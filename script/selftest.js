@@ -600,7 +600,7 @@ function runTests()
          remove:          function() {},
          rename:          function() {},
          makeDirectory:   function() {},
-         platform:        function() { return "macOS"; },
+         platform:        function() { return Util.PLATFORM_MACOS; },
          execute:         function() { return gitResult; },
          spawnDetached:   function( prog, args ) { spawned.push( prog + " " + args.join( " " ) ); }
       };
@@ -632,19 +632,19 @@ function runTests()
     * unguarded would throw a modal system installer into Loom's startup.
     */
    check( "the bare macOS stub is not a usable git",
-          Update.resolveGitPath( Update.gitCandidates( "macOS" ),
+          Update.resolveGitPath( Update.gitCandidates( Util.PLATFORM_MACOS ),
              fakeIo( [ "/usr/bin/git" ], [] ) ), null );
    check( "the stub counts once the command line tools are there",
-          Update.resolveGitPath( Update.gitCandidates( "macOS" ),
+          Update.resolveGitPath( Update.gitCandidates( Util.PLATFORM_MACOS ),
              fakeIo( [ "/usr/bin/git",
                        "/Library/Developer/CommandLineTools/usr/bin/git" ], [] ) ),
           "/usr/bin/git" );
    check( "homebrew's git needs no guard",
-          Update.resolveGitPath( Update.gitCandidates( "macOS" ),
+          Update.resolveGitPath( Update.gitCandidates( Util.PLATFORM_MACOS ),
              fakeIo( [ "/opt/homebrew/bin/git", "/usr/bin/git" ], [] ) ),
           "/opt/homebrew/bin/git" );
    check( "no git at all resolves to nothing",
-          Update.resolveGitPath( Update.gitCandidates( "macOS" ),
+          Update.resolveGitPath( Update.gitCandidates( Util.PLATFORM_MACOS ),
              fakeIo( [], [] ) ), null );
    check( "a working git is recognised", Update.isWorkingGit( GOOD_GIT ), true );
    check( "a non-zero exit is not a working git",
@@ -790,6 +790,310 @@ function runTests()
    check( "with no repository it carries the version alone",
           Update.describeVersion( "/x/Loom", fakeIo( [], [] ) ),
           "Loom " + Util.LOOM_VERSION );
+
+
+   /* ---------------------------------------------------------------- */
+   /* Running on Windows as well as macOS                               */
+   /* ---------------------------------------------------------------- */
+
+   /*
+    * These tests are the whole reason the platform is an ARGUMENT
+    * everywhere rather than a read of Util.PLATFORM: the machine this
+    * suite runs on is a Mac, so the Windows branch can only ever be
+    * checked by injecting it. Testing the branch you happen to be
+    * standing on is not testing the code.
+    */
+   check( "the platform resolves to one Loom knows",
+          [ Util.PLATFORM_WINDOWS, Util.PLATFORM_MACOS, Util.PLATFORM_UNIX ]
+             .indexOf( Util.PLATFORM ) >= 0, true );
+   /*
+    * The preprocessor branch actually taken. If __PI_PLATFORM__ ever stops
+    * being MACOSX here, this is the test that says so rather than a
+    * mysteriously macOS-shaped Windows run.
+    */
+   check( "this build identifies itself as macOS", Util.PLATFORM,
+          Util.PLATFORM_MACOS );
+   check( "an injected platform overrides it",
+          Util.platform( Util.PLATFORM_WINDOWS ), Util.PLATFORM_WINDOWS );
+   check( "with nothing injected the running platform is used",
+          Util.platform(), Util.PLATFORM );
+   check( "Windows is Windows", Util.isWindows( Util.PLATFORM_WINDOWS ), true );
+   check( "macOS is not Windows", Util.isWindows( Util.PLATFORM_MACOS ), false );
+   check( "linux is not Windows", Util.isWindows( Util.PLATFORM_UNIX ), false );
+
+   /*
+    * The install layout is asked of the core, not spelled out. These are
+    * the four paths that used to be /Applications literals; each is
+    * checked against the running installation, so a wrong property name
+    * fails here rather than mid-run.
+    */
+   check( "the spectrum database is where the core says it is",
+          Steps.FILTERS_XSPD_PATH,
+          CoreApplication.baseDirPath + "/library/filters.xspd" );
+   check( "...and it is really there", File.exists( Steps.FILTERS_XSPD_PATH ), true );
+   check( "the bundled scripts are where the core says they are",
+          Steps.PI_SRC_SCRIPTS_DIR, CoreApplication.srcDirPath + "/scripts" );
+   check( "...and the ImageSolver engine is really there",
+          File.exists( Steps.IMAGE_SOLVER_ENGINE_PATH ), true );
+   check( "the core settings directory is the core's own",
+          Steps.CORE_SETTINGS_DIR, CoreApplication.configDirPath );
+   check( "...and it is really there",
+          File.directoryExists( Steps.CORE_SETTINGS_DIR ), true );
+   /*
+    * The include that cannot take a runtime path. It is written
+    * <../src/scripts/...>, relative to the core's include directory, so it
+    * resolves wherever PixInsight is installed and on whatever platform.
+    * If it ever fails to resolve, PixInsight discards this whole script
+    * silently -- so reaching this line at all is half the assertion.
+    */
+   check( "the ImageSolver engine class is in scope",
+          typeof ImageSolver, "function" );
+
+   /*
+    * No source file may carry an absolute path into the PixInsight
+    * installation again. The check is on the sources because a literal
+    * that is only reached on a Windows machine cannot be caught any other
+    * way from here.
+    */
+   var LIB_FILES = [ "Util.js", "Cache.js", "Psb.js", "Steps.js",
+                     "Pipeline.js", "Update.js", "UI.js" ];
+   var hardcoded = [];
+   for ( var lf = 0; lf < LIB_FILES.length; ++lf )
+   {
+      var src = File.readTextFile( LOOM_DIR + "/lib/" + LIB_FILES[lf] );
+      // A quote immediately before the path: a string literal, not prose.
+      if ( src.indexOf( "\"/Applications/PixInsight" ) >= 0 ||
+           src.indexOf( "\"C:/Program Files/PixInsight" ) >= 0 ||
+           src.indexOf( "\"/Library/PixInsight" ) >= 0 )
+         hardcoded.push( LIB_FILES[lf] );
+   }
+   check( "no library hardcodes the PixInsight install path", hardcoded, [] );
+
+   /*
+    * Where applications live. The macOS answer must not have changed --
+    * this is the list that finds the SyQon binaries today.
+    */
+   check( "macOS looks in both Applications folders",
+          Steps.applicationRoots( Util.PLATFORM_MACOS, "/Users/x" ),
+          [ "/Applications", "/Users/x/Applications" ] );
+   check( "linux uses the same list",
+          Steps.applicationRoots( Util.PLATFORM_UNIX, "/home/x" ),
+          [ "/Applications", "/home/x/Applications" ] );
+   check( "Windows looks in the Program Files trees and the per-user one",
+          Steps.applicationRoots( Util.PLATFORM_WINDOWS, "C:/Users/x" ),
+          [ "C:/Program Files", "C:/Program Files (x86)",
+            "C:/Users/x/AppData/Local/Programs" ] );
+   check( "an unknown home drops the per-user root rather than building \"/AppData\"",
+          Steps.applicationRoots( Util.PLATFORM_WINDOWS, "" ),
+          [ "C:/Program Files", "C:/Program Files (x86)" ] );
+   check( "and does the same on macOS",
+          Steps.applicationRoots( Util.PLATFORM_MACOS, "" ), [ "/Applications" ] );
+
+   /*
+    * What an executable looks like under one of those roots. The .exe
+    * suffix is added here rather than baked into the tool names, so
+    * Steps.findExecutable( "parallax_cli" ) is one call on both platforms.
+    */
+   check( "macOS checks the bare binary and the app bundle",
+          Steps.executableCandidates( "/Applications/X", "tool",
+                                      Util.PLATFORM_MACOS ),
+          [ "/Applications/X/tool", "/Applications/X/Contents/MacOS/tool" ] );
+   check( "Windows checks .exe, bin\\.exe and the bare name",
+          Steps.executableCandidates( "C:/Program Files/X", "tool",
+                                      Util.PLATFORM_WINDOWS ),
+          [ "C:/Program Files/X/tool.exe", "C:/Program Files/X/bin/tool.exe",
+            "C:/Program Files/X/tool" ] );
+
+   /*
+    * The starless model is derived from wherever the binary was found. The
+    * bare /Applications fallback is macOS-only: on Windows that is a path
+    * on the current drive, which is worse than no candidate at all.
+    */
+   var MODEL_MAC = "/Applications/SyQonStarless.app/Contents/Resources/axiom3.mlmodelc";
+   check( "the model is looked for beside the binary first",
+          Steps.starlessModelCandidates(
+             "/Applications/SyQonStarless.app/Contents/MacOS/SyQonStarless",
+             Util.PLATFORM_MACOS )[0],
+          MODEL_MAC );
+   check( "with no binary macOS still has its last resort",
+          Steps.starlessModelCandidates( null, Util.PLATFORM_MACOS ),
+          [ MODEL_MAC ] );
+   check( "Windows does not fall back to a macOS path",
+          Steps.starlessModelCandidates( null, Util.PLATFORM_WINDOWS ), [] );
+   check( "Windows still looks beside the binary",
+          Steps.starlessModelCandidates( "C:/Program Files/SyQon/SyQonStarless.exe",
+                                         Util.PLATFORM_WINDOWS ).length, 2 );
+
+   /* ---------------------------------------------------------------- */
+   /* The updater on Windows                                            */
+   /* ---------------------------------------------------------------- */
+
+   check( "Git for Windows is looked for where its installer puts it",
+          Update.resolveGitPath(
+             Update.gitCandidates( Util.PLATFORM_WINDOWS, "C:/Users/x" ),
+             fakeIo( [ "C:/Program Files/Git/cmd/git.exe" ], [] ) ),
+          "C:/Program Files/Git/cmd/git.exe" );
+   /*
+    * A machine where the user cannot elevate gets git under their own
+    * profile. Missing that path means the updater silently never runs.
+    */
+   check( "a per-user Git for Windows install is found too",
+          Update.resolveGitPath(
+             Update.gitCandidates( Util.PLATFORM_WINDOWS, "C:/Users/x" ),
+             fakeIo( [ "C:/Users/x/AppData/Local/Programs/Git/cmd/git.exe" ], [] ) ),
+          "C:/Users/x/AppData/Local/Programs/Git/cmd/git.exe" );
+   check( "no git on Windows resolves to nothing",
+          Update.resolveGitPath(
+             Update.gitCandidates( Util.PLATFORM_WINDOWS, "C:/Users/x" ),
+             fakeIo( [], [] ) ), null );
+   /*
+    * The macOS stub guard is a macOS concept. It must not leak into the
+    * Windows list, where /usr/bin/git means nothing.
+    */
+   check( "the Windows candidates carry no macOS guards",
+          Update.gitCandidates( Util.PLATFORM_WINDOWS, "C:/Users/x" )
+             .filter( function( c ) { return c.guards.length > 0; } ).length, 0 );
+
+   check( "the POSIX helper is a shell script", Update.helperFileName( Util.PLATFORM_MACOS ),
+          "update-run.sh" );
+   /*
+    * .ps1 is not decoration: powershell -File refuses any other extension.
+    */
+   check( "the Windows helper is a .ps1", Update.helperFileName( Util.PLATFORM_WINDOWS ),
+          "update-run.ps1" );
+   var macCmd = Update.helperCommand( Util.PLATFORM_MACOS, "/s/update-run.sh" );
+   check( "macOS runs the helper with /bin/sh", macCmd.program, "/bin/sh" );
+   check( "...and passes it the file", macCmd.args, [ "/s/update-run.sh" ] );
+   var winCmd = Update.helperCommand( Util.PLATFORM_WINDOWS, "C:/s/update-run.ps1" );
+   /*
+    * PowerShell rather than cmd.exe because PJSR hands out forward-slash
+    * paths on Windows too, and cmd.exe reads a leading "/" as a switch.
+    */
+   check( "Windows runs the helper with PowerShell", winCmd.program, "powershell.exe" );
+   check( "the script path is the last argument",
+          winCmd.args[ winCmd.args.length - 1 ], "C:/s/update-run.ps1" );
+   check( "the default Restricted policy cannot block it",
+          winCmd.args.indexOf( "Bypass" ) >= 0, true );
+   check( "a user profile cannot change the updater's environment",
+          winCmd.args.indexOf( "-NoProfile" ) >= 0, true );
+   check( "nothing detached can sit waiting for input",
+          winCmd.args.indexOf( "-NonInteractive" ) >= 0, true );
+
+   /* The same guards again, this time in PowerShell. */
+   var ps = Update.gitScript( { git: "C:/Program Files/Git/cmd/git.exe",
+                                dir: "C:/Users/x/Loom", stateDir: "C:/Users/x/.loom",
+                                platform: Util.PLATFORM_WINDOWS } );
+   check( "the Windows update is fast-forward only",
+          ps.indexOf( "--ff-only" ) >= 0, true );
+   check( "the Windows dirty check sees untracked files too",
+          ps.indexOf( "--untracked-files=all" ) >= 0, true );
+   check( "the discredited diff guard is not used on Windows either",
+          ps.indexOf( "diff --quiet" ) < 0, true );
+   check( "an inherited autostash cannot stash the user's work on Windows",
+          ps.indexOf( "merge.autoStash=false" ) >= 0, true );
+   check( "a credential prompt cannot stall the Windows fetch",
+          ps.indexOf( "GIT_TERMINAL_PROMPT" ) >= 0, true );
+   check( "ssh runs in batch mode on Windows too",
+          ps.indexOf( "BatchMode=yes" ) >= 0, true );
+   check( "two Windows launches cannot both update",
+          ps.indexOf( "New-Item -ItemType Directory -Path $LOCK -ErrorAction Stop" ) >= 0,
+          true );
+   check( "the lock is released however the Windows helper ends",
+          ps.indexOf( "finally {" ) >= 0, true );
+   check( "the Windows upstream is resolved rather than assumed",
+          ps.indexOf( "--symbolic-full-name" ) >= 0, true );
+   check( "the Windows outcome is published by rename",
+          ps.indexOf( "Move-Item -LiteralPath $TMP -Destination $OUT -Force" ) >= 0,
+          true );
+   /*
+    * Set-Content and Out-File write ANSI or UTF-16-with-BOM under
+    * PowerShell 5.1, and a BOM in front of the status word makes
+    * Update.parseOutcome reject the record as malformed. Everything is
+    * written through [System.IO.File] instead.
+    */
+   check( "the Windows helper writes no BOM",
+          ps.indexOf( "Set-Content" ) < 0 && ps.indexOf( "Out-File" ) < 0, true );
+   check( "...by writing through System.IO.File",
+          ps.indexOf( "[System.IO.File]::WriteAllText" ) >= 0, true );
+   /*
+    * Under $ErrorActionPreference = 'Stop', PowerShell 5.1 turns anything
+    * a native program writes to stderr into a terminating error -- so an
+    * ordinary git progress line would abort the update. Failure is read
+    * from $LASTEXITCODE instead.
+    */
+   check( "native stderr cannot abort the Windows update",
+          ps.indexOf( "$ErrorActionPreference = 'Continue'" ) >= 0, true );
+   check( "...and git's own exit code is what decides",
+          ps.indexOf( "$LASTEXITCODE" ) >= 0, true );
+   check( "an unexpected throw still leaves a record",
+          ps.indexOf( "catch {" ) >= 0, true );
+
+   /*
+    * Quoting. A path may contain a single quote -- "C:/Users/O'Brien" is
+    * an ordinary Windows home -- and it must not be able to end the
+    * literal it sits in.
+    */
+   check( "PowerShell quoting doubles an embedded quote",
+          Update.quotePowerShell( "C:/Users/O'Brien" ), "'C:/Users/O''Brien'" );
+   check( "POSIX quoting is unchanged",
+          Update.quotePosix( "/Users/O'Brien" ), "'/Users/O'\\''Brien'" );
+   var psQuoted = Update.gitScript( { git: "C:/Git/git.exe",
+                                      dir: "C:/Users/O'Brien/Loom",
+                                      stateDir: "C:/Users/O'Brien/.loom",
+                                      platform: Util.PLATFORM_WINDOWS } );
+   check( "a quote in a real path is escaped in the generated script",
+          psQuoted.indexOf( "'C:/Users/O''Brien/Loom'" ) >= 0, true );
+
+   var psZip = Update.zipScript( { dir: "C:/Users/x/Loom", stateDir: "C:/Users/x/.loom",
+                                   version: "0.1", owner: "o", repo: "r",
+                                   platform: Util.PLATFORM_WINDOWS } );
+   check( "the Windows download refuses a non-https asset",
+          psZip.indexOf( "StartsWith('https://')" ) >= 0, true );
+   /*
+    * PowerShell 5.1 inherits .NET's default protocol list, which on an
+    * un-updated machine still offers TLS 1.0 -- GitHub refuses it.
+    */
+   check( "TLS 1.2 is forced",
+          psZip.indexOf( "Tls12" ) >= 0, true );
+   check( "the old copy is kept until the new one is in place on Windows",
+          psZip.indexOf( "Move-Item -LiteralPath $DIR -Destination ($DIR + '.old') -Force" ) >= 0,
+          true );
+   check( "a failed Windows install rolls back",
+          psZip.indexOf( "Move-Item -LiteralPath ($DIR + '.old') -Destination $DIR -Force" ) >= 0,
+          true );
+   check( "the installed tree is marked as a release install on Windows",
+          psZip.indexOf( Update.RELEASE_MARKER ) >= 0, true );
+   check( "the staging directory is cleaned up however it ends",
+          psZip.indexOf( "Remove-Item -LiteralPath $WORK" ) >= 0, true );
+
+   /*
+    * And the whole path end to end: a Windows checkout writes a .ps1 and
+    * spawns PowerShell, with no trace of /bin/sh.
+    */
+   function windowsIo( files, dirs, gitResult )
+   {
+      var io = fakeIo( files, dirs, gitResult );
+      io.platform = function() { return Util.PLATFORM_WINDOWS; };
+      return io;
+   }
+   Update.SCRIPT_DIR = "C:/Users/x/Loom";
+   var winIo = windowsIo( [ "C:/Program Files/Git/cmd/git.exe" ],
+                          [ "C:/Users/x/Loom/.git" ], GOOD_GIT );
+   check( "a Windows checkout spawns the git updater",
+          Update.start( { autoUpdate: true }, winIo ), "git" );
+   check( "...as a PowerShell process",
+          winIo.spawned.length == 1 &&
+          winIo.spawned[0].indexOf( "powershell.exe" ) == 0, true );
+   check( "...running a .ps1",
+          winIo.spawned[0].indexOf( "update-run.ps1" ) >= 0, true );
+   check( "...and nothing anywhere runs /bin/sh",
+          winIo.spawned[0].indexOf( "/bin/sh" ) < 0, true );
+   var psWritten = winIo.written[ Update.stateDir() + "/update-run.ps1" ];
+   check( "the helper written is the PowerShell one, not the shell one",
+          psWritten != null && psWritten.indexOf( "$ErrorActionPreference" ) >= 0 &&
+             psWritten.indexOf( "#!/bin/sh" ) < 0, true );
+   /* Restore what the macOS updater tests set, so order cannot matter. */
+   Update.SCRIPT_DIR = "/x/Loom";
 
    /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own

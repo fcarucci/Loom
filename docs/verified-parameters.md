@@ -333,6 +333,23 @@ engine.initialize( window, false /*prioritizeSettings*/ );
 engine.solveImage( window );        // throws on failure
 engine.saveImage( window );         // optional, writes WCS keywords/output
 ```
+**The path to write (verified 2026-09-17).** `#include` is resolved when the
+script is parsed, so it can never take a runtime value such as
+`CoreApplication.srcDirPath`. Write it with angle brackets and a relative
+path instead:
+
+```javascript
+#include <../src/scripts/ImageSolver/ImageSolverEngine.js>
+```
+
+Angle-bracket includes resolve against the core's `include` directory
+(`<base>/include`), so `../src/scripts/...` lands on `<base>/src/scripts/...`
+whatever `<base>` is and on whatever platform. Probed on macOS: it resolves,
+and `typeof ImageSolver` is `"function"` afterwards. An absolute
+`/Applications/...` path is macOS-only, and a path that does not resolve is
+not reported — PixInsight discards the entire script with no message, no
+console output and exit status 0.
+
 `ImageSolverEngine.js` itself further `#include`s
 `AstrometricMetadata.js`, `AstronomicalCatalogs.js`,
 `SearchCoordinatesDialog.js`, `CatalogDownloaderDialog.js`,

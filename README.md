@@ -302,7 +302,9 @@ when no palette was built.
 
 ## Requirements
 
-PixInsight 1.9.4 or later. Developed and run on macOS.
+PixInsight 1.9.4 or later. Developed and run on macOS. It is written to run on
+Windows as well, but it has never been run on one — treat that as untested
+rather than as supported.
 
 The camera is read from the `INSTRUME` keyword, not assumed.
 `Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the

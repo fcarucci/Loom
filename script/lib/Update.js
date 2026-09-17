@@ -213,11 +213,25 @@ Update.describeVersion = function( dir, io )
  * and needs none; /usr/bin/git is only trustworthy when a real git sits
  * behind it.
  */
-Update.gitCandidates = function( platform )
+Update.gitCandidates = function( platform, home )
 {
-   if ( platform == "Windows" )
-      return [ { path: "C:/Program Files/Git/cmd/git.exe", guards: [] },
-               { path: "C:/Program Files (x86)/Git/cmd/git.exe", guards: [] } ];
+   if ( Util.isWindows( platform ) )
+   {
+      if ( home === undefined )
+         try { home = File.homeDirectory; } catch ( e ) { home = ""; }
+      /*
+       * Git for Windows has no /usr/bin stub problem, so no guards: these
+       * paths exist only if git is really installed. The third is where
+       * the installer puts it when it is run without elevation, which is
+       * the common case on a managed machine.
+       */
+      var w = [ { path: "C:/Program Files/Git/cmd/git.exe", guards: [] },
+                { path: "C:/Program Files (x86)/Git/cmd/git.exe", guards: [] } ];
+      if ( home != null && String( home ).length > 0 )
+         w.push( { path: home + "/AppData/Local/Programs/Git/cmd/git.exe",
+                   guards: [] } );
+      return w;
+   }
    return [
       { path: "/opt/homebrew/bin/git", guards: [] },
       { path: "/usr/local/bin/git",    guards: [] },
@@ -258,9 +272,9 @@ Update.isWorkingGit = function( result )
  * binary works rather than merely existing. Acknowledged as a bounded
  * exception to "startup never waits".
  */
-Update.usableGit = function( io, platform )
+Update.usableGit = function( io, platform, home )
 {
-   var path = Update.resolveGitPath( Update.gitCandidates( platform ), io );
+   var path = Update.resolveGitPath( Update.gitCandidates( platform, home ), io );
    if ( path == null )
       return null;
    return Update.isWorkingGit( io.execute( path, [ "--version" ] ) ) ? path : null;
@@ -337,6 +351,73 @@ Update.isFailure = function( o )
 /* ------------------------------------------------------------------ */
 
 /*
+ * There are two of everything below, one per shell, because there is no
+ * shell both platforms have.
+ *
+ * The POSIX half is the original and is unchanged. The Windows half is
+ * PowerShell rather than cmd.exe, for one decisive reason: PJSR hands out
+ * paths with forward slashes on Windows too ("C:/Users/..."), and cmd.exe
+ * reads a leading "/" as the start of a switch. PowerShell takes those
+ * paths as they come. It is also the only one of the two that can write a
+ * file without a BOM and rename it atomically without a helper.
+ *
+ * The two must stay behaviourally identical: same guards, same outcome
+ * records, same single-flight lock. The selftest asserts every guard
+ * separately for each.
+ */
+
+/* Quoting for each shell, so a path or branch name cannot become syntax. */
+Update.quotePosix = function( s )
+{
+   return "'" + String( s ).replace( /'/g, "'\\''" ) + "'";
+};
+
+/* PowerShell single-quoted literals: nothing expands; '' is a literal '. */
+Update.quotePowerShell = function( s )
+{
+   return "'" + String( s ).replace( /'/g, "''" ) + "'";
+};
+
+/*
+ * The helper's filename and how it is launched. Kept together because the
+ * extension is not cosmetic: PowerShell -File refuses anything that is not
+ * .ps1.
+ */
+Update.helperFileName = function( platform )
+{
+   return Util.isWindows( platform ) ? "update-run.ps1" : "update-run.sh";
+};
+
+Update.helperCommand = function( platform, path )
+{
+   if ( Util.isWindows( platform ) )
+      /*
+       * -ExecutionPolicy Bypass because the default policy on a fresh
+       * Windows install (Restricted) refuses to run a script FILE at all;
+       * -NoProfile so a user profile cannot change git's environment or
+       * slow the launch; -NonInteractive so nothing can ever sit waiting
+       * for input in a detached process nobody can see.
+       */
+      return { program: "powershell.exe",
+               args: [ "-NoProfile", "-NonInteractive",
+                       "-ExecutionPolicy", "Bypass", "-File", path ] };
+   return { program: "/bin/sh", args: [ path ] };
+};
+
+/* Dispatches on o.platform, defaulting to the platform Loom is running on. */
+Update.gitScript = function( o )
+{
+   return Util.isWindows( o.platform ) ? Update.gitScriptPowerShell( o )
+                                       : Update.gitScriptPosix( o );
+};
+
+Update.zipScript = function( o )
+{
+   return Util.isWindows( o.platform ) ? Update.zipScriptPowerShell( o )
+                                       : Update.zipScriptPosix( o );
+};
+
+/*
  * Written to a file and run as `/bin/sh <file>` rather than interpolated
  * into `sh -c`: paths, branch names and URLs cannot then break quoting or
  * turn into shell syntax.
@@ -344,9 +425,9 @@ Update.isFailure = function( o )
  * Every guard below earned its place by being wrong in an earlier draft;
  * the selftest asserts each one is still present.
  */
-Update.gitScript = function( o )
+Update.gitScriptPosix = function( o )
 {
-   var q = function( s ) { return "'" + String( s ).replace( /'/g, "'\\''" ) + "'" ; };
+   var q = Update.quotePosix;
    return [
       "#!/bin/sh",
       "GIT=" + q( o.git ),
@@ -404,6 +485,98 @@ Update.gitScript = function( o )
 };
 
 /*
+ * The Windows git updater. Line for line the same decisions as the POSIX
+ * one above; only the language differs. Read them side by side.
+ *
+ * $ErrorActionPreference is 'Continue', NOT 'Stop'. Under 'Stop',
+ * PowerShell 5.1 turns anything a native program writes to stderr into a
+ * terminating NativeCommandError -- so a perfectly ordinary `git fetch`
+ * progress line would abort the update. Every failure here is therefore
+ * detected the way git reports it, through $LASTEXITCODE, and the whole
+ * body sits in a try/catch so an unexpected throw still leaves a record.
+ *
+ * Every file this writes goes through [System.IO.File], never Set-Content
+ * or Out-File: in PowerShell 5.1 those write ANSI or UTF-16-with-BOM, and
+ * a BOM in front of the status word makes Update.parseOutcome reject the
+ * record as malformed.
+ */
+Update.gitScriptPowerShell = function( o )
+{
+   var q = Update.quotePowerShell;
+   return [
+      "# Loom updater. Generated; do not edit.",
+      "$ErrorActionPreference = 'Continue'",
+      "$GIT   = " + q( o.git ),
+      "$DIR   = " + q( o.dir ),
+      "$STATE = " + q( o.stateDir ),
+      "$LOCK  = $STATE + '/" + Update.LOCK_DIR + "'",
+      "$OUT   = $STATE + '/" + Update.OUTCOME_FILE + "'",
+      "$HIST  = $STATE + '/" + Update.HISTORY_FILE + "'",
+      "$TMP   = $STATE + '/.update-' + $PID",
+      "",
+      "# A background fetch that hits an authentication prompt would wait",
+      "# for ever, invisibly, one worker per launch.",
+      "$env:GIT_TERMINAL_PROMPT = '0'",
+      "$env:GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'",
+      "",
+      "function Report($status, $code, $from, $to, $message) {",
+      "  $when = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')",
+      "  $msg  = ([string]$message) -replace '[\\r\\n]+', ' '",
+      "  $line = @($status, [string]$code, $from, $to, $when, $msg) -join \"`t\"",
+      "  [System.IO.File]::WriteAllText($TMP, $line + \"`n\")",
+      "  [System.IO.File]::AppendAllText($HIST, $line + \"`n\")",
+      "  Move-Item -LiteralPath $TMP -Destination $OUT -Force",  // atomic publication
+      "}",
+      "",
+      "# Creating a directory is atomic and fails if it already exists:",
+      "# two launches cannot both update.",
+      "try { New-Item -ItemType Directory -Path $LOCK -ErrorAction Stop | Out-Null }",
+      "catch { exit 0 }",
+      "",
+      "try {",
+      "  # status --porcelain, and not a plain diff against the index: that",
+      "  # misses staged changes and untracked files entirely.",
+      "  $ST = (& $GIT -C $DIR status --porcelain=v1 --untracked-files=all 2>&1 | Out-String)",
+      "  if ($ST.Trim() -ne '') {",
+      "    Report 'skipped-dirty' 0 '-' '-' 'local changes present'; exit 0 }",
+      "",
+      "  # Resolve the upstream and fetch THAT. 'fetch origin <branch>' then",
+      "  # 'merge @{u}' can target different refs, or different remotes.",
+      "  $UP = (& $GIT -C $DIR rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null |",
+      "         Select-Object -First 1)",
+      "  if (-not $UP) {",
+      "    Report 'skipped-no-upstream' 0 '-' '-' 'detached HEAD or no upstream'; exit 0 }",
+      "  $UP = ([string]$UP).Trim()",
+      "  # A branch name may contain '/', a remote name may not: split once.",
+      "  $REMOTE = $UP.Substring(0, $UP.IndexOf('/'))",
+      "  $BRANCH = $UP.Substring($UP.IndexOf('/') + 1)",
+      "  $FROM = (& $GIT -C $DIR rev-parse --short HEAD 2>$null | Select-Object -First 1)",
+      "  if (-not $FROM) { $FROM = '-' } else { $FROM = ([string]$FROM).Trim() }",
+      "",
+      "  $ERR = (& $GIT -C $DIR -c merge.autoStash=false fetch -q $REMOTE $BRANCH 2>&1 | Out-String)",
+      "  if ($LASTEXITCODE -ne 0) { Report 'failed' $LASTEXITCODE $FROM '-' $ERR; exit 0 }",
+      "",
+      "  $ERR = (& $GIT -C $DIR -c merge.autoStash=false merge --ff-only -q '@{u}' 2>&1 | Out-String)",
+      "  $RC = $LASTEXITCODE",
+      "  $TO = (& $GIT -C $DIR rev-parse --short HEAD 2>$null | Select-Object -First 1)",
+      "  if (-not $TO) { $TO = '-' } else { $TO = ([string]$TO).Trim() }",
+      "  if ($RC -ne 0) { Report 'failed' $RC $FROM $TO $ERR; exit 0 }",
+      "  if ($FROM -eq $TO) { Report 'unchanged' 0 $FROM $TO ''; exit 0 }",
+      "  Report 'updated' 0 $FROM $TO ''",
+      "}",
+      "catch {",
+      "  # Nothing may end without a record: a launch that finds neither an",
+      "  # outcome nor a lock has no way to tell 'never ran' from 'died'.",
+      "  Report 'failed' 1 '-' '-' ([string]$_)",
+      "}",
+      "finally {",
+      "  Remove-Item -LiteralPath $LOCK -Recurse -Force -ErrorAction SilentlyContinue",
+      "}",
+      ""
+   ].join( "\n" );
+};
+
+/*
  * The zip fallback, for installations that did not come from git.
  *
  * curl and tar rather than PJSR's in-process NetworkTransfer, because
@@ -413,9 +586,9 @@ Update.gitScript = function( o )
  * them leaves script.old in place; recovery is one mv, which is the
  * accepted trade against building an immutable-release launcher.
  */
-Update.zipScript = function( o )
+Update.zipScriptPosix = function( o )
 {
-   var q = function( s ) { return "'" + String( s ).replace( /'/g, "'\\''" ) + "'" ; };
+   var q = Update.quotePosix;
    var api = "https://api.github.com/repos/" + o.owner + "/" + o.repo +
              "/releases/latest";
    return [
@@ -473,6 +646,96 @@ Update.zipScript = function( o )
    ].join( "\n" );
 };
 
+/*
+ * The Windows zip fallback. Same shape as the POSIX one: fetch the
+ * release metadata, refuse anything that is not newer, stage into a
+ * scratch directory, and swap by rename with a rollback.
+ *
+ * Invoke-RestMethod and Expand-Archive rather than curl and tar. Windows
+ * does ship both of those now, but only on recent builds, and tar.exe
+ * reading a .zip is a bsdtar detail rather than a guarantee; the
+ * PowerShell calls are present on every machine that can run the rest of
+ * this file.
+ *
+ * TLS 1.2 is forced because PowerShell 5.1 inherits .NET's default, which
+ * on an un-updated machine still offers TLS 1.0 -- and GitHub refuses it,
+ * producing the unhelpful "the underlying connection was closed".
+ */
+Update.zipScriptPowerShell = function( o )
+{
+   var q = Update.quotePowerShell;
+   var api = "https://api.github.com/repos/" + o.owner + "/" + o.repo +
+             "/releases/latest";
+   return [
+      "# Loom updater. Generated; do not edit.",
+      "$ErrorActionPreference = 'Stop'",
+      "$DIR     = " + q( o.dir ),
+      "$STATE   = " + q( o.stateDir ),
+      "$CURRENT = " + q( o.version ),
+      "$LOCK  = $STATE + '/" + Update.LOCK_DIR + "'",
+      "$OUT   = $STATE + '/" + Update.OUTCOME_FILE + "'",
+      "$HIST  = $STATE + '/" + Update.HISTORY_FILE + "'",
+      "$TMP   = $STATE + '/.update-' + $PID",
+      "$WORK  = $STATE + '/staging-' + $PID",
+      "",
+      "function Report($status, $code, $from, $to, $message) {",
+      "  $when = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')",
+      "  $msg  = ([string]$message) -replace '[\\r\\n]+', ' '",
+      "  $line = @($status, [string]$code, $from, $to, $when, $msg) -join \"`t\"",
+      "  [System.IO.File]::WriteAllText($TMP, $line + \"`n\")",
+      "  [System.IO.File]::AppendAllText($HIST, $line + \"`n\")",
+      "  Move-Item -LiteralPath $TMP -Destination $OUT -Force",
+      "}",
+      "",
+      "try { New-Item -ItemType Directory -Path $LOCK -ErrorAction Stop | Out-Null }",
+      "catch { exit 0 }",
+      "",
+      "try {",
+      "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+      "  $JSON = Invoke-RestMethod -UseBasicParsing -Uri " + q( api ) +
+                " -Headers @{ 'User-Agent' = 'Loom' }",
+      "  $TAG = [string]$JSON.tag_name",
+      "  $URL = ''",
+      "  if ($JSON.assets -and $JSON.assets.Count -gt 0) {",
+      "    $URL = [string]$JSON.assets[0].browser_download_url }",
+      "  if (-not $TAG -or -not $URL) {",
+      "    Report 'failed' 1 $CURRENT '-' 'no release asset published'; exit 0 }",
+      "  # The transport cannot be downgraded by whatever the API hands back.",
+      "  if (-not $URL.StartsWith('https://')) {",
+      "    Report 'failed' 1 $CURRENT $TAG 'release asset is not served over https'; exit 0 }",
+      "  if ($TAG.TrimStart('v') -eq $CURRENT) {",
+      "    Report 'unchanged' 0 $CURRENT $CURRENT ''; exit 0 }",
+      "",
+      "  New-Item -ItemType Directory -Path $WORK -Force | Out-Null",
+      "  New-Item -ItemType Directory -Path ($WORK + '/tree') -Force | Out-Null",
+      "  Invoke-WebRequest -UseBasicParsing -Uri $URL -OutFile ($WORK + '/release.zip')",
+      "  Expand-Archive -LiteralPath ($WORK + '/release.zip') -DestinationPath ($WORK + '/tree') -Force",
+      "",
+      "  # Verify against the NEW release: requiring every file the OLD copy",
+      "  # had would reject a release that legitimately renamed one.",
+      "  if (-not (Test-Path -LiteralPath ($WORK + '/tree/Loom.js')) -or",
+      "      -not (Test-Path -LiteralPath ($WORK + '/tree/lib'))) {",
+      "    Report 'failed' 1 $CURRENT $TAG 'release is missing Loom.js or lib/'; exit 0 }",
+      "",
+      "  [System.IO.File]::WriteAllText($WORK + '/tree/" + Update.RELEASE_MARKER + "', '')",
+      "  Remove-Item -LiteralPath ($DIR + '.old') -Recurse -Force -ErrorAction SilentlyContinue",
+      "  Move-Item -LiteralPath $DIR -Destination ($DIR + '.old') -Force",
+      "  try { Move-Item -LiteralPath ($WORK + '/tree') -Destination $DIR -Force }",
+      "  catch {",
+      "    Move-Item -LiteralPath ($DIR + '.old') -Destination $DIR -Force",  // the one rollback that can still run
+      "    Report 'failed' 1 $CURRENT $TAG 'install failed, rolled back'; exit 0 }",
+      "  Remove-Item -LiteralPath ($DIR + '.old') -Recurse -Force -ErrorAction SilentlyContinue",
+      "  Report 'updated' 0 $CURRENT $TAG ''",
+      "}",
+      "catch { Report 'failed' 1 $CURRENT '-' ([string]$_) }",
+      "finally {",
+      "  Remove-Item -LiteralPath $WORK -Recurse -Force -ErrorAction SilentlyContinue",
+      "  Remove-Item -LiteralPath $LOCK -Recurse -Force -ErrorAction SilentlyContinue",
+      "}",
+      ""
+   ].join( "\n" );
+};
+
 /* ------------------------------------------------------------------ */
 /* Real-world plumbing, isolated so everything above can be tested      */
 /* ------------------------------------------------------------------ */
@@ -485,7 +748,14 @@ Update.io = {
    remove:          function( p ) { File.remove( p ); },
    rename:          function( a, b ) { File.move( a, b ); },
    makeDirectory:   function( p ) { File.createDirectory( p, true ); },
-   platform:        function() { return CoreApplication.platform; },
+   /*
+    * Util.PLATFORM, not CoreApplication.platform. The core does expose a
+    * platform string at runtime ("macOS" here), but nothing documents
+    * what it says on Windows, so comparing against it would be a guess.
+    * Util.PLATFORM comes from the preprocessor's __PI_PLATFORM__, whose
+    * spellings PixInsight's own bundled scripts rely on.
+    */
+   platform:        function() { return Util.PLATFORM; },
 
    execute: function( program, args )
    {
@@ -568,6 +838,7 @@ Update.start = function( config, io )
          io.makeDirectory( state );
 
       var kind = Update.installKind( dir, io );
+      var platform = io.platform();
       var script = null;
 
       if ( kind == "git" )
@@ -577,10 +848,11 @@ Update.start = function( config, io )
           * zip path here would replace a working tree behind git's back:
           * permanently dirty, and refused by every later --ff-only.
           */
-         var git = Update.usableGit( io, io.platform() );
+         var git = Update.usableGit( io, platform );
          if ( git == null )
             return null;
-         script = Update.gitScript( { git: git, dir: dir, stateDir: state } );
+         script = Update.gitScript( { git: git, dir: dir, stateDir: state,
+                                      platform: platform } );
       }
       else if ( kind == "release" )
       {
@@ -589,14 +861,16 @@ Update.start = function( config, io )
          script = Update.zipScript( { dir: dir, stateDir: state,
                                       version: Util.LOOM_VERSION,
                                       owner: Update.GITHUB_OWNER,
-                                      repo: Update.GITHUB_REPO } );
+                                      repo: Update.GITHUB_REPO,
+                                      platform: platform } );
       }
       else
          return null;             // not ours to touch
 
-      var path = state + "/update-run.sh";
+      var path = state + "/" + Update.helperFileName( platform );
       io.writeText( path, script );
-      io.spawnDetached( "/bin/sh", [ path ] );
+      var cmd = Update.helperCommand( platform, path );
+      io.spawnDetached( cmd.program, cmd.args );
       return kind;
    }
    catch ( e )

@@ -33,26 +33,61 @@
 #include <pjsr/astrometry/VizierMirrorDialog.js>
 #include <pjsr/controls/DateTimeEditor.js>
 #include <pjsr/controls/GeodeticCoordinatesEditor.js>
-#include "/Applications/PixInsight/src/scripts/ImageSolver/ImageSolverEngine.js"
+/*
+ * The engine include, and the only one that cannot be written as an
+ * ordinary <pjsr/...> path: ImageSolverEngine.js ships under src/scripts,
+ * not under include.
+ *
+ * It used to be the absolute path /Applications/PixInsight/src/scripts/...
+ * which is macOS-only, and #include is resolved at PARSE time so it cannot
+ * be given a runtime value like CoreApplication.srcDirPath.
+ *
+ * Angle brackets resolve relative to the core's include directory
+ * (<base>/include), so "../src/scripts/..." walks back to <base>/src and
+ * lands on the engine whatever <base> is and whatever platform this is.
+ * Verified on macOS 2026-09-17: the include resolves and ImageSolver is a
+ * function afterwards.
+ *
+ * If this ever fails to resolve, the symptom is NOT an error. PixInsight
+ * discards a script with an unresolvable include silently -- no message,
+ * no console output, exit status 0. A Loom that "does nothing at all"
+ * starts here.
+ */
+#include <../src/scripts/ImageSolver/ImageSolverEngine.js>
 
 var Steps = {};
 
 /*
- * ASI2600MM (Sony IMX571) quantum-efficiency curve, confirmed present at
- * /Applications/PixInsight/library/filters.xspd as the channel="Q" entry
+ * ASI2600MM (Sony IMX571) quantum-efficiency curve, confirmed present in
+ * <PixInsight>/library/filters.xspd as the channel="Q" entry
  * named "Sony IMX411/455/461/533/571". deviceQECurve and
  * deviceQECurveName are a matched pair (verified-parameters.md, Finding 4)
  * -- both must be set together on SPFC and SPCC, never the name alone.
  */
 
+/*
+ * Where the core is installed, asked of the core rather than assumed.
+ *
+ * CoreApplication.baseDirPath is /Applications/PixInsight on this Mac
+ * and C:/Program Files/PixInsight on a default Windows install -- and,
+ * more to the point, whatever the user actually chose in either case.
+ * PJSR reports Windows paths with forward slashes, so nothing below needs
+ * a separator.
+ */
+Steps.PI_BASE_DIR = CoreApplication.baseDirPath;
+Steps.PI_SRC_SCRIPTS_DIR = CoreApplication.srcDirPath + "/scripts";
+
 // Path to the PixInsight spectrum database that holds both device QE
 // curves and filter transmission curves, per verified-parameters.md
 // ("Filter-name-to-curve lookup").
-Steps.FILTERS_XSPD_PATH = "/Applications/PixInsight/library/filters.xspd";
+Steps.FILTERS_XSPD_PATH = Steps.PI_BASE_DIR + "/library/filters.xspd";
 
 // Path to the ImageSolver script's reusable engine, per the
-// verified-parameters.md ImageSolver invocation recipe.
-Steps.IMAGE_SOLVER_ENGINE_PATH = "/Applications/PixInsight/src/scripts/ImageSolver/ImageSolverEngine.js";
+// verified-parameters.md ImageSolver invocation recipe. Informational
+// only: the engine itself arrives through the #include above, which
+// cannot use this value because #include is resolved at parse time.
+Steps.IMAGE_SOLVER_ENGINE_PATH =
+   Steps.PI_SRC_SCRIPTS_DIR + "/ImageSolver/ImageSolverEngine.js";
 
 /*
  * True if a process of this name is installed. Checked during preflight
@@ -292,8 +327,14 @@ Steps.configuredSPFC = function()
  *   <v k="MARSDatabaseFilePath000" t="s">/path/to/MARS-DR2-1.0.3-s08.xmars</v>
  *
  * Generic location, no user-specific path baked in.
+ *
+ * Asked of the core rather than spelled out: CoreApplication.configDirPath
+ * is exactly this directory -- "~/Library/PixInsight" on macOS, the
+ * per-user configuration folder on Windows -- so no platform branch is
+ * needed and a relocated configuration is still found. Probed on macOS
+ * 2026-09-17: it returns the same path the previous literal built.
  */
-Steps.CORE_SETTINGS_DIR = File.homeDirectory + "/Library/PixInsight";
+Steps.CORE_SETTINGS_DIR = CoreApplication.configDirPath;
 
 Steps.marsDatabasesFromCoreSettings = function()
 {
@@ -1095,7 +1136,7 @@ Steps.availableNoiseTools = function()
    var out = [];
    try { if ( Steps.moduleAvailable( "NoiseXTerminator" ) ) out.push( Steps.NR_TOOL_NXT ); }
    catch ( e ) {}
-   if ( File.exists( "/Applications/PixInsight/src/scripts/SyQon_Prism.js" ) &&
+   if ( File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Prism.js" ) &&
         Steps.prismExecutable() != null )
       out.push( Steps.NR_TOOL_PRISM );
    return out;
@@ -1559,10 +1600,11 @@ Steps.SHARPEN_TOOL_SYQON = "SyQon Parallax";
  *      exactly once per installation.
  *   2. SyQon's config CSV, when it exists. Authoritative: it is the path the
  *      user chose with the wrench button, and it outranks anything guessed.
- *   3. A bounded scan of the application directories. For each entry in
- *      /Applications and ~/Applications it checks <entry>/<name> and
- *      <entry>/Contents/MacOS/<name> -- depth two, no recursion, which is
- *      enough for all three real layouts (ParallaxAI/parallax_cli,
+ *   3. A bounded scan of the application directories -- see
+ *      Steps.applicationRoots and Steps.executableCandidates, which are
+ *      the two places that know what "installed application" means on
+ *      this platform. Depth two, no recursion, which is enough for all
+ *      three real macOS layouts (ParallaxAI/parallax_cli,
  *      prism_cli/prism_cli, SyQonStarless.app/Contents/MacOS/SyQonStarless)
  *      without hardcoding one machine's paths as the only truth.
  */
@@ -1589,18 +1631,58 @@ Steps.rememberExecutable = function( name, path )
    catch ( e ) { /* remembering is an optimisation, not a requirement */ }
 };
 
-/* Roots that hold installed applications on this platform. */
-Steps.applicationRoots = function()
+/*
+ * Roots that hold installed applications on this platform.
+ *
+ * `platform` and `home` are arguments rather than reads of Util.PLATFORM
+ * and File.homeDirectory so that the selftest can exercise the branch it
+ * is not running on. Production callers pass nothing.
+ *
+ * The Windows list is the two Program Files trees plus the per-user
+ * location that installers written without an elevation prompt use
+ * (%LOCALAPPDATA%\Programs -- where, for instance, user-scope installs
+ * land). It is the same bounded, depth-two idea as macOS: a list of
+ * places applications live, not a filesystem walk.
+ */
+Steps.applicationRoots = function( platform, home )
 {
-   var roots = [ "/Applications" ];
-   try
+   if ( home === undefined )
+      try { home = File.homeDirectory; } catch ( e ) { home = ""; }
+   var hasHome = ( home != null && String( home ).length > 0 );
+
+   if ( Util.isWindows( platform ) )
    {
-      var home = File.homeDirectory;
-      if ( home && home.length > 0 )
-         roots.push( home + "/Applications" );
+      var wroots = [ "C:/Program Files", "C:/Program Files (x86)" ];
+      if ( hasHome )
+         wroots.push( home + "/AppData/Local/Programs" );
+      return wroots;
    }
-   catch ( e ) {}
+
+   var roots = [ "/Applications" ];
+   if ( hasHome )
+      roots.push( home + "/Applications" );
    return roots;
+};
+
+/*
+ * The paths under one application directory that could BE the executable
+ * `name`.
+ *
+ * macOS has two shapes: a bare binary in the folder, and the binary
+ * inside an .app bundle at Contents/MacOS. Windows has no bundles; what
+ * it has instead is the .exe suffix and a conventional bin\ subfolder.
+ * Loom never spells the suffix into a tool name, so it is added here --
+ * the bare name is kept as a candidate too, since PJSR's File.exists is
+ * happy with either and an extensionless helper is not impossible.
+ */
+Steps.executableCandidates = function( base, name, platform )
+{
+   if ( Util.isWindows( platform ) )
+      return [ base + "/" + name + ".exe",
+               base + "/bin/" + name + ".exe",
+               base + "/" + name ];
+   return [ base + "/" + name,
+            base + "/Contents/MacOS/" + name ];
 };
 
 /*
@@ -1633,8 +1715,7 @@ Steps.scanForExecutable = function( name )
       for ( var i = 0; i < entries.length; ++i )
       {
          var base = roots[r] + "/" + entries[i];
-         var candidates = [ base + "/" + name,
-                            base + "/Contents/MacOS/" + name ];
+         var candidates = Steps.executableCandidates( base, name );
          for ( var c = 0; c < candidates.length; ++c )
             try { if ( File.exists( candidates[c] ) ) return candidates[c]; }
             catch ( e2 ) {}
@@ -1704,7 +1785,7 @@ Steps.availableSharpenTools = function()
    var tools = [];
    if ( Steps.moduleAvailable( "BlurXTerminator" ) )
       tools.push( Steps.SHARPEN_TOOL_BXT );
-   if ( File.exists( "/Applications/PixInsight/src/scripts/SyQon_Parallax.js" ) &&
+   if ( File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Parallax.js" ) &&
         Steps.syqonExecutable() != null )
       tools.push( Steps.SHARPEN_TOOL_SYQON );
    return tools;
@@ -2386,22 +2467,37 @@ Steps.starlessExecutable = function()
 };
 
 /*
- * The model sits in the app bundle's Resources, beside the binary's MacOS
- * directory. Derived from wherever the binary was actually found rather than
- * assuming /Applications, so a non-standard install still works.
+ * Where the model could be, in preference order, given where the binary was
+ * found.
+ *
+ * On macOS the model sits in the app bundle's Resources, beside the binary's
+ * MacOS directory. Deriving it from the binary rather than assuming
+ * /Applications is what makes a non-standard install work -- and it is also
+ * what makes this correct on Windows, where there is no bundle and the model
+ * can only be beside the executable or one level up.
+ *
+ * The bare /Applications path stays as a last resort on macOS only: on
+ * Windows it is not merely useless but misleading, since "/Applications"
+ * there is a path on the current drive.
  */
-Steps.starlessModelPath = function()
+Steps.starlessModelCandidates = function( exe, platform )
 {
-   var exe = Steps.starlessExecutable();
    var candidates = [];
    if ( exe != null )
    {
-      var macosDir = File.extractDirectory( exe );               // .../Contents/MacOS
-      var contents = File.extractDirectory( macosDir );          // .../Contents
-      candidates.push( contents + "/Resources/axiom3.mlmodelc" );
-      candidates.push( macosDir + "/axiom3.mlmodelc" );
+      var exeDir = File.extractDirectory( exe );                 // .../Contents/MacOS
+      var parent = File.extractDirectory( exeDir );              // .../Contents
+      candidates.push( parent + "/Resources/axiom3.mlmodelc" );
+      candidates.push( exeDir + "/axiom3.mlmodelc" );
    }
-   candidates.push( "/Applications/SyQonStarless.app/Contents/Resources/axiom3.mlmodelc" );
+   if ( !Util.isWindows( platform ) )
+      candidates.push( "/Applications/SyQonStarless.app/Contents/Resources/axiom3.mlmodelc" );
+   return candidates;
+};
+
+Steps.starlessModelPath = function()
+{
+   var candidates = Steps.starlessModelCandidates( Steps.starlessExecutable() );
    for ( var i = 0; i < candidates.length; ++i )
       try
       {

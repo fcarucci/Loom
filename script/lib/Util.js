@@ -21,6 +21,84 @@ var Util = {};
  */
 Util.LOOM_VERSION = "0.1";
 
+/* ------------------------------------------------------------------ */
+/* Which operating system this is                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The three values Loom branches on. Anything that is not Windows and not
+ * macOS is treated as "unix": Linux and FreeBSD differ from macOS only in
+ * where applications live, and every shell assumption Loom makes holds on
+ * both.
+ */
+Util.PLATFORM_WINDOWS = "windows";
+Util.PLATFORM_MACOS   = "macos";
+Util.PLATFORM_UNIX    = "unix";
+
+/*
+ * The platform is decided by the PREPROCESSOR, not at runtime, and that is
+ * deliberate.
+ *
+ * `CoreApplication.platform` exists and returns "macOS" here (probed
+ * 2026-09-17), but nothing documents what it returns on Windows, so a
+ * string comparison against it would be a guess. `__PI_PLATFORM__` is not
+ * a guess: PixInsight's own bundled scripts switch on exactly these
+ * spellings -- src/scripts/ContinuumSubtraction.js tests MACOSX,
+ * MSWINDOWS and LINUX, and misc/DSSImageDownloader.js uses
+ * `#ifoneof __PI_PLATFORM__ MSWINDOWS MACOSX`.
+ *
+ * The trailing #ifndef is the safety net: if a future core ever reports a
+ * fourth value, LOOM_PLATFORM_ID would otherwise be left undefined and the
+ * assignment below would throw at load. "unix" is the conservative default
+ * because it is what every non-Windows platform behaves like.
+ *
+ * The name is LOOM_PLATFORM_ID rather than anything shorter because every
+ * #define here is a textual substitution applied to the whole script from
+ * this point on -- see the note on Util.LOOM_VERSION above for what a
+ * common bare token costs.
+ */
+#ifeq __PI_PLATFORM__ MACOSX
+#define LOOM_PLATFORM_ID "macos"
+#endif
+#ifeq __PI_PLATFORM__ MSWINDOWS
+#define LOOM_PLATFORM_ID "windows"
+#endif
+#ifoneof __PI_PLATFORM__ LINUX FREEBSD
+#define LOOM_PLATFORM_ID "unix"
+#endif
+#ifndef LOOM_PLATFORM_ID
+#define LOOM_PLATFORM_ID "unix"
+#endif
+
+Util.PLATFORM = LOOM_PLATFORM_ID;
+
+/*
+ * Every platform-dependent function in Loom takes the platform as an
+ * ARGUMENT and defaults to this, so the selftest can exercise the Windows
+ * branch from a Mac. Call sites that do not care pass nothing.
+ */
+Util.platform = function( platform )
+{
+   return platform || Util.PLATFORM;
+};
+
+Util.isWindows = function( platform )
+{
+   return Util.platform( platform ) == Util.PLATFORM_WINDOWS;
+};
+
+/*
+ * PJSR's File API speaks forward slashes on every platform, including
+ * Windows: File.homeDirectory and CoreApplication.baseDirPath come back
+ * as C:/Users/... and C:/Program Files/PixInsight, and File.exists
+ * accepts that form. So paths are BUILT with "/" throughout Loom and no
+ * separator variable exists (there is no File.separator; probed).
+ *
+ * The one place the distinction survives is a path handed to a native
+ * program -- see Update.js, where the Windows helper is PowerShell
+ * precisely because cmd.exe reads a leading "/" as a switch.
+ */
+
 /*
  * Returns `base` if free, otherwise the first free `base_<n>` starting at n=1.
  * `exists` is a predicate taking an identifier and returning true if taken.
