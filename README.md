@@ -34,6 +34,12 @@ own sky to a fixed level, so no range is spent on emptiness.
 NoiseXTerminator, SyQon Parallax, SyQon Prism, SyQon Starless — and offers
 only the ones your installation can actually run.
 
+**It hands off to Photoshop.** Results can be written as 16-bit TIFFs and as a
+single layered PSB with the plates already stacked, blended and clipped the way
+they are meant to be used — palette at the bottom, stars screened on top,
+adjustment layers in place. Everything is tagged ProPhoto RGB so nothing shifts
+colour on the way across.
+
 **It is opinionated.** The steps and their order are not configurable, because
 the order is the part that is easy to get wrong and expensive to get wrong:
 aberration correction belongs on native pixels before registration; colour
@@ -49,6 +55,12 @@ decision, made once you have looked at the result.
 
 ```
 git clone https://git.local.carucci.studio/francesco/Loom.git ~/PixInsight/scripts/Loom
+```
+
+or from the GitHub mirror:
+
+```
+git clone git@github.com:fcarucci/Loom.git ~/PixInsight/scripts/Loom
 ```
 
 `~/PixInsight/scripts/Loom` is the conventional location, but any location
@@ -88,6 +100,17 @@ system temp directory, which the OS is free to purge — and did, which is what
 made those tools silently disappear from the dropdowns until Loom kept its own
 record.
 
+**It keeps itself current.** With **Update Loom automatically** ticked, each
+launch spawns a background `git` update and opens the dialog immediately —
+nothing is waited on. PJSR resolves `#include` when the script is parsed, so an
+update could never apply to the run that fetched it; the new version is used the
+*next* time you start Loom.
+
+A checkout with local changes is never touched, a diverged branch is refused
+rather than merged, and a failed update is reported in the Process Console at
+the following launch. The version and commit are in the dialog's title bar —
+`Loom 0.1 (a4c1f2e)` — because many commits share one version number.
+
 **Verify the install.** Open **Script → Batch Processing → Loom**, add masters,
 and tick **Validate only (check everything, run nothing)**. It runs every
 preflight check — files and views present, required FITS keywords, installed
@@ -110,6 +133,10 @@ It writes its results to a file and is run from the command line, not the menu.
 The channel comes from the file's `FILTER` keyword. A view selection beats a
 file path for the same channel.
 
+**Name the project** in the box at the top. It is filled in from the folder your
+masters came from and follows the file list until you type something of your
+own; it names the exported PSB.
+
 **Set the options** (all described below), then **Run**. A Cancel window stays
 up for the duration and stops at the next checkpoint; the Process Console
 stays open throughout, one green line per operation.
@@ -122,6 +149,16 @@ MARS database — and executes nothing.
 repeat run does no pixel work. Change one setting and only the affected stage
 and those after it recompute. **Ignore cache for this run** forces a recompute
 without discarding anything; **Clear cache** discards it.
+
+Set **Cache folder** to keep it somewhere with room — a fast external volume,
+say — rather than the system temp directory, which the OS is free to purge. A
+fully cached run reads no masters at all: the sources are opened lazily and
+skipped entirely when every stage that needs them is already cached.
+
+**Run logs.** Every run writes the whole Process Console to
+`<cache>/logs/loom-run-<timestamp>.log`, including the runs that fail — which
+are the ones anyone wants to read. They live in a subfolder, so **Clear cache**
+does not delete them.
 
 **Saved instances.** Drag the script's instance icon to the workspace to reuse
 a configuration. Only file-path selections round-trip; a view id from a
@@ -154,7 +191,7 @@ previous session has no guaranteed meaning later.
 |---|---|---|
 | **Combine** | R, G, B | — |
 | **Solve, SPFC, SPCC** | calibration of the composite | filter curves |
-| **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/High, detail None/Low/Medium/High |
+| **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless |
 | **Stretch** | see below | on/off |
 | **Denoise** | last, after the stretch | None, NoiseXTerminator, SyQon Prism; strength Low/Medium/High |
@@ -167,7 +204,7 @@ Built independently of RGB; either can be produced without the other.
 |---|---|---|
 | **Combine** | channels mapped to R, G, B by palette | SHO, HOO, HSO |
 | **SPCC narrowband** | emission-line calibration by wavelength and bandwidth | bandwidth in nm |
-| **Normalise** | a neutral NarrowbandNormalization pass | — |
+| **Normalise** | a neutral NarrowbandNormalization pass | on/off |
 | **Sharpen, extract, stretch, denoise** | as for RGB | as above |
 
 No SPFC and no broadband SPCC: a palette is an aesthetic mapping of emission
@@ -175,10 +212,20 @@ lines onto RGB, not a photometric rendition.
 
 ### Stretch
 
-Off by default. When on, each plate gets one `HistogramTransformation`
-computed from that plate alone — black point at its darkest level that is not
-a single-pixel defect, midtone placing its sky median at a fixed target. There
-is nothing to set.
+Off by default, and there are two methods.
+
+**Histogram (deterministic MTF)** is Loom's own. Each plate gets one
+`HistogramTransformation` computed from that plate alone — black point at its
+darkest level that is not a single-pixel defect, midtone placing its sky median
+at a fixed target. Nothing to set, and the same input always gives the same
+output.
+
+**MultiscaleAdaptiveStretch** hands the plate to the process of that name, with
+target background 0.15, aggressiveness 0.70, dynamic range compression 0.40 and
+contrast recovery on at full intensity. Scale separation is left at the
+process's own default. A saved MultiscaleAdaptiveStretch process icon, if you
+have made one, is used instead — so the way to change these numbers is to make
+an icon, not to edit the script.
 
 Starless plates are stretched after extraction. The stars plate is stretched
 *before* it, at a different target chosen to maximise the separation between
@@ -202,6 +249,46 @@ fraction of a percent of the range, and quantising that to 16 bits posterises
 it — so Loom writes nothing and says why, rather than producing a file that
 looks fine in a listing and is ruined on open.
 
+#### Colour profiles
+
+Every exported file carries a profile, and so does every plate left in the
+workspace: **ROMM RGB** — colorimetrically ProPhoto RGB — for colour, and
+Generic Gray for mono. The gamut is wide enough to hold saturated emission-line
+colour that sRGB clips outright.
+
+The PSB embeds Adobe's own `ProPhoto.icm` bytes where they are installed,
+because Photoshop matches its working space by profile *name*: ROMM RGB and
+ProPhoto RGB are the same space, and Photoshop will still offer to convert
+between them.
+
+#### Frequency separation
+
+**Frequency-separate the L stars plate** splits it into `L_stars_low` and
+`L_stars_high` using a Gaussian sized from the plate's own measured star width.
+This is exactly Photoshop's Apply Image method — the high layer is
+`(original − low) / 2 + 0.5`, recombining through Linear Light — so star cores
+and their halos can be retouched separately.
+
+#### The layered PSB
+
+**Also write one layered `<project>.psb`** assembles everything into a single
+Photoshop Large Document, bottom to top:
+
+| layer | |
+|---|---|
+| **HSO** group | the palette starless plate, with **Ha**, **SII** and **OIII** Curves layers above it, each already set to the channel that line was mapped to |
+| **RGB** group | the broadband starless plate, hidden — switch it on when you want it |
+| **Stars** group, *Screen* | RGB stars, and the L stars plate in *Luminosity*; with frequency separation on, that becomes an **L Stars** group holding the low layer and the high layer in *Soft Light* |
+| **Stars Curve**, **Stars Saturation** | clipped to the stars, so they work on the stars as they come out of the Screen blend and leave everything beneath alone |
+
+PSB rather than PSD because uncompressed 16-bit layers of a modern sensor's
+frame run to about 3 GB and PSD stops at 2. Expect the write to take a minute.
+
+The Curves layers open on RGB in Photoshop's panel whatever the file says —
+that is Photoshop's own state, not something a file can set — so each layer's
+name carries its channel: `Ha[R]`, `SII[G]`, `OIII[B]`, and `OIII[G,B]` for HOO
+where one line feeds two channels.
+
 ### Outputs
 
 With star extraction on: `L_starless` + `L_stars`, `RGB_starless` +
@@ -213,9 +300,37 @@ reconstruct them.
 With it off: `L`, `RGB`, `<palette>`, and the narrowband channels themselves
 when no palette was built.
 
+## macOS and Windows
+
+**Loom runs on macOS today. It will not run on Windows as it stands**, and the
+reasons are specific rather than vague:
+
+| what | where | why it stops Windows |
+|---|---|---|
+| `#include "/Applications/PixInsight/src/scripts/ImageSolver/ImageSolverEngine.js"` | `Steps.js:36` | an absolute include resolved when the script is parsed. On Windows the path does not exist, and PixInsight discards a script with an unresolvable include **silently** — no error, no console output, exit status 0 |
+| `/Applications/PixInsight/library/filters.xspd` | `Steps.js:51` | the filter curve list SPFC and SPCC are driven from |
+| `~/Library/PixInsight` | `Steps.js:296` | where the core's persisted settings are read from |
+| `/Applications`, `~/Applications` | `Steps.js:1595` | the two-level scan that finds the SyQon binaries |
+| `/bin/sh` | `Update.js` | the auto-updater spawns a POSIX shell to run its helper script |
+
+None of these is hard to fix — each is one constant or one branch, and
+`Update.gitCandidates` already knows where Git for Windows installs — but none
+of them has been fixed, and nothing here has ever been run on Windows. Claiming
+support would be a guess.
+
+What is already portable, and deliberately so: the PSB writer produces
+byte-identical files on either platform because it is written by hand rather
+than shelling out to an image library; the cache location defaults to the
+system temp directory, which resolves correctly on both; and `tar` reads zip
+archives on both, since macOS's `/usr/bin/tar` and Windows' bundled `tar.exe`
+are both bsdtar.
+
+If you want Windows support, say so — it is a contained piece of work, not a
+port.
+
 ## Requirements
 
-PixInsight 1.9.4 or later.
+PixInsight 1.9.4 or later, on macOS — see above.
 
 The camera is read from the `INSTRUME` keyword, not assumed.
 `Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the
