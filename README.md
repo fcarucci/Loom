@@ -300,37 +300,9 @@ reconstruct them.
 With it off: `L`, `RGB`, `<palette>`, and the narrowband channels themselves
 when no palette was built.
 
-## macOS and Windows
-
-**Loom runs on macOS today. It will not run on Windows as it stands**, and the
-reasons are specific rather than vague:
-
-| what | where | why it stops Windows |
-|---|---|---|
-| `#include "/Applications/PixInsight/src/scripts/ImageSolver/ImageSolverEngine.js"` | `Steps.js:36` | an absolute include resolved when the script is parsed. On Windows the path does not exist, and PixInsight discards a script with an unresolvable include **silently** — no error, no console output, exit status 0 |
-| `/Applications/PixInsight/library/filters.xspd` | `Steps.js:51` | the filter curve list SPFC and SPCC are driven from |
-| `~/Library/PixInsight` | `Steps.js:296` | where the core's persisted settings are read from |
-| `/Applications`, `~/Applications` | `Steps.js:1595` | the two-level scan that finds the SyQon binaries |
-| `/bin/sh` | `Update.js` | the auto-updater spawns a POSIX shell to run its helper script |
-
-None of these is hard to fix — each is one constant or one branch, and
-`Update.gitCandidates` already knows where Git for Windows installs — but none
-of them has been fixed, and nothing here has ever been run on Windows. Claiming
-support would be a guess.
-
-What is already portable, and deliberately so: the PSB writer produces
-byte-identical files on either platform because it is written by hand rather
-than shelling out to an image library; the cache location defaults to the
-system temp directory, which resolves correctly on both; and `tar` reads zip
-archives on both, since macOS's `/usr/bin/tar` and Windows' bundled `tar.exe`
-are both bsdtar.
-
-If you want Windows support, say so — it is a contained piece of work, not a
-port.
-
 ## Requirements
 
-PixInsight 1.9.4 or later, on macOS — see above.
+PixInsight 1.9.4 or later. Developed and run on macOS.
 
 The camera is read from the `INSTRUME` keyword, not assumed.
 `Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the
