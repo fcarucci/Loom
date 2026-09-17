@@ -356,6 +356,34 @@ Psb.isAdjustment = function( layer )
    return ( layer.curves != null ) || ( layer.hueSaturation === true );
 };
 
+/*
+ * The layer whose pixels stand in for the flattened composite.
+ *
+ * The bottom-most visible pixel layer is written rather than a real
+ * composite: compositing screen and luminosity blends here would mean a
+ * second full pass over every layer to produce something Photoshop
+ * discards on open.
+ *
+ * Group dividers and adjustment layers carry no pixels, so they are never
+ * eligible. Visibility is preferred but not required -- a document whose
+ * pixel layers are all hidden still needs a composite section, so the
+ * first pixel layer of any visibility is taken rather than none at all.
+ */
+Psb.compositeBaseLayer = function( layers )
+{
+   var pixelLayer = function( layer )
+   {
+      return layer.divider == null && !Psb.isAdjustment( layer );
+   };
+   for ( var p = 0; p < layers.length; ++p )
+      if ( pixelLayer( layers[p] ) && layers[p].visible )
+         return layers[p];
+   for ( var q = 0; q < layers.length; ++q )
+      if ( pixelLayer( layers[q] ) )
+         return layers[q];
+   return null;
+};
+
 Psb.layerRecord = function( layer, width, height, channelLengths )
 {
    var b = new Psb.Buffer;
@@ -683,21 +711,10 @@ Psb.write = function( path, entries, width, height, iccProfile )
        * --- the flattened composite.
        *
        * Photoshop rebuilds its view from the layers and uses this only as a
-       * preview, but the section is mandatory and other readers show it. The
-       * bottom-most visible pixel layer is written rather than a real
-       * composite: compositing screen and luminosity blends here would mean
-       * a second full pass over every layer to produce something Photoshop
-       * discards on open.
+       * preview, but the section is mandatory and other readers show it.
+       * See Psb.compositeBaseLayer for which layer's pixels go here.
        */
-      var base = null;
-      for ( var p = 0; p < layers.length; ++p )
-         if ( layers[p].divider == null && !Psb.isAdjustment( layers[p] ) &&
-              layers[p].visible )
-         { base = layers[p]; break; }
-      if ( base == null )
-         for ( var q = 0; q < layers.length; ++q )
-            if ( layers[q].divider == null && !Psb.isAdjustment( layers[q] ) )
-            { base = layers[q]; break; }
+      var base = Psb.compositeBaseLayer( layers );
 
       var ch0 = new Psb.Buffer; ch0.u16( Psb.COMPRESSION_RAW );
       file.write( ch0.toByteArray() );

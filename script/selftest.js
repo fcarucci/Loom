@@ -604,6 +604,44 @@ function runTests()
           cp.length() % 4, 0 );
 
    /*
+    * Which layer stands in for the flattened composite. Psb.write itself
+    * cannot be exercised here -- a malformed PSB fails in Photoshop, not
+    * in PixInsight -- but the choice of base layer is pure, so it is
+    * pinned directly.
+    */
+   function psbLayer( name, opts )
+   {
+      var l = { name: name, divider: null, visible: true };
+      for ( var k in opts )
+         l[k] = opts[k];
+      return l;
+   }
+   function baseName( layers )
+   {
+      var b = Psb.compositeBaseLayer( layers );
+      return ( b == null ) ? null : b.name;
+   }
+   check( "the bottom-most visible pixel layer is the composite",
+          baseName( [ psbLayer( "bottom" ), psbLayer( "top" ) ] ), "bottom" );
+   check( "group dividers are not pixels",
+          baseName( [ psbLayer( "open", { divider: "open" } ),
+                      psbLayer( "real" ) ] ), "real" );
+   check( "neither are adjustment layers, of either kind",
+          baseName( [ psbLayer( "curves", { curves: [ 0 ] } ),
+                      psbLayer( "hs", { hueSaturation: true } ),
+                      psbLayer( "real" ) ] ), "real" );
+   check( "a hidden pixel layer loses to a visible one further up",
+          baseName( [ psbLayer( "hidden", { visible: false } ),
+                      psbLayer( "shown" ) ] ), "shown" );
+   check( "but an all-hidden document still gets a composite",
+          baseName( [ psbLayer( "hidden", { visible: false } ),
+                      psbLayer( "alsoHidden", { visible: false } ) ] ), "hidden" );
+   check( "a document with no pixel layer at all has no base",
+          baseName( [ psbLayer( "curves", { curves: [ 0 ] } ) ] ), null );
+   check( "and neither does an empty document",
+          Psb.compositeBaseLayer( [] ), null );
+
+   /*
     * The updater. Everything below runs against injected predicates and a
     * stubbed spawn: no repository, no network, no filesystem.
     */
