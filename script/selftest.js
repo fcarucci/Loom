@@ -910,6 +910,36 @@ function runTests()
           Steps.applicationRoots( Util.PLATFORM_MACOS, "" ), [ "/Applications" ] );
 
    /*
+    * One level of a directory, which is all the scan ever looks at. Run
+    * against Loom's own lib/ folder: it is guaranteed to be there, and its
+    * contents are already known to this suite.
+    */
+   var libEntries = Steps.directoryEntries( LOOM_DIR + "/lib" );
+   check( "one directory level lists the library files",
+          libEntries.indexOf( "Steps.js" ) >= 0 &&
+          libEntries.indexOf( "Pipeline.js" ) >= 0, true );
+   check( "the dot entries are not part of the listing",
+          libEntries.indexOf( "." ) < 0 && libEntries.indexOf( ".." ) < 0, true );
+   check( "a root that is not there enumerates as empty, not as an error",
+          Steps.directoryEntries( "/nonexistent/loom-selftest-root" ), [] );
+
+   /*
+    * Picking a binary out of a candidate list. First match wins, and a
+    * path that cannot be tested counts as absent rather than aborting the
+    * search -- otherwise one odd entry in /Applications would hide every
+    * tool installed after it.
+    */
+   check( "the first candidate that exists is the answer",
+          Steps.firstExistingPath( [ LOOM_DIR + "/lib/nothing-here.js",
+                                     LOOM_DIR + "/lib/Steps.js",
+                                     LOOM_DIR + "/lib/Util.js" ] ),
+          LOOM_DIR + "/lib/Steps.js" );
+   check( "no candidate exists and the answer is null",
+          Steps.firstExistingPath( [ "/nonexistent/a", "/nonexistent/b" ] ), null );
+   check( "an empty candidate list is null too",
+          Steps.firstExistingPath( [] ), null );
+
+   /*
     * What an executable looks like under one of those roots. The .exe
     * suffix is added here rather than baked into the tool names, so
     * Steps.findExecutable( "parallax_cli" ) is one call on both platforms.

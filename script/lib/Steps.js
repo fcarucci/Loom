@@ -1686,6 +1686,49 @@ Steps.executableCandidates = function( base, name, platform )
 };
 
 /*
+ * The immediate children of `root`, with "." and ".." dropped. One level
+ * only -- the scan below is deliberately not recursive, and this is where
+ * that stops.
+ *
+ * A root that cannot be enumerated yields the empty list rather than an
+ * error: the scan walks a list of places applications MIGHT live, and one
+ * of them being absent is the normal case, not a fault.
+ */
+Steps.directoryEntries = function( root )
+{
+   var entries = [];
+   try
+   {
+      var find = new FileFind;
+      if ( find.begin( root + "/*" ) )
+         do
+         {
+            if ( find.name != "." && find.name != ".." )
+               entries.push( find.name );
+         }
+         while ( find.next() );
+   }
+   catch ( e )
+   {
+      return [];
+   }
+   return entries;
+};
+
+/*
+ * The first of `paths` that exists, or null. A path that cannot even be
+ * tested is treated as absent -- File.exists throws on some of the
+ * stranger things an application directory can hold.
+ */
+Steps.firstExistingPath = function( paths )
+{
+   for ( var i = 0; i < paths.length; ++i )
+      try { if ( File.exists( paths[i] ) ) return paths[i]; }
+      catch ( e ) {}
+   return null;
+};
+
+/*
  * Depth-two scan for an executable called `name`. Returns the first match, or
  * null. Deliberately not recursive: /Applications contains entire frameworks
  * and app bundles, and walking them to find a CLI binary would cost seconds
@@ -1698,27 +1741,13 @@ Steps.scanForExecutable = function( name )
    {
       if ( !File.directoryExists( roots[r] ) )
          continue;
-      var entries = [];
-      try
-      {
-         var find = new FileFind;
-         if ( find.begin( roots[r] + "/*" ) )
-            do
-            {
-               if ( find.name != "." && find.name != ".." )
-                  entries.push( find.name );
-            }
-            while ( find.next() );
-      }
-      catch ( e ) { continue; }
-
+      var entries = Steps.directoryEntries( roots[r] );
       for ( var i = 0; i < entries.length; ++i )
       {
-         var base = roots[r] + "/" + entries[i];
-         var candidates = Steps.executableCandidates( base, name );
-         for ( var c = 0; c < candidates.length; ++c )
-            try { if ( File.exists( candidates[c] ) ) return candidates[c]; }
-            catch ( e2 ) {}
+         var hit = Steps.firstExistingPath(
+                      Steps.executableCandidates( roots[r] + "/" + entries[i], name ) );
+         if ( hit != null )
+            return hit;
       }
    }
    return null;
