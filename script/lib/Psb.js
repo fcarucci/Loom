@@ -1,0 +1,714 @@
+/*
+ * Psb.js -- a minimal writer for Photoshop Large Document (.psb) files.
+ *
+ * WHY THIS EXISTS. The plates Loom produces are meant to be assembled in
+ * Photoshop, and doing that by hand every time is the tedium the rest of
+ * this script exists to remove. Nothing else could write the file:
+ * ImageMagick produces MULTI-PAGE TIFFs, which Photoshop opens as a single
+ * page -- a Photoshop layered TIFF is a flattened image plus Adobe's layer
+ * records in private tag 37724, which ImageMagick does not write. The
+ * Python libraries that can write real layer structures bring a Python and
+ * numpy dependency, pinned, onto every machine Loom runs on.
+ *
+ * So: PSB, written directly. No dependency, identical on macOS and Windows.
+ *
+ * WHY PSB AND NOT PSD. PSD is capped at 2 GB and 30000 px. Five uncompressed
+ * 16-bit layers of an 11957x7669 frame come to roughly 3.3 GB. PSB is the
+ * same format with 8-byte lengths in four places and a version word of 2.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO. No compression (the format allows RLE;
+ * raw keeps this simple and the writing I/O-bound rather than CPU-bound),
+ * no masks, no adjustment layers, no clipping. Everything here serves one
+ * document shape, described by the caller.
+ *
+ * FORMAT REFERENCE. Adobe Photoshop File Formats Specification. The four
+ * PSB-vs-PSD differences implemented below are: the version word, the
+ * length of the layer-and-mask section, the length of the layer-info
+ * section, and per-channel data lengths.
+ */
+
+var Psb = {};
+
+Psb.SIGNATURE      = "8BPS";
+Psb.VERSION_PSB    = 2;
+Psb.COLOR_MODE_RGB = 3;
+Psb.COMPRESSION_RAW = 0;
+
+/* Section-divider types for the 'lsct' tagged block. */
+Psb.DIVIDER_OTHER   = 0;
+Psb.DIVIDER_OPEN    = 1;   // group header, expanded
+Psb.DIVIDER_CLOSED  = 2;   // group header, collapsed
+Psb.DIVIDER_BOUNDING = 3;  // the hidden marker that closes a group
+
+/*
+ * A growable byte buffer.
+ *
+ * Everything in a PSB is big-endian, which is NOT this machine's order, so
+ * every multi-byte value goes through one of these writers rather than
+ * being memcpy'd. Pixel data is the exception and is handled separately --
+ * see Psb.writeChannelData -- because it is far too big to pass through
+ * here a byte at a time.
+ */
+Psb.Buffer = function()
+{
+   this.bytes = [];
+};
+
+Psb.Buffer.prototype.u8 = function( v )
+{
+   this.bytes.push( v & 0xFF );
+   return this;
+};
+
+Psb.Buffer.prototype.u16 = function( v )
+{
+   this.bytes.push( ( v >> 8 ) & 0xFF, v & 0xFF );
+   return this;
+};
+
+Psb.Buffer.prototype.u32 = function( v )
+{
+   this.bytes.push( ( v >>> 24 ) & 0xFF, ( v >>> 16 ) & 0xFF,
+                    ( v >>> 8 ) & 0xFF, v & 0xFF );
+   return this;
+};
+
+/*
+ * 64-bit, written as two 32-bit halves. JavaScript numbers hold integers
+ * exactly to 2^53, far beyond any length this writes, so the high half is
+ * computed by division rather than by a shift -- >>> is a 32-bit operator
+ * and would silently truncate.
+ */
+Psb.Buffer.prototype.u64 = function( v )
+{
+   var hi = Math.floor( v / 4294967296 );
+   var lo = v - hi * 4294967296;
+   this.u32( hi );
+   this.u32( lo );
+   return this;
+};
+
+/* Signed 32-bit, for layer rectangles. */
+Psb.Buffer.prototype.i32 = function( v )
+{
+   return this.u32( v < 0 ? ( v + 4294967296 ) : v );
+};
+
+Psb.Buffer.prototype.ascii = function( s )
+{
+   for ( var i = 0; i < s.length; ++i )
+      this.bytes.push( s.charCodeAt( i ) & 0xFF );
+   return this;
+};
+
+Psb.Buffer.prototype.zeros = function( n )
+{
+   for ( var i = 0; i < n; ++i )
+      this.bytes.push( 0 );
+   return this;
+};
+
+/* Pascal string, padded so the whole field is a multiple of `pad`. */
+Psb.Buffer.prototype.pascal = function( s, pad )
+{
+   var name = String( s );
+   if ( name.length > 255 )
+      name = name.substring( 0, 255 );
+   this.u8( name.length );
+   this.ascii( name );
+   var len = 1 + name.length;
+   var over = len % pad;
+   if ( over != 0 )
+      this.zeros( pad - over );
+   return this;
+};
+
+/*
+ * Photoshop's own layer name, as UTF-16BE inside a 'luni' tagged block.
+ * The Pascal name in the layer record is legacy and Photoshop ignores it
+ * when this is present; both are written because older readers use the
+ * former.
+ */
+Psb.Buffer.prototype.unicodeName = function( s )
+{
+   var name = String( s );
+   this.u32( name.length );
+   for ( var i = 0; i < name.length; ++i )
+      this.u16( name.charCodeAt( i ) );
+   // the block's own length must be a multiple of 4
+   var len = 4 + name.length * 2;
+   var over = len % 4;
+   if ( over != 0 )
+      this.zeros( 4 - over );
+   return this;
+};
+
+Psb.Buffer.prototype.length = function() { return this.bytes.length; };
+
+Psb.Buffer.prototype.toByteArray = function()
+{
+   return new ByteArray( new Uint8Array( this.bytes ) );
+};
+
+/*
+ * One tagged block: '8BIM' + key + length + data. Lengths are 4 bytes for
+ * the keys used here ('lsct' and 'luni' are not among the handful that take
+ * 8-byte lengths in PSB).
+ */
+Psb.taggedBlock = function( key, payloadBuffer )
+{
+   var b = new Psb.Buffer;
+   b.ascii( "8BIM" ).ascii( key );
+   var data = payloadBuffer.bytes;
+   b.u32( data.length );
+   for ( var i = 0; i < data.length; ++i )
+      b.bytes.push( data[i] );
+   // blocks are padded to even lengths
+   if ( data.length % 2 != 0 )
+      b.zeros( 1 );
+   return b;
+};
+
+/*
+ * A Curves adjustment layer's 'curv' payload, with IDENTITY curves.
+ *
+ * The layer changes nothing on its own; it exists so the curve for a given
+ * channel is already there to be dragged. `channelIds` are Photoshop's
+ * curve channels EXACTLY as written: 0 = composite (RGB), 1 = red,
+ * 2 = green, 3 = blue.
+ *
+ * The composite is NOT added for you, and adding it was a real bug. A
+ * file with both the composite and the target channel present was opened
+ * in Photoshop with a visibly bent curve in each variant: the bend landed
+ * on the WHITE composite line and moved all three channels. With the
+ * composite absent, the same bend showed as the RED overlay line and
+ * moved red alone, which is the intent. Only ask for channel 0 when the
+ * curve really is meant to act on all three.
+ *
+ * Photoshop opens the panel's dropdown on RGB regardless; that is
+ * application state, not something the file carries. A channel curve
+ * still draws as its own coloured line over the composite view.
+ *
+ * The layout is not in any public spec. It was taken from psd-tools'
+ * reader/writer, which parses real Photoshop files, and checked by
+ * generating the same structure there and comparing bytes:
+ *
+ *    B  is_map = 0            (point curves, not a 256-entry map)
+ *    H  version = 1
+ *    I  count_map             bitmap: bit 0 composite, 1 R, 2 G, 3 B
+ *    per curve: H point count, then point count x (H output, H input)
+ *    'Crv ' H version = 4, I item count
+ *    per item: H channel id, H point count, then the points again
+ *    padded to a multiple of four
+ *
+ * Version 1 carries the channels as a BITMAP and repeats the curves in the
+ * 'Crv ' section with explicit ids; both have to agree.
+ */
+Psb.curvesPayload = function( channelIds )
+{
+   var ids = [];
+   for ( var i = 0; i < channelIds.length; ++i )
+      if ( ids.indexOf( channelIds[i] ) < 0 )
+         ids.push( channelIds[i] );
+
+   var bitmap = 0;
+   for ( var j = 0; j < ids.length; ++j )
+      bitmap |= ( 1 << ids[j] );
+
+   var b = new Psb.Buffer;
+   b.u8( 0 );                             // is_map: point curves
+   b.u16( 1 );                            // version
+   b.u32( bitmap );
+
+   function identity( buf )
+   {
+      buf.u16( 2 );                       // two points
+      buf.u16( 0 ).u16( 0 );              // (output, input) = black
+      buf.u16( 255 ).u16( 255 );          // ...and white
+   }
+
+   for ( var k = 0; k < ids.length; ++k )
+      identity( b );
+
+   b.ascii( "Crv " );
+   b.u16( 4 );                            // extra marker version
+   b.u32( ids.length );
+   for ( var m = 0; m < ids.length; ++m )
+   {
+      b.u16( ids[m] );
+      identity( b );
+   }
+
+   while ( b.length() % 4 != 0 )
+      b.zeros( 1 );
+   return b;
+};
+
+/*
+ * A Hue/Saturation adjustment layer's 'hue2' payload, with everything at
+ * zero -- it changes nothing until it is touched.
+ *
+ * Same provenance as the curves block: psd-tools' reader/writer, checked
+ * by generating the structure there and comparing bytes.
+ *
+ *    H  version = 2
+ *    B  COLORIZE flag, then one padding byte
+ *    3h colorization  (hue, saturation, lightness)
+ *    3h master        (hue, saturation, lightness)
+ *    6 x [ 4h range, 3h settings ]      reds .. magentas
+ *    padded to a multiple of four
+ *
+ * The six ranges are Photoshop's own defaults; they are the band edges of
+ * the colour ranges in the dropdown, not adjustments, and Photoshop shows
+ * the wrong bands if they are left at zero.
+ */
+Psb.HUE_RANGES = [ [ 315, 345,  15,  45 ],    // reds
+                   [  15,  45,  75, 105 ],    // yellows
+                   [  75, 105, 135, 165 ],    // greens
+                   [ 135, 165, 195, 225 ],    // cyans
+                   [ 195, 225, 255, 285 ],    // blues
+                   [ 255, 285, 315, 345 ] ];  // magentas
+
+Psb.hueSaturationPayload = function()
+{
+   var b = new Psb.Buffer;
+   b.u16( 2 );                  // version
+   /*
+    * COLORIZE, and it must be 0.
+    *
+    * psd-tools calls this field `enable`, which reads like "is this
+    * adjustment active" -- it is not. It is the Colorize checkbox, and
+    * with it ticked and saturation at 0 the layer drains the colour out of
+    * everything it touches. Set to 1 once, which is exactly what it did.
+    */
+   b.u8( 0 );
+   b.u8( 0 );                   // padding
+   b.u16( 0 ).u16( 0 ).u16( 0 );   // colorization: hue, saturation, lightness
+   b.u16( 0 ).u16( 0 ).u16( 0 );   // master: the same, all neutral
+   for ( var i = 0; i < Psb.HUE_RANGES.length; ++i )
+   {
+      var r = Psb.HUE_RANGES[i];
+      for ( var j = 0; j < 4; ++j )
+         b.u16( r[j] );
+      b.u16( 0 ).u16( 0 ).u16( 0 );   // no shift in this band
+   }
+   while ( b.length() % 4 != 0 )
+      b.zeros( 1 );
+   return b;
+};
+
+/*
+ * The tagged blocks that follow a layer record: the unicode name, the
+ * section divider for a group marker, and the adjustment data for a
+ * curves or hue/saturation layer.
+ */
+Psb.layerExtraBlocks = function( layer )
+{
+   var b = new Psb.Buffer;
+
+   var luni = new Psb.Buffer;
+   luni.unicodeName( layer.name );
+   var lb = Psb.taggedBlock( "luni", luni );
+   for ( var i = 0; i < lb.bytes.length; ++i )
+      b.bytes.push( lb.bytes[i] );
+
+   if ( layer.divider != null )
+   {
+      var lsct = new Psb.Buffer;
+      lsct.u32( layer.divider );
+      /*
+       * A group header also carries its own blend mode here. Photoshop
+       * reads the group's blend from THIS copy, not from the layer
+       * record's -- a group set to Screen with only the record updated
+       * opens as Pass Through.
+       */
+      if ( layer.divider == Psb.DIVIDER_OPEN || layer.divider == Psb.DIVIDER_CLOSED )
+         lsct.ascii( "8BIM" ).ascii( layer.blend || "norm" );
+      var db = Psb.taggedBlock( "lsct", lsct );
+      for ( var j = 0; j < db.bytes.length; ++j )
+         b.bytes.push( db.bytes[j] );
+   }
+
+   if ( layer.curves != null )
+   {
+      var cb = Psb.taggedBlock( "curv",
+                   Psb.curvesPayload( layer.curves ) );
+      for ( var c = 0; c < cb.bytes.length; ++c )
+         b.bytes.push( cb.bytes[c] );
+   }
+
+   if ( layer.hueSaturation )
+   {
+      var hb = Psb.taggedBlock( "hue2", Psb.hueSaturationPayload() );
+      for ( var h = 0; h < hb.bytes.length; ++h )
+         b.bytes.push( hb.bytes[h] );
+   }
+   return b;
+};
+
+/*
+ * One layer record. `channelLengths` is the byte count each channel's data
+ * will occupy INCLUDING its 2-byte compression word, which the caller
+ * computes once and reuses when it writes the data itself.
+ */
+Psb.isAdjustment = function( layer )
+{
+   return ( layer.curves != null ) || ( layer.hueSaturation === true );
+};
+
+Psb.layerRecord = function( layer, width, height, channelLengths )
+{
+   var b = new Psb.Buffer;
+
+   /*
+    * Group markers are zero-area. Photoshop writes them with an empty
+    * rectangle and a single, empty channel; giving them the document's
+    * bounds makes Photoshop treat them as real pixel layers.
+    */
+   // adjustment layers hold no pixels of their own, exactly like the
+   // markers: empty rectangle, empty channels
+   var isMarker = ( layer.divider != null ) || Psb.isAdjustment( layer );
+   if ( isMarker )
+      b.i32( 0 ).i32( 0 ).i32( 0 ).i32( 0 );
+   else
+      b.i32( 0 ).i32( 0 ).i32( height ).i32( width );
+
+   var ids = layer.channelIds;
+   b.u16( ids.length );
+   for ( var c = 0; c < ids.length; ++c )
+   {
+      b.u16( ids[c] < 0 ? ( ids[c] + 65536 ) : ids[c] );
+      b.u64( channelLengths[c] );          // PSB: 8 bytes, PSD would be 4
+   }
+
+   b.ascii( "8BIM" );
+   b.ascii( layer.blend || "norm" );
+   b.u8( layer.opacity == null ? 255 : layer.opacity );
+   /*
+    * Clipping: 0 is a base layer, 1 clips to the layer BELOW. A clipped
+    * adjustment affects only that one layer instead of everything under it
+    * in the group -- which for a saturation layer over the star plate is
+    * the difference between colouring the stars and colouring the stack.
+    */
+   b.u8( layer.clipping ? 1 : 0 );
+   /*
+    * Flags, bit 1 = "transparency protected", bit 2 = HIDDEN. Photoshop
+    * writes bit 4 (0x08) too, meaning "bit 5 has useful information", plus
+    * bit 5 (0x10) "pixel data irrelevant to appearance" on group markers.
+    */
+   var flags = 0x08;
+   if ( !layer.visible )
+      flags |= 0x02;
+   if ( layer.divider != null )
+      flags |= 0x10;
+   b.u8( flags );
+   b.u8( 0 );                               // filler
+
+   var extra = new Psb.Buffer;
+   extra.u32( 0 );                          // layer mask data: none
+   extra.u32( 0 );                          // blending ranges: none
+   extra.pascal( layer.name, 4 );
+   var blocks = Psb.layerExtraBlocks( layer );
+   for ( var k = 0; k < blocks.bytes.length; ++k )
+      extra.bytes.push( blocks.bytes[k] );
+
+   b.u32( extra.length() );
+   for ( var m = 0; m < extra.bytes.length; ++m )
+      b.bytes.push( extra.bytes[m] );
+
+   return b;
+};
+
+/*
+ * Flattens the caller's nested description into the order Photoshop stores
+ * layers in: BOTTOM FIRST, and each group expressed as three parts --
+ *
+ *    bounding divider (hidden, closes the group)
+ *    ... the group's own layers, bottom first ...
+ *    group header (carries the name and blend mode)
+ *
+ * which is the reverse of how anyone reading the file would describe it,
+ * and the single most common way a hand-written PSD comes out inside out.
+ *
+ * Input: an array of entries, bottom first, each either
+ *    { name, window, visible, blend }                     -- a pixel layer
+ *    { name, group: [ ...entries, bottom first... ], blend, visible, open }
+ */
+/*
+ * ORDER, ESTABLISHED THE HARD WAY.
+ *
+ * Callers describe a document BOTTOM FIRST -- "HSO at the bottom, stars on
+ * top" -- and that is exactly the order records are written in. The last
+ * record written is the TOP layer in Photoshop's panel.
+ *
+ * A reversal was added here once, on the strength of psd-tools' composite()
+ * of a two-layer probe, which rendered the first-written layer as though it
+ * were on top. Photoshop then opened the result upside down at every level.
+ * psd-tools lists layers bottom-first and its composite of a file with no
+ * transparency channels is not a reliable guide to stacking; PHOTOSHOP IS
+ * THE AUTHORITY, and it was checked against a real 3.3 GB export.
+ *
+ * So: no reversal. Do not add one without opening the file in Photoshop.
+ */
+
+Psb.flatten = function( entries )
+{
+   var out = [];
+   for ( var i = 0; i < entries.length; ++i )
+   {
+      var e = entries[i];
+      if ( e.group != null )
+      {
+         out.push( { name: "</Layer group>", divider: Psb.DIVIDER_BOUNDING,
+                     visible: true, blend: "norm", opacity: 255,
+                     channelIds: [ 0, 1, 2, -1 ], window: null } );
+         var inner = Psb.flatten( e.group );
+         for ( var j = 0; j < inner.length; ++j )
+            out.push( inner[j] );
+         out.push( { name: e.name,
+                     divider: ( e.open === false ) ? Psb.DIVIDER_CLOSED
+                                                   : Psb.DIVIDER_OPEN,
+                     visible: ( e.visible !== false ),
+                     blend: e.blend || "pass",
+                     opacity: ( e.opacity == null ) ? 255 : e.opacity,
+                     channelIds: [ 0, 1, 2, -1 ], window: null } );
+      }
+      else
+      {
+         out.push( { name: e.name, divider: null,
+                     visible: ( e.visible !== false ),
+                     blend: e.blend || "norm",
+                     opacity: ( e.opacity == null ) ? 255 : e.opacity,
+                     channelIds: [ -1, 0, 1, 2 ],
+                     curves: ( e.curves != null ) ? e.curves : null,
+                     hueSaturation: ( e.hueSaturation === true ),
+                     clipping: ( e.clipping === true ),
+                     mask: ( e.mask === true ),
+                     window: e.window } );
+      }
+   }
+   return out;
+};
+
+/*
+ * Writes one channel's samples, big-endian, to an open file.
+ *
+ * This is the only place in the writer that touches bulk pixel data, and
+ * the only per-sample loop in it. Image.pixelData hands over the channel as
+ * an ArrayBuffer in one call -- no per-pixel reads -- and the loop below
+ * does nothing but swap byte order, because PSB is big-endian and this
+ * machine is not.
+ *
+ * Written in chunks so peak memory stays bounded: a full 11957x7669
+ * channel is 183 MB, and holding a swapped copy of every channel at once
+ * would be pointless when the file is written sequentially anyway.
+ */
+Psb.CHUNK_SAMPLES = 4 * 1024 * 1024;   // 8 MB per chunk at 16 bits
+
+Psb.writeChannelData = function( file, image, channel, sampleCount )
+{
+   var src = new Uint16Array( image.pixelData( channel ) );
+   var i = 0;
+   while ( i < sampleCount )
+   {
+      var n = Math.min( Psb.CHUNK_SAMPLES, sampleCount - i );
+      var out = new Uint8Array( n * 2 );
+      for ( var k = 0; k < n; ++k )
+      {
+         var v = src[i + k];
+         out[k*2]     = ( v >> 8 ) & 0xFF;
+         out[k*2 + 1] = v & 0xFF;
+      }
+      file.write( new ByteArray( out ) );
+      i += n;
+   }
+};
+
+/* Photoshop's four-character blend keys. */
+Psb.BLEND_NORMAL       = "norm";
+Psb.BLEND_SCREEN       = "scrn";
+Psb.BLEND_LUMINOSITY   = "lum ";   // the trailing space is part of the key
+Psb.BLEND_LINEAR_LIGHT = "lLit";
+Psb.BLEND_SOFT_LIGHT   = "sLit";
+Psb.BLEND_PASS_THROUGH = "pass";
+
+/*
+ * Writes the whole document.
+ *
+ * `entries` is bottom-first and nested; see Psb.flatten. Every pixel layer
+ * must carry a 16-bit window of exactly `width` x `height`.
+ *
+ * No transparency channel is written. A layer without one is fully opaque,
+ * which every layer here is, and omitting it saves 183 MB per layer on a
+ * frame this size.
+ */
+/*
+ * One image-resource block: '8BIM' + id + name + length + data, with both
+ * the name and the data padded to even lengths.
+ */
+Psb.RESOURCE_ICC_PROFILE = 1039;   // 0x040F
+
+Psb.imageResource = function( id, dataBytes )
+{
+   var b = new Psb.Buffer;
+   b.ascii( "8BIM" );
+   b.u16( id );
+   b.u16( 0 );                         // empty Pascal name, padded to even
+   b.u32( dataBytes.length );
+   for ( var i = 0; i < dataBytes.length; ++i )
+      b.bytes.push( dataBytes[i] );
+   if ( dataBytes.length % 2 != 0 )
+      b.zeros( 1 );
+   return b;
+};
+
+Psb.write = function( path, entries, width, height, iccProfile )
+{
+   // bottom-first, straight through: see the note above Psb.flatten
+   var layers = Psb.flatten( entries );
+   var samples = width * height;
+   var pixelBytes = 2 + samples * 2;        // compression word + raw samples
+   var markerBytes = 2;                     // compression word, zero area
+
+   // every layer declares three channels: R, G, B
+   var channelLengths = [];
+   for ( var i = 0; i < layers.length; ++i )
+   {
+      var isEmpty = ( layers[i].divider != null ) || Psb.isAdjustment( layers[i] );
+      var per = isEmpty ? markerBytes : pixelBytes;
+      channelLengths.push( [ per, per, per ] );
+      layers[i].channelIds = [ 0, 1, 2 ];
+   }
+
+   // --- the layer records, which must be sized before anything is written
+   var records = new Psb.Buffer;
+   records.u16( layers.length );
+   for ( var r = 0; r < layers.length; ++r )
+   {
+      var rec = Psb.layerRecord( layers[r], width, height, channelLengths[r] );
+      for ( var b = 0; b < rec.bytes.length; ++b )
+         records.bytes.push( rec.bytes[b] );
+   }
+
+   var channelDataBytes = 0;
+   for ( var c = 0; c < layers.length; ++c )
+      channelDataBytes += channelLengths[c][0] * 3;
+
+   var layerInfoLength = records.length() + channelDataBytes;
+   // PSB pads the layer info section to an even length
+   var layerInfoPad = ( layerInfoLength % 2 != 0 ) ? 1 : 0;
+   var layerAndMaskLength = 8 + layerInfoLength + layerInfoPad + 4; // +len +global mask
+
+   var file = new File;
+   file.createForWriting( path );
+   try
+   {
+      // --- file header
+      var h = new Psb.Buffer;
+      h.ascii( Psb.SIGNATURE );
+      h.u16( Psb.VERSION_PSB );
+      h.zeros( 6 );
+      h.u16( 3 );                            // channels in the composite
+      h.u32( height );
+      h.u32( width );
+      h.u16( 16 );                           // bits per sample
+      h.u16( Psb.COLOR_MODE_RGB );
+      h.u32( 0 );                            // colour mode data: none
+
+      /*
+       * Image resources: the ICC profile, or nothing.
+       *
+       * Without it Photoshop opens the document untagged and applies
+       * whatever its policy says, which for ProPhoto data is a visible
+       * shift. The rest of Loom's outputs carry their profile because
+       * PixInsight embeds it on save; this file is written by hand, so it
+       * has to be put here deliberately.
+       */
+      if ( iccProfile != null && iccProfile.length > 0 )
+      {
+         var icc = [];
+         for ( var ib = 0; ib < iccProfile.length; ++ib )
+            icc.push( iccProfile.at( ib ) );
+         var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, icc );
+         h.u32( res.length() );
+         for ( var rb = 0; rb < res.bytes.length; ++rb )
+            h.bytes.push( res.bytes[rb] );
+      }
+      else
+         h.u32( 0 );
+
+      h.u64( layerAndMaskLength );
+      h.u64( layerInfoLength + layerInfoPad );
+      file.write( h.toByteArray() );
+
+      // --- layer records
+      file.write( records.toByteArray() );
+
+      // --- channel data, in the same order the records declared
+      for ( var L = 0; L < layers.length; ++L )
+      {
+         var layer = layers[L];
+         if ( layer.divider != null || Psb.isAdjustment( layer ) )
+         {
+            // zero-area: the compression word and nothing else
+            var empty = new Psb.Buffer;
+            empty.u16( Psb.COMPRESSION_RAW ).u16( Psb.COMPRESSION_RAW )
+                 .u16( Psb.COMPRESSION_RAW );
+            file.write( empty.toByteArray() );
+            continue;
+         }
+         var img = layer.window.mainView.image;
+         for ( var ch = 0; ch < 3; ++ch )
+         {
+            var cw = new Psb.Buffer;
+            cw.u16( Psb.COMPRESSION_RAW );
+            file.write( cw.toByteArray() );
+            // a mono plate fills all three channels from its only one
+            Psb.writeChannelData( file, img,
+                                  ( img.numberOfChannels > 1 ) ? ch : 0, samples );
+         }
+      }
+
+      if ( layerInfoPad )
+      {
+         var pad = new Psb.Buffer; pad.zeros( 1 );
+         file.write( pad.toByteArray() );
+      }
+
+      // --- global layer mask info: none
+      var g = new Psb.Buffer; g.u32( 0 );
+      file.write( g.toByteArray() );
+
+      /*
+       * --- the flattened composite.
+       *
+       * Photoshop rebuilds its view from the layers and uses this only as a
+       * preview, but the section is mandatory and other readers show it. The
+       * bottom-most visible pixel layer is written rather than a real
+       * composite: compositing screen and luminosity blends here would mean
+       * a second full pass over every layer to produce something Photoshop
+       * discards on open.
+       */
+      var base = null;
+      for ( var p = 0; p < layers.length; ++p )
+         if ( layers[p].divider == null && !Psb.isAdjustment( layers[p] ) &&
+              layers[p].visible )
+         { base = layers[p]; break; }
+      if ( base == null )
+         for ( var q = 0; q < layers.length; ++q )
+            if ( layers[q].divider == null && !Psb.isAdjustment( layers[q] ) )
+            { base = layers[q]; break; }
+
+      var ch0 = new Psb.Buffer; ch0.u16( Psb.COMPRESSION_RAW );
+      file.write( ch0.toByteArray() );
+      var bimg = base.window.mainView.image;
+      for ( var cc = 0; cc < 3; ++cc )
+         Psb.writeChannelData( file, bimg,
+                               ( bimg.numberOfChannels > 1 ) ? cc : 0, samples );
+   }
+   finally
+   {
+      try { file.close(); } catch ( e ) {}
+   }
+   return path;
+};
