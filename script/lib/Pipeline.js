@@ -2130,6 +2130,8 @@ Pipeline.run = function( config )
 
       Pipeline.exportResults( results, config );
 
+      Pipeline.arrangeOutputs( results );
+
       return results;
    }
    catch ( e )
@@ -2155,6 +2157,175 @@ Pipeline.run = function( config )
  * its title reads "L_1" rather than "L_1 | bb9fbae0f6...xisf". Returns
  * the window to keep -- the original when no detach was needed.
  */
+/*
+ * The order the plates are arranged in, and therefore the order their
+ * icons appear.
+ *
+ * Fixed rather than derived from the results object, so a given plate's
+ * icon is in the same place on every run and can be found by position
+ * rather than by reading labels. Anything not named here follows, sorted,
+ * so a new kind of output is never silently dropped from the layout.
+ */
+Pipeline.OUTPUT_ORDER = [
+   "L", "L_starless", "L_stars", "L_stars_low", "L_stars_high",
+   "RGB", "RGB_starless", "RGB_stars",
+   "HSO", "HSO_starless", "HSO_stars",
+   "SHO", "SHO_starless", "SHO_stars",
+   "HOO", "HOO_starless", "HOO_stars"
+];
+
+Pipeline.orderedOutputKeys = function( keys )
+{
+   var known = [], rest = [];
+   for ( var i = 0; i < keys.length; ++i )
+      ( Pipeline.OUTPUT_ORDER.indexOf( keys[i] ) >= 0 ? known : rest ).push( keys[i] );
+   known.sort( function( a, b )
+   {
+      return Pipeline.OUTPUT_ORDER.indexOf( a ) - Pipeline.OUTPUT_ORDER.indexOf( b );
+   } );
+   rest.sort();
+   return known.concat( rest );
+};
+
+/*
+ * Where each icon goes: a grid centred in `area`, kept as square as the
+ * count allows.
+ *
+ * Pure arithmetic, so the layout is testable without a workspace. `area`
+ * is { x, y, width, height }, `icon` is { width, height }.
+ *
+ * The grid is clamped to start inside the area: a large icon and a small
+ * screen would otherwise place the first column off the left edge, where
+ * it cannot be clicked.
+ */
+Pipeline.ICON_SPACING = 8;
+
+Pipeline.iconGrid = function( count, icon, area, spacing )
+{
+   var out = [];
+   if ( count <= 0 )
+      return out;
+   var gap = ( spacing == null ) ? Pipeline.ICON_SPACING : spacing;
+   var cols = Math.ceil( Math.sqrt( count ) );
+   var rows = Math.ceil( count / cols );
+
+   var stepX = icon.width + gap;
+   var stepY = icon.height + gap;
+   var blockW = cols * stepX - gap;
+   var blockH = rows * stepY - gap;
+
+   var originX = Math.max( area.x, Math.round( area.x + ( area.width - blockW ) / 2 ) );
+   var originY = Math.max( area.y, Math.round( area.y + ( area.height - blockH ) / 2 ) );
+
+   for ( var i = 0; i < count; ++i )
+      out.push( { x: originX + ( i % cols ) * stepX,
+                  y: originY + Math.floor( i / cols ) * stepY } );
+   return out;
+};
+
+/*
+ * Minimises the run's plates and lays their icons out in the middle.
+ *
+ * An icon's position IS its restore position -- verified 2026-09-17 by
+ * moving an icon and deiconizing it, which came back at the icon's
+ * coordinates and not at the window's former ones. So a centred grid of
+ * icons buys the "opens somewhere sensible" behaviour for nothing: each
+ * plate reopens near the middle, offset from its neighbours, instead of
+ * every one landing on top of the last.
+ *
+ * There is no hook to run code when the user opens an icon, which is why
+ * everything that makes a window pleasant to open -- the zoom above all --
+ * has to be done here, BEFORE it is iconized.
+ *
+ * Only the run's own outputs are touched. Windows the user already had
+ * open are not Loom's to rearrange.
+ */
+Pipeline.arrangeOutputs = function( results )
+{
+   try
+   {
+      var keys = [];
+      for ( var k in results )
+         if ( results[k] && Pipeline.windowIsUsable( results[k] ) )
+            keys.push( k );
+      if ( keys.length == 0 )
+         return;
+      keys = Pipeline.orderedOutputKeys( keys );
+
+      /*
+       * Fit the image to the window first. A plate is tens of megapixels
+       * and opens at 1:1 otherwise, showing one corner of it.
+       */
+      for ( var z = 0; z < keys.length; ++z )
+         try { results[keys[z]].zoomToOptimalFit(); }
+         catch ( e ) { /* a zoom that fails is not worth failing a run for */ }
+
+      /*
+       * The icon's size is read back from the first one rather than
+       * assumed: it follows the workspace's own icon metrics, which are
+       * not exposed anywhere.
+       */
+      var first = results[keys[0]];
+      first.iconize();
+      var g = first.geometry;
+      var icon = { width: g.width, height: g.height };
+
+      var area = Pipeline.workspaceArea();
+      var grid = Pipeline.iconGrid( keys.length, icon, area );
+
+      for ( var i = 0; i < keys.length; ++i )
+      {
+         var w = results[keys[i]];
+         try
+         {
+            if ( !w.iconic )
+               w.iconize();
+            w.position = new Point( grid[i].x, grid[i].y );
+         }
+         catch ( e )
+         {
+            Util.warn( "output", "could not place " + keys[i] + ": " + e );
+         }
+      }
+      Util.log( "output", "minimised " + keys.length +
+                          " plate(s) into a grid in the middle" );
+   }
+   catch ( e )
+   {
+      // Tidying the workspace must never be able to fail a finished run.
+      Util.warn( "output", "could not arrange the outputs: " + e );
+   }
+};
+
+/*
+ * The rectangle to centre the icons in.
+ *
+ * This is the SCREEN's usable area, not PixInsight's workspace: PJSR
+ * exposes no workspace geometry at all. Side panels inset the workspace,
+ * so the grid can sit slightly off-centre within it. Measured rather than
+ * guessed where possible -- a Dialog knows its available screen rect --
+ * and a fixed fallback where a Dialog cannot be made.
+ */
+Pipeline.FALLBACK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
+
+Pipeline.workspaceArea = function()
+{
+   try
+   {
+      /*
+       * A Rect is x0,y0,x1,y1 -- CORNERS, not an origin and a size. y1 is
+       * the bottom edge, so the height is y1-y0. Reading y1 as a height
+       * would push the grid below the screen by the height of the menu bar.
+       */
+      var r = ( new Dialog ).availableScreenRect;
+      if ( r != null && r.x1 > r.x0 && r.y1 > r.y0 )
+         return { x: r.x0, y: r.y0,
+                  width: r.x1 - r.x0, height: r.y1 - r.y0 };
+   }
+   catch ( e ) {}
+   return Pipeline.FALLBACK_AREA;
+};
+
 /*
  * True when a window reference can still be used -- not null, not closed.
  * A closed ImageWindow leaves a live JS object whose mainView is null, so
