@@ -653,6 +653,141 @@ Pipeline.buildStageKeys = function( sourceKey, params )
 };
 
 /*
+ * Is a cached entry usable as a whole?
+ *
+ * An extraction stage's entry has two halves: the stage result under the
+ * stage key, and a companion (the stars frame) alongside it. A stage key
+ * with a missing companion is a half-written entry -- it must be treated
+ * as a miss and re-extracted, rather than continued from with no stars
+ * image.
+ *
+ * This is a query and nothing else, so processChain can settle which
+ * stage it is reusing BEFORE it starts executing. The loop used to
+ * discover a half-written entry mid-flight and demote its own controlling
+ * variable to say so, which meant the store-on-success path existed twice.
+ */
+Pipeline.cacheEntryComplete = function( entry )
+{
+   if ( entry == null || Cache.lookup( entry.key ) == null )
+      return false;
+   if ( entry.companion == null )
+      return true;
+   return Cache.lookupCompanion( entry.key, entry.companion ) != null;
+};
+
+/*
+ * A stage that a LATER cached stage has superseded: it is not run and its
+ * result is not loaded, because the later entry already holds it.
+ */
+Pipeline.skipSupersededStage = function( chan, entry, found, hitStage, label, reg )
+{
+   if ( found )
+      Util.log( "cache", label + " HIT " + entry.key.substring( 0, 12 ) +
+                "... (superseded by later cached stage " + hitStage + ")" );
+   else
+      Util.log( "cache", label + " MISS (no entry; skipped -- " +
+                hitStage + " is cached)" );
+   /*
+    * A superseded stage is skipped because a later one already holds
+    * its result -- but an extraction stage ALSO produced a stars
+    * frame, and no later stage carries that. Skipping past it without
+    * loading the companion silently loses the stars image whenever
+    * anything downstream (noise reduction) is cached. So the
+    * companion is picked up even when the stage itself is superseded.
+    */
+   if ( entry.companion != null && found )
+   {
+      var scomp = entry.companion;
+      var superseded = Cache.loadCompanion( entry.key, scomp,
+                          Util.freeWindowId( chan.key + "_" + scomp ) );
+      if ( superseded != null )
+      {
+         reg.add( superseded );
+         chan[scomp] = superseded;
+      }
+      else
+         Util.warn( "cache", label + " superseded and its " + scomp +
+                             " companion is missing; this run produces no " +
+                             scomp + " frame for " + chan.key );
+   }
+};
+
+/*
+ * Puts a cached stage result in place of running the stage: the window
+ * becomes the channel's current window, and `loadedStars` -- already
+ * opened by the caller, because whether it opened at all decides whether
+ * this is attempted -- becomes its companion.
+ *
+ * Returns false when the entry is present but will not load, having said
+ * so; the caller then recomputes the stage.
+ */
+Pipeline.reuseCachedStage = function( chan, entry, loadedStars, label, reg )
+{
+   var loaded = Cache.load( entry.key, Util.freeWindowId( chan.key + "_" + entry.stage ) );
+   if ( !loaded )
+   {
+      if ( loadedStars != null )
+         try { loadedStars.forceClose(); } catch ( e3 ) {}
+      Util.warn( "cache", label + " cache entry present but failed to load -- recomputing" );
+      return false;
+   }
+
+   if ( loadedStars != null )
+   {
+      reg.add( loadedStars );
+      chan[ entry.companion ] = loadedStars;
+   }
+   reg.add( loaded );
+   var old = chan.window;
+   chan.window = loaded;
+   chan.view = loaded.mainView;
+   /*
+    * `old` is null when the chain's first stage CREATES its window
+    * rather than transforming one -- the RGB composite's `combine`
+    * stage. Guard both the close and the error message, or a hit on
+    * that stage throws from inside the catch handler.
+    */
+   if ( old != null )
+   {
+      reg.forget( old );
+      var oldId = "?";
+      try { oldId = old.mainView.id; } catch ( e0 ) {}
+      try { old.forceClose(); }
+      catch ( e ) { Util.warn( "cache", "could not close " + oldId + ": " + e ); }
+   }
+   try
+   {
+      if ( !loaded.hasAstrometricSolution )
+         Util.warn( "cache", label + " loaded window has no astrometric solution" );
+   }
+   catch ( e2 ) { /* property not readable on this window; not fatal */ }
+   Util.log( "cache", label + " HIT " + entry.key.substring( 0, 12 ) + "..." );
+   return true;
+};
+
+/*
+ * Runs a stage for real and caches what it produced. Returns false when
+ * the runner reported SKIP_CACHE, in which case nothing was stored.
+ *
+ * A runner returning SKIP_CACHE ran but did not produce the result
+ * this stage is supposed to represent -- the tolerated-failure path,
+ * where the composite is kept as it is and a warning is logged.
+ * Storing that under the stage's key would cache the FAILURE and
+ * serve it forever after, so it is deliberately not stored and the
+ * stage simply retries on the next run.
+ */
+Pipeline.runAndStoreStage = function( chan, entry, runners )
+{
+   if ( runners[ entry.stage ]( Pipeline.ensureLoaded( chan ) ) === Pipeline.SKIP_CACHE )
+      return false;
+   Cache.store( entry.key, chan.window,
+                { channel: chan.key, stage: entry.stage, params: entry.params } );
+   if ( entry.companion != null && chan[ entry.companion ] != null )
+      Cache.storeCompanion( entry.key, entry.companion, chan[ entry.companion ] );
+   return true;
+};
+
+/*
  * Cache-aware execution of a channel's stage chain. `chan` is the entry
  * from Pipeline.run's `chans` map ({ key, window, view, ... }); `runners`
  * maps each stage name in `chain` to a function( chan ) that performs the
@@ -666,6 +801,11 @@ Pipeline.buildStageKeys = function( sourceKey, params )
  * and only the stages after it actually run. Every stage still gets a
  * HIT/MISS log line, including ones skipped because a later stage was
  * cached, so a wrong reuse is never silent.
+ *
+ * Three kinds of stage come out of that: before the hit (superseded),
+ * the hit itself (reused, unless its entry turns out to be unusable),
+ * and after the hit (run and stored). A hit whose entry is unusable
+ * joins the third kind.
  */
 Pipeline.processChain = function( chan, chain, config, reg, runners )
 {
@@ -684,136 +824,40 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
       if ( found )
          hitIndex = i;
    }
+   var hitComplete = ( hitIndex >= 0 ) && Pipeline.cacheEntryComplete( chain[hitIndex] );
 
    for ( var i = 0; i < chain.length; ++i )
    {
-      var stage = chain[i].stage, key = chain[i].key;
-      var label = chan.key + " " + stage;
+      var entry = chain[i];
+      var label = chan.key + " " + entry.stage;
 
       if ( i < hitIndex )
       {
-         if ( lookups[i] )
-            Util.log( "cache", label + " HIT " + key.substring( 0, 12 ) +
-                      "... (superseded by later cached stage " + chain[hitIndex].stage + ")" );
-         else
-            Util.log( "cache", label + " MISS (no entry; skipped -- " +
-                      chain[hitIndex].stage + " is cached)" );
-         /*
-          * A superseded stage is skipped because a later one already holds
-          * its result -- but an extraction stage ALSO produced a stars
-          * frame, and no later stage carries that. Skipping past it without
-          * loading the companion silently loses the stars image whenever
-          * anything downstream (noise reduction) is cached. So the
-          * companion is picked up even when the stage itself is superseded.
-          */
-         if ( chain[i].companion != null && lookups[i] )
-         {
-            var scomp = chain[i].companion;
-            var superseded = Cache.loadCompanion( key, scomp,
-                                Util.freeWindowId( chan.key + "_" + scomp ) );
-            if ( superseded != null )
-            {
-               reg.add( superseded );
-               chan[scomp] = superseded;
-            }
-            else
-               Util.warn( "cache", label + " superseded and its " + scomp +
-                                   " companion is missing; this run produces no " +
-                                   scomp + " frame for " + chan.key );
-         }
+         Pipeline.skipSupersededStage( chan, entry, lookups[i],
+                                       chain[hitIndex].stage, label, reg );
          continue;
-      }
-
-      if ( i == hitIndex )
-      {
-         /*
-          * An extraction stage's entry is only usable if BOTH halves are
-          * present. A stage key with a missing stars companion is a
-          * half-written entry -- treat it as a miss and re-extract, rather
-          * than continue with no stars image.
-          */
-         var comp = chain[i].companion;
-         var loadedStars = null;
-         if ( comp != null )
-         {
-            loadedStars = Cache.loadCompanion( key, comp,
-                             Util.freeWindowId( chan.key + "_" + comp ) );
-            if ( loadedStars == null )
-            {
-               Util.warn( "cache", label + " has no " + comp +
-                                   " companion; recomputing" );
-               hitIndex = -1;
-               Util.log( "cache", label + " MISS (incomplete entry)" );
-               if ( runners[ stage ]( Pipeline.ensureLoaded( chan ) ) === Pipeline.SKIP_CACHE )
-               {
-                  Util.log( "cache", label + " not cached (the step did not complete)" );
-                  continue;
-               }
-               Cache.store( key, chan.window,
-                            { channel: chan.key, stage: stage, params: chain[i].params } );
-               if ( chan[comp] != null )
-                  Cache.storeCompanion( key, comp, chan[comp] );
-               continue;
-            }
-         }
-         var loaded = Cache.load( key, Util.freeWindowId( chan.key + "_" + stage ) );
-         if ( loaded )
-         {
-            if ( loadedStars != null )
-            {
-               reg.add( loadedStars );
-               chan[comp] = loadedStars;
-            }
-            reg.add( loaded );
-            var old = chan.window;
-            chan.window = loaded;
-            chan.view = loaded.mainView;
-            /*
-             * `old` is null when the chain's first stage CREATES its window
-             * rather than transforming one -- the RGB composite's `combine`
-             * stage. Guard both the close and the error message, or a hit on
-             * that stage throws from inside the catch handler.
-             */
-            if ( old != null )
-            {
-               reg.forget( old );
-               var oldId = "?";
-               try { oldId = old.mainView.id; } catch ( e0 ) {}
-               try { old.forceClose(); }
-               catch ( e ) { Util.warn( "cache", "could not close " + oldId + ": " + e ); }
-            }
-            try
-            {
-               if ( !loaded.hasAstrometricSolution )
-                  Util.warn( "cache", label + " loaded window has no astrometric solution" );
-            }
-            catch ( e2 ) { /* property not readable on this window; not fatal */ }
-            Util.log( "cache", label + " HIT " + key.substring( 0, 12 ) + "..." );
-            continue;
-         }
-         if ( loadedStars != null )
-            try { loadedStars.forceClose(); } catch ( e3 ) {}
-         Util.warn( "cache", label + " cache entry present but failed to load -- recomputing" );
       }
 
       var reason = config.ignoreCache ? "cache ignored for this run" : "no entry";
-      Util.log( "cache", label + " MISS (" + reason + ")" );
-      /*
-       * A runner returning SKIP_CACHE ran but did not produce the result
-       * this stage is supposed to represent -- the tolerated-failure path,
-       * where the composite is kept as it is and a warning is logged.
-       * Storing that under the stage's key would cache the FAILURE and
-       * serve it forever after, so it is deliberately not stored and the
-       * stage simply retries on the next run.
-       */
-      if ( runners[ stage ]( Pipeline.ensureLoaded( chan ) ) === Pipeline.SKIP_CACHE )
+      if ( i == hitIndex )
       {
-         Util.log( "cache", label + " not cached (the step did not complete)" );
-         continue;
+         var loadedStars = ( hitComplete && entry.companion != null )
+                         ? Cache.loadCompanion( entry.key, entry.companion,
+                              Util.freeWindowId( chan.key + "_" + entry.companion ) )
+                         : null;
+         if ( entry.companion != null && loadedStars == null )
+         {
+            Util.warn( "cache", label + " has no " + entry.companion +
+                                " companion; recomputing" );
+            reason = "incomplete entry";
+         }
+         else if ( Pipeline.reuseCachedStage( chan, entry, loadedStars, label, reg ) )
+            continue;
       }
-      Cache.store( key, chan.window, { channel: chan.key, stage: stage, params: chain[i].params } );
-      if ( chain[i].companion != null && chan[ chain[i].companion ] != null )
-         Cache.storeCompanion( key, chain[i].companion, chan[ chain[i].companion ] );
+
+      Util.log( "cache", label + " MISS (" + reason + ")" );
+      if ( !Pipeline.runAndStoreStage( chan, entry, runners ) )
+         Util.log( "cache", label + " not cached (the step did not complete)" );
    }
 };
 

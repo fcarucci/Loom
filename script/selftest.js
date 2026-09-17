@@ -1668,6 +1668,98 @@ function runTests()
       Cache.lookup = realLookup; Cache.load = realLoad; Cache.store = realStore;
    }
 
+   /*
+    * Whether a cached entry is usable at all. Asked once, before anything
+    * executes, so the chain's hit index is settled up front -- an
+    * extraction entry missing its stars frame used to be discovered
+    * halfway through the run.
+    */
+   var realLookup2 = Cache.lookup, realLookupComp = Cache.lookupCompanion;
+   try
+   {
+      Cache.lookup = function( k )
+      {
+         return ( k == "whole" || k == "half" ) ? ( "/cache/" + k ) : null;
+      };
+      Cache.lookupCompanion = function( k, n )
+      {
+         return ( k == "whole" ) ? ( "/cache/" + k + "." + n ) : null;
+      };
+      check( "an ordinary entry is complete when its file is there",
+             Pipeline.cacheEntryComplete( { stage: "solve", key: "whole" } ), true );
+      check( "an entry with no file is not complete",
+             Pipeline.cacheEntryComplete( { stage: "solve", key: "absent" } ), false );
+      check( "an extraction entry with both halves is complete",
+             Pipeline.cacheEntryComplete( { stage: "extractL", key: "whole",
+                                            companion: "stars" } ), true );
+      check( "an extraction entry missing its stars frame is half-written",
+             Pipeline.cacheEntryComplete( { stage: "extractL", key: "half",
+                                            companion: "stars" } ), false );
+      check( "no entry at all is not complete",
+             Pipeline.cacheEntryComplete( null ), false );
+   }
+   finally
+   {
+      Cache.lookup = realLookup2; Cache.lookupCompanion = realLookupComp;
+   }
+
+   /*
+    * ...and what processChain then does with a half-written extraction
+    * entry: recompute the stage and store it, rather than continue with no
+    * stars image. Driven with the same fakes as above.
+    */
+   var rLookup = Cache.lookup, rLookupComp = Cache.lookupCompanion,
+       rLoad = Cache.load, rLoadComp = Cache.loadCompanion,
+       rStore = Cache.store, rStoreComp = Cache.storeCompanion;
+   try
+   {
+      var extractChain = [ { stage: "extractL", key: "kx", params: {},
+                             companion: "stars" } ];
+      function driveExtraction( companionPresent )
+      {
+         var ran = [], stored = [];
+         var starsWindow = { mainView: { id: "stars" }, forceClose: function() {} };
+         Cache.lookup = function( k ) { return "/cache/" + k; };
+         Cache.lookupCompanion = function()
+         {
+            return companionPresent ? "/cache/kx.stars.xisf" : null;
+         };
+         Cache.load = function( k, id )
+         {
+            return { mainView: { id: id }, hasAstrometricSolution: true,
+                     forceClose: function() {} };
+         };
+         Cache.loadCompanion = function()
+         {
+            return companionPresent ? starsWindow : null;
+         };
+         Cache.store = function( k ) { stored.push( k ); };
+         Cache.storeCompanion = function( k, n ) { stored.push( k + "." + n ); };
+         var chan = { key: "L", view: null,
+                      window: { mainView: { id: "src" }, forceClose: function() {} } };
+         var runners = { extractL: function( c ) { ran.push( "extractL" ); } };
+         Pipeline.processChain( chan, extractChain, { useCache: true },
+                                { add: function() {}, forget: function() {} },
+                                runners );
+         return { ran: ran.join( "," ), stored: stored.join( "," ),
+                  starsRecovered: chan.stars === starsWindow };
+      }
+      var whole = driveExtraction( true );
+      check( "a complete extraction entry is reused, not run", whole.ran, "" );
+      check( "and its stars frame comes back with it",
+             whole.starsRecovered, true );
+      var half = driveExtraction( false );
+      check( "a half-written extraction entry is recomputed instead",
+             half.ran, "extractL" );
+      check( "and the recomputed result is stored once", half.stored, "kx" );
+   }
+   finally
+   {
+      Cache.lookup = rLookup; Cache.lookupCompanion = rLookupComp;
+      Cache.load = rLoad; Cache.loadCompanion = rLoadComp;
+      Cache.store = rStore; Cache.storeCompanion = rStoreComp;
+   }
+
    // A channel already holding a window (a view source, or a chain whose
    // first stage creates one) has no loader and must pass through untouched.
    var noLoader = { key: "RGB", window: { mainView: { id: "x" } } };

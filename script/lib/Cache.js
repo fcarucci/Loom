@@ -183,6 +183,18 @@ Cache.storeCompanion = function( key, name, window )
 };
 
 /*
+ * Path of an entry's companion, or null when absent -- the same file-exists
+ * question Cache.lookup asks about the entry itself, asked about its other
+ * half. Answering it without opening anything is what lets a caller decide
+ * an entry is half-written before it starts work.
+ */
+Cache.lookupCompanion = function( key, name )
+{
+   var p = Cache.companionPathFor( key, name );
+   return File.exists( p ) ? p : null;
+};
+
+/*
  * Returns null when the companion is absent. A hit on the stage key with a
  * missing companion is a half-written entry -- the caller treats it as a
  * miss rather than silently continuing with no stars image.
