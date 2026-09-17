@@ -216,49 +216,61 @@ Pipeline.projectNameFor = function( config )
    return "";
 };
 
+/*
+ * Reads geometry and keywords from `path`'s header alone, without decoding
+ * a single pixel.
+ *
+ * Returns { info, why }: `info` is the header fields on success and null on
+ * failure, and `why` then carries the diagnostic string the caller prints
+ * before it falls back to a full read. Every failure point has its own
+ * reason -- the reason is the whole point of this probe, because the
+ * fallback is expensive enough that "it did not work" is not a useful
+ * thing to read in a log.
+ */
+Pipeline.tryHeaderRead = function( path )
+{
+   try
+   {
+      var ext = File.extractExtension( path );
+      var F = new FileFormat( ext, true /*toRead*/, false /*toWrite*/ );
+      if ( F.isNull )
+         return { info: null, why: "no reader for extension '" + ext + "'" };
+
+      var f = new FileFormatInstance( F );
+      if ( f.isNull )
+         return { info: null, why: "could not instantiate the " + ext + " reader" };
+
+      var d = f.open( path, "verbosity 0" );
+      if ( d == null || d.length < 1 )
+      {
+         try { f.close(); } catch ( e ) {}
+         return { info: null, why: "the reader returned no image description" };
+      }
+
+      var info = {
+         keywords: F.canStoreKeywords ? f.keywords : [],
+         width: d[0].width,
+         height: d[0].height
+      };
+      // The header is already in hand; a close that fails now costs
+      // nothing and must not send the caller down the full-read path.
+      try { f.close(); } catch ( e1 ) {}
+      return { info: info, why: null };
+   }
+   catch ( e2 )
+   {
+      return { info: null, why: String( e2 ) };
+   }
+};
+
 Pipeline.readImageInfo = function( path )
 {
    var ck = Pipeline.imageInfoCacheKey( path );
    if ( ck != null && Pipeline.imageInfoCache[ck] != null )
       return Pipeline.imageInfoCache[ck];
 
-   var info = null;
-   var why = null;
-   try
-   {
-      var ext = File.extractExtension( path );
-      var F = new FileFormat( ext, true /*toRead*/, false /*toWrite*/ );
-      if ( F.isNull )
-         why = "no reader for extension '" + ext + "'";
-      else
-      {
-         var f = new FileFormatInstance( F );
-         if ( f.isNull )
-            why = "could not instantiate the " + ext + " reader";
-         else
-         {
-            var d = f.open( path, "verbosity 0" );
-            if ( d != null && d.length >= 1 )
-            {
-               info = {
-                  keywords: F.canStoreKeywords ? f.keywords : [],
-                  width: d[0].width,
-                  height: d[0].height
-               };
-               f.close();
-            }
-            else
-            {
-               why = "the reader returned no image description";
-               try { f.close(); } catch ( e ) {}
-            }
-         }
-      }
-   }
-   catch ( e )
-   {
-      why = String( e );
-   }
+   var probe = Pipeline.tryHeaderRead( path );
+   var info = probe.info;
 
    /*
     * The fallback reads and decodes the ENTIRE image to recover a few
@@ -270,7 +282,7 @@ Pipeline.readImageInfo = function( path )
    if ( info == null )
    {
       Util.warn( "read", "header-only read unavailable for " + path +
-                         " (" + ( why || "unknown reason" ) + ")" +
+                         " (" + ( probe.why || "unknown reason" ) + ")" +
                          " -- falling back to a FULL read of the image" );
       var w = ImageWindow.open( path );
       if ( w.length == 0 )

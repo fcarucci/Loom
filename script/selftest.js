@@ -442,6 +442,26 @@ function runTests()
           Pipeline.projectNameFor( { paths: {} } ), "" );
 
    /*
+    * The header-only probe. It must never throw and must never report a
+    * failure without a reason: the reason is what the caller prints before
+    * it falls back to decoding a whole gigabyte-sized master, and an
+    * unexplained fallback is exactly the silent behaviour that warning was
+    * added to end.
+    */
+   var noReader = Pipeline.tryHeaderRead( "/nonexistent/loom-selftest.zzzz" );
+   check( "an unreadable extension yields no header info",
+          noReader.info, null );
+   check( "...and says why, in words",
+          typeof noReader.why == "string" && noReader.why.length > 0, true );
+   var noFile = Pipeline.tryHeaderRead( "/nonexistent/loom-selftest.xisf" );
+   check( "a missing file does not throw out of the probe",
+          noFile.info, null );
+   check( "...and it too carries a reason",
+          typeof noFile.why == "string" && noFile.why.length > 0, true );
+   check( "an empty path is a failure like any other, not a crash",
+          Pipeline.tryHeaderRead( "" ).info, null );
+
+   /*
     * The PSB's own name. One rule, used by both the writer and the
     * checkbox that promises what will be written.
     */
