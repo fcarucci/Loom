@@ -1,0 +1,63 @@
+name: CI
+
+# GitHub reads workflows only from .github/workflows, so this file lives
+# here rather than at the repository root. The work itself is in ci/, so
+# the same build can be run and inspected locally:
+#
+#    ci/package.sh
+#
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  package:
+    name: Package the installable zip
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag names the release; anything else takes the version from
+      # Util.LOOM_VERSION, which is the single source of truth for it.
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$( sed -n 's/^Util\.LOOM_VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+                        script/lib/Util.js )"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Packaging Loom $version"
+
+      - name: Build the zip
+        run: ci/package.sh "${{ steps.version.outputs.version }}"
+
+      # Proves the archive is installable rather than merely present: one
+      # top-level Loom/ folder, the entry point where PixInsight's Feature
+      # Scripts dialog will look for it, and the RELEASE marker the
+      # updater requires before it will ever replace the directory.
+      - name: Check the layout is installable
+        run: |
+          zip="dist/Loom-${{ steps.version.outputs.version }}.zip"
+          unzip -q "$zip" -d /tmp/verify
+          test -f /tmp/verify/Loom/script/Loom.js     || { echo "missing script/Loom.js"; exit 1; }
+          test -f /tmp/verify/Loom/script/lib/Util.js || { echo "missing script/lib/Util.js"; exit 1; }
+          test -f /tmp/verify/Loom/RELEASE            || { echo "missing RELEASE marker"; exit 1; }
+          test -f /tmp/verify/Loom/LICENSE            || { echo "missing LICENSE"; exit 1; }
+          if [ "$( ls /tmp/verify | wc -l )" -ne 1 ]; then
+            echo "the archive must contain exactly one top-level folder:"; ls /tmp/verify; exit 1
+          fi
+          echo "layout OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Loom-${{ steps.version.outputs.version }}
+          path: dist/*.zip
+          if-no-files-found: error
