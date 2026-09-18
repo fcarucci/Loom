@@ -39,17 +39,24 @@ Update.GITHUB_REPO = "";
 Update.RELEASE_MARKER = "RELEASE";
 
 /*
- * Updater state lives here, NOT in the cache.
+ * Updater state lives in a SUBDIRECTORY of the cache, beside the run logs.
  *
- * Cache.clear deletes every non-directory file in the cache folder, so
- * "Clear cache" would eat the outcome record; the cache folder is also
- * user-selectable, so changing it would strand previous results. And a
- * zip update renames script/ out from under itself, so nothing inside the
- * installation can be state either.
+ * Not a dotfile in the home directory: Loom keeps its working state in one
+ * place the user chose, and scattering it is how a tool becomes something
+ * you cannot fully uninstall.
+ *
+ * Not loose in the cache folder either -- Cache.clear deletes every
+ * non-directory file there, so "Clear cache" would eat the record. It
+ * skips directories, which is exactly why the run logs already live in
+ * one. Nothing may live inside the installation, because a zip update
+ * renames script/ out from under itself.
+ *
+ * Changing the cache folder strands an unreported record. That is the
+ * right trade: the state belongs to the cache the user pointed Loom at.
  */
 Update.stateDir = function()
 {
-   return File.homeDirectory + "/.loom";
+   return Cache.dir() + "/update";
 };
 
 Update.OUTCOME_FILE = "update-last.txt";
@@ -444,18 +451,35 @@ Update.gitScriptPosix = function( o )
       "",
       "# mkdir is atomic: two launches cannot both update.",
       "mkdir \"$LOCK\" 2>/dev/null || exit 0",
-      "trap 'rmdir \"$LOCK\" 2>/dev/null' EXIT",
+      "trap 'rmdir \"$LOCK\" 2>/dev/null; rm -f \"$STATE/.err-$$\"' EXIT",
       "",
       "report() {",
+      "  # git's own messages run to many lines -- a refused fast-forward",
+      "  # prints a paragraph of hints -- and a record is ONE line. Folding",
+      "  # them here keeps the file parseable and the log readable.",
+      "  MSG=$(printf '%s' \"$5\" | tr '\\n\\r' '  ')",
       "  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \\",
-      "    \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$5\" > \"$TMP\"",
+      "    \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$MSG\" > \"$TMP\"",
       "  cat \"$TMP\" >> \"$STATE/" + Update.HISTORY_FILE + "\"",
       "  mv \"$TMP\" \"$OUT\"",       // atomic publication; no partial reads
       "}",
       "",
       "# status --porcelain, and not a plain diff against the index: that",
       "# misses staged changes and untracked files entirely.",
-      "if [ -n \"$(\"$GIT\" -C \"$DIR\" status --porcelain=v1 --untracked-files=all 2>&1)\" ]; then",
+      "# stderr goes to its own file, NOT into the captured output. Merging",
+      "# them made ANY git failure -- a missing binary, an unreadable repo --",
+      "# look like uncommitted work, so the user was told they had local",
+      "# changes they did not have and the real error was never reported.",
+      "ERRF=\"$STATE/.err-$$\"",
+      "DIRTY=$(\"$GIT\" -C \"$DIR\" status --porcelain=v1 --untracked-files=all 2>\"$ERRF\")",
+      "RC=$?",
+      "if [ $RC -ne 0 ]; then",
+      "  report failed $RC - - \"$(cat \"$ERRF\" 2>/dev/null)\"",
+      "  rm -f \"$ERRF\"",
+      "  exit 0",
+      "fi",
+      "rm -f \"$ERRF\"",
+      "if [ -n \"$DIRTY\" ]; then",
       "  report skipped-dirty 0 - - 'local changes present'",
       "  exit 0",
       "fi",
@@ -472,7 +496,10 @@ Update.gitScriptPosix = function( o )
       "FROM=$(\"$GIT\" -C \"$DIR\" rev-parse --short HEAD 2>/dev/null)",
       "",
       "ERR=$(\"$GIT\" -C \"$DIR\" -c merge.autoStash=false fetch -q \"$REMOTE\" \"$BRANCH\" 2>&1)",
-      "if [ $? -ne 0 ]; then report failed $? \"$FROM\" - \"$ERR\"; exit 0; fi",
+      "# Captured IMMEDIATELY: the [ ] test below would otherwise overwrite",
+      "# $? with its own status, and every failure was reported as code 0.",
+      "RC=$?",
+      "if [ $RC -ne 0 ]; then report failed $RC \"$FROM\" - \"$ERR\"; exit 0; fi",
       "",
       "ERR=$(\"$GIT\" -C \"$DIR\" -c merge.autoStash=false merge --ff-only -q '@{u}' 2>&1)",
       "RC=$?",
@@ -536,7 +563,17 @@ Update.gitScriptPowerShell = function( o )
       "try {",
       "  # status --porcelain, and not a plain diff against the index: that",
       "  # misses staged changes and untracked files entirely.",
-      "  $ST = (& $GIT -C $DIR status --porcelain=v1 --untracked-files=all 2>&1 | Out-String)",
+      "  # stderr is kept OUT of the captured output. Merging them made any",
+      "  # git failure look like uncommitted work, so the user was told they",
+      "  # had local changes they did not have and the real error was lost.",
+      "  $ERRF = Join-Path $STATE (\".err-\" + $PID)",
+      "  $ST = (& $GIT -C $DIR status --porcelain=v1 --untracked-files=all 2>$ERRF | Out-String)",
+      "  if ($LASTEXITCODE -ne 0) {",
+      "    $e = ''",
+      "    if (Test-Path -LiteralPath $ERRF) { $e = (Get-Content -Raw -LiteralPath $ERRF) }",
+      "    Remove-Item -LiteralPath $ERRF -Force -ErrorAction SilentlyContinue",
+      "    Report 'failed' $LASTEXITCODE '-' '-' $e; exit 0 }",
+      "  Remove-Item -LiteralPath $ERRF -Force -ErrorAction SilentlyContinue",
       "  if ($ST.Trim() -ne '') {",
       "    Report 'skipped-dirty' 0 '-' '-' 'local changes present'; exit 0 }",
       "",
@@ -605,8 +642,12 @@ Update.zipScriptPosix = function( o )
       "trap 'rmdir \"$LOCK\" 2>/dev/null; rm -rf \"$WORK\"' EXIT",
       "",
       "report() {",
+      "  # git's own messages run to many lines -- a refused fast-forward",
+      "  # prints a paragraph of hints -- and a record is ONE line. Folding",
+      "  # them here keeps the file parseable and the log readable.",
+      "  MSG=$(printf '%s' \"$5\" | tr '\\n\\r' '  ')",
       "  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \\",
-      "    \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$5\" > \"$TMP\"",
+      "    \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$MSG\" > \"$TMP\"",
       "  cat \"$TMP\" >> \"$STATE/" + Update.HISTORY_FILE + "\"",
       "  mv \"$TMP\" \"$OUT\"",
       "}",
@@ -757,13 +798,33 @@ Update.io = {
     */
    platform:        function() { return Util.PLATFORM; },
 
+   /*
+    * Output is accumulated in onStandardOutputDataAvailable and read from
+    * `stdout`, which is how every other ExternalProcess in Loom does it
+    * (see Steps.syqonRun). `standardOutput` does not exist -- reading it
+    * returned undefined, so `git --version` came back empty and a
+    * perfectly good git was rejected as unusable.
+    *
+    * The wait pumps the event loop, or the callback never fires.
+    */
    execute: function( program, args )
    {
       var P = new ExternalProcess;
+      var buf = "";
+      P.onStandardOutputDataAvailable = function() { buf += String( P.stdout ); };
       P.start( program, args );
-      P.waitForFinished( 5000 );
-      return { exitCode: P.exitCode,
-               output: P.standardOutput ? P.standardOutput.toString() : "" };
+
+      var deadline = ( new Date() ).getTime() + 5000;
+      while ( P.isStarting || P.isRunning )
+      {
+         CoreApplication.processEvents();
+         if ( ( new Date() ).getTime() > deadline )
+         {
+            try { P.terminate(); } catch ( e ) {}
+            return { exitCode: -1, output: "" };
+         }
+      }
+      return { exitCode: P.exitCode, output: buf };
    },
 
    spawnDetached: function( program, args )

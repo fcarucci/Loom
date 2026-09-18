@@ -761,7 +761,7 @@ function runTests()
     * quietly drop one.
     */
    var gs = Update.gitScript( { git: "/opt/homebrew/bin/git", dir: "/x/Loom",
-                                stateDir: "/home/.loom" } );
+                                stateDir: "/cache/update" } );
    check( "the update is fast-forward only", gs.indexOf( "--ff-only" ) >= 0, true );
    check( "the dirty check sees untracked files too",
           gs.indexOf( "--untracked-files=all" ) >= 0, true );
@@ -772,6 +772,48 @@ function runTests()
     */
    check( "the discredited diff guard is not used",
           gs.indexOf( "diff --quiet" ) < 0, true );
+   /*
+    * Found by running the helper against a fixture repository: the dirty
+    * check used to capture stderr along with stdout, so ANY git failure --
+    * a missing binary, an unreadable repository -- came back as "local
+    * changes present". The user was told they had uncommitted work they
+    * did not have, and the real error was never reported at all.
+    */
+   /*
+    * Also found against the fixture: a refused fast-forward prints a
+    * paragraph of hints, and those newlines went into the record verbatim,
+    * so a "one line per outcome" file stopped being one line per outcome.
+    */
+   check( "the shell folds git's multi-line messages into one line",
+          gs.indexOf( "tr '\\n\\r'" ) >= 0, true );
+   /*
+    * And a third, same fixture: `[ $? -ne 0 ]` overwrites $? with the
+    * test's own status, so every failure was recorded as exit code 0. The
+    * status has to be captured before anything else runs.
+    */
+   check( "no failure path reports the status of the test instead of git's",
+          gs.indexOf( "report failed $? " ) < 0, true );
+   /*
+    * State belongs to the cache the user chose, not to a dotfile in their
+    * home directory -- scattering state is how a tool becomes something
+    * you cannot fully uninstall. It sits in a SUBDIRECTORY because
+    * Cache.clear deletes loose files and skips directories.
+    */
+   check( "updater state lives under the cache folder",
+          Update.stateDir().indexOf( Cache.dir() ) == 0, true );
+   check( "...in a subdirectory, so Clear cache cannot eat it",
+          Update.stateDir() != Cache.dir(), true );
+   check( "...and not in the home directory",
+          Update.stateDir().indexOf( "/.loom" ) < 0, true );
+   check( "the dirty check keeps stderr out of its output",
+          gs.indexOf( "--untracked-files=all 2>&1" ) < 0, true );
+   check( "...and reports a failed status check as a failure",
+          gs.indexOf( "report failed $RC" ) >= 0, true );
+   check( "the PowerShell branch does the same",
+          Update.zipScript != null &&
+          Update.gitScript( { git: "git.exe", dir: "C:/L", stateDir: "C:/S",
+                              platform: "Windows" } )
+            .indexOf( "--untracked-files=all 2>&1" ) < 0, true );
    check( "an inherited autostash cannot stash the user's work",
           gs.indexOf( "merge.autoStash=false" ) >= 0, true );
    check( "a credential prompt cannot stall the background fetch",
@@ -785,7 +827,7 @@ function runTests()
    check( "the outcome is published by rename, not written in place",
           gs.indexOf( "mv \"$TMP\" \"$OUT\"" ) >= 0, true );
 
-   var zs = Update.zipScript( { dir: "/x/Loom", stateDir: "/home/.loom",
+   var zs = Update.zipScript( { dir: "/x/Loom", stateDir: "/cache/update",
                                 version: "0.1", owner: "o", repo: "r" } );
    check( "curl fails on an error page instead of saving it",
           zs.indexOf( "-fsSL" ) >= 0, true );
@@ -1069,7 +1111,7 @@ function runTests()
 
    /* The same guards again, this time in PowerShell. */
    var ps = Update.gitScript( { git: "C:/Program Files/Git/cmd/git.exe",
-                                dir: "C:/Users/x/Loom", stateDir: "C:/Users/x/.loom",
+                                dir: "C:/Users/x/Loom", stateDir: "C:/cache/update",
                                 platform: Util.PLATFORM_WINDOWS } );
    check( "the Windows update is fast-forward only",
           ps.indexOf( "--ff-only" ) >= 0, true );
@@ -1127,12 +1169,12 @@ function runTests()
           Update.quotePosix( "/Users/O'Brien" ), "'/Users/O'\\''Brien'" );
    var psQuoted = Update.gitScript( { git: "C:/Git/git.exe",
                                       dir: "C:/Users/O'Brien/Loom",
-                                      stateDir: "C:/Users/O'Brien/.loom",
+                                      stateDir: "C:/cache/O'Brien/update",
                                       platform: Util.PLATFORM_WINDOWS } );
    check( "a quote in a real path is escaped in the generated script",
           psQuoted.indexOf( "'C:/Users/O''Brien/Loom'" ) >= 0, true );
 
-   var psZip = Update.zipScript( { dir: "C:/Users/x/Loom", stateDir: "C:/Users/x/.loom",
+   var psZip = Update.zipScript( { dir: "C:/Users/x/Loom", stateDir: "C:/cache/update",
                                    version: "0.1", owner: "o", repo: "r",
                                    platform: Util.PLATFORM_WINDOWS } );
    check( "the Windows download refuses a non-https asset",
