@@ -3063,6 +3063,117 @@ function runTests()
    check( "unchannelled ignored", Object.keys( sel4 ).sort(), [ "O" ] );
    check( "empty input", Object.keys( Util.selectMasters( [] ) ).length, 0 );
 
+   // ---- minimum PixInsight core version -----------------------------------
+
+   var MIN = Util.MIN_CORE;
+
+   // The version Loom actually requires, spelled out so a careless edit of
+   // Util.MIN_CORE has to be deliberate.
+   check( "required core is 1.9.5", Util.formatCoreVersion( MIN ), "1.9.5" );
+
+   check( "exact minimum passes",
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 5 }, MIN ), true );
+   check( "one release older fails",
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 4 }, MIN ), false );
+   check( "one release newer passes",
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 6 }, MIN ), true );
+   check( "older minor fails",
+          Util.coreVersionAtLeast( { major: 1, minor: 8, release: 9 }, MIN ), false );
+   check( "newer major passes regardless of the rest",
+          Util.coreVersionAtLeast( { major: 2, minor: 0, release: 0 }, MIN ), true );
+   check( "older major fails regardless of the rest",
+          Util.coreVersionAtLeast( { major: 0, minor: 99, release: 99 }, MIN ), false );
+
+   // The case a numeric or string comparison of "1.9.5" gets wrong: 1.10
+   // comes AFTER 1.9, it is not 1.1.
+   check( "1.10.0 is newer than 1.9.5",
+          Util.coreVersionAtLeast( { major: 1, minor: 10, release: 0 }, MIN ), true );
+   check( "1.9.10 is newer than 1.9.5",
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 10 }, MIN ), true );
+
+   // A core that does not expose one of the components must not be read as
+   // NaN and quietly pass.
+   check( "missing release reads as zero",
+          Util.coreVersionAtLeast( { major: 1, minor: 9 }, MIN ), false );
+   check( "missing release reads as zero on a newer minor",
+          Util.coreVersionAtLeast( { major: 1, minor: 10 }, MIN ), true );
+   check( "all components missing fails",
+          Util.coreVersionAtLeast( {}, MIN ), false );
+   check( "formatCoreVersion fills missing components",
+          Util.formatCoreVersion( { major: 1 } ), "1.0.0" );
+
+   // ---- astrometric residual verdict --------------------------------------
+
+   // Both thresholds, spelled out: 3.0 px is the verifier's matching
+   // tolerance, 0.315 px is the published pre-1.9.5 solver median.
+   check( "bad threshold is the matching tolerance", Steps.RESIDUALS_BAD_PX, 3.0 );
+   check( "warn threshold is the published median", Steps.RESIDUALS_WARN_PX, 0.315 );
+
+   // 0.091 px: the 1.9.5 recursive-surface-spline result on the published
+   // mosaic panel. It must read as good, or the threshold is wrong.
+   check( "published recursive-spline result is ok",
+          Steps.residualVerdict( 0.091 ), "ok" );
+   // 0.315 px: the published pre-1.9.5 result on the same panel, exactly at
+   // the bar. At the bar is not over it.
+   check( "published old-solver result is not yet poor",
+          Steps.residualVerdict( 0.315 ), "ok" );
+   check( "just past the bar is poor",
+          Steps.residualVerdict( 0.316 ), "poor" );
+   check( "well past the bar is poor",
+          Steps.residualVerdict( 1.5 ), "poor" );
+   check( "at the matching tolerance is bad",
+          Steps.residualVerdict( 3.0 ), "bad" );
+   check( "beyond the matching tolerance is bad",
+          Steps.residualVerdict( 12 ), "bad" );
+   check( "a perfect solution is ok", Steps.residualVerdict( 0 ), "ok" );
+
+   // No number is not a good number.
+   check( "NaN has no verdict", Steps.residualVerdict( NaN ), "unknown" );
+   check( "undefined has no verdict", Steps.residualVerdict( undefined ), "unknown" );
+   check( "null has no verdict", Steps.residualVerdict( null ), "unknown" );
+   check( "a string has no verdict", Steps.residualVerdict( "0.1" ), "unknown" );
+   check( "a negative deviation has no verdict",
+          Steps.residualVerdict( -1 ), "unknown" );
+
+   // Measured on the owner's own data, NGC 5907 masterLight L autocrop,
+   // 5710x3182 at 0.966 arcsec/px, 1.9.5 build 1702, 2026-09-18. Both
+   // the solution WBPP shipped and a fresh recursive-spline solve must
+   // read as good, or the bar is in the wrong place for this rig.
+   check( "the WBPP solution of a real master is ok",
+          Steps.residualVerdict( 0.0190 ), "ok" );
+   check( "a recursive-spline solve of the same master is ok",
+          Steps.residualVerdict( 0.0157 ), "ok" );
+
+   // ---- verification never costs the run ----------------------------------
+
+   // A window with no solution at all: measure() throws, the warning is
+   // logged, and null -- not an exception -- reaches the caller. Steps.solve
+   // must not lose a good solve because the diagnostic failed.
+   check( "a failed verification returns null",
+          Steps.verifyAndReport( { isNull: true, mainView: { id: "x" } }, "x" ),
+          null );
+   check( "a failed verification is repeatable, not latched",
+          Steps.verifyAndReport( { isNull: true, mainView: { id: "y" } }, "y" ),
+          null );
+
+   // ---- residual measurement configuration --------------------------------
+
+   // The thresholds are read against this value; if the tolerance is ever
+   // changed the bad threshold has to move with it.
+   check( "matching tolerance matches the bad threshold",
+          Steps.RESIDUALS_CONFIG.matchingTolerance, Steps.RESIDUALS_BAD_PX );
+   // AstrometricResiduals' header lists exactly these as required.
+   var needed = [ "structureLayers", "minStructureSize", "hotPixelFilterRadius",
+                  "noiseReductionFilterRadius", "sensitivity", "peakResponse",
+                  "brightThreshold", "maxStarDistortion", "autoPSF",
+                  "autoMagnitude", "magnitude", "restrictToHQStars",
+                  "matchingTolerance", "rejectionSigma" ];
+   var missing = [];
+   for ( var ri = 0; ri < needed.length; ++ri )
+      if ( Steps.RESIDUALS_CONFIG[needed[ri]] === undefined )
+         missing.push( needed[ri] );
+   check( "every parameter AstrometricResiduals requires is present", missing, [] );
+
 }
 
 function main()

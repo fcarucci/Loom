@@ -371,6 +371,198 @@ processes: it cannot be built with `new ImageSolver; P.someParam = x;
 P.executeOn(view)`. It must be driven by including the engine script and
 calling `initialize()` / `solveImage()` directly on a live `ImageWindow`.
 
+### ImageSolver — `solverCfg.recursiveSplines` (PixInsight 1.9.5)
+
+The one solver setting Loom overrides. Everything else is left to
+`solverCfg.LoadSettings()`, i.e. to the user's own ImageSolver
+configuration.
+
+| Parameter | Value | Where the value comes from |
+| --- | --- | --- |
+| `solverCfg.recursiveSplines` | `true` | Declared `ImageSolverEngine.js:72` (persisted, `DataType.Boolean`), defaulted to `false` at `:129`, read at `:565` and `:939` where it is the last argument to `new ReferSpline`. |
+
+Recursive surface splines model distortion as a partition of unity of local
+surface splines over a quadtree on top of the projective model, using every
+matched star after robust outlier rejection, rather than fitting one global
+function to a capped set of control points. On the mosaic panel with 34,000
+control points published in the PixInsight 1.9.5 announcement, the median
+deviation against Gaia DR3 improved from **0.315 px to 0.091 px** — roughly
+one arcsecond to about a third of one — and the solve was faster, not
+slower.
+
+**Measured on the owner's own data**, not quoted from the announcement.
+NGC 5907 `masterLight_..._FILTER-L_mono_autocrop.xisf`, 5710x3182 at 0.9664
+arcsec/px, PixInsight 1.9.5 build 1702, 2026-09-18. The frame was opened
+read-only, verified as shipped, re-solved with `recursiveSplines = true`,
+and verified again:
+
+| | matched stars | median | RMS | max |
+| --- | --- | --- | --- | --- |
+| solution as shipped by WBPP | 230 | 0.0190 px / 0.0178" | 0.0414 px / 0.0386" | 0.1411 px / 0.1273" |
+| re-solved, `recursiveSplines = true` | 237 | 0.0157 px / 0.0152" | 0.0338 px / 0.0325" | 0.1099 px / 0.1061" |
+
+Median −17%, RMS −18%, maximum −22%, and seven more stars matched. The
+improvement is an order of magnitude smaller than the published mosaic-panel
+figure, which is what one should expect: this is a single well-corrected
+field, not a mosaic panel with 34,000 control points and real distortion to
+model. The solve took **959 ms** and each verification **762 ms**.
+
+**Ordering is part of the parameter.** `engine.initialize( window, false )`
+calls `this.solverCfg.LoadSettings()` internally
+(`ImageSolverEngine.js:183`), so an override applied before `initialize()`
+is silently replaced by whatever the user last saved from the ImageSolver
+dialog. It must be set *after* `initialize()` and before `solveImage()`.
+
+Setting it does not disturb the user's saved configuration:
+`ImageSolverEngine.js` contains no call to `SaveSettings` or
+`SaveParameters` anywhere (verified by grep — only the front-end
+`ImageSolver.js` persists), so the override lives and dies with the
+`ImageSolver` instance.
+
+---
+
+## AstrometricResiduals — verifying a solution (PixInsight 1.9.5)
+
+`<pjsr/astrometry/AstrometricResiduals.js>` is the measurement half of
+astrometric solution analysis: star detection, PSF fitting, Gaia retrieval,
+matching, and the deviations between measured centroids and catalog
+positions. It is the base class of the `AstrometricSolutionVerifier`
+script's engine, and its own header states it is shared "so that every
+script that measures an astrometric solution measures it in exactly the
+same way".
+
+Unlike `ImageSolverEngine.js` it ships under `include/`, not `src/scripts/`,
+so it needs no `../src/scripts/...` path, and it carries its own
+`#ifndef __PJSR_AstrometricResiduals_js` guard. It defines no `VERSION`,
+`TITLE` or `SETTINGS_MODULE`, so it cannot collide with the `#define`s
+Steps.js must make for ImageSolver (verified by grep: none of those three
+tokens appears in the file). Its only dependencies are
+`AstrometricMetadata.js` and `AstronomicalCatalogs.js`, both of which
+Steps.js already includes.
+
+### The "silent discard" when both engines are included — what it actually is
+
+Including `ImageSolverEngine.js` and `AstrometricSolutionVerifierEngine.js`
+in one script produced no output, no error and exit status 0. The obvious
+suspect was a preprocessor collision: PJSR's preprocessor has one define
+table for the whole unit, Steps.js must `#define VERSION "6.4.2"` / `TITLE`
+/ `SETTINGS_MODULE` for ImageSolver, and the verifier's front end defines
+its own `VERSION "1.0.0"` / `TITLE` / `SETTINGS_MODULE`.
+
+**That is not the cause.** Bisected on 1.9.5 build 1702, 2026-09-18:
+
+* **Redefining a macro is not an error.** A script that defines `VERSION`,
+  `TITLE` and `SETTINGS_MODULE` twice runs to completion; the last
+  definition simply wins (`VERSION=1.0.0`, and so on). No warning, no
+  discard.
+* **Both engines coexist in one preprocessed unit.** With the ImageSolver
+  define set in force and `<pjsr/astrometry/AstrometricResiduals.js>` and
+  `<pjsr/astrometry/AstrometricPlot.js>` included, `ImageSolver`,
+  `AstrometricSolutionVerifier` and `AstrometricResiduals` are all
+  `function` afterwards.
+* **The real cause is a missing dependency include.**
+  `AstrometricSolutionVerifierEngine.js` does not include the two files it
+  needs — its front end does. Without
+  `<pjsr/astrometry/AstrometricResiduals.js>`, the statement
+  `var AstrometricSolutionVerifier = class extends AstrometricResiduals`
+  inside the engine fails when the unit is evaluated, and nothing after it
+  runs.
+
+Proved by writing a marker file *before* the engine's `#include` and
+another after it: the first file appears, the second does not. The script
+therefore parsed and started running — it was not discarded — but because a
+dispatched script's only output is normally written at the end, the
+observable symptom is identical to a discard. **"No output file" means
+"something stopped before the write", and that is a parse failure OR a
+load-time exception; the two are only distinguishable by writing a marker
+early.**
+
+A third thing produces the same symptom and is worth ruling out first: the
+shared instance being busy. A script dispatched with `-x=1:` while another
+long script is running is queued, not dropped, and its output appears
+whenever the instance gets to it — which can be an hour.
+
+```javascript
+#include <pjsr/astrometry/AstrometricResiduals.js>
+
+let M = ( new AstrometricResiduals( config ) ).measure( window );
+// M.metadata.resolution is DEGREES per pixel; 3600*resolution is the
+// plate scale in arcsec/px (AstrometricSolutionVerifierEngine.js:274).
+// M.retained is the set after sigma clipping:
+//   M.retained.n
+//   M.retained.px.{median,sigma,rms,p90,p99,max}
+//   M.retained.as.{median,sigma,rms,p90,p99,max}
+//   M.retained.bias.{dx,dy,dra,ddec}
+```
+
+`measure()` throws when the window is null, has no astrometric solution, or
+no star matches a catalog star.
+
+**`M.result.retained`, not `M.retained`.** `measure()` returns the retained
+*matches* as `M.retained` (a plain array) and their *statistics* as
+`M.result.retained`. The names are one property apart and reading the wrong
+one costs a run: an array has no `.px`.
+
+**Cost, measured** on the frame above: **762 ms** for 230 matched stars on a
+5710x3182 image, against 959 ms for the solve itself. It scales with the
+number of matched stars. That is cheap enough to verify every solve rather
+than only the reference, which matters because Loom solves each channel
+independently and SPFC then calibrates each channel against that channel's
+own solution.
+
+### Settings the pipeline must make
+
+The configuration is a plain object, **not** a `VerifierConfiguration`.
+`VerifierConfiguration extends PersistentObject`, so constructing it and
+calling `LoadSettings()` / `SaveSettings()` reads and writes the user's own
+saved AstrometricSolutionVerifier settings. `AstrometricResiduals` asks only
+for the properties below (listed in its own header comment), so a literal
+satisfies it completely and touches no `Settings` at all.
+
+Every value is copied verbatim from `VerifierConfiguration`'s defaults,
+`AstrometricSolutionVerifierEngine.js:105-126`, which are in turn the
+ImageSolver defaults for star detection and PSF fitting.
+
+| Parameter | Value | Source line |
+| --- | --- | --- |
+| `structureLayers` | `5` | `:105` |
+| `minStructureSize` | `0` | `:106` |
+| `hotPixelFilterRadius` | `1` | `:107` |
+| `noiseReductionFilterRadius` | `0` | `:108` |
+| `sensitivity` | `0.5` | `:109` |
+| `peakResponse` | `0.5` | `:110` |
+| `brightThreshold` | `3.0` | `:111` |
+| `maxStarDistortion` | `0.6` | `:112` |
+| `autoPSF` | `false` | `:113` |
+| `autoMagnitude` | `true` | `:118` |
+| `magnitude` | `16` | `:119` |
+| `restrictToHQStars` | `false` | `:120` |
+| `matchingTolerance` | `3.0` px | `:125` |
+| `rejectionSigma` | `5.0` | `:126` |
+
+The `AstrometricSolutionVerifier` **engine** class is deliberately not used.
+Its `verify()` is the reporting half: it prints a 98-column report and
+per-cell grid tables, and with the defaults above it also opens a
+false-colour deviation map (`mapMode = MapMode.FalseColor`, `:133`) and a
+graphs window (`showGraphs = true`, `:139`). Loom runs unattended; two
+windows per solve over the user's workspace is not acceptable. The
+measurement is identical either way, because it is the same code.
+
+### Residual thresholds
+
+Both are compared against the **median** deviation in pixels. Pixels is the
+scale-relative form: `arcsec / (arcsec/px)`.
+
+| Threshold | Value | Where the number comes from |
+| --- | --- | --- |
+| solution is wrong | `>= 3.0` px | The `matchingTolerance` above — the radius inside which a detected star is accepted as a catalog star at all, hence the largest deviation the measurement can represent. |
+| solution is poor | `> 0.315` px | The median deviation against Gaia DR3 that PixInsight's pre-1.9.5 global-surface-spline solver achieved on the 34,000-control-point mosaic panel published in the 1.9.5 announcement (the same measurement that gave 0.091 px with recursive splines). |
+
+No threshold is set on the RMS. Both published figures are medians, RMS is
+`>= median` by construction, and reusing a median limit on an RMS would fire
+on solutions that are fine. The RMS is reported — it is the number that
+shows a tail of bad corners a median hides — but it is reported, not judged.
+
 ---
 
 ## Findings — divergences from Appendix A / the plan's assumptions

@@ -62,6 +62,72 @@ Util.BANNER = [
 Util.LOOM_VERSION = "0.1.1";
 
 /* ------------------------------------------------------------------ */
+/* The oldest PixInsight core Loom will run on                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * PixInsight 1.9.5 "Lockhart", build 1702.
+ *
+ * Four separate things in Loom already require it, so running on an older
+ * core does not degrade -- it breaks, and mostly in ways that do not name
+ * themselves:
+ *
+ *   - `#include <../src/scripts/ImageSolver/ImageSolverEngine.js>` in
+ *     Steps.js. An unresolvable #include is not an error in PJSR: the core
+ *     discards the whole script with no message, no console output and
+ *     exit status 0. On a core where that form does not resolve, Loom
+ *     simply does nothing at all.
+ *   - `<pjsr/astrometry/AstrometricResiduals.js>`, which Steps.js uses to
+ *     verify astrometric solutions, is new in 1.9.5.
+ *   - `solverCfg.recursiveSplines` (ImageSolverEngine.js:129) is new in
+ *     1.9.5; on an older engine the assignment is silently inert.
+ *   - Astrometric solutions written by 1.9.5 are not compatible with
+ *     previous versions (1.9.5 release notes), so a mixed setup produces
+ *     solutions one half of the toolchain cannot read.
+ *
+ * Deliberately NOT named Util.MIN_VERSION or anything containing the bare
+ * token VERSION: Steps.js must `#define VERSION "6.4.2"` for the bundled
+ * ImageSolver engine, the preprocessor has one define table for the whole
+ * unit, and every later occurrence of that token is substituted. See the
+ * comment on Util.LOOM_VERSION above -- this cost hours once already.
+ */
+Util.MIN_CORE = { major: 1, minor: 9, release: 5 };
+
+/*
+ * "1.9.5" from { major: 1, minor: 9, release: 5 }. Missing components read
+ * as zero so a core that does not expose one of them still prints and
+ * compares as something rather than "undefined".
+ */
+Util.formatCoreVersion = function( v )
+{
+   function n( x ) { return ( typeof x == "number" && isFinite( x ) ) ? x : 0; }
+   return n( v.major ) + "." + n( v.minor ) + "." + n( v.release );
+};
+
+/*
+ * True if `found` is at least `required`, comparing (major, minor,
+ * release) in that order -- the ordinary lexicographic rule, so 1.10.0 is
+ * newer than 1.9.5 and not older, which a string or float comparison of
+ * the same numbers gets wrong.
+ *
+ * Pure on purpose: it takes both versions as arguments and reads nothing
+ * from CoreApplication, so the comparison can be exercised for versions
+ * this machine is not running.
+ */
+Util.coreVersionAtLeast = function( found, required )
+{
+   function n( x ) { return ( typeof x == "number" && isFinite( x ) ) ? x : 0; }
+   var f = [ n( found.major ), n( found.minor ), n( found.release ) ];
+   var r = [ n( required.major ), n( required.minor ), n( required.release ) ];
+   for ( var i = 0; i < 3; ++i )
+   {
+      if ( f[i] > r[i] ) return true;
+      if ( f[i] < r[i] ) return false;
+   }
+   return true;   // exactly equal counts as meeting the minimum
+};
+
+/* ------------------------------------------------------------------ */
 /* Which operating system this is                                      */
 /* ------------------------------------------------------------------ */
 

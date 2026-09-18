@@ -26,6 +26,20 @@
 #include <pjsr/UndoFlag.jsh>
 #include <pjsr/astrometry/AstrometricMetadata.js>
 #include <pjsr/astrometry/AstronomicalCatalogs.js>
+/*
+ * The measurement half of astrometric solution analysis, new in 1.9.5:
+ * star detection, PSF fitting, Gaia retrieval, matching, and the
+ * deviations between measured centroids and catalog positions. Used by
+ * Steps.verifySolution below.
+ *
+ * This is the base class of the AstrometricSolutionVerifier script's
+ * engine, and Loom uses the base class rather than that engine on
+ * purpose -- see the comment on Steps.verifySolution. It lives under
+ * include/, not src/scripts/, so it needs no path gymnastics, it carries
+ * its own #ifndef guard, and it depends only on AstrometricMetadata.js
+ * and AstronomicalCatalogs.js, both already included immediately above.
+ */
+#include <pjsr/astrometry/AstrometricResiduals.js>
 #include <pjsr/astrometry/SearchCoordinatesDialog.js>
 #include <pjsr/astrometry/CatalogDownloaderDialog.js>
 #include <pjsr/astrometry/ProjectionConfigurationDialog.js>
@@ -587,6 +601,243 @@ Steps.hasAstrometricSolution = function( window )
    catch ( e ) { return Util.keywordValue( window.keywords, "CTYPE1" ) !== null; }
 };
 
+/* ------------------------------------------------------------------ */
+/* Verification of the astrometric solution                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Parameters of the residual measurement.
+ *
+ * Every value is copied verbatim from VerifierConfiguration's defaults in
+ * <PixInsight>/src/scripts/AstrometricSolutionVerifier/AstrometricSolutionVerifierEngine.js
+ * (lines 105-126), which are in turn the ImageSolver defaults for star
+ * detection and PSF fitting. They are written out here, as a plain
+ * object, rather than constructed through VerifierConfiguration, and that
+ * is the point:
+ *
+ * VerifierConfiguration extends PersistentObject. Constructing it and
+ * calling LoadSettings()/SaveSettings() reads and WRITES the user's saved
+ * AstrometricSolutionVerifier configuration, so driving the script's own
+ * config object would quietly replace settings the user chose in that
+ * script's dialog. AstrometricResiduals asks only for these properties
+ * (see its header comment), so a literal satisfies it completely and
+ * touches no Settings at all.
+ */
+Steps.RESIDUALS_CONFIG = {
+   // Star detection and PSF fitting.
+   structureLayers: 5,
+   minStructureSize: 0,
+   hotPixelFilterRadius: 1,
+   noiseReductionFilterRadius: 0,
+   sensitivity: 0.5,
+   peakResponse: 0.5,
+   brightThreshold: 3.0,
+   maxStarDistortion: 0.6,
+   autoPSF: false,
+   // Catalog selection. autoMagnitude searches for the limit magnitude
+   // that yields about 1.5x the detected star count, so it adapts to the
+   // field instead of over-fetching on a dense one.
+   autoMagnitude: true,
+   magnitude: 16,
+   restrictToHQStars: false,
+   // Matching and clipping.
+   matchingTolerance: 3.0,   // px
+   rejectionSigma: 5.0       // sigma clipping of deviations
+};
+
+/*
+ * The two numbers the verdict is drawn against. Both are medians of the
+ * deviation in PIXELS, and pixels is the scale-relative form the check
+ * needs: a residual is only meaningful next to the plate scale, and
+ * arcsec/px is exactly the conversion between the two.
+ *
+ * RESIDUALS_BAD_PX = 3.0 px is the verifier's own matchingTolerance
+ * (above). It is the radius inside which a detected star is accepted as
+ * the same star as a catalog entry, so it is the largest deviation the
+ * measurement can even represent. A median at that level means the
+ * correspondences themselves are no longer trustworthy. It is a limit of
+ * the measurement, not a taste.
+ *
+ * RESIDUALS_WARN_PX = 0.315 px is the median deviation against Gaia DR3
+ * that PixInsight's pre-1.9.5 global-surface-spline solver achieved on a
+ * mosaic panel with 34,000 control points, published in the 1.9.5 release
+ * announcement alongside the 0.091 px the new recursive surface splines
+ * achieved on the same panel. It is therefore a bar a real solver cleared
+ * on a genuinely hard field. Doing worse than the solver Loom has just
+ * superseded is worth saying out loud.
+ *
+ * No threshold is attached to the RMS. Both published figures are
+ * medians, RMS >= median by construction, and reusing a median limit on
+ * an RMS would fire on solutions that are fine. The RMS is reported --
+ * it is the number that shows a tail of bad corners a median hides --
+ * but it is reported, not judged.
+ */
+Steps.RESIDUALS_WARN_PX = 0.315;
+Steps.RESIDUALS_BAD_PX  = 3.0;
+
+/*
+ * The verdict, as a pure function of the measured median deviation in
+ * pixels. Separated from the measurement so it can be tested for values
+ * no image on this machine happens to produce.
+ *
+ * Returns "ok", "poor" or "bad"; "unknown" when there is no number, which
+ * is what a measurement that found too few stars leaves behind.
+ */
+Steps.residualVerdict = function( medianPx )
+{
+   if ( typeof medianPx != "number" || !isFinite( medianPx ) || medianPx < 0 )
+      return "unknown";
+   if ( medianPx >= Steps.RESIDUALS_BAD_PX )
+      return "bad";
+   if ( medianPx > Steps.RESIDUALS_WARN_PX )
+      return "poor";
+   return "ok";
+};
+
+/*
+ * EVERY solve is verified, not just the first one of a run, and the
+ * reason is that the cost was measured rather than guessed.
+ *
+ * The worry was real: Loom solves up to seven channels plus the RGB
+ * composite plus one composite per narrowband palette, and a verification
+ * is a full star detection, PSF fit and Gaia search over the frame -- the
+ * solver's own work, paid again. An easy assumption is that it must
+ * therefore be run once, on the reference, since every channel is the
+ * same field through the same optics.
+ *
+ * Measured instead, on the owner's own data (NGC 5907 masterLight L
+ * autocrop, 5710x3182 at 0.966 arcsec/px, 1.9.5 build 1702, 2026-09-18):
+ *
+ *    verification          0.76 s   (230 matched stars)
+ *    the solve itself      0.96 s
+ *
+ * Under a second. Nine of them is some seven seconds on a run that takes
+ * many minutes, so the saving was never worth what it costs: every
+ * channel is solved INDEPENDENTLY, so every channel's solution can be
+ * independently wrong, and SPFC runs per channel against that channel's
+ * own solution. Verifying only the reference would check the one thing
+ * and trust the other eight.
+ *
+ * The cost scales with the number of matched stars, so a dense field will
+ * be dearer than 0.76 s. It will not become comparable to the rest of a
+ * Loom run.
+ */
+
+/*
+ * Measures the astrometric solution of `window` against Gaia and returns
+ * { n, medianPx, rmsPx, maxPx, medianArcsec, rmsArcsec, maxArcsec,
+ *   arcsecPerPx, biasRaArcsec, biasDecArcsec, verdict }, or null if it
+ * could not be measured.
+ *
+ * Deliberately NOT the AstrometricSolutionVerifier engine, though that is
+ * the script this measurement belongs to. Three reasons, in order of
+ * weight:
+ *
+ *   1. Its verify() is the reporting half: it prints a 98-column report
+ *      and per-cell grid tables, and by default opens a false-colour
+ *      deviation map and a graphs window (mapMode FalseColor, showGraphs
+ *      true). Loom runs unattended across many channels; two windows per
+ *      solve over the user's workspace is not acceptable, and suppressing
+ *      them means setting the config fields anyway.
+ *   2. Its VerifierConfiguration extends PersistentObject and so reads
+ *      and writes the user's saved settings -- see Steps.RESIDUALS_CONFIG.
+ *   3. It lives under src/scripts/ and would have to be reached with the
+ *      same <../src/scripts/...> form as ImageSolverEngine.js, and it
+ *      needs <pjsr/astrometry/AstrometricPlot.js> as well, which its own
+ *      file does not include.
+ *
+ * The measurement itself is not duplicated: AstrometricResiduals.measure()
+ * is exactly what the verifier calls, and its own header says it is shared
+ * "so that every script that measures an astrometric solution measures it
+ * in exactly the same way".
+ */
+Steps.verifySolution = function( window )
+{
+   var residuals = new AstrometricResiduals( Steps.RESIDUALS_CONFIG );
+   var M = residuals.measure( window );   // throws when it cannot measure
+
+   /*
+    * Statistics of the retained set, i.e. after 5-sigma clipping of the
+    * deviations. Statistics of ALL matches are dominated by the handful
+    * of bad correspondences the clipping exists to remove.
+    *
+    * M.result.retained, NOT M.retained: measure() returns the retained
+    * MATCHES as M.retained (a plain array) and their STATISTICS as
+    * M.result.retained. Reading the array cost a run -- it has no .px --
+    * and the two names are one character apart.
+    */
+   var S = M.result.retained;
+   // metadata.resolution is in DEGREES per pixel; the verifier prints
+   // 3600*resolution as arcsec/px (AstrometricSolutionVerifierEngine.js:274).
+   var arcsecPerPx = 3600 * M.metadata.resolution;
+
+   return {
+      n: S.n,
+      medianPx: S.px.median,
+      rmsPx: S.px.rms,
+      maxPx: S.px.max,
+      medianArcsec: S.as.median,
+      rmsArcsec: S.as.rms,
+      maxArcsec: S.as.max,
+      arcsecPerPx: arcsecPerPx,
+      biasRaArcsec: S.bias.dra,
+      biasDecArcsec: S.bias.ddec,
+      verdict: Steps.residualVerdict( S.px.median )
+   };
+};
+
+/*
+ * Verifies and reports. Never throws: a verification that cannot run is a
+ * lost diagnostic, not a reason to lose the pipeline -- the solution it
+ * was going to judge is still there and still usable. Returns the
+ * measurement, or null if it could not be made.
+ */
+Steps.verifyAndReport = function( window, label )
+{
+   var r;
+   try
+   {
+      Util.reportStage( "verifying astrometric solution \u2192 " + label );
+      r = Steps.verifySolution( window );
+   }
+   catch ( e )
+   {
+      Util.warn( "verify", label + ": the astrometric solution could not be " +
+                           "verified (" + e + "). The solution itself is " +
+                           "unchanged and the run continues." );
+      return null;
+   }
+
+   var summary = label + ": " + r.n + " stars, residual RMS " +
+                 r.rmsArcsec.toFixed( 3 ) + "\" (" + r.rmsPx.toFixed( 3 ) +
+                 " px), median " + r.medianArcsec.toFixed( 3 ) + "\" (" +
+                 r.medianPx.toFixed( 3 ) + " px), max " +
+                 r.maxArcsec.toFixed( 3 ) + "\", at " +
+                 r.arcsecPerPx.toFixed( 3 ) + "\"/px";
+
+   if ( r.verdict == "bad" )
+      Util.warn( "verify", summary + " -- THE SOLUTION IS WRONG. The median " +
+                           "deviation has reached the " +
+                           Steps.RESIDUALS_BAD_PX.toFixed( 1 ) + " px matching " +
+                           "tolerance, so detected stars are no longer being " +
+                           "paired with the right catalog stars. SPFC and SPCC " +
+                           "will calibrate flux and colour against the wrong " +
+                           "sky positions." );
+   else if ( r.verdict == "poor" )
+      Util.warn( "verify", summary + " -- POOR. The median deviation is worse " +
+                           "than the " + Steps.RESIDUALS_WARN_PX.toFixed( 3 ) +
+                           " px PixInsight's previous solver reached on a hard " +
+                           "mosaic panel, so check the field edges before " +
+                           "trusting SPFC and SPCC." );
+   else if ( r.verdict == "unknown" )
+      Util.warn( "verify", summary + " -- no usable deviation statistic; " +
+                           "reported without a verdict." );
+   else
+      Util.log( "verify", summary );
+
+   return r;
+};
+
 Steps.solve = function( view )
 {
    Util.reportStage( "plate solving \u2192 " + view.id );
@@ -594,6 +845,11 @@ Steps.solve = function( view )
    if ( Steps.hasAstrometricSolution( window ) )
    {
       Util.log( "solve", view.id + " already has an astrometric solution -- skipping" );
+      // Verified anyway, and this is the important case rather than the
+      // exception: the owner's masters come out of WBPP already solved, so
+      // the solution SPFC and SPCC actually depend on is usually one Loom
+      // never computed and has no other way to judge.
+      Steps.verifyAndReport( window, view.id );
       return;
    }
 
@@ -609,7 +865,39 @@ Steps.solve = function( view )
     * or catalog here discards that and was what made the solver reach for
     * an online catalog when a perfectly good local one was configured.
     */
+
+   /*
+    * Recursive surface splines, new in 1.9.5 (ImageSolverEngine.js:129,
+    * read at :565 and :939), and the one setting Loom does override.
+    *
+    * It models distortion as a partition of unity of local surface
+    * splines over a quadtree on top of the projective model, using every
+    * matched star after robust outlier rejection, instead of fitting one
+    * global function to a capped set of control points. On the mosaic
+    * panel with 34,000 control points published in the 1.9.5
+    * announcement, the median deviation against Gaia DR3 went from 0.315
+    * px to 0.091 px -- roughly one arcsecond to a third of one -- and the
+    * solve was faster, not slower.
+    *
+    * That matters here specifically because unmodelled distortion is
+    * worst at the field edges, and it is edge stars whose wrong positions
+    * feed SPFC and SPCC the wrong catalog flux.
+    *
+    * The core default is false, so this has to be set explicitly, and it
+    * has to be set HERE -- after initialize(), because initialize() calls
+    * solverCfg.LoadSettings() and would otherwise overwrite it with
+    * whatever the user last saved from the ImageSolver dialog. This is
+    * the one deliberate exception to the "do not override the user's
+    * solver configuration" rule above; it is safe because the engine
+    * never calls SaveSettings (verified: the string does not appear in
+    * ImageSolverEngine.js), so the override lives and dies with this
+    * ImageSolver instance and the user's saved configuration is untouched.
+    */
+   engine.solverCfg.recursiveSplines = true;
+
    engine.solveImage( window );   // throws on failure
+
+   Steps.verifyAndReport( window, view.id );
 
    /*
     * Deliberately NOT engine.SaveImage( window ).

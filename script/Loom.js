@@ -309,14 +309,57 @@ function reportValidateOnly( config )
    Util.log( "validate", "Results stay as open windows" );
 }
 
+/*
+ * Refuses to run on a core older than Util.MIN_CORE, and says which
+ * version it found and which it needs.
+ *
+ * Returns true to carry on. Split out of main() so the message is written
+ * once and the ordering -- before the dialog, before the updater, before
+ * anything touches a process -- is visible at the call site.
+ *
+ * Deliberately NOT CoreApplication.ensureMinimumVersion(). Probed on
+ * 1.9.5 build 1702: it returns true when the version is met, and on
+ * failure it THROWS an ordinary catchable Error reading "This script
+ * requires PixInsight core version 99.0.0 or higher." -- it does not
+ * abort the script, so it is safe, but the message is the core's and
+ * not Loom's. Loom has to name itself and say what it needs the version
+ * FOR, because "Loom does nothing at all" is the symptom the user
+ * actually sees on an old core: an unresolvable #include is discarded
+ * silently (see Util.MIN_CORE). Doing the comparison here also makes the
+ * comparison itself testable, which a core call is not.
+ */
+function checkCoreVersion()
+{
+   var core = { major:   CoreApplication.versionMajor,
+                minor:   CoreApplication.versionMinor,
+                release: CoreApplication.versionRelease };
+   if ( Util.coreVersionAtLeast( core, Util.MIN_CORE ) )
+      return true;
+
+   var message =
+      "Loom needs PixInsight " + Util.formatCoreVersion( Util.MIN_CORE ) +
+      " or later.\n\n" +
+      "This is PixInsight " + Util.formatCoreVersion( core ) +
+      " (build " + CoreApplication.versionBuild + ").\n\n" +
+      "Loom uses the ImageSolver and AstrometricResiduals sources that " +
+      "ship with " + Util.formatCoreVersion( Util.MIN_CORE ) + ", and " +
+      "astrometric solutions written by it are not readable by earlier " +
+      "versions. Please update PixInsight and run Loom again.";
+
+   console.criticalln( message );
+   new MessageBox( message, "Loom: PixInsight is too old",
+                   StdIcon_Error, StdButton_Ok ).execute();
+   return false;
+}
+
 function main()
 {
-   console.show();
-
    /*
     * The banner first, so a run log opens with what it is and which build
-    * produced it. console.show() because a previous modal may have slid
-    * the console away.
+    * produced it -- including a run that is about to be refused for the
+    * core version, where knowing which Loom refused it is the whole
+    * question. console.show() because a previous modal may have slid the
+    * console away.
     */
    console.show();
    for ( var bl = 0; bl < Util.BANNER.length; ++bl )
@@ -325,6 +368,12 @@ function main()
                     Update.describeVersion( File.extractDirectory( #__FILE__ ) + "/..",
                                             Update.io ) );
    console.writeln( "<end><cbr>" );
+
+   // Before the updater, before the dialog, before anything is opened:
+   // an unsupported core must name itself rather than fail obscurely
+   // several minutes into a run.
+   if ( !checkCoreVersion() )
+      return;
 
    var config = loadConfig();
 
