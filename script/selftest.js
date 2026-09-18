@@ -1376,6 +1376,49 @@ function runTests()
    finally { Cache.setDir( savedOverride ); }
 
    /*
+    * The installation root is NOT the folder the script sits in.
+    *
+    * Loom.js lives in <root>/script and .git is at <root>/.git, so handing
+    * the script's own directory to installKind reported "unknown": the
+    * updater silently did nothing and the title bar showed no commit.
+    * Caught by rolling the checkout back a commit and watching nothing
+    * happen, which is exactly the failure a silent updater hides.
+    */
+   var savedScriptDir = Update.SCRIPT_DIR;
+   try
+   {
+      Update.SCRIPT_DIR = "/x/Loom/script";
+      check( "the root is found one level up from the script folder",
+             Update.installDir( fakeIo( [], [ "/x/Loom/.git" ] ) ), "/x/Loom" );
+      check( "a worktree root, where .git is a file, is found too",
+             Update.installDir( fakeIo( [ "/x/Loom/.git" ], [] ) ), "/x/Loom" );
+      check( "a release install is found by its marker",
+             Update.installDir( fakeIo( [ "/x/Loom/RELEASE" ], [] ) ), "/x/Loom" );
+      /*
+       * Nothing recognised: report the parent, which is the installation
+       * root by layout and the directory a zip install would replace --
+       * never the script folder itself.
+       */
+      check( "with nothing to recognise it still reports the root",
+             Update.installDir( fakeIo( [], [] ) ), "/x/Loom" );
+      /*
+       * A checkout several levels up is still found, so the script folder
+       * can be nested without the updater going quiet.
+       */
+      Update.SCRIPT_DIR = "/x/Loom/a/b/script";
+      check( "a root further up is still found",
+             Update.installDir( fakeIo( [], [ "/x/Loom/.git" ] ) ), "/x/Loom" );
+      /*
+       * ...but not without limit: walking to / would let Loom decide that
+       * some unrelated repository above it was the thing to update.
+       */
+      Update.SCRIPT_DIR = "/a/b/c/d/e/f/script";
+      check( "the walk upwards is bounded",
+             Update.installDir( fakeIo( [], [ "/a/.git" ] ) ), "/a/b/c/d/e/f" );
+   }
+   finally { Update.SCRIPT_DIR = savedScriptDir; }
+
+   /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own
     * band edges -- not adjustments -- and the dropdown shows the wrong
     * bands if they are left at zero.

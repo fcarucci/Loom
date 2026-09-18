@@ -866,8 +866,16 @@ Update.reportLast = function( io )
                               "it may have been interrupted" );
          return null;
       }
+      /*
+       * "Nothing to do" is reported too. Silence on the happy path meant
+       * a working updater and a broken one looked exactly alike, which is
+       * precisely the complaint that prompted this.
+       */
       if ( outcome.status == "unchanged" )
-         return outcome;          // nothing happened; say nothing
+      {
+         Util.log( "update", "last check: already up to date" );
+         return outcome;
+      }
       if ( Update.isFailure( outcome ) )
          Util.warn( "update", Update.outcomeMessage( outcome ) );
       else
@@ -891,9 +899,12 @@ Update.start = function( config, io )
    try
    {
       if ( !config || !config.autoUpdate )
+      {
+         Util.log( "update", "automatic updating is off" );
          return null;
+      }
 
-      var dir = Update.installDir();
+      var dir = Update.installDir( io );
       var state = Update.stateDir();
       if ( !io.directoryExists( state ) )
          io.makeDirectory( state );
@@ -911,14 +922,22 @@ Update.start = function( config, io )
           */
          var git = Update.usableGit( io, platform );
          if ( git == null )
+         {
+            Util.warn( "update", "no usable git was found, so " + dir +
+                                 " cannot be updated" );
             return null;
+         }
          script = Update.gitScript( { git: git, dir: dir, stateDir: state,
                                       platform: platform } );
       }
       else if ( kind == "release" )
       {
          if ( Update.GITHUB_OWNER.length == 0 || Update.GITHUB_REPO.length == 0 )
-            return null;          // no mirror configured; guess nothing
+         {
+            Util.log( "update", "this is a release install, but no download " +
+                                "source is configured" );
+            return null;          // guess nothing
+         }
          script = Update.zipScript( { dir: dir, stateDir: state,
                                       version: Util.LOOM_VERSION,
                                       owner: Update.GITHUB_OWNER,
@@ -926,17 +945,36 @@ Update.start = function( config, io )
                                       platform: platform } );
       }
       else
-         return null;             // not ours to touch
+      {
+         /*
+          * Neither a checkout nor something this feature installed, so
+          * there is nothing safe to replace. Said out loud rather than
+          * passed over: a silent updater that has quietly decided it
+          * cannot act is indistinguishable from one that is broken.
+          */
+         Util.warn( "update", dir + " is not a git checkout and carries no " +
+                              "release marker; leaving it alone" );
+         return null;
+      }
 
       var path = state + "/" + Update.helperFileName( platform );
       io.writeText( path, script );
       var cmd = Update.helperCommand( platform, path );
       io.spawnDetached( cmd.program, cmd.args );
+      /*
+       * Announced when it STARTS, not when it finishes: the check runs
+       * detached and this launch never learns the outcome. Without this
+       * line a launch that checked and a launch that decided not to look
+       * were both silent, which is indistinguishable from broken.
+       */
+      Util.log( "update", "checking for a newer Loom in the background (" +
+                          dir + "); the result is reported at the next launch" );
       return kind;
    }
    catch ( e )
    {
       // An updater that cannot start is not a reason not to start Loom.
+      Util.warn( "update", "the update check could not be started: " + e );
       return null;
    }
 };
@@ -945,7 +983,43 @@ Update.start = function( config, io )
  * The installation directory: the folder holding Loom.js, found from the
  * script's own path rather than from configuration.
  */
-Update.installDir = function()
+/*
+ * The INSTALLATION's root, which is not the folder the script sits in.
+ *
+ * Loom.js lives in <root>/script, and .git is at <root>/.git. Handing the
+ * script's own directory to installKind reported "unknown" -- no .git, no
+ * RELEASE marker -- so the updater silently did nothing at all and the
+ * title bar showed no commit. Found by rolling the checkout back a commit
+ * and watching nothing happen.
+ *
+ * So walk UP from the script directory until something says "this is the
+ * installation", and fall back to the parent, which is where it is.
+ */
+Update.MAX_ROOT_DEPTH = 4;
+
+Update.installDir = function( io )
 {
-   return Update.SCRIPT_DIR || "";
+   io = io || Update.io;
+   var dir = Update.SCRIPT_DIR || "";
+   if ( dir.length == 0 )
+      return "";
+
+   var here = dir;
+   for ( var up = 0; up <= Update.MAX_ROOT_DEPTH; ++up )
+   {
+      if ( Update.installKind( here, io ) != "unknown" )
+         return here;
+      var slash = here.lastIndexOf( "/" );
+      if ( slash <= 0 )
+         break;
+      here = here.substring( 0, slash );
+   }
+   /*
+    * Nothing recognised it. The parent of the script folder is the
+    * installation root by layout, so report that rather than the script
+    * folder -- installKind will call it "unknown" either way, and this is
+    * the directory a zip install would replace.
+    */
+   var s = dir.lastIndexOf( "/" );
+   return ( s > 0 ) ? dir.substring( 0, s ) : dir;
 };
