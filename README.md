@@ -108,7 +108,9 @@ update could never apply to the run that fetched it; the new version is used the
 
 A checkout with local changes is never touched, a diverged branch is refused
 rather than merged, and a failed update is reported in the Process Console at
-the following launch. The version and commit are in the dialog's title bar —
+the following launch. What each attempt did is recorded in
+`<cache>/update/update.log`, beside the run logs and safe from **Clear
+cache**. The version and commit are in the dialog's title bar —
 `Loom 0.1 (a4c1f2e)` — because many commits share one version number.
 
 **Verify the install.** Open **Script → Batch Processing → Loom**, add masters,
