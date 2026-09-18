@@ -530,23 +530,257 @@ Psb.flatten = function( entries )
  * Written in chunks so peak memory stays bounded: a full 11957x7669
  * channel is 183 MB, and holding a swapped copy of every channel at once
  * would be pointless when the file is written sequentially anyway.
+ *
+ * Being the only per-sample loop, it is also the only part of the writer
+ * worth threading, and since PixInsight 1.9.5 it is threaded -- see
+ * Psb.canSwapInParallel below for how that is decided and Psb.swapRange for
+ * the loop itself. The chunks, and the order in which they are written, are
+ * exactly the same either way: PSB is a byte-exact format and the layer
+ * data section has to be assembled in the order the layer records declared.
  */
 Psb.CHUNK_SAMPLES = 4 * 1024 * 1024;   // 8 MB per chunk at 16 bits
+
+/*
+ * The swap, over one half-open range of samples of one chunk.
+ *
+ * Kept as a function of its own because it is the body of a thread as well
+ * as the serial loop, and a thread body is compiled from its source in a
+ * runtime where nothing of this script exists: it may use its argument and
+ * nothing else. That is why the ranges and the buffers are passed in rather
+ * than read from Psb.
+ */
+Psb.swapRange = function( src, dst, begin, end )
+{
+   for ( var k = begin; k < end; ++k )
+   {
+      var v = src[k];
+      dst[k*2]     = ( v >> 8 ) & 0xFF;
+      dst[k*2 + 1] = v & 0xFF;
+   }
+};
+
+/*
+ * The same loop, as the body of a thread.
+ *
+ * The source of Psb.swapRange is pasted into the thread's own script rather
+ * than the loop being written out a second time. A thread body is compiled
+ * in a runtime where this script does not exist, so it cannot call
+ * Psb.swapRange -- but it can carry its text, which is what the PJSR
+ * Parallel library calls a preamble. Two copies of a byte-order loop, one
+ * serial and one threaded, is exactly the arrangement where somebody fixes
+ * one of them; there is only one here, and the serial path and the threads
+ * run the same characters.
+ *
+ * The body reattaches the two shared buffers -- the only bulk data that
+ * reaches a thread without being copied -- and swaps its own slice of the
+ * chunk in place.
+ */
+Psb.swapThreadSource = function()
+{
+   return "(function( d )\n"
+        + "{\n"
+        + "   var swapRange = " + Psb.swapRange.toString() + ";\n"
+        + "   swapRange( new Uint16Array( Thread.sharedBuffer( d.src ) ),\n"
+        + "              new Uint8Array( Thread.sharedBuffer( d.dst ) ),\n"
+        + "              d.begin, d.end );\n"
+        + "   return d.end - d.begin;\n"
+        + "});\n";
+};
+
+/*
+ * How many threads the swap should use.
+ *
+ * Measured on a 16-processor machine, one 6000x6000 channel, chunked as
+ * below: 2 threads 1.30x, 4 threads 1.67x, 6 and 8 threads 1.88x, 12
+ * threads 1.30x, and 16 threads 0.11x -- nine times SLOWER than serial,
+ * because leaving no processor for the thread that is handing out the work
+ * turns the whole group into a scheduling problem. The curve is flat from
+ * six threads on and falls off a cliff past twelve, so this caps well short
+ * of the processor count rather than trying to find the exact peak.
+ *
+ * The ceiling is low because a byte swap does almost no arithmetic per
+ * sample it moves; the PJSR Thread documentation measures the same ceiling,
+ * three to four times, for any loop that is pure data movement.
+ */
+Psb.PARALLEL_MAX_THREADS = 8;
+
+/*
+ * Below this many samples the swap is a few milliseconds and starting
+ * threads cannot pay for itself.
+ */
+Psb.PARALLEL_MIN_SAMPLES = 1024 * 1024;
+
+/*
+ * Whether threads can be used at all, decided once and remembered.
+ *
+ * Nothing here is assumed from the core version. Thread, SharedArrayBuffer
+ * and Thread.shareBuffer arrived in PixInsight 1.9.5, and on anything older
+ * they are simply not there; the check is for the objects themselves. This
+ * deliberately does NOT #include <pjsr/utility/Parallel.js>, which would be
+ * the tidier API: an #include that cannot be resolved makes PixInsight
+ * discard the whole script silently, so depending on a file that only 1.9.5
+ * ships would turn a missing feature into an unrunnable Loom. Thread is a
+ * runtime global and can be tested for.
+ *
+ * The test is a real swap on a real worker rather than a feature test: it
+ * proves that a thread starts, that the shared buffer reaches it, and that
+ * what it wrote is visible here. If any of that fails, for any reason, the
+ * writer stays serial and still produces the same file.
+ */
+Psb.parallelReady = null;      // null until tested
+
+Psb.canSwapInParallel = function()
+{
+   if ( Psb.parallelReady !== null )
+      return Psb.parallelReady;
+
+   Psb.parallelReady = false;
+   try
+   {
+      if ( typeof Thread == "undefined" || typeof SharedArrayBuffer == "undefined" )
+         return false;
+      if ( typeof Thread.shareBuffer != "function" || typeof Thread.sharedBuffer != "function" )
+         return false;
+      if ( !( Thread.numberOfProcessors > 1 ) )
+         return false;
+
+      var srcSab = new SharedArrayBuffer( 4 );     // two samples
+      var dstSab = new SharedArrayBuffer( 4 );
+      var sdesc = Thread.shareBuffer( srcSab );
+      var ddesc = Thread.shareBuffer( dstSab );
+      try
+      {
+         var sv = new Uint16Array( srcSab );
+         sv[0] = 0x0102; sv[1] = 0xFFEE;
+         var t = new Thread( Psb.swapThreadSource(),
+                             { src: sdesc, dst: ddesc, begin: 0, end: 2 },
+                             { pooled: true } );
+         t.start();
+         t.wait();
+         if ( t.error.length > 0 )
+            return false;
+         var dv = new Uint8Array( dstSab );
+         Psb.parallelReady = ( dv[0] == 0x01 && dv[1] == 0x02
+                            && dv[2] == 0xFF && dv[3] == 0xEE );
+      }
+      finally
+      {
+         Thread.releaseBuffer( sdesc );
+         Thread.releaseBuffer( ddesc );
+      }
+   }
+   catch ( e )
+   {
+      Psb.parallelReady = false;
+   }
+   return Psb.parallelReady;
+};
+
+/*
+ * The parallel swap. Same chunks, same order, same bytes.
+ *
+ * The two buffers are allocated once per channel and reused by every chunk,
+ * and they are SharedArrayBuffers because that is the only bulk data that
+ * reaches a thread without being copied -- everything else crosses by
+ * structured clone, which would copy the chunk into every thread and back
+ * out again and cost more than the swap it is trying to speed up.
+ *
+ * The threads are pooled. A full frame is some forty channels of twenty-two
+ * chunks, so this starts many hundreds of short-lived groups, and a fresh
+ * thread runtime costs milliseconds against a warm worker's microseconds.
+ * Only the swap body runs on those workers and it touches no global
+ * scope, so nothing is left behind on a worker for whatever runs next.
+ *
+ * Each thread owns a disjoint slice of the chunk, so no synchronization is
+ * needed; the group is joined before the chunk is written, which is what
+ * keeps the file order identical to the serial path.
+ */
+Psb.writeChannelDataParallel = function( file, src, sampleCount, threads )
+{
+   var chunk = Math.min( Psb.CHUNK_SAMPLES, sampleCount );
+   var srcSab = new SharedArrayBuffer( chunk * 2 );
+   var dstSab = new SharedArrayBuffer( chunk * 2 );
+   var sdesc = Thread.shareBuffer( srcSab );
+   var ddesc = Thread.shareBuffer( dstSab );
+   var body = Psb.swapThreadSource();
+   try
+   {
+      var sv = new Uint16Array( srcSab );
+      var dv = new Uint8Array( dstSab );
+      var i = 0;
+      while ( i < sampleCount )
+      {
+         var n = Math.min( chunk, sampleCount - i );
+         sv.set( src.subarray( i, i + n ) );
+
+         var group = [];
+         var base = Math.floor( n/threads );
+         var rem = n - base*threads;
+         var begin = 0;
+         for ( var t = 0; t < threads; ++t )
+         {
+            var count = base + ( ( t < rem ) ? 1 : 0 );
+            if ( count > 0 )
+               group.push( new Thread( body,
+                                       { src: sdesc, dst: ddesc,
+                                         begin: begin, end: begin + count },
+                                       { pooled: true } ) );
+            begin += count;
+         }
+         for ( var a = 0; a < group.length; ++a )
+            group[a].start();
+
+         /*
+          * Every thread is joined before an error is raised: a script must
+          * never be left with threads still running.
+          */
+         var failure = "";
+         for ( var b = 0; b < group.length; ++b )
+         {
+            group[b].wait();
+            if ( group[b].error.length > 0 && failure.length == 0 )
+               failure = group[b].error;
+         }
+         if ( failure.length > 0 )
+            throw new Error( "Psb: parallel byte swap failed: " + failure );
+
+         /*
+          * The last chunk of a channel is usually short. It is copied out
+          * to a buffer of exactly the right length rather than handed over
+          * as a subarray of the shared one: ByteArray is a core object and
+          * how it reads a view's length is not something this writer should
+          * be betting the file format on. One extra copy, once per channel.
+          */
+         file.write( new ByteArray( ( n == chunk ) ? dv
+                                                   : new Uint8Array( dv.subarray( 0, n*2 ) ) ) );
+         i += n;
+      }
+   }
+   finally
+   {
+      Thread.releaseBuffer( sdesc );
+      Thread.releaseBuffer( ddesc );
+   }
+};
 
 Psb.writeChannelData = function( file, image, channel, sampleCount )
 {
    var src = new Uint16Array( image.pixelData( channel ) );
+
+   if ( sampleCount >= Psb.PARALLEL_MIN_SAMPLES && Psb.canSwapInParallel() )
+   {
+      Psb.writeChannelDataParallel( file, src, sampleCount,
+                                    Math.min( Thread.numberOfProcessors,
+                                              Psb.PARALLEL_MAX_THREADS ) );
+      return;
+   }
+
    var i = 0;
    while ( i < sampleCount )
    {
       var n = Math.min( Psb.CHUNK_SAMPLES, sampleCount - i );
       var out = new Uint8Array( n * 2 );
-      for ( var k = 0; k < n; ++k )
-      {
-         var v = src[i + k];
-         out[k*2]     = ( v >> 8 ) & 0xFF;
-         out[k*2 + 1] = v & 0xFF;
-      }
+      Psb.swapRange( src.subarray( i, i + n ), out, 0, n );
       file.write( new ByteArray( out ) );
       i += n;
    }
@@ -726,6 +960,15 @@ Psb.write = function( path, entries, width, height, iccProfile )
    finally
    {
       try { file.close(); } catch ( e ) {}
+      /*
+       * Give back the warm thread runtimes the swap left behind. Each is a
+       * whole V8 isolate, and Loom is a long-lived script holding several
+       * full-size images; there is no reason to keep eight of them alive
+       * between exports for the sake of a few milliseconds at the next one.
+       */
+      if ( Psb.parallelReady === true && typeof Thread != "undefined"
+        && typeof Thread.releasePool == "function" )
+         try { Thread.releasePool(); } catch ( e2 ) {}
    }
    return path;
 };

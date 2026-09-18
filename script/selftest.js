@@ -1703,6 +1703,84 @@ function runTests()
           Psb.isAdjustment( { window: {} } ), false );
 
    /*
+    * The byte swap. This is the loop the threads run, and the only part of
+    * the writer that touches pixels, so what it produces is what Photoshop
+    * reads. PSB is big-endian and this machine is not.
+    */
+   ( function()
+   {
+      var src = new Uint16Array( [ 0x0102, 0xFFEE, 0x0000, 0x8001 ] );
+      var dst = new Uint8Array( 8 );
+      Psb.swapRange( src, dst, 0, 4 );
+      check( "the swap writes samples big-endian",
+             Array.prototype.join.call( dst, "," ), "1,2,255,238,0,0,128,1" );
+
+      /*
+       * Every thread owns a half-open slice of the chunk and must write
+       * that slice and nothing else -- there is no synchronization, and a
+       * thread that ran past its end would corrupt its neighbour's bytes.
+       */
+      var partial = new Uint8Array( 8 );
+      Psb.swapRange( src, partial, 1, 3 );
+      check( "the swap touches only its own range",
+             Array.prototype.join.call( partial, "," ), "0,0,255,238,0,0,0,0" );
+
+      var empty = new Uint8Array( 4 );
+      Psb.swapRange( src, empty, 2, 2 );
+      check( "an empty range writes nothing",
+             Array.prototype.join.call( empty, "," ), "0,0,0,0" );
+   } )();
+
+   /*
+    * The thread body is generated source, not a function this file can call
+    * directly, and a thread that fails does so far away from here. It can
+    * still be exercised without any thread at all: build it with a stand-in
+    * Thread object, run it over ordinary buffers, and require that it
+    * produces exactly what the serial loop produces. That is the assertion
+    * that keeps the two paths from drifting apart -- they share one loop,
+    * and this proves the shared loop survives being pasted into a thread.
+    */
+   ( function()
+   {
+      var src = new Uint16Array( [ 0x0102, 0xFFEE, 0x1234, 0x00FF, 0xABCD ] );
+      var expected = new Uint8Array( 10 );
+      Psb.swapRange( src, expected, 0, 5 );
+
+      // the parameter shadows the global, so no core object is touched
+      var make = new Function( "Thread", "return " + Psb.swapThreadSource() + ";" );
+      var body = make( { sharedBuffer: function( x ) { return x; } } );
+
+      var dst = new Uint8Array( 10 );
+      var swapped = body( { src: src.buffer, dst: dst.buffer, begin: 0, end: 5 } );
+
+      check( "the thread body swaps exactly as the serial loop does",
+             Array.prototype.join.call( dst, "," ),
+             Array.prototype.join.call( expected, "," ) );
+      check( "the thread body reports the samples it did", swapped, 5 );
+
+      var partial = new Uint8Array( 10 );
+      body( { src: src.buffer, dst: partial.buffer, begin: 2, end: 4 } );
+      var partialExpected = new Uint8Array( 10 );
+      Psb.swapRange( src, partialExpected, 2, 4 );
+      check( "the thread body stays inside the slice it was given",
+             Array.prototype.join.call( partial, "," ),
+             Array.prototype.join.call( partialExpected, "," ) );
+   } )();
+
+   /*
+    * The fallback. Threads arrived in PixInsight 1.9.5; on anything older,
+    * and in this harness, there is no Thread object at all, and the writer
+    * has to stay serial rather than fail. Nothing about the file changes.
+    */
+   check( "the parallel swap reports a definite answer",
+          typeof Psb.canSwapInParallel(), "boolean" );
+   if ( !IN_PIXINSIGHT )
+      check( "without a Thread object the swap stays serial",
+             Psb.canSwapInParallel(), false );
+   check( "a threaded swap is only claimed where Thread exists",
+          Psb.canSwapInParallel() && typeof Thread == "undefined", false );
+
+   /*
     * Clipping. The saturation layer must affect the star plate ALONE, not
     * everything beneath it in the Stars group, which is the difference
     * between colouring the stars and colouring the whole stack.
