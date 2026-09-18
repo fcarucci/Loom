@@ -15,7 +15,25 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Most of what the suite asserts is arithmetic, cache keys, shell
+  # generation and document structure, none of which needs an image
+  # processing application. Those run here on every push. The handful that
+  # genuinely need PixInsight -- installed modules, the ImageSolver
+  # include, opening a window, constructing a dialog -- are skipped rather
+  # than faked, and still run locally against the real thing.
+  test:
+    name: Tests (no PixInsight)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run the suite under node
+        run: node ci/run-tests.js
+
   package:
+    needs: test
     name: Package the installable zip
     runs-on: ubuntu-latest
 

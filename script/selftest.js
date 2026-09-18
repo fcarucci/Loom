@@ -34,6 +34,20 @@
  */
 var LOOM_DIR = File.extractDirectory( #__FILE__ );
 
+/*
+ * Some assertions cannot run outside PixInsight: they ask whether a
+ * process module is installed, whether the ImageSolver engine an
+ * #include pulled in is in scope, or they open windows and construct
+ * dialogs. ci/run-tests.js runs everything else under node, on every
+ * push, and sets LOOM_NODE_HARNESS to say so.
+ *
+ * These are SKIPPED there, never faked. A dialog built against fake
+ * widgets proves only that the fakes agree with each other, and two real
+ * dialog breakages reached the user precisely because nothing built them
+ * for real.
+ */
+var IN_PIXINSIGHT = ( typeof LOOM_NODE_HARNESS == "undefined" );
+
 var TESTS_RUN = 0;
 var FAILURES = [];
 
@@ -182,14 +196,17 @@ function runTests()
           [ "Same file selected for R and G: /a/X.xisf" ] );
 
    // Availability checks use real process constructors
-   check( "module check finds StarAlignment",
-          Steps.moduleAvailable( "StarAlignment" ), true );
-   check( "module check finds SPFC",
-          Steps.moduleAvailable( "SpectrophotometricFluxCalibration" ), true );
-   check( "module check finds MGC",
-          Steps.moduleAvailable( "MultiscaleGradientCorrection" ), true );
-   check( "module check finds GraXpert",
-          Steps.moduleAvailable( "GraXpert" ), true );
+   if ( IN_PIXINSIGHT )
+   {
+      check( "module check finds StarAlignment",
+             Steps.moduleAvailable( "StarAlignment" ), true );
+      check( "module check finds SPFC",
+             Steps.moduleAvailable( "SpectrophotometricFluxCalibration" ), true );
+      check( "module check finds MGC",
+             Steps.moduleAvailable( "MultiscaleGradientCorrection" ), true );
+      check( "module check finds GraXpert",
+             Steps.moduleAvailable( "GraXpert" ), true );
+   }
    check( "module check rejects nonsense",
           Steps.moduleAvailable( "NotARealProcess" ), false );
 
@@ -1006,8 +1023,9 @@ function runTests()
     * If it ever fails to resolve, PixInsight discards this whole script
     * silently -- so reaching this line at all is half the assertion.
     */
-   check( "the ImageSolver engine class is in scope",
-          typeof ImageSolver, "function" );
+   if ( IN_PIXINSIGHT )
+      check( "the ImageSolver engine class is in scope",
+             typeof ImageSolver, "function" );
 
    /*
     * No source file may carry an absolute path into the PixInsight
@@ -2548,7 +2566,7 @@ function runTests()
     * row, not row 0. Writing rows 0-2 for a mono plate is a silent no-op --
     * observed on L, which came back unstretched.
     */
-   ( function()
+   if ( IN_PIXINSIGHT ) ( function()
    {
       var w = new ImageWindow( 64, 64, 1, 32, true, false,
                                Util.freeWindowId( "stretchprobe" ) );
@@ -2570,7 +2588,13 @@ function runTests()
 
    /* ---- the dialogs must actually construct ---------------------------- */
 
-   ( function()
+   /*
+    * PixInsight only, and deliberately so. The whole value of these two
+    * assertions is that the dialogs are built against the REAL widget
+    * classes -- both breakages they exist to catch were constructor
+    * errors that no amount of pure-function testing could see.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
    {
       function cfg()
       {
