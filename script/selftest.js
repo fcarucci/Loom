@@ -1858,6 +1858,123 @@ function runTests()
       check( "a half-written extraction entry is recomputed instead",
              half.ran, "extractL" );
       check( "and the recomputed result is stored once", half.stored, "kx" );
+
+      /*
+       * THE BUG THIS PINS. A chain of more than one stage whose LAST
+       * cached entry is half-written.
+       *
+       * The stages before it are skipped as superseded -- correct only if
+       * the later entry is actually usable. When it is not, the recompute
+       * ran the stage against the UNPROCESSED SOURCE rather than against
+       * the previous stage's output, and stored that wrong result in the
+       * cache under the right key, where every later run would serve it.
+       *
+       * The fix is to choose the latest COMPLETE entry as the hit, so the
+       * earlier stage is reused and the recompute chains from it.
+       */
+      function driveTwoStage( companionPresent )
+      {
+         var sawInput = [], stored = [];
+         var starsWindow = { mainView: { id: "stars" }, forceClose: function() {} };
+         var chain = [ { stage: "mgc", key: "k1", params: {}, companion: null },
+                       { stage: "extractL", key: "k2", params: {},
+                         companion: "stars" } ];
+         Cache.lookup = function( k ) { return "/cache/" + k; };
+         Cache.lookupCompanion = function( k )
+         {
+            // only the LAST stage's companion is in question
+            return ( k == "k2" && !companionPresent ) ? null : "/cache/x.stars.xisf";
+         };
+         Cache.load = function( k, id )
+         {
+            return { mainView: { id: "from_" + k }, hasAstrometricSolution: true,
+                     forceClose: function() {} };
+         };
+         Cache.loadCompanion = function( k )
+         {
+            return ( k == "k2" && !companionPresent ) ? null : starsWindow;
+         };
+         Cache.store = function( k ) { stored.push( k ); };
+         Cache.storeCompanion = function( k, n ) { stored.push( k + "." + n ); };
+         var chan = { key: "L", view: null,
+                      window: { mainView: { id: "SOURCE" },
+                                forceClose: function() {} } };
+         var runners = { mgc: function( c ) { sawInput.push( "mgc:" + c.window.mainView.id ); },
+                         extractL: function( c )
+                         {
+                            sawInput.push( "extractL:" + c.window.mainView.id );
+                         } };
+         Pipeline.processChain( chan, chain, { useCache: true },
+                                { add: function() {}, forget: function() {} },
+                                runners );
+         return { saw: sawInput.join( "," ), stored: stored.join( "," ) };
+      }
+      var twoWhole = driveTwoStage( true );
+      check( "a complete last entry means nothing runs", twoWhole.saw, "" );
+
+      var twoHalf = driveTwoStage( false );
+      check( "a half-written LAST entry recomputes only that stage",
+             twoHalf.saw.indexOf( "mgc:" ) < 0, true );
+      /*
+       * The assertion that matters: the recomputed stage must see the
+       * earlier CACHED stage's window, never the untouched source.
+       */
+      check( "and it runs against the previous stage's output, not the source",
+             twoHalf.saw, "extractL:from_k1" );
+
+      /*
+       * The same hazard by a rarer route: the entry is complete at lookup
+       * time but will not load, or loses its companion between the lookup
+       * and the load. Falling back to an EARLIER entry is always safe --
+       * an earlier stage's output is what the next stage expects as input
+       * -- whereas recomputing from the source is the bug above.
+       */
+      function driveResolve( failMode )
+      {
+         var closed = [];
+         var chain = [ { stage: "mgc", key: "k1", params: {}, companion: null },
+                       { stage: "extractL", key: "k2", params: {},
+                         companion: "stars" } ];
+         Cache.lookup = function( k ) { return "/cache/" + k; };
+         Cache.lookupCompanion = function() { return "/cache/x.stars.xisf"; };
+         Cache.load = function( k, id )
+         {
+            if ( failMode == "load" && k == "k2" )
+               return null;
+            return { mainView: { id: "from_" + k }, hasAstrometricSolution: true,
+                     forceClose: function() { closed.push( "from_" + k ); } };
+         };
+         Cache.loadCompanion = function( k )
+         {
+            if ( failMode == "companion" && k == "k2" )
+               return null;
+            return { mainView: { id: "stars" }, forceClose: function() {} };
+         };
+         Cache.store = function() {}; Cache.storeCompanion = function() {};
+         var chan = { key: "L", view: null,
+                      window: { mainView: { id: "SOURCE" },
+                                forceClose: function() {} } };
+         var saw = [];
+         var runners = { mgc: function( c ) { saw.push( "mgc:" + c.window.mainView.id ); },
+                         extractL: function( c )
+                         { saw.push( "extractL:" + c.window.mainView.id ); } };
+         Pipeline.processChain( chan, chain, { useCache: true },
+                                { add: function() {}, forget: function() {} },
+                                runners );
+         return { saw: saw.join( "," ), closed: closed.join( "," ) };
+      }
+      var wontLoad = driveResolve( "load" );
+      check( "an entry that will not load falls back to the earlier stage",
+             wontLoad.saw, "extractL:from_k1" );
+      var lostComp = driveResolve( "companion" );
+      check( "so does one that loses its companion before loading",
+             lostComp.saw, "extractL:from_k1" );
+      /*
+       * And the window opened for the rejected entry is closed rather
+       * than left behind -- these are full-size plates.
+       */
+      check( "the rejected entry's window is not leaked",
+             lostComp.closed, "from_k2" );
    }
    finally
    {

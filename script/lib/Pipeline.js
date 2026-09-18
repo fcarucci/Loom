@@ -653,6 +653,62 @@ Pipeline.buildStageKeys = function( sourceKey, params )
 };
 
 /*
+ * The stage to restart from: the LATEST entry that is complete AND
+ * actually loads, with its companion already in hand.
+ *
+ * Resolved before anything is skipped, and that ordering is the whole
+ * point. The previous version took the latest entry that merely EXISTED,
+ * skipped every stage before it as superseded, and only then discovered
+ * the entry was half-written. By that time the earlier stages had not
+ * run, so the recompute fed the stage the UNPROCESSED SOURCE instead of
+ * the previous stage's output -- and stored that wrong result in the
+ * cache under the right key, where every later run would serve it as
+ * current. A missing .stars.xisf companion was enough to trigger it.
+ *
+ * Falling back to an earlier entry is always safe: an earlier stage's
+ * output is exactly what the next stage expects as input.
+ *
+ * Returns { index, window, stars }; index -1 means run the whole chain.
+ */
+Pipeline.resolveCacheHit = function( chan, chain, lookups )
+{
+   for ( var i = chain.length - 1; i >= 0; --i )
+   {
+      var entry = chain[i];
+      if ( !lookups[i] || !Pipeline.cacheEntryComplete( entry ) )
+         continue;
+
+      var label = chan.key + " " + entry.stage;
+      var loaded = Cache.load( entry.key,
+                      Util.freeWindowId( chan.key + "_" + entry.stage ) );
+      if ( !loaded )
+      {
+         Util.warn( "cache", label + " is in the cache but would not load; " +
+                             "looking further back" );
+         continue;
+      }
+
+      if ( entry.companion == null )
+         return { index: i, window: loaded, stars: null };
+
+      var stars = Cache.loadCompanion( entry.key, entry.companion,
+                     Util.freeWindowId( chan.key + "_" + entry.companion ) );
+      if ( stars != null )
+         return { index: i, window: loaded, stars: stars };
+
+      /*
+       * The companion vanished between the lookup and the load. Drop the
+       * window we just opened rather than leaking it, and look further
+       * back -- never recompute this stage from the source.
+       */
+      try { loaded.forceClose(); } catch ( e ) {}
+      Util.warn( "cache", label + " lost its " + entry.companion +
+                          " companion; looking further back" );
+   }
+   return { index: -1, window: null, stars: null };
+};
+
+/*
  * Is a cached entry usable as a whole?
  *
  * An extraction stage's entry has two halves: the stage result under the
@@ -721,17 +777,15 @@ Pipeline.skipSupersededStage = function( chan, entry, found, hitStage, label, re
  * Returns false when the entry is present but will not load, having said
  * so; the caller then recomputes the stage.
  */
-Pipeline.reuseCachedStage = function( chan, entry, loadedStars, label, reg )
+/*
+ * Adopts an already-loaded cache entry as the channel's current window.
+ *
+ * The loading happens in Pipeline.resolveCacheHit, BEFORE any stage is
+ * skipped, because a load that fails here would leave the earlier stages
+ * already skipped and nothing to chain from.
+ */
+Pipeline.reuseCachedStage = function( chan, entry, loaded, loadedStars, label, reg )
 {
-   var loaded = Cache.load( entry.key, Util.freeWindowId( chan.key + "_" + entry.stage ) );
-   if ( !loaded )
-   {
-      if ( loadedStars != null )
-         try { loadedStars.forceClose(); } catch ( e3 ) {}
-      Util.warn( "cache", label + " cache entry present but failed to load -- recomputing" );
-      return false;
-   }
-
    if ( loadedStars != null )
    {
       reg.add( loadedStars );
@@ -816,15 +870,16 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
       return;
    }
 
-   var lookups = [], hitIndex = -1;
+   var lookups = [];
    for ( var i = 0; i < chain.length; ++i )
-   {
-      var found = config.ignoreCache ? null : Cache.lookup( chain[i].key );
-      lookups.push( found );
-      if ( found )
-         hitIndex = i;
-   }
-   var hitComplete = ( hitIndex >= 0 ) && Pipeline.cacheEntryComplete( chain[hitIndex] );
+      lookups.push( config.ignoreCache ? null : Cache.lookup( chain[i].key ) );
+
+   /*
+    * Resolved in full before the loop below skips anything: see
+    * Pipeline.resolveCacheHit for why the order matters.
+    */
+   var hit = Pipeline.resolveCacheHit( chan, chain, lookups );
+   var hitIndex = hit.index;
 
    for ( var i = 0; i < chain.length; ++i )
    {
@@ -838,21 +893,12 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
          continue;
       }
 
-      var reason = config.ignoreCache ? "cache ignored for this run" : "no entry";
+      var reason = config.ignoreCache ? "cache ignored for this run"
+                 : ( lookups[i] ? "incomplete entry" : "no entry" );
       if ( i == hitIndex )
       {
-         var loadedStars = ( hitComplete && entry.companion != null )
-                         ? Cache.loadCompanion( entry.key, entry.companion,
-                              Util.freeWindowId( chan.key + "_" + entry.companion ) )
-                         : null;
-         if ( entry.companion != null && loadedStars == null )
-         {
-            Util.warn( "cache", label + " has no " + entry.companion +
-                                " companion; recomputing" );
-            reason = "incomplete entry";
-         }
-         else if ( Pipeline.reuseCachedStage( chan, entry, loadedStars, label, reg ) )
-            continue;
+         Pipeline.reuseCachedStage( chan, entry, hit.window, hit.stars, label, reg );
+         continue;
       }
 
       Util.log( "cache", label + " MISS (" + reason + ")" );
