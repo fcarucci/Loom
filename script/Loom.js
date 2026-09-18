@@ -327,8 +327,27 @@ function main()
     * running, and there is nothing to be gained by waiting for it.
     */
    Update.SCRIPT_DIR = File.extractDirectory( #__FILE__ );
+   Update.SCRIPT_FILE = #__FILE__;
+   /*
+    * Any record left by an older asynchronous check, then the check for
+    * this launch -- which BLOCKS, because "the result is reported at the
+    * next launch" is not an answer to "is there a new version?".
+    *
+    * An update that lands cannot apply to this run: #include is resolved
+    * when the script is parsed, and that has already happened. So Loom
+    * restarts itself instead of continuing on code it has just
+    * superseded, and the dialog opens in the relaunched copy.
+    */
    Update.reportLast();
-   Update.start( config );
+   var updated = Update.checkNow( config );
+   if ( updated != null && updated.status == "updated" )
+   {
+      Util.log( "update", "restarting Loom on " + updated.to + "..." );
+      if ( Update.relaunch() )
+         return;
+      // Could not relaunch: carry on rather than leaving the user with
+      // nothing. Update.relaunch has already said so.
+   }
 
    // Deliberately NOT defaulted: an empty output folder means "keep the
    // results as open windows in the current project".

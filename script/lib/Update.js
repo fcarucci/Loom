@@ -807,14 +807,15 @@ Update.io = {
     *
     * The wait pumps the event loop, or the callback never fires.
     */
-   execute: function( program, args )
+   execute: function( program, args, deadlineMs )
    {
       var P = new ExternalProcess;
       var buf = "";
       P.onStandardOutputDataAvailable = function() { buf += String( P.stdout ); };
       P.start( program, args );
 
-      var deadline = ( new Date() ).getTime() + 5000;
+      var deadline = ( new Date() ).getTime() +
+                     ( ( deadlineMs == null ) ? 5000 : deadlineMs );
       while ( P.isStarting || P.isRunning )
       {
          CoreApplication.processEvents();
@@ -848,18 +849,32 @@ Update.io = {
  * or validate-only run. The durable trail is ~/.loom/update.log, written
  * by the helper itself.
  */
+/*
+ * Takes the outcome record, by RENAME rather than read-then-delete, so
+ * two readers cannot both claim the same one.
+ */
+Update.claimOutcome = function( io )
+{
+   io = io || Update.io;
+   var path = Update.stateDir() + "/" + Update.OUTCOME_FILE;
+   if ( !io.fileExists( path ) )
+      return null;
+   var claimed = path + ".reading";
+   io.rename( path, claimed );
+   var outcome = Update.parseOutcome( io.readText( claimed ) );
+   io.remove( claimed );
+   return outcome;
+};
+
 Update.reportLast = function( io )
 {
    io = io || Update.io;
    try
    {
-      var path = Update.stateDir() + "/" + Update.OUTCOME_FILE;
-      if ( !io.fileExists( path ) )
+      var outcome = Update.claimOutcome( io );
+      if ( outcome === null && !io.fileExists( Update.stateDir() + "/" +
+                                               Update.OUTCOME_FILE ) )
          return null;
-      var claimed = path + ".reading";
-      io.rename( path, claimed );
-      var outcome = Update.parseOutcome( io.readText( claimed ) );
-      io.remove( claimed );
       if ( outcome == null )
       {
          Util.warn( "update", "the last update left an incomplete record; " +
@@ -890,10 +905,11 @@ Update.reportLast = function( io )
 };
 
 /*
- * Decides what to spawn. Returns the kind spawned, or null, which is what
- * the selftest asserts on.
+ * Works out what to run, writes the helper, and returns the command --
+ * without running it. Returns null, having said why, when there is
+ * nothing to do.
  */
-Update.start = function( config, io )
+Update.prepareHelper = function( config, io )
 {
    io = io || Update.io;
    try
@@ -960,22 +976,98 @@ Update.start = function( config, io )
       var path = state + "/" + Update.helperFileName( platform );
       io.writeText( path, script );
       var cmd = Update.helperCommand( platform, path );
-      io.spawnDetached( cmd.program, cmd.args );
-      /*
-       * Announced when it STARTS, not when it finishes: the check runs
-       * detached and this launch never learns the outcome. Without this
-       * line a launch that checked and a launch that decided not to look
-       * were both silent, which is indistinguishable from broken.
-       */
-      Util.log( "update", "checking for a newer Loom in the background (" +
-                          dir + "); the result is reported at the next launch" );
-      return kind;
+      return { kind: kind, dir: dir, program: cmd.program, args: cmd.args };
    }
    catch ( e )
    {
       // An updater that cannot start is not a reason not to start Loom.
       Util.warn( "update", "the update check could not be started: " + e );
       return null;
+   }
+};
+
+/*
+ * How long the check may take before it is abandoned.
+ *
+ * It runs on the main thread now, so this is time the user waits at
+ * startup. Long enough for a fetch against a LAN server with the VPN in
+ * the way; short enough that an unreachable one is a pause rather than a
+ * hang.
+ */
+Update.CHECK_DEADLINE_MS = 15000;
+
+/*
+ * Checks NOW, blocking, and reports the outcome to the console.
+ *
+ * The first design ran this detached and reported at the next launch,
+ * which is correct in the narrow sense -- #include is resolved at parse
+ * time, so an update can never apply to the run that fetched it -- and
+ * useless in practice: "the result is reported at the next launch" is not
+ * an answer to "is there a new version?". So the check is synchronous,
+ * and a launch that finds one relaunches itself rather than running the
+ * code it has just superseded.
+ *
+ * Returns the outcome record, or null if nothing was checked.
+ */
+Update.checkNow = function( config, io )
+{
+   io = io || Update.io;
+   var cmd = Update.prepareHelper( config, io );
+   if ( cmd == null )
+      return null;
+
+   Util.log( "update", "checking " + cmd.dir + " for a newer Loom..." );
+   var r = io.execute( cmd.program, cmd.args, Update.CHECK_DEADLINE_MS );
+   if ( r != null && r.exitCode == -1 )
+   {
+      Util.warn( "update", "the check did not finish within " +
+                           Math.round( Update.CHECK_DEADLINE_MS / 1000 ) +
+                           "s and was abandoned; continuing on this version" );
+      return null;
+   }
+
+   var outcome = Update.claimOutcome( io );
+   if ( outcome == null )
+   {
+      Util.warn( "update", "the check left no result; continuing on this version" );
+      return null;
+   }
+   if ( Update.isFailure( outcome ) )
+      Util.warn( "update", Update.outcomeMessage( outcome ) );
+   else
+      Util.log( "update", Update.outcomeMessage( outcome ) );
+   return outcome;
+};
+
+/*
+ * Re-runs Loom in this same PixInsight instance, so the newly updated
+ * #includes are parsed afresh.
+ *
+ * The dispatch is the one PixInsight offers for handing a script to a
+ * running instance; `instance` is the slot this one occupies and
+ * `filePath` the executable. Detached, because the script that asks for
+ * it is about to end.
+ *
+ * Returns false if it could not be started, so the caller can carry on
+ * with the version in hand rather than leaving the user with nothing.
+ */
+Update.relaunch = function( io )
+{
+   io = io || Update.io;
+   try
+   {
+      if ( !Update.SCRIPT_FILE )
+         return false;
+      io.spawnDetached( CoreApplication.filePath,
+                        [ "-x=" + CoreApplication.instance + ":" +
+                          Update.SCRIPT_FILE ] );
+      return true;
+   }
+   catch ( e )
+   {
+      Util.warn( "update", "could not restart Loom automatically (" + e +
+                           "); start it again to use the new version" );
+      return false;
    }
 };
 

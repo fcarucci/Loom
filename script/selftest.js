@@ -736,24 +736,84 @@ function runTests()
           Update.installKind( "/x/Loom", fakeIo( [], [] ) ), "unknown" );
 
    Update.SCRIPT_DIR = "/x/Loom";
-   check( "autoUpdate off spawns nothing",
-          Update.start( { autoUpdate: false },
-             fakeIo( [], [ "/x/Loom/.git" ], GOOD_GIT ) ), null );
-   check( "a checkout with a working git spawns the git updater",
-          Update.start( { autoUpdate: true },
-             fakeIo( [ "/opt/homebrew/bin/git" ], [ "/x/Loom/.git" ], GOOD_GIT ) ),
+   function kindOf( r ) { return ( r == null ) ? null : r.kind; }
+   check( "autoUpdate off prepares nothing",
+          kindOf( Update.prepareHelper( { autoUpdate: false },
+             fakeIo( [], [ "/x/Loom/.git" ], GOOD_GIT ) ) ), null );
+   check( "a checkout with a working git prepares the git updater",
+          kindOf( Update.prepareHelper( { autoUpdate: true },
+             fakeIo( [ "/opt/homebrew/bin/git" ], [ "/x/Loom/.git" ], GOOD_GIT ) ) ),
           "git" );
    /*
-    * A checkout whose git is unusable spawns NOTHING. It must not fall
+    * A checkout whose git is unusable prepares NOTHING. It must not fall
     * through to the zip path: that swaps a directory into place, which
     * over a working tree leaves a repository permanently dirty and
     * refused by every later --ff-only.
     */
-   check( "a checkout with no usable git spawns nothing at all",
-          Update.start( { autoUpdate: true },
-             fakeIo( [], [ "/x/Loom/.git" ], GOOD_GIT ) ), null );
-   check( "an unknown directory spawns nothing",
-          Update.start( { autoUpdate: true }, fakeIo( [], [], GOOD_GIT ) ), null );
+   check( "a checkout with no usable git prepares nothing at all",
+          kindOf( Update.prepareHelper( { autoUpdate: true },
+             fakeIo( [], [ "/x/Loom/.git" ], GOOD_GIT ) ) ), null );
+   check( "an unknown directory prepares nothing",
+          kindOf( Update.prepareHelper( { autoUpdate: true },
+             fakeIo( [], [], GOOD_GIT ) ) ), null );
+
+   /*
+    * The check BLOCKS and reports now. Reporting at the next launch was
+    * the first design and it was no use: it cannot answer "is there a new
+    * version?", which is the only question being asked.
+    */
+   function checkIo( record )
+   {
+      var io = fakeIo( [ "/opt/homebrew/bin/git" ], [ "/x/Loom/.git" ], GOOD_GIT );
+      io.ran = [];
+      io.execute = function( program, args, deadline )
+      {
+         if ( args && args.length && String( args[0] ).indexOf( "--version" ) >= 0 )
+            return GOOD_GIT;
+         io.ran.push( program + " deadline=" + deadline );
+         return { exitCode: 0, output: "" };
+      };
+      io.fileExists = function( p )
+      {
+         if ( p.indexOf( Update.OUTCOME_FILE ) >= 0 )
+            return record != null;
+         return [ "/opt/homebrew/bin/git", "/x/Loom/.git" ].indexOf( p ) >= 0;
+      };
+      io.readText = function() { return record; };
+      return io;
+   }
+   var okIo = checkIo( Update.formatOutcome( { status: "updated", exitCode: 0,
+                          from: "aaaaaaa", to: "bbbbbbb", when: "-", message: "" } ) );
+   var res = Update.checkNow( { autoUpdate: true }, okIo );
+   check( "the check runs the helper itself rather than detaching it",
+          okIo.ran.length, 1 );
+   check( "...under a deadline, so an unreachable server is a pause not a hang",
+          okIo.ran[0].indexOf( "deadline=" + Update.CHECK_DEADLINE_MS ) > 0, true );
+   check( "...and returns the outcome to the caller", res.status, "updated" );
+   check( "...naming the commit to restart on", res.to, "bbbbbbb" );
+   /*
+    * A check that leaves no record must not read as success: the caller
+    * would restart Loom for nothing.
+    */
+   check( "a check that leaves no record returns nothing",
+          Update.checkNow( { autoUpdate: true }, checkIo( null ) ), null );
+
+   /*
+    * The relaunch hands the script back to THIS PixInsight instance, so
+    * the updated #includes are parsed afresh.
+    */
+   var relaunchIo = fakeIo( [], [] );
+   var savedFile = Update.SCRIPT_FILE;
+   Update.SCRIPT_FILE = "/x/Loom/script/Loom.js";
+   check( "a relaunch is dispatched to this instance",
+          Update.relaunch( relaunchIo ) && relaunchIo.spawned.length == 1, true );
+   check( "...with the -x form that re-runs a script in a live instance",
+          relaunchIo.spawned[0].indexOf( "-x=" ) >= 0 &&
+          relaunchIo.spawned[0].indexOf( "/x/Loom/script/Loom.js" ) >= 0, true );
+   Update.SCRIPT_FILE = "";
+   check( "with no script path there is nothing to relaunch",
+          Update.relaunch( fakeIo( [], [] ) ), false );
+   Update.SCRIPT_FILE = savedFile;
 
    /*
     * Each guard in the generated script earned its place by being wrong in
@@ -1209,15 +1269,16 @@ function runTests()
    Update.SCRIPT_DIR = "C:/Users/x/Loom";
    var winIo = windowsIo( [ "C:/Program Files/Git/cmd/git.exe" ],
                           [ "C:/Users/x/Loom/.git" ], GOOD_GIT );
-   check( "a Windows checkout spawns the git updater",
-          Update.start( { autoUpdate: true }, winIo ), "git" );
+   var winCmd = Update.prepareHelper( { autoUpdate: true }, winIo );
+   check( "a Windows checkout prepares the git updater",
+          winCmd == null ? null : winCmd.kind, "git" );
    check( "...as a PowerShell process",
-          winIo.spawned.length == 1 &&
-          winIo.spawned[0].indexOf( "powershell.exe" ) == 0, true );
+          winCmd.program.indexOf( "powershell.exe" ) == 0, true );
    check( "...running a .ps1",
-          winIo.spawned[0].indexOf( "update-run.ps1" ) >= 0, true );
+          winCmd.args.join( " " ).indexOf( "update-run.ps1" ) >= 0, true );
    check( "...and nothing anywhere runs /bin/sh",
-          winIo.spawned[0].indexOf( "/bin/sh" ) < 0, true );
+          ( winCmd.program + " " + winCmd.args.join( " " ) ).indexOf( "/bin/sh" ) < 0,
+          true );
    var psWritten = winIo.written[ Update.stateDir() + "/update-run.ps1" ];
    check( "the helper written is the PowerShell one, not the shell one",
           psWritten != null && psWritten.indexOf( "$ErrorActionPreference" ) >= 0 &&
