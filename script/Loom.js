@@ -24,9 +24,6 @@
 
 #define SETTINGS_KEY "Loom/"
 
-// Update test marker, 2026-09-18. Harmless; remove whenever.
-#define UPDATE_TEST_MARKER "2026-09-18b"
-
 function defaultConfig()
 {
    return {

@@ -101,15 +101,19 @@ made those tools silently disappear from the dropdowns until Loom kept its own
 record.
 
 **It keeps itself current.** With **Update Loom automatically** ticked, each
-launch spawns a background `git` update and opens the dialog immediately —
-nothing is waited on. PJSR resolves `#include` when the script is parsed, so an
-update could never apply to the run that fetched it; the new version is used the
-*next* time you start Loom.
+launch checks for a newer Loom before the dialog opens and says what it found.
+If there is one it is fast-forwarded and **Loom restarts itself** — PJSR
+resolves `#include` when the script is parsed, so an update cannot apply to the
+run that fetched it, and the dialog opens from the updated copy instead.
+
+The check is quick — a few hundred milliseconds against a local server — and
+gives up after fifteen seconds, so an unreachable one is a pause rather than a
+hang.
 
 A checkout with local changes is never touched, a diverged branch is refused
-rather than merged, and a failed update is reported in the Process Console at
-the following launch. What each attempt did is recorded in
-`<cache>/update/update.log`, beside the run logs and safe from **Clear
+rather than merged, and anything that goes wrong is named in the Process
+Console rather than passed over in silence. What each attempt did is recorded
+in `<cache>/update/update.log`, beside the run logs and safe from **Clear
 cache**. The version and commit are in the dialog's title bar —
 `Loom 0.1 (a4c1f2e)` — because many commits share one version number.
 
