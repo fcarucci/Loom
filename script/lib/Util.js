@@ -14,6 +14,15 @@ var Util = {};
  * Two or three numeric components; Update.compareVersions treats a missing
  * patch as zero, so "0.1" and "0.1.0" are the same version.
  *
+ * Bumped to the NEXT version as soon as one is tagged, so the tip is
+ * never mistaken for the release behind it. A build from here reports
+ * 0.1.1 while v0.1.0 is the last thing published, which is the honest
+ * answer: it is not 0.1.0, it is whatever is on the way to 0.1.1.
+ *
+ * Releasing is: set this to the version being released, commit, tag
+ * `v<version>`, push the tag -- CI builds and publishes it -- then bump
+ * to the next patch.
+ *
  * This alone does NOT identify the running code: the updater installs
  * whatever is on the branch, and many commits share one version. What is
  * shown to the user is this plus the short commit read from .git -- see

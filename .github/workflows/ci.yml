@@ -37,6 +37,13 @@ jobs:
     name: Package the installable zip
     runs-on: ubuntu-latest
 
+    # The workflow token is read-only by default, so publishing a release
+    # fails with "Resource not accessible by integration" -- a 403 that
+    # reads like a missing secret rather than a missing permission. The
+    # packaging job needs to write exactly one thing: releases.
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
