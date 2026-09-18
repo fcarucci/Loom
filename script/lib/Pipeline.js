@@ -1057,6 +1057,13 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
 
 Pipeline.run = function( config )
 {
+   /*
+    * Re-checked here and not only at startup: the box can be ticked again
+    * in the dialog, and the drive can be unmounted between opening the
+    * dialog and pressing Run.
+    */
+   Cache.disableIfDirMissing( config );
+
    var reg = new Util.Registry;
 
    /*

@@ -1332,6 +1332,50 @@ function runTests()
             } )(), true );
 
    /*
+    * A cache folder that is not there disables the cache rather than
+    * being created.
+    *
+    * Cache.ensureDir creates intermediate directories, so with the cache
+    * on an external volume an unmounted drive would have Loom build a
+    * decoy cache on the boot disk, fill it with the tens of gigabytes a
+    * few runs produce, and then ignore the real one when the drive came
+    * back.
+    */
+   var savedOverride = Cache.overrideDir;
+   try
+   {
+      Cache.setDir( "/nonexistent/volume/Loom-cache" );
+      check( "a chosen folder that is absent is reported missing",
+             Cache.selectedDirMissing(), true );
+      var cfg = { useCache: true };
+      check( "and the cache is turned off", Cache.disableIfDirMissing( cfg ), true );
+      check( "...with useCache actually false", cfg.useCache, false );
+      /*
+       * Once off, it must not keep announcing itself on every re-check.
+       */
+      check( "a second call has nothing left to disable",
+             Cache.disableIfDirMissing( cfg ), false );
+
+      Cache.setDir( "" );
+      check( "the default temp folder is never treated as missing",
+             Cache.selectedDirMissing(), false );
+      var dflt = { useCache: true };
+      check( "...so the cache stays on",
+             Cache.disableIfDirMissing( dflt ) == false && dflt.useCache == true, true );
+
+      Cache.setDir( LOOM_DIR );      // a folder that certainly exists
+      check( "an existing chosen folder is not missing",
+             Cache.selectedDirMissing(), false );
+      /*
+       * A run with the cache already off must not be "re-disabled": the
+       * caller uses the return value to decide whether to say anything.
+       */
+      check( "a cache already off reports no change",
+             Cache.disableIfDirMissing( { useCache: false } ), false );
+   }
+   finally { Cache.setDir( savedOverride ); }
+
+   /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own
     * band edges -- not adjustments -- and the dropdown shows the wrong
     * bands if they are left at zero.

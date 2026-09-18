@@ -220,6 +220,22 @@ function loadConfig()
     */
    Cache.setDir( config.cacheDir );
 
+   /*
+    * A chosen cache folder that is not there disables the cache for this
+    * launch, rather than being created.
+    *
+    * The folder lives on an external volume, and an unmounted volume is
+    * indistinguishable from a missing folder. Creating it would put a
+    * decoy cache on the boot disk, fill it with tens of gigabytes, and
+    * leave the real one -- with all its entries -- ignored the next time
+    * the drive appeared. Running uncached is slower; that is the cheaper
+    * mistake by a wide margin.
+    *
+    * Not persisted: the setting still names the folder, so plugging the
+    * drive back in and relaunching restores the cache with no clicking.
+    */
+   Cache.disableIfDirMissing( config );
+
    return config;
 }
 

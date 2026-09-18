@@ -43,6 +43,44 @@ Cache.setDir = function( path )
    Cache.overrideDir = ( path == null ) ? "" : String( path ).trim();
 };
 
+/*
+ * Is the folder the user CHOSE actually there?
+ *
+ * Only a chosen folder can be missing in a way worth acting on. An empty
+ * setting means the system temp directory, which always exists and is
+ * created on demand if it does not.
+ *
+ * This matters because Cache.ensureDir creates intermediate directories.
+ * With the cache on an external volume -- /Volumes/A008 here -- an
+ * unmounted drive would otherwise have Loom CREATE that path on the boot
+ * disk and quietly fill it with the tens of gigabytes a few runs produce,
+ * in a folder the user would never think to look in.
+ */
+Cache.selectedDirMissing = function()
+{
+   return Cache.overrideDir.length > 0 &&
+          !File.directoryExists( Cache.overrideDir );
+};
+
+/*
+ * Turns the cache off when its folder is missing, and says so once.
+ *
+ * Called at startup AND at the top of a run: the dialog lets the box be
+ * ticked again, and the drive can be unmounted between opening the dialog
+ * and pressing Run. Returns true when it disabled something, so the
+ * caller can tell "already off" from "just turned off".
+ */
+Cache.disableIfDirMissing = function( config )
+{
+   if ( !config || !config.useCache || !Cache.selectedDirMissing() )
+      return false;
+   config.useCache = false;
+   Util.warn( "cache", "the cache folder is not there (" + Cache.overrideDir +
+                       "); running without the cache. If that is an external " +
+                       "drive, mount it and start Loom again." );
+   return true;
+};
+
 Cache.dir = function()
 {
    return ( Cache.overrideDir.length > 0 ) ? Cache.overrideDir
