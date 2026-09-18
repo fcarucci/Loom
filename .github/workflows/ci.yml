@@ -79,3 +79,21 @@ jobs:
           name: Loom-${{ steps.version.outputs.version }}
           path: dist/*.zip
           if-no-files-found: error
+
+      # A tag publishes the archive as a release asset. This is the only
+      # place a release is ever built: tagging is the whole procedure, so
+      # a maintenance release cannot accidentally ship a zip someone made
+      # by hand from a tree that was not the tagged one.
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            Install: unzip into your PixInsight scripts folder, so that you
+            have `<scripts>/Loom`, then **Script → Feature Scripts → Add**
+            and point it at that folder.
+
+            The archive carries a `RELEASE` marker, which is what lets Loom
+            recognise the install as its own and update it in place.

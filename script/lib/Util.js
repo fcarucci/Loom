@@ -19,7 +19,7 @@ var Util = {};
  * shown to the user is this plus the short commit read from .git -- see
  * Update.describeVersion.
  */
-Util.LOOM_VERSION = "0.1";
+Util.LOOM_VERSION = "0.1.0";
 
 /* ------------------------------------------------------------------ */
 /* Which operating system this is                                      */
