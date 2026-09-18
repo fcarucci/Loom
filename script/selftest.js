@@ -210,6 +210,14 @@ function runTests()
    check( "module check rejects nonsense",
           Steps.moduleAvailable( "NotARealProcess" ), false );
 
+   /*
+    * lookupFilterCurve reads the real filters.xspd out of the PixInsight
+    * installation, so it can only run where there is one. It passed under
+    * node on the author's Mac and failed on a CI runner, which is the
+    * whole argument for running the suite somewhere PixInsight is absent.
+    */
+   if ( IN_PIXINSIGHT )
+   {
    // lookupFilterCurve against the real filters.xspd library, per the
    // exact-then-length-gated-substring rule in Steps.lookupFilterCurve.
    var exact = Steps.lookupFilterCurve( "Antlia ALP-T" );
@@ -227,6 +235,7 @@ function runTests()
 
    check( "lookupFilterCurve absent name is no-match",
           Steps.lookupFilterCurve( "Definitely Not A Real Filter Name" ), null );
+   }
 
    // channelFromFilter: the owner's masters carry bare single letters
    check( "channelFromFilter L", Util.channelFromFilter( "L" ), "L" );
@@ -1007,15 +1016,24 @@ function runTests()
    check( "the spectrum database is where the core says it is",
           Steps.FILTERS_XSPD_PATH,
           CoreApplication.baseDirPath + "/library/filters.xspd" );
-   check( "...and it is really there", File.exists( Steps.FILTERS_XSPD_PATH ), true );
    check( "the bundled scripts are where the core says they are",
           Steps.PI_SRC_SCRIPTS_DIR, CoreApplication.srcDirPath + "/scripts" );
-   check( "...and the ImageSolver engine is really there",
-          File.exists( Steps.IMAGE_SOLVER_ENGINE_PATH ), true );
    check( "the core settings directory is the core's own",
           Steps.CORE_SETTINGS_DIR, CoreApplication.configDirPath );
-   check( "...and it is really there",
-          File.directoryExists( Steps.CORE_SETTINGS_DIR ), true );
+   /*
+    * The paths above are derived from the core's own properties and can
+    * be checked anywhere. Whether the FILES are there describes the
+    * installation, so it is asked only where there is one.
+    */
+   if ( IN_PIXINSIGHT )
+   {
+      check( "the spectrum database is really there",
+             File.exists( Steps.FILTERS_XSPD_PATH ), true );
+      check( "the ImageSolver engine is really there",
+             File.exists( Steps.IMAGE_SOLVER_ENGINE_PATH ), true );
+      check( "the core settings directory is really there",
+             File.directoryExists( Steps.CORE_SETTINGS_DIR ), true );
+   }
    /*
     * The include that cannot take a runtime path. It is written
     * <../src/scripts/...>, relative to the core's include directory, so it

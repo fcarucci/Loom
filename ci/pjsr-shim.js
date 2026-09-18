@@ -110,13 +110,24 @@ global.format = function ( spec )
 
 /* ---- Application ----------------------------------------------------- */
 
+/*
+ * The install paths deliberately point at a directory that does not
+ * exist, EVEN ON A MACHINE WITH PIXINSIGHT INSTALLED.
+ *
+ * Otherwise a run here is not a rehearsal of a run on a CI machine: tests
+ * that read filters.xspd out of the real installation passed locally and
+ * failed on the runner, which is a slow and confusing way to discover
+ * that the local run was never representative.
+ */
+const NO_INSTALL = "/nonexistent/PixInsight";
+
 global.CoreApplication = {
    instance: 1,
-   filePath: "/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight",
-   baseDirPath: "/Applications/PixInsight",
-   srcDirPath: "/Applications/PixInsight/src",
-   libDirPath: "/Applications/PixInsight/lib",
-   configDirPath: "/Applications/PixInsight/etc",
+   filePath: NO_INSTALL + "/PixInsight",
+   baseDirPath: NO_INSTALL,
+   srcDirPath: NO_INSTALL + "/src",
+   libDirPath: NO_INSTALL + "/lib",
+   configDirPath: NO_INSTALL + "/etc",
    platform: "macos",
    processEvents: quiet
 };
