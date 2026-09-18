@@ -1406,6 +1406,29 @@ Steps.matchBackgroundOffset = function( views, refView )
 
 Steps.NR_TOOL_NXT   = "NoiseXTerminator";
 Steps.NR_TOOL_PRISM = "SyQon Prism";
+Steps.NR_TOOL_MLDENOISE = "MLDenoise";
+
+/*
+ * WHERE a denoiser runs is the tool's property, not the user's choice.
+ *
+ * NoiseXTerminator and MLDenoise want LINEAR data. RC Astro's guidance for
+ * NXT is to apply it after colour calibration and after deconvolution but
+ * before the stretch, so the noise is reduced before the stretch amplifies
+ * it; NXT tolerates stretched data because it internally stretches and
+ * reverses, but tolerating is not the recommendation. MLDenoise's authors
+ * say the same more firmly: "color calibrated linear deep sky images".
+ *
+ * SyQon Prism is the opposite: it is a post-stretch tool, which is why
+ * Steps.prismMtfTarget exists at all -- that target is only meaningful on
+ * data that has been stretched.
+ *
+ * So the dropdown offers a tool and Loom puts it where it belongs. Order is
+ * the part that is easy to get wrong, and it is not configurable here.
+ */
+Steps.denoiseIsLinear = function( tool )
+{
+   return tool == Steps.NR_TOOL_NXT || tool == Steps.NR_TOOL_MLDENOISE;
+};
 
 Steps.prismConfigPath = function()
 {
@@ -1418,10 +1441,71 @@ Steps.prismExecutable = function()
    return Steps.findExecutable( "prism_cli", Steps.prismConfigPath() );
 };
 
+/*
+ * MLDenoise ships WITHOUT a model, and a fresh instance starts with an
+ * empty modelPath. Executing it then fails outright:
+ *
+ *    No model path specified. Please select a neural network model file.
+ *
+ * -- observed on 1.9.5 build 1702, which is why "the module is
+ * registered" is not the same question as "the tool can run". The model
+ * has to be found here; trusting the process default gets a run most of
+ * the way through and then throws.
+ *
+ * Searched in the install's library/ (where PixInsight keeps the other
+ * downloaded models) and in the user's own PixInsight folder, which is
+ * where a model dropped in by hand tends to land.
+ */
+Steps.mlDenoiseModelDirs = function()
+{
+   return [ Steps.PI_BASE_DIR + "/library",
+            File.homeDirectory + "/PixInsight/library",
+            File.homeDirectory + "/PixInsight/models" ];
+};
+
+/*
+ * A model is a .xmlm container, NOT a bare .onnx. PixInsight's Machine
+ * Learning Model Format wraps several networks and their weights in one
+ * file -- MLDenoise_v41.xmlm carries mono.onnx, rgb.onnx and a 595 MB
+ * weights.bin, and declares <Process>MLDenoise</Process> in its header.
+ *
+ * The name test matters because library/ also holds BlurXTerminator and
+ * StarXTerminator models; handing MLDenoise one of those would be a
+ * confident wrong answer rather than a missing one.
+ */
+Steps.isMLDenoiseModelName = function( name )
+{
+   return /\.xmlm$/i.test( name ) && /denoise/i.test( name );
+};
+
+Steps.mlDenoiseModelPath = function()
+{
+   var dirs = Steps.mlDenoiseModelDirs();
+   for ( var d = 0; d < dirs.length; ++d )
+   {
+      var entries = Steps.directoryEntries( dirs[d] );
+      for ( var i = 0; i < entries.length; ++i )
+         if ( Steps.isMLDenoiseModelName( entries[i] ) )
+            return dirs[d] + "/" + entries[i];
+   }
+   return null;
+};
+
 /* Which noise reduction tools this installation can actually run. */
 Steps.availableNoiseTools = function()
 {
    var out = [];
+   /*
+    * Both halves are required. The module without a model is a tool that
+    * offers itself in the dialog and then fails mid-run, which is the one
+    * outcome worth spending a directory scan to avoid.
+    */
+   try
+   {
+      if ( Steps.moduleAvailable( "MLDenoise" ) && Steps.mlDenoiseModelPath() != null )
+         out.push( Steps.NR_TOOL_MLDENOISE );
+   }
+   catch ( eM ) {}
    try { if ( Steps.moduleAvailable( "NoiseXTerminator" ) ) out.push( Steps.NR_TOOL_NXT ); }
    catch ( e ) {}
    if ( File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Prism.js" ) &&
@@ -1435,9 +1519,9 @@ Steps.availableNoiseTools = function()
  * a person -- or a language model -- can state as intent.
  *
  * NXT defaults are denoise 0.90 / detail 0.15; Prism's is strength 0.85.
- * "High" sits at each tool's own default, with the lower levels backing off,
- * so High means "what the tool author considered normal" rather than a
- * number invented here.
+ * "Medium" sits at each tool's own default, with Low backing off and High
+ * pushing past it, so Medium means "what the tool author considered normal"
+ * rather than a number invented here.
  */
 Steps.NOISE_LEVELS = {
    // MEDIUM IS EACH TOOL'S OWN DEFAULT, read from the tool, not chosen here:
@@ -1448,7 +1532,35 @@ Steps.NOISE_LEVELS = {
    nxt:   { low:    { denoise: 0.70, detail: 0.25 },
             medium: { denoise: 0.90, detail: 0.15 },   // NXT default
             high:   { denoise: 0.95, detail: 0.10 } },
-   prism: { low: 0.50, medium: 0.85, high: 0.95 }      // 0.85 = Prism default
+   prism: { low: 0.50, medium: 0.85, high: 0.95 },     // 0.85 = Prism default
+   /*
+    * MLDenoise's own default is amount 0.90, so that is Medium, exactly as
+    * for the other two.
+    *
+    * Low and High are bracket values rather than measured optima, and the
+    * measurement is the reason. On a 1600x1600 crop of a 180 s Ha master
+    * (background sigma 2.368e-5), the noise MLDenoise removes is exactly
+    * proportional to `amount`:
+    *
+    *    amount   0.30   0.50   0.60   0.75   0.90   1.00
+    *    kept     .922   .881   .864   .844   .830   .824
+    *    removed  3.57   5.95   7.14   8.92  10.7   11.9   (x1e-6)
+    *
+    * -- removed/amount is 1.19e-5 at every step. `amount` is a linear
+    * blend between the original and the fully denoised result, not a
+    * strength knob with a knee, so there is no measured optimum to find;
+    * there is only how much of the denoised image you want. Low at 0.60
+    * keeps 86% of the noise, High at 1.00 keeps 82%.
+    *
+    * The mask stays OFF, also measured. It does what it claims -- it holds
+    * the denoiser off bright structure -- but on LINEAR data, which is the
+    * only place Loom runs MLDenoise, there is almost nothing bright for it
+    * to hold off: across five tiles spanning the frame's brightness range
+    * it changed removal by -0.0%, -0.1%, -0.1%, -0.7% and -2.6%, darkest
+    * to brightest. A 2.6% effect on the brightest tile is not worth
+    * departing from the tool's own default for.
+    */
+   mldenoise: { low: 0.60, medium: 0.90, high: 1.00 }  // 0.90 = MLDenoise default
 };
 
 Steps.denoise = function( view, tool, level, label, alreadyStretched )
@@ -1471,6 +1583,32 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched )
       P.detail = lv.detail;
       if ( !P.executeOn( view ) )
          throw new Error( "NoiseXTerminator failed on " + view.id );
+      return;
+   }
+
+   if ( tool == Steps.NR_TOOL_MLDENOISE )
+   {
+      var amount = Steps.NOISE_LEVELS.mldenoise[level];
+      if ( amount == null )
+         throw new Error( "Unknown noise reduction level: " + level );
+      Util.log( "denoise", view.id + ": MLDenoise " + level +
+                           " (amount " + amount + ")" );
+      var model = Steps.mlDenoiseModelPath();
+      if ( model == null )
+         throw new Error( "MLDenoise has no model: put an ONNX denoise " +
+                          "model in " + Steps.mlDenoiseModelDirs()[0] );
+      var M = new MLDenoise;
+      M.amount = amount;
+      M.modelPath = model;
+      /*
+       * Left at its default: the mask (parameters `mask`, `maskClipLow`,
+       * `maskBackground`, `maskSmoothness`) is off until it is measured.
+       * NOT `linearMask` -- no such parameter exists, and PJSR accepts an
+       * assignment to a name a process does not have without complaining,
+       * so setting it would read as "the mask changes nothing".
+       */
+      if ( !M.executeOn( view ) )
+         throw new Error( "MLDenoise failed on " + view.id );
       return;
    }
 

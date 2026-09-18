@@ -43,8 +43,8 @@ colour on the way across.
 **It is opinionated.** The steps and their order are not configurable, because
 the order is the part that is easy to get wrong and expensive to get wrong:
 aberration correction belongs on native pixels before registration; colour
-calibration belongs before sharpening; noise reduction belongs after. You
-choose which tools run and how hard, not when.
+calibration belongs before sharpening; noise reduction belongs wherever its
+tool was designed to work. You choose which tools run and how hard, not when.
 
 Results stay as open windows. Loom never writes to disk — saving is your
 decision, made once you have looked at the result.
@@ -200,7 +200,7 @@ previous session has no guaranteed meaning later.
 | **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless |
 | **Stretch** | see below | on/off |
-| **Denoise** | last, after the stretch | None, NoiseXTerminator, SyQon Prism; strength Low/Medium/High |
+| **Denoise** | where the tool belongs: NoiseXTerminator and MLDenoise on linear data, after star extraction and before the stretch; SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism; strength Low/Medium/High |
 
 ### Narrowband palette
 

@@ -587,7 +587,16 @@ UI.SelectDialog = class extends Dialog
          this.noiseCombo.currentItem = ntj + 1;
    this.noiseCombo.toolTip =
       "<p>Applied to the finished RGB and any narrowband palette, after " +
-      "colour calibration -- never to the individual channels.</p>";
+      "colour calibration -- never to the individual channels, and never " +
+      "to the stars plate.</p>" +
+      "<p><b>Where it runs is decided by the tool, not by you.</b> " +
+      "NoiseXTerminator and MLDenoise run on the <i>linear</i> starless " +
+      "plate, after star extraction and before the stretch, which is what " +
+      "their authors ask for: noise reduced before the stretch amplifies " +
+      "it. SyQon Prism runs <i>after</i> the stretch, which is the data it " +
+      "is built for.</p>" +
+      "<p><b>Strength</b> is the same ladder for all three: Medium is the " +
+      "tool\'s own default, Low backs off, High pushes past it.</p>";
    this.noiseCombo.onItemSelected = function( i )
    {
       self.config.noiseTool = ( i == 0 ) ? "none" : noiseTools[i-1];

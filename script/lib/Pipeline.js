@@ -318,9 +318,11 @@ Pipeline.readImageInfo = function( path )
 Pipeline.STAGE_ORDER = [ "solve", "spfc", "mgc", "graxpert",
                          "aberration", "register",
                          "combine", "solveRGB", "spfcRGB", "spccRGB",
-                         "sharpenRGB", "extractRGB", "stretchRGB", "denoiseRGB",
+                         "sharpenRGB", "extractRGB", "denoiseLinearRGB",
+                         "stretchRGB", "denoiseRGB",
                          "paletteCombine", "paletteSpcc", "paletteNorm",
-                         "paletteSharpen", "paletteExtract", "paletteStretch",
+                         "paletteSharpen", "paletteExtract",
+                         "paletteDenoiseLinear", "paletteStretch",
                          "paletteDenoise",
                          "extractL", "stretchL" ];
 
@@ -463,6 +465,30 @@ Pipeline.compositeDenoiseParams = function( config )
    // params carry theirs -- see Steps.noiseAmountFor.
    return { tool: tool, level: level, stretched: !!config.stretch,
             amount: Steps.noiseAmountFor( tool, level ) };
+};
+
+/*
+ * The same parameters, offered to whichever of the two slots the chosen
+ * tool belongs in -- and null to the other, so only one denoise stage is
+ * ever in the chain.
+ *
+ * NXT and MLDenoise run LINEAR, after star extraction and before the
+ * stretch: linear because that is what their authors ask for, and after
+ * extraction because the stars plate is spared the denoiser entirely.
+ * Loom extracts while still linear, so that one position satisfies both.
+ *
+ * Prism runs after the stretch, which is the data it is built for.
+ */
+Pipeline.linearDenoiseParams = function( config )
+{
+   var p = Pipeline.compositeDenoiseParams( config );
+   return ( p != null && Steps.denoiseIsLinear( p.tool ) ) ? p : null;
+};
+
+Pipeline.stretchedDenoiseParams = function( config )
+{
+   var p = Pipeline.compositeDenoiseParams( config );
+   return ( p != null && !Steps.denoiseIsLinear( p.tool ) ) ? p : null;
 };
 
 Pipeline.SKIP_CACHE = "loom-skip-cache";
@@ -1573,14 +1599,21 @@ Pipeline.run = function( config )
          if ( Pipeline.starExtractionParams( config ) != null )
             rgbParams.extractRGB = Pipeline.starExtractionParams( config );
          /*
+          * Linear noise reduction, between extraction and the stretch: the
+          * plate here is colour-calibrated, deconvolved, starless and
+          * still linear, which is exactly what NXT and MLDenoise ask for.
+          */
+         if ( Pipeline.linearDenoiseParams( config ) != null )
+            rgbParams.denoiseLinearRGB = Pipeline.linearDenoiseParams( config );
+         /*
           * The stretch acts on the STARLESS plate, after extraction. The
           * stars plate was already stretched inside the extraction stage,
           * from its own clone -- see Steps.extractStars.
           */
          if ( Pipeline.stretchParams( config, true ) != null )
             rgbParams.stretchRGB = Pipeline.stretchParams( config, true );
-         if ( Pipeline.compositeDenoiseParams( config ) != null )
-            rgbParams.denoiseRGB = Pipeline.compositeDenoiseParams( config );
+         if ( Pipeline.stretchedDenoiseParams( config ) != null )
+            rgbParams.denoiseRGB = Pipeline.stretchedDenoiseParams( config );
          var rgbChain = Pipeline.buildStageKeys( rgbSource, rgbParams );
 
          var rgbHolder = { key: "RGB", window: null, view: null };
@@ -1661,6 +1694,20 @@ Pipeline.run = function( config )
                {
                   Util.warn( "stretch", "RGB could not be stretched (" + e +
                                         "); the composite is kept linear" );
+                  return Pipeline.SKIP_CACHE;
+               }
+            },
+            denoiseLinearRGB: function( h )
+            {
+               Pipeline.checkAbort( "denoising RGB" );
+               // `false`: linear by construction here, whatever the run's
+               // stretch setting says about what happens later.
+               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+                                    "RGB linear", false ); }
+               catch ( e )
+               {
+                  Util.warn( "denoise", "RGB could not be denoised (" + e +
+                                        "); the composite is kept as it is" );
                   return Pipeline.SKIP_CACHE;
                }
             },
@@ -1761,10 +1808,13 @@ Pipeline.run = function( config )
             palParams.paletteSharpen = Pipeline.compositeSharpenParams( config );
          if ( Pipeline.starExtractionParams( config ) != null )
             palParams.paletteExtract = Pipeline.starExtractionParams( config );
+         // Linear, starless, before the stretch -- see the RGB side.
+         if ( Pipeline.linearDenoiseParams( config ) != null )
+            palParams.paletteDenoiseLinear = Pipeline.linearDenoiseParams( config );
          if ( Pipeline.stretchParams( config, true ) != null )
             palParams.paletteStretch = Pipeline.stretchParams( config, true );
-         if ( Pipeline.compositeDenoiseParams( config ) != null )
-            palParams.paletteDenoise = Pipeline.compositeDenoiseParams( config );
+         if ( Pipeline.stretchedDenoiseParams( config ) != null )
+            palParams.paletteDenoise = Pipeline.stretchedDenoiseParams( config );
 
          var palChain = Pipeline.buildStageKeys( palSource, palParams );
          var palHolder = { key: pal, window: null, view: null };
@@ -1875,6 +1925,19 @@ Pipeline.run = function( config )
                {
                   Util.warn( "stretch", pal + " could not be stretched (" + e +
                                         "); the palette is kept linear" );
+                  return Pipeline.SKIP_CACHE;
+               }
+            },
+            paletteDenoiseLinear: function( h )
+            {
+               Pipeline.checkAbort( "denoising " + pal );
+               // `false`: linear by construction at this point in the chain.
+               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+                                    pal + " linear", false ); }
+               catch ( e )
+               {
+                  Util.warn( "denoise", pal + " could not be denoised (" + e +
+                                        "); the palette is kept as it is" );
                   return Pipeline.SKIP_CACHE;
                }
             },

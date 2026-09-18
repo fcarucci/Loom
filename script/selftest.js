@@ -1534,6 +1534,143 @@ function runTests()
           Util.BANNER[4].indexOf( "/_/ /_/" ) > 0, true );
 
    /*
+    * WHERE a denoiser runs is the tool's property.
+    *
+    * NXT and MLDenoise want linear data -- RC Astro asks for NXT after
+    * colour calibration and deconvolution but before the stretch, and
+    * MLDenoise's authors ask for "color calibrated linear" outright. Prism
+    * is the opposite: Steps.prismMtfTarget only means anything on stretched
+    * data. So the dropdown chooses a tool and Loom chooses the slot.
+    */
+   check( "NoiseXTerminator is a linear-stage tool",
+          Steps.denoiseIsLinear( Steps.NR_TOOL_NXT ), true );
+   check( "so is MLDenoise",
+          Steps.denoiseIsLinear( Steps.NR_TOOL_MLDENOISE ), true );
+   check( "Prism is not -- it runs after the stretch",
+          Steps.denoiseIsLinear( Steps.NR_TOOL_PRISM ), false );
+   check( "and nothing is linear by accident",
+          Steps.denoiseIsLinear( "none" ), false );
+
+   /*
+    * The model test, not the extension test. library/ holds
+    * BlurXTerminator and StarXTerminator models beside any denoise one,
+    * and MLDenoise given the wrong network is a confident wrong answer,
+    * where no model at all is an honest refusal.
+    */
+   check( "the shipped model container is recognised",
+          Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
+   check( "case does not matter",
+          Steps.isMLDenoiseModelName( "DeNoise_v2.XMLM" ), true );
+   check( "BlurXTerminator's model is not a denoise model",
+          Steps.isMLDenoiseModelName( "BlurXTerminator.4.xmlm" ), false );
+   check( "and a bare .onnx is not the container MLDenoise wants",
+          Steps.isMLDenoiseModelName( "denoise.onnx" ), false );
+   check( "nor is a denoise-named file that is not a model at all",
+          Steps.isMLDenoiseModelName( "denoise-notes.txt" ), false );
+   check( "the install's library is searched first",
+          Steps.mlDenoiseModelDirs()[0], Steps.PI_BASE_DIR + "/library" );
+
+   /*
+    * Exactly ONE denoise stage is ever in a chain. Two would denoise twice;
+    * none would silently drop the step the user asked for.
+    */
+   function denoiseSlots( tool )
+   {
+      var cfg = { noiseTool: tool, noiseLevel: "medium", stretch: true };
+      return ( Pipeline.linearDenoiseParams( cfg ) != null ? "linear" : "" ) +
+             ( Pipeline.stretchedDenoiseParams( cfg ) != null ? "stretched" : "" );
+   }
+   check( "NXT occupies the linear slot only",
+          denoiseSlots( Steps.NR_TOOL_NXT ), "linear" );
+   check( "MLDenoise occupies the linear slot only",
+          denoiseSlots( Steps.NR_TOOL_MLDENOISE ), "linear" );
+   check( "Prism occupies the post-stretch slot only",
+          denoiseSlots( Steps.NR_TOOL_PRISM ), "stretched" );
+   check( "with no tool, neither slot is filled",
+          denoiseSlots( "none" ), "" );
+
+   /*
+    * The order within the chain is the whole point: the linear denoise must
+    * sit AFTER extraction -- so the stars plate is never denoised -- and
+    * BEFORE the stretch.
+    */
+   function rgbStageOrder( tool )
+   {
+      var params = {
+         combine: {}, spccRGB: {},
+         sharpenRGB: { tool: "BlurXTerminator", stars: "low" },
+         extractRGB: { tool: "StarXTerminator" }
+      };
+      var cfg = { noiseTool: tool, noiseLevel: "medium", stretch: true };
+      if ( Pipeline.linearDenoiseParams( cfg ) != null )
+         params.denoiseLinearRGB = Pipeline.linearDenoiseParams( cfg );
+      params.stretchRGB = { target: 0.25, linked: true };
+      if ( Pipeline.stretchedDenoiseParams( cfg ) != null )
+         params.denoiseRGB = Pipeline.stretchedDenoiseParams( cfg );
+      var chain = Pipeline.buildStageKeys( "src", params );
+      var names = [];
+      for ( var i = 0; i < chain.length; ++i )
+         names.push( chain[i].stage );
+      return names.join( "," );
+   }
+   check( "NXT lands between extraction and the stretch",
+          rgbStageOrder( Steps.NR_TOOL_NXT ),
+          "combine,spccRGB,sharpenRGB,extractRGB,denoiseLinearRGB,stretchRGB" );
+   check( "MLDenoise lands in the same place",
+          rgbStageOrder( Steps.NR_TOOL_MLDENOISE ),
+          "combine,spccRGB,sharpenRGB,extractRGB,denoiseLinearRGB,stretchRGB" );
+   check( "Prism stays after the stretch",
+          rgbStageOrder( Steps.NR_TOOL_PRISM ),
+          "combine,spccRGB,sharpenRGB,extractRGB,stretchRGB,denoiseRGB" );
+
+   /*
+    * Medium is the tool's own default for every tool, so "Medium" means
+    * "what its author considered normal" rather than a number invented in
+    * this script.
+    */
+   check( "MLDenoise Medium is the module's own default amount",
+          Steps.NOISE_LEVELS.mldenoise.medium, 0.90 );
+   check( "...with Low and High bracketing it",
+          Steps.NOISE_LEVELS.mldenoise.low < Steps.NOISE_LEVELS.mldenoise.medium &&
+          Steps.NOISE_LEVELS.mldenoise.high > Steps.NOISE_LEVELS.mldenoise.medium,
+          true );
+   /*
+    * The header comment above NOISE_LEVELS said for a long time that "High"
+    * sat at each tool's own default while the table and the rest of the same
+    * comment said Medium did. Medium is correct. The prose is asserted
+    * because a comment that contradicts the code it introduces is how the
+    * wrong level gets chosen by the next reader.
+    */
+   var noiseSrc = File.readTextFile( LOOM_DIR + "/lib/Steps.js" );
+   check( "no comment claims High is the tools' own default",
+          noiseSrc.indexOf( "\"High\" sits at each tool's own default" ), -1 );
+   check( "the ladder's header says Medium does",
+          noiseSrc.indexOf( "\"Medium\" sits at each tool's own default" ) >= 0,
+          true );
+
+   /*
+    * The README's Process table is user-facing documentation of WHERE the
+    * denoise runs, and that moved: it is no longer unconditionally after the
+    * stretch. Documentation drift is invisible until a user follows it, so
+    * the claim is asserted rather than trusted.
+    */
+   var readmeSrc = File.readTextFile( LOOM_DIR + "/../README.md" );
+   check( "the README no longer calls denoise last, after the stretch",
+          readmeSrc.indexOf( "last, after the stretch" ), -1 );
+   check( "the README offers MLDenoise alongside the other two",
+          readmeSrc.indexOf( "MLDenoise" ) >= 0, true );
+
+   /*
+    * Moving a stage changes its cache key, so old entries cannot be served
+    * as if they described the new placement.
+    */
+   check( "the linear and post-stretch stages are different cache stages",
+          Pipeline.buildStageKeys( "s",
+             { denoiseLinearRGB: { tool: "x", level: "medium" } } )[0].key !=
+          Pipeline.buildStageKeys( "s",
+             { denoiseRGB: { tool: "x", level: "medium" } } )[0].key, true );
+
+   /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own
     * band edges -- not adjustments -- and the dropdown shows the wrong
     * bands if they are left at zero.
@@ -1745,9 +1882,11 @@ function runTests()
           [ "solve", "spfc", "mgc", "graxpert",
             "aberration", "register",
             "combine", "solveRGB", "spfcRGB", "spccRGB",
-            "sharpenRGB", "extractRGB", "stretchRGB", "denoiseRGB",
+            "sharpenRGB", "extractRGB", "denoiseLinearRGB",
+            "stretchRGB", "denoiseRGB",
             "paletteCombine", "paletteSpcc", "paletteNorm",
-            "paletteSharpen", "paletteExtract", "paletteStretch",
+            "paletteSharpen", "paletteExtract",
+            "paletteDenoiseLinear", "paletteStretch",
             "paletteDenoise",
             "extractL", "stretchL" ] );
 

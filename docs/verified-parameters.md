@@ -929,3 +929,87 @@ running MGC with `useMARSDatabase = false` would produce a different
 (non-MARS-referenced) gradient correction than the design intends — that
 would be exactly the "runs cleanly, silently wrong" failure mode this task
 exists to prevent.
+
+---
+
+## MLDenoise (MachineLearning module, PixInsight 1.9.5 build 1702)
+
+Verified on 2026-09-18 against the running instance, on a 1600×1600 crop
+of `masterLight … FILTER-H … drizzle_2x` (background σ 2.368e-5, SNR 9.9).
+
+### Where the process comes from
+
+MLDenoise is **not** a module of its own in 1.9.5. It ships inside
+`bin/MachineLearning-pxm.dylib`. The standalone `MLDenoise-pxm.dylib` was
+the 1.9.4 macOS-ARM64 technology preview and is superseded; an install
+that still carries it is carrying a duplicate against an older ONNX
+runtime.
+
+### The parameter names, read from a live instance
+
+```
+amount 0.8999999761581421   backend 0        useCache true
+overlapPercent 25           modelPath ""     mask false
+maskClipLow 0               maskBackground 0.25
+maskSmoothness 2            maskPreview false   noisePreview false
+```
+
+There is **no `linearMask`**, and no `linearMaskAmpFactor`,
+`linearMaskInverted` or `linearMaskSmoothness`. Because PJSR accepts
+assignment to a property a process does not have without complaining, a
+measurement written against those names would have reported "the mask
+changes nothing" with complete confidence.
+
+### A model is mandatory
+
+`new MLDenoise` starts with `modelPath = ""`, and executing it then fails:
+
+> MLDenoise: Cannot execute instance on view: … Reason: No model path
+> specified. Please select a neural network model file.
+
+No model ships with PixInsight. Models are distributed as separate
+database files through the PixInsight Software Distribution System
+(**Resources → Updates**, the `update-dat.auth` Databases repository).
+So "the module is registered" does not imply "the tool can run", and
+`Steps.availableNoiseTools` requires both.
+
+The model is a `.xmlm` container, not a bare `.onnx`. `MLDenoise_v41.xmlm`
+(595 MB) declares `<Process>MLDenoise</Process>` and holds `mono.onnx`,
+`rgb.onnx` and `weights.bin`.
+
+### `amount` is a linear blend, not a strength knob
+
+| amount | 0.30 | 0.50 | 0.60 | 0.75 | 0.90 | 1.00 |
+|---|---|---|---|---|---|---|
+| noise kept (σ/σ₀) | 0.922 | 0.881 | 0.864 | 0.844 | 0.830 | 0.824 |
+| noise removed (×1e-6) | 3.57 | 5.95 | 7.14 | 8.92 | 10.7 | 11.9 |
+
+`removed / amount` is 1.19e-5 at every step, and the structure-selectivity
+ratio (signal-ROI removal over background-ROI removal, each normalised by
+that ROI's own original noise, so shot noise does not confound it) is a
+flat **0.18** across the whole ladder. There is no knee and no point at
+which it starts eating structure; there is only how much of the denoised
+image is blended in.
+
+### The mask is real but nearly inert on linear data
+
+At `amount 0.90`, removal normalised by each tile's original σ, five tiles
+spanning the frame's brightness range, darkest first:
+
+| tile median | 1.093e-3 | 1.154e-3 | 1.173e-3 | 1.208e-3 | 1.290e-3 |
+|---|---|---|---|---|---|
+| change with `mask = true` | −0.0% | −0.1% | −0.1% | −0.7% | −2.6% |
+
+The direction confirms the documented behaviour — it holds the denoiser
+off bright structure, and the effect grows with brightness — but on linear
+data there is almost nothing bright for it to act on. Left at the tool's
+default of `false`.
+
+### Crop raises a modal dialog in a dispatched script
+
+`Crop` on a plate-solved image warns that the astrometric solution will be
+destroyed and **waits for an answer**. In a script dispatched with `-x=`
+that dialog is invisible to whoever dispatched it, the script blocks on
+it, and every later dispatch queues behind a running script — which
+presents exactly as "PixInsight accepts dispatches and runs none". Set
+`C.noGUIMessages = true`.
