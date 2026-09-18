@@ -1516,6 +1516,24 @@ function runTests()
    finally { Update.SCRIPT_DIR = savedScriptDir; }
 
    /*
+    * The startup banner. Plain rather than coloured: the console honours
+    * only its semantic channels, so colour would mean a three-tone banner
+    * rather than the gradient the core prints for itself.
+    */
+   check( "the banner has five lines", Util.BANNER.length, 5 );
+   check( "no line would wrap an 80-column console",
+          Util.BANNER.filter( function( l ) { return l.length > 80; } ).length, 0 );
+   check( "the banner carries no markup the console would strip",
+          Util.BANNER.join( "" ).indexOf( "<" ) < 0, true );
+   /*
+    * Drawn by hand, so the letters can drift. This pins the shape: the
+    * L's upright, and the closing /_/ of the m.
+    */
+   check( "it still reads as Loom",
+          Util.BANNER[4].indexOf( "/_____/" ) == 0 &&
+          Util.BANNER[4].indexOf( "/_/ /_/" ) > 0, true );
+
+   /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own
     * band edges -- not adjustments -- and the dropdown shows the wrong
     * bands if they are left at zero.

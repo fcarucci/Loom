@@ -39,6 +39,26 @@ var Util = {};
  * shown to the user is this plus the short commit read from .git -- see
  * Update.describeVersion.
  */
+/*
+ * The banner, in the slant style PixInsight's own startup uses.
+ *
+ * Plain: the console strips most markup and colour is available only
+ * through the semantic channels (noteln green, warningln magenta), which
+ * would mean a three-tone banner rather than a gradient. Not worth the
+ * noise, so this stays white.
+ *
+ * Printed with the version line under it, which is the cheapest place to
+ * see which build is running -- the title bar carries it too, but a run
+ * log does not.
+ */
+Util.BANNER = [
+   "    __                       ",
+   "   / /   ____  ____  ____ ___",
+   "  / /   / __ \\/ __ \\/ __ `__ \\",
+   " / /___/ /_/ / /_/ / / / / / /",
+   "/_____/\\____/\\____/_/ /_/ /_/ "
+];
+
 Util.LOOM_VERSION = "0.1.1";
 
 /* ------------------------------------------------------------------ */

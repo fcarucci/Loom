@@ -313,6 +313,19 @@ function main()
 {
    console.show();
 
+   /*
+    * The banner first, so a run log opens with what it is and which build
+    * produced it. console.show() because a previous modal may have slid
+    * the console away.
+    */
+   console.show();
+   for ( var bl = 0; bl < Util.BANNER.length; ++bl )
+      console.writeln( "<end><cbr>" + Util.BANNER[bl] );
+   console.writeln( "<end><cbr>" +
+                    Update.describeVersion( File.extractDirectory( #__FILE__ ) + "/..",
+                                            Update.io ) );
+   console.writeln( "<end><cbr>" );
+
    var config = loadConfig();
 
    /*
