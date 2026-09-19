@@ -332,7 +332,7 @@ UI.SelectDialog = class extends Dialog
    this.info.useRichText = true;
    this.info.text = "<b>Add your masters below.</b> The channel is taken from " +
                     "each image's FITS <i>FILTER</i> keyword, not its filename.<br>" +
-                    "Use <b>Add Open Views</b> or <b>Add Files</b>. Nothing is added automatically.<br>" +
+                    "Use <b>Scan Masters Folder</b> or <b>Add Files</b>. Nothing is added automatically.<br>" +
                     "Results are left as open windows in the current project.";
    this.info.wordWrapping = true;
 
@@ -413,11 +413,6 @@ UI.SelectDialog = class extends Dialog
          self.addMastersFolder( d.directory );
    };
 
-   this.addViewsButton = new PushButton( this );
-   this.addViewsButton.text = "Add Open Views";
-   this.addViewsButton.toolTip = "Add every open view that has a FILTER keyword.";
-   this.addViewsButton.onClick = function() { self.addOpenViews(); };
-
    this.removeButton = new PushButton( this );
    this.removeButton.text = "Remove";
    this.removeButton.onClick = function() { self.removeSelected(); };
@@ -428,9 +423,13 @@ UI.SelectDialog = class extends Dialog
 
    var listButtons = new HorizontalSizer;
    listButtons.spacing = 6;
-   listButtons.add( this.addFilesButton );
+   /*
+    * Scanning a folder first, because it is what a run actually starts
+    * with: WBPP writes a masters folder and Loom picks the best variant
+    * per filter out of it. Adding files by hand is the exception.
+    */
    listButtons.add( this.addMastersButton );
-   listButtons.add( this.addViewsButton );
+   listButtons.add( this.addFilesButton );
    listButtons.addStretch();
    listButtons.add( this.removeButton );
    listButtons.add( this.clearButton );
@@ -1405,8 +1404,8 @@ UI.SelectDialog = class extends Dialog
    {
       var busy = message != null;
       this.busy = busy;
-      var buttons = [ this.addFilesButton, this.addMastersButton,
-                      this.addViewsButton, this.removeButton, this.clearButton ];
+      var buttons = [ this.addMastersButton, this.addFilesButton,
+                      this.removeButton, this.clearButton ];
       for ( var i = 0; i < buttons.length; ++i )
          if ( buttons[i] != null )
             buttons[i].enabled = !busy;
@@ -1445,8 +1444,8 @@ UI.SelectDialog = class extends Dialog
       this.runButton.enabled = !this.busy && n > 0;
       this.runButton.toolTip = ( n > 0 )
          ? "<p>Process the masters listed above.</p>"
-         : "<p>Add at least one master first \u2014 <b>Add Files</b>, " +
-           "<b>Scan Masters Folder</b> or <b>Add Open Views</b>.</p>";
+         : "<p>Add at least one master first \u2014 " +
+           "<b>Scan Masters Folder</b> or <b>Add Files</b>.</p>";
    }
 
    /* Reads FILTER/INSTRUME for a path and appends an entry. */
@@ -1706,7 +1705,7 @@ UI.SelectDialog = class extends Dialog
    }
 
    /*
-    * Adds one view, as dropped. Unlike addOpenViews this does NOT require
+    * Adds one view, as dropped. This does NOT require
     * a FILTER keyword: the user dropped this deliberately, so an
     * unreadable filter is shown as a problem rather than silently ignored.
     */
@@ -1795,40 +1794,6 @@ UI.SelectDialog = class extends Dialog
    }
 
    /* Adds every open view that carries a FILTER keyword, skipping duplicates. */
-   addOpenViews()
-   {
-      var wins = ImageWindow.windows;
-      this.skipped = 0;
-      for ( var i = 0; i < wins.length; ++i )
-      {
-         var v = wins[i].mainView;
-         var dup = false;
-         for ( var j = 0; j < this.entries.length; ++j )
-            if ( this.entries[j].source == "view" && this.entries[j].ref == v.id )
-               dup = true;
-         if ( dup )
-            continue;
-         var kws = wins[i].keywords;
-         var filter = Util.keywordValue( kws, "FILTER" );
-         if ( filter === null )
-         {
-            this.skipped++;
-            continue;
-         }
-         this.entries.push( {
-            source: "view",
-            ref: v.id,
-            label: v.id,
-            filter: filter,
-            instrume: Util.keywordValue( kws, "INSTRUME" ),
-            channel: Util.channelFromFilter( filter ),
-            width: v.image.width,
-            height: v.image.height,
-            drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) )
-         } );
-      }
-      this.rebuild();
-   }
 
    /*
     * Palettes only make sense when narrowband data is present, and the

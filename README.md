@@ -132,12 +132,17 @@ It writes its results to a file and is run from the command line, not the menu.
 
 | | |
 |---|---|
-| **Add Files...** | pick masters directly |
 | **Scan Masters Folder...** | newest master per filter, preferring drizzled and autocropped variants |
-| **Add Open Views** | every open view carrying a `FILTER` keyword |
+| **Add Files...** | pick masters directly |
 
-The channel comes from the file's `FILTER` keyword. A view selection beats a
-file path for the same channel.
+Scanning a folder is listed first because it is how a run normally starts: WBPP
+writes a masters folder and Loom picks the best variant per filter out of it.
+Adding files by hand is the exception.
+
+The channel comes from the file's `FILTER` keyword. A view dropped on the list
+still works and beats a file path for the same channel, but there is no longer a
+button to add every open view at once — it added whatever happened to be on the
+workspace, which is rarely what a run wants.
 
 **Name the project** in the box at the top. It is filled in from the folder your
 masters came from and follows the file list until you type something of your
