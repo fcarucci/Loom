@@ -1101,22 +1101,15 @@ Pipeline.run = function( config )
     * working window is ever left behind.
     */
    /*
-    * Close the PREVIOUS run's outputs first. They are marked with a FITS
-    * keyword, so this only ever touches windows Loom itself produced --
-    * never the user's own views. Without it, each run's results survive as
-    * "pre-existing" into the next and pile up (RGB, RGB_1, RGB_2 ...).
+    * A previous run's outputs are LEFT ALONE.
+    *
+    * This used to close every window carrying Loom's LOOMOUT keyword, to
+    * stop results piling up as RGB, RGB_1, RGB_2 across runs. That is not
+    * Loom's call to make: a plate from an earlier run that is still open is
+    * one someone deliberately kept, and it was closed out from under them.
+    * Loom closes what THIS run created and nothing else; the ids never
+    * collide because Util.freeWindowId already steps around what is open.
     */
-   var stale = ImageWindow.windows, staleClosed = [];
-   for ( var si = 0; si < stale.length; ++si )
-      if ( Steps.isLoomOutput( stale[si] ) )
-      {
-         var sid = stale[si].mainView.id;
-         try { stale[si].forceClose(); staleClosed.push( sid ); }
-         catch ( e ) { Util.warn( "cleanup", "could not close " + sid + ": " + e ); }
-      }
-   if ( staleClosed.length )
-      Util.log( "cleanup", "closed " + staleClosed.length +
-                           " output(s) from a previous run: " + staleClosed.join( ", " ) );
 
    var preexisting = {};
    var pre = ImageWindow.windows;
@@ -2499,6 +2492,21 @@ Pipeline.detachIfCached = function( window, id, reg )
    return clean;
 };
 
+/*
+ * May this window be closed at the end of a run?
+ *
+ * Only if the run made it and it is not a result. Anything that was on the
+ * workspace before the run started is untouchable, whoever made it and
+ * however long ago -- including a plate from an earlier Loom run that
+ * someone kept.
+ */
+Pipeline.mayCloseWindow = function( id, preexisting, keep )
+{
+   if ( id == null )
+      return false;
+   return !( preexisting[id] || keep[id] );
+};
+
 Pipeline.sweepNewWindows = function( preexisting, keepIds )
 {
    var keep = {};
@@ -2511,7 +2519,7 @@ Pipeline.sweepNewWindows = function( preexisting, keepIds )
    for ( var i = 0; i < wins.length; ++i )
    {
       var id = wins[i].mainView.id;
-      if ( preexisting[id] || keep[id] )
+      if ( !Pipeline.mayCloseWindow( id, preexisting, keep ) )
          continue;
       try { wins[i].forceClose(); closed.push( id ); }
       catch ( e ) { Util.warn( "cleanup", "could not close " + id + ": " + e ); }

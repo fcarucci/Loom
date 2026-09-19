@@ -1747,6 +1747,31 @@ function runTests()
           Util.runnableEntryCount( [ { channel: "H" },
                                      { channel: "O", unavailable: true } ] ), 1 );
 
+   /*
+    * Loom closes what THIS run created and nothing else.
+    *
+    * An earlier version also swept away anything carrying the LOOMOUT
+    * keyword at startup, to stop results accumulating as RGB, RGB_1,
+    * RGB_2. That closed a plate from a previous run that had been set
+    * aside on purpose -- and a window someone kept is not Loom's to
+    * remove, whoever made it.
+    */
+   ( function()
+   {
+      var pre = { "HSO": true, "MasterLight_H": true };
+      var keep = { "RGB_starless": true };
+      check( "a window that existed before the run is never closed",
+             Pipeline.mayCloseWindow( "HSO", pre, keep ), false );
+      check( "including one an earlier Loom run produced",
+             Pipeline.mayCloseWindow( "MasterLight_H", pre, keep ), false );
+      check( "this run's results are kept",
+             Pipeline.mayCloseWindow( "RGB_starless", pre, keep ), false );
+      check( "but this run's working windows are closed",
+             Pipeline.mayCloseWindow( "G_work_MGC_gradient_model", pre, keep ), true );
+      check( "and a nameless window is left alone",
+             Pipeline.mayCloseWindow( null, pre, keep ), false );
+   } )();
+
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",

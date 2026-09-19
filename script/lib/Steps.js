@@ -204,9 +204,13 @@ Steps.cropTo = function( view, rect )
 };
 
 /*
- * Marks a window as a Loom output, so a later run can recognise and close
- * it. Without this, every run's results survive into the next one as
- * "pre-existing" windows and accumulate (RGB, RGB_1, RGB_2 ...).
+ * Marks a window as a Loom output, so a plate can be identified as one
+ * later -- in a saved file, or by eye in the FITS header.
+ *
+ * It is NOT a licence to close it. An earlier version used this marker to
+ * sweep away previous runs' results at startup, which closed plates
+ * someone had deliberately kept. Loom closes what the current run created
+ * and nothing else.
  */
 Steps.LOOM_OUTPUT_KEYWORD = "LOOMOUT";
 
@@ -222,6 +226,7 @@ Steps.markAsOutput = function( window, label )
    catch ( e ) { Util.warn( "output", "could not mark " + label + ": " + e ); }
 };
 
+/* Reads the marker back. Informational: nothing closes a window on it. */
 Steps.isLoomOutput = function( window )
 {
    try { return Util.keywordValue( window.keywords, Steps.LOOM_OUTPUT_KEYWORD ) !== null; }
