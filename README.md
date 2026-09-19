@@ -224,8 +224,7 @@ previous session has no guaranteed meaning later.
 
 **Every solve is verified**, not just the first of a run: each channel is solved
 independently and SPFC calibrates each against its own solution, so each one is
-worth checking. Verification costs 762 ms against 959 ms for the solve itself,
-measured — cheap enough that a once-per-run latch was not worth having.
+worth checking.
 
 The thresholds are on the median deviation in pixels, which is already the
 scale-relative form. At or above **3.0 px** the solution is wrong — that is the
