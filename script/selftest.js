@@ -3123,12 +3123,28 @@ function runTests()
          runAfter = s.runButton.enabled;
          busyOK = ( s.addMastersButton.enabled === true &&
                     s.clearButton.enabled === true );
+         /*
+          * With something in the list, clearing the busy state must bring
+          * Run back -- the two rules have to compose, not cancel.
+          */
+         s.entries = [ { source: "file", ref: "/m/H.xisf", channel: "H" } ];
+         s.updateRunEnabled();
+         runAfterWithEntries = s.runButton.enabled;
       }
       catch ( e3 ) { busyOK = false; busyErr = String( e3 ); }
       check( "the busy state sets and clears without throwing" +
              ( busyErr ? ": " + busyErr : "" ), busyOK, true );
       check( "Run is dead while masters are being measured", runDuring, false );
-      check( "and alive again after a scan that threw", runAfter, true );
+      /*
+    * NOT alive again by itself: the list is empty here, and Run is dead
+    * whenever there is nothing to run. A scan that throws leaves the
+    * dialog usable -- the add buttons come back -- but Run follows the
+    * list, not the busy flag.
+    */
+   check( "Run stays dead after a failed scan that added nothing",
+          runAfter, false );
+   check( "and comes back once there is something to run",
+          runAfterWithEntries, true );
       check( "and the progress line is on screen meanwhile",
              statusDuring.indexOf( "1 of 3" ) >= 0, true );
 
