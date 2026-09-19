@@ -1,7 +1,7 @@
 # Loom Frame Selector — design
 
 **Date:** 2026-09-19
-**Status:** approved
+**Status:** approved — revised after three adversarial review rounds
 
 ## What this is for
 
@@ -34,10 +34,32 @@ only. Splitting a channel further — by exposure, by night — is a judgement a
 someone's data, and a script that quietly divides a session into two groups and
 applies two different thresholds is worse than one that does nothing.
 
+It does, however, have to **notice when a group is not comparable**. Frames of
+one filter can differ in exposure, binning, image geometry or calibration state,
+and a shorter exposure legitimately loses on SNR and star count while a different
+sampling makes pixel FWHM incomparable. So the group's exposure, binning, geometry AND
+calibration state are checked (`IMAGETYP`, and the calibration history WBPP
+writes; unknown state counts as a mismatch, because raw and calibrated frames of
+one filter can agree on every other field): a mixed group is reported, and Apply is blocked for that
+channel until it is either accepted explicitly or the folder is narrowed. The
+raw `FILTER` string is the grouping key, not `Util.channelFromFilter`, which maps
+to Loom's seven canonical channels and returns null for anything else — it would
+merge distinct filters and drop unfamiliar ones. Frames with no readable FILTER
+form their own group and are never auto-rejected.
+
 ## Measurement
 
 One SubframeSelector call per channel, `routine = 0` (measure), with every sub
-of that channel in `subframes`. The measurement row is positional; the indices
+of that channel in `subframes`.
+
+**Results are matched back to inputs by the file path in the measurement row
+(column 3), never by position.** WBPP's own analyzer does exactly this
+(`BPP-SubframeAnalyzer.js:520`), and the reason is not hypothetical: if one
+frame fails to measure, positional reading shifts every subsequent row onto the
+wrong file, and a perfect deletion fingerprint would then verify the wrong
+frame's identity against another frame's metrics. A duplicate or unexpected path
+in the results aborts the channel; any input with no result row becomes an
+**unmeasurable** entry. The measurement row is positional; the indices
 below were read off a live run on 1.9.5 build 1702, not assumed, and are pinned
 by assertions so a future reordering fails loudly rather than reporting a noise
 figure as an FWHM:
@@ -46,15 +68,36 @@ figure as an FWHM:
 |---|---|
 | 5 | FWHM |
 | 6 | eccentricity |
-| 8 | PSF SNR |
+| 7 | PSF signal weight |
+| 9 | SNR estimate |
 | 12 | noise |
 | 14 | stars |
+| **28** | **PSF SNR** |
 
-`subframeScale = 1` and `scaleUnit = 0`, so FWHM is in pixels and comparable
-between frames without a plate scale.
+An earlier draft of this spec said PSF SNR was column 8. It is not, and the
+error would have been invisible: column 8 reads 0 on every frame measured here,
+so the dominant term of the score would have been a constant zero. The indices
+above come from WBPP's own `BPP-SubframeAnalyzer.js:481`, which carries the
+comment *"fixed indexes that need to be aligned with the process
+implementation"*, cross-checked against a live measurement.
+
+Pinning a constant does not detect a reordering — `SFS_PSF_SNR === 28` passes
+happily after the process changes. The assertion must therefore check the
+MEANING: a measurement of a known frame, whose FWHM, star count and PSF SNR fall
+in expected ranges and disagree with each other, so a shuffle moves a value out
+of its range. `SubframeSelector.toSource()` is also recorded with the cache, as
+WBPP does, so a process change invalidates cached numbers rather than silently
+mixing them.
+
+`subframeScale = 1` and `scaleUnit = 0` are intended to give FWHM in pixels.
+A scale of 1 makes arcseconds numerically equal to pixels, so this setting
+cannot prove itself: the units enum is verified against
+`SubframeSelector.Pixels` before any of this is trusted.
 
 A measurement of a 26 MP sub takes a few seconds, so results are cached in
-`Cache.dir()/frame-quality.json` keyed by path, size and modification time.
+`Cache.dir()/frame-quality.json` keyed by path, size, modification time AND the
+measurement configuration (`SubframeSelector.toSource()`), because a number
+produced under different settings is not comparable with a fresh one.
 Re-opening a folder is then instant, and a re-acquired frame is measured again
 because its mtime changed. The cache key carries a version prefix: what is
 measured has changed before, and a number from an older definition compared
@@ -81,56 +124,157 @@ score =  w_snr   * (snr / med_snr)
 FWHM and eccentricity are inverted so that larger is better in every term.
 
 Defaults: `w_snr 0.5`, `w_fwhm 0.3`, `w_ecc 0.1`, `w_stars 0.1` — SNR dominant,
-which is the conventional weighting. The score is written to each frame's weight
-so it survives into WBPP; it does **not** decide rejection.
+which is the conventional weighting. The score does **not** decide rejection.
+
+Two honest limits on it. Dividing by the median aligns typical levels but not
+dispersion, so a frame with a near-zero eccentricity can contribute a term of 40 and swamp
+the weights. Each normalised ratio is therefore clamped to **[0.25, 4]** before
+it is weighted — two stops either side of typical, beyond which the frame's
+ranking is not in question anyway — and a frame with an invalid metric is scored
+as unmeasurable rather than given a number. And
+the four metrics are **not independent** — SNR, star count and FWHM move
+together — so the weights are a ranking preference, not an allocation of
+"quality" between separate things.
+
+**The score is not written into the files in the first version.** Saying it
+"survives into WBPP" would be a claim about a persistence mechanism this design
+has not verified: changing an in-memory SubframeSelector measurement persists
+nothing, in-place mode rewrites no surviving file, and WBPP chooses its
+integration weighting mode explicitly. Writing a weight would also add a second
+destructive operation — rewriting every kept frame — to a tool whose safety case
+rests on touching as little as possible. The score ranks the table; exporting it
+is a separate feature with its own live test.
 
 ### Clip, for rejection
 
-A frame is rejected if **any** metric is worse than its channel's robust bound:
+A frame is rejected if **any** metric is worse than its channel's robust bound.
+The scale is the **normalised** MAD, `sigma = 1.4826 * MAD`, which is what makes
+`k` a number of standard deviations rather than an arbitrary width:
 
 ```
-snr   < median - k*MAD          fwhm  > median + k*MAD
-ecc   > median + k*MAD          stars < median - k*MAD
+snr   < median - k*sigma          fwhm  > median + k*sigma
+ecc   > median + k*sigma          stars < median - k*sigma
 ```
 
-`k = 2.5` by default. MAD rather than standard deviation, because a handful of
-disasters would widen a deviation-based gate and defeat the thing meant to catch
-them. The bound is per channel and per run, so it adapts to the night instead of
-imposing a number from a different one.
+MAD rather than standard deviation, because a handful of disasters would widen a
+deviation-based gate and defeat the thing meant to catch them. The bound is per
+channel and per run.
 
-Every rejection is therefore explainable in one line, and the reason is shown
-and logged:
+Every rejection is explainable in one line, and the reason is shown and logged:
 
 ```
 FWHM 9.81 px, median 6.82, limit 7.94
 ```
 
+### Degenerate measurements
+
+These are not edge cases to handle later; they decide whether the tool is safe to
+point at a real folder.
+
+- **A metric is valid only if it is finite and positive.** Eccentricity of 0,
+  a star count of 0, or a failed fit produce infinities and NaN through the
+  score's divisions.
+- **A zero weight does not neutralise an invalid term**: JavaScript evaluates
+  `0 * Infinity` as `NaN`. Validity is checked before weighting, not after.
+- **NaN escapes every gate**, because all comparisons against it are false. A
+  frame with an invalid measurement is therefore *not* silently kept: it is
+  marked **unmeasurable** and reported as its own state, neither approved nor
+  auto-rejected, and it is never deleted automatically.
+- **Zero or near-zero MAD rejects perfection.** With FWHM `[4, 4, 4, 4,
+  4.000001]` the MAD is 0 and every preset rejects the last frame. When
+  `sigma` is 0, or below **1% of the absolute median**, the clip for that metric
+  is DISABLED and says so, rather than rejecting on noise. At that point the
+  spread is smaller than the measurement's own repeatability.
+- **A lower bound at or below zero cannot reject anything**, so a gate that
+  computes a non-positive limit is reported as inactive rather than passing
+  everything silently.
+- **Below 10 valid measurements in a channel the robust clip does not run.** A
+  median exists at 3 frames; a dispersion worth clipping on does not, and at 10
+  frames the loss rate is already double its asymptotic value. Hard limits still
+  apply — they do not depend on the sample.
+
 ### Presets
 
-Three, because `k` is the one number that decides how much is dropped and
-nobody should have to reason about a robust sigma width to use this:
+Three, because `k` is the one number that decides how much is dropped and nobody
+should have to reason about a robust sigma width to use this:
 
-| preset | `k` | expected loss |
-|---|---|---|
-| Lenient | 3.0 | genuine outliers only, ~1% |
-| Balanced | 2.5 | the default, ~5% |
-| Strict | 2.0 | the soft tail as well, ~15% |
+| preset | `k` | asymptotic | at 20 frames | at 10 frames |
+|---|---|---|---|---|
+| Lenient | 3.0 | ~0.5% | ~2.8% | ~6% |
+| Balanced | 2.5 | ~2.5% | ~6.1% | ~10% |
+| Strict | 2.0 | ~9% | ~13.1% | ~17% |
 
-The percentages are the normal-distribution expectation across four metrics and
-are there to set expectations, not to promise a yield. The dialog shows the
-**actual** kept count per channel and updates it as the preset changes, so the
-names never have to carry the meaning alone — which matters, because a night
-with a genuinely tight distribution loses almost nothing even on Strict, and
-that is correct behaviour rather than a broken preset.
+The asymptotic column is `1 - P(z < k)^4` for four one-sided Gaussian gates on
+the normalised MAD. **It is not what a real run does.** Median and MAD are
+estimated from the same small sample being clipped, so the cutoffs are estimates,
+not population parameters, and the loss is markedly higher at realistic frame
+counts — the two right-hand columns come from a simulation of this exact
+estimator. An earlier draft quoted 1% / 5% / 15%, which matched neither the raw
+MAD nor the normalised one nor any sample size.
 
-Named Lenient / Balanced / Strict: each name says which end of the range it
-sits at, and the ordering is unambiguous. "Strict" and "Stricter" were
-considered and rejected — they read as the same thing, and leave the loose end
-without a name.
+All three columns remain an expectation and not a promised yield. The metrics are
+also **not independent** — SNR, star count and FWHM move together through
+detection and fitting — which shifts the real figure in a direction that depends
+on the sign of that dependence and is not predictable from here. The dialog shows
+the actual count, which is the only number that is true.
 
-A preset sets the default for every channel. A channel whose knobs have been
-touched by hand keeps them: changing the preset does not silently undo an
-explicit edit, exactly as a verdict override outranks the formula.
+**A clip on an ACTIVE gate's median and MAD is scale-invariant, and that has a
+consequence worth stating plainly.** Shrink a night's FWHM spread by a factor of
+a hundred and the MAD shrinks with it: the same frames are rejected. A uniformly
+excellent night therefore loses about the same *fraction* as a poor one. An
+earlier draft claimed the opposite — that a tight night would lose almost
+nothing — and that was simply wrong. (The qualifier matters: shrink the spread
+far enough and `sigma` crosses the floor below, which disables the gate
+entirely. That is a different mechanism, not the clip being generous.)
+
+This is the right default for the tool's purpose, which is "drop this night's
+worst frames". It is **not** "drop frames that are bad in absolute terms", and
+the two cannot be served by the same rule.
+
+### Relative, absolute, or both
+
+Per channel, one of three modes, because an earlier draft promised that hard
+limits could preserve an excellent night and they cannot: a frame at FWHM 5.0
+with a robust limit of 4.5 and a ceiling of 9.0 is still rejected by the robust
+gate, and no additional criterion can rescue it.
+
+The rejection predicate is stated per mode, leaving nothing to infer:
+
+- **Relative** (default) — rejected iff an **active relative gate** fails. Hard
+  limits are ignored entirely, even if values are still configured from a
+  previous mode.
+- **Absolute** — rejected iff a **configured hard limit** fails. The robust clip
+  is off. This is the mode that keeps an entire good night, and the only one
+  that can.
+- **Both** — rejected iff **either** condition fails.
+
+The minimum-count rule disables **relative gates only**. In Relative mode a
+channel below the minimum therefore rejects nothing — it does not fall through
+to hard limits, which that mode ignores by definition. In Absolute or Both, hard
+limits still apply, because they are a statement about the data rather than
+about the sample size.
+
+Absolute mode with no hard limits configured is a valid "keep everything"
+setting, not an error, and the dialog says so rather than blocking Apply.
+
+### How presets, knobs, modes and overrides compose
+
+The opening preset is **Balanced**. A preset sets `k` for every channel whose
+`k` has not been edited by hand; an edited value is kept and marked as such, and
+a **Reset channel** action returns it to the preset. Editing one knob does not
+pin the others — a channel whose weight was changed still inherits `k` from a
+later preset change.
+
+The combinations that would otherwise be guesses:
+
+| situation | rule |
+|---|---|
+| channel `k` edited, then a preset selected | the edited `k` stands; the preset marks it as overridden |
+| only a weight edited, then a preset selected | `k` follows the preset |
+| Absolute mode, no hard limits set | valid: keeps everything, and says so |
+| channel disabled with manual condemnations pending | disabling suppresses **all** action on that channel, condemnations included; re-enabling restores them unchanged |
+| disabled channel, "another folder" mode | its frames are **not** copied; a disabled channel is untouched in every mode |
+| unmeasurable frame | a third state, never auto-deleted; it may be condemned by hand, and cannot be "approved" because there is no measurement to approve |
 
 ### Knobs
 
@@ -144,23 +288,114 @@ Per channel, each defaulting to the preset and overridable independently:
 
 ## Actions
 
+Applying builds a **frozen manifest** first: for every file, its path, size,
+modification time, the **full-content digest** taken when the frame was measured, the
+verdict, and the reason. Nothing is deleted or copied except through that manifest.
+
+A digest of the whole file, not of the header and a sample of pixels: a change
+outside the sampled region would pass a partial hash without any collision. The
+digest is computed once, at measurement, and stored WITH the measurement in the
+cache. A cached measurement whose digest no longer matches the file is not
+reused — it is re-measured — so the numbers that produced a verdict always
+describe the bytes that verdict will be applied to.
+
+Immediately before each destructive operation the digest is recomputed and
+compared. Path, size and modification time are not identity; a replacement can
+preserve all three. A frame that changed, vanished or became unreadable is
+skipped and reported.
+
+**This does not close the window between the check and the unlink.** Nothing in
+PJSR locks a file, so a replacement in that instant is undetectable. The design
+narrows the window to microseconds and says so here rather than claiming a
+guarantee it cannot make. The mitigation that actually matters is the audit log,
+which records the fingerprint of every file deleted.
+
+### Three layers, and what may change in each
+
+The word "frozen" is not enough on its own, so the lifecycle is explicit:
+
+1. **The cohort** — the set of frames and their measurements, fixed when the
+   folder is scanned. Channel medians and MADs are computed from the cohort's
+   valid measurements and **never** from survivors of a partial run.
+2. **The review** — verdicts, presets, knobs, modes and manual overrides. Fully
+   editable, recomputed freely from the cohort, and worth nothing until
+   committed.
+3. **The execution manifest** — a copy of the review taken at the moment Apply
+   is confirmed, immutable thereafter, carrying each file's digest and each
+   entry's outcome as it completes.
+
+Once an execution begins, the review is **locked** until that execution is
+finished or abandoned. A stopped run offers exactly two choices: *resume*, which
+continues the same manifest and skips entries already recorded done, or
+*abandon*, which discards it and unlocks the review. There is no path in which
+editing a knob silently alters a manifest that is already deleting files, and no
+path in which pressing Apply twice runs two different manifests over one cohort.
+
+**Apply never recomputes a verdict.** Recomputing after a partial run would be **iterative
+clipping**: delete the worst frame, and the median and MAD of the survivors
+tighten, so a second Apply deletes the next-worst. With a cohort of sixteen frames whose FWHM runs
+`[4.0 … 4.7, 5.3]` plus one at `10`, the first pass drops `10`; recomputed on
+the survivors the median and MAD both tighten and the next pass takes `5.3` — a
+frame nobody condemned. (The example needs a cohort above the ten-frame minimum,
+or the minimum-count rule would stop the second pass for an unrelated reason and
+hide the defect.) Recomputation is a new review, entered
+explicitly, never a consequence of pressing Apply twice.
+
 **In place** — rejected frames are deleted where they are. This is the only
-irreversible operation in the tool, and it is guarded:
+irreversible operation in the tool:
 
 - nothing is deleted until the table has been shown
 - a confirmation names the exact count and the per-channel breakdown
-- the full list, with each frame's metrics and the reason, is written to a log
-  under the cache directory *before* anything is unlinked
+- the manifest is written to a durable log **before** any unlink, and each
+  file's outcome is appended as it happens, so the record says what actually
+  died rather than only what was intended
+- if the log cannot be written, Apply **stops**; an unrecorded deletion is worse
+  than a deferred one
+- the log does NOT live where `Cache.clear` can remove it, and not under the
+  system temporary directory
 
 **To another folder** — SubframeSelector's output routine writes the approved
-frames there. `overwriteExistingFiles` is off by default.
+frames there. Export success has to be well defined even though no original is
+deleted, because otherwise "it worked" is a guess:
 
-**Delete originals** — offered only when writing to another folder, only after
-the written copies are confirmed present and non-empty, and never silently.
+- the destination mapping is computed **before** writing and must be
+  collision-free. Two sources that would produce one output name — two formats
+  sharing a stem, say — abort the channel rather than silently overwrite one
+  with the other
+- the destination must not be, contain, or be an alias or symlink of any source
+  directory
+- `overwriteExistingFiles` is off by default; with it off, an existing
+  destination file aborts that entry and is reported, rather than being counted
+  as a success
+- every entry's outcome is recorded per file, so a retry knows which outputs
+  this run produced and does not mistake an unrelated pre-existing file for its
+  own work
+
+**Delete originals — NOT in the first version.**
+
+It was in the first draft, guarded by "the copies are present and non-empty".
+That guard is worthless: a stale file from an earlier run, a truncated write, or
+a different frame sharing a basename all satisfy it. Tightening it to "opens as
+an image with the expected geometry" is no better — another exposure from the
+same camera passes that too.
+
+Making it safe needs a collision-free source-to-output mapping (two sources
+mapping to one destination would delete both originals while one output
+survives), per-file confirmation that THIS run wrote THAT file, and content
+equivalence between source and output strong enough to survive SubframeSelector
+rewriting metadata. That is a feature with its own design and its own live test,
+not a checkbox on this one.
+
+Until then the workflow is: write approved frames elsewhere, look at them, and
+delete the source folder yourself. The tool will not delete a file it did not
+verify.
 
 ## The dialog
 
-Nothing touches disk until **Apply**.
+Nothing in the **source folders** changes, and nothing destructive happens,
+until **Apply**. Measurements and their digests are cached during the scan, so
+the cache directory is written before the table appears; that is the only disk
+activity before Apply.
 
 ```
 +-----------+--------------------------------------+------------------+
@@ -183,16 +418,33 @@ the score, the verdict, and the reason when rejected.
 
 ### Preview
 
-Selecting a row opens that sub, auto-stretches a duplicate, and renders it once
-to a `Bitmap` with `Image.render()`. `onPaint` draws the visible region into a
-`Control`; because the bitmap is rendered once per frame rather than per paint,
-panning is a blit.
+**`Image.render()` does not apply a screen stretch** — its own documentation
+excludes it. Setting an STF on a view therefore renders nothing different. The
+duplicate's PIXELS are stretched, with a HistogramTransformation built from the
+frame's own median and MAD, and that stretched duplicate is what gets rendered.
+An earlier draft said "auto-stretches a duplicate" while meaning an STF, which
+would have produced a black preview.
+
+The stretched duplicate is rendered once to a `Bitmap` with `Image.render()`.
+`onPaint` draws the visible region into a `Control`; because the bitmap is
+rendered once per frame rather than once per paint, panning is a blit.
 
 - **Mouse:** click and drag.
-- **Keyboard:** arrow keys once the preview has focus — clicking it focuses it,
-  so the keys work without hunting for a widget. Arrow pans a quarter of the
-  visible width, Shift+arrow a full screen.
-- **Wheel:** toggles 1:1 and fit.
+- **Keyboard:** arrow keys once the preview has focus. Focus is not automatic —
+  the control sets `focusStyle` so a click focuses it — and `onKeyPress` must
+  **consume** the keys it handles, or the TreeBox will act on the same arrow
+  press and move the selection underneath the preview.
+- **Wheel:** toggles 1:1 and fit. `Image.render()` takes integer zoom levels, so
+  "fit" is a scaled bitmap, not a render argument.
+
+"1:1" means one image pixel per **physical** display pixel, which on a Retina
+screen is not one logical pixel: `Bitmap.physicalPixelRatio` is applied, and the
+prototype verifies it with a checkerboard rather than by eye.
+
+Exactly one frame's windows and bitmaps are held at a time — a 26 MP ARGB bitmap
+is about 104 MB — and selecting another frame disposes of the previous one
+before opening the next. Browsing a hundred frames must leave the open-window
+count and memory flat, which the prototype checks.
 
 ### Overrides
 
@@ -223,8 +475,14 @@ preview. The same mechanism condemns a frame the formula kept.
 
 The score, the clip, the per-channel overrides, the reason strings and the
 verdict/override interaction are pure and belong in `selftest.js`, with real
-numbers from the 2026-09-18 masters. The SubframeSelector column indices get the
-same pinning assertions Loom already has.
+numbers from the 2026-09-18 masters. Pinning the column indices as constants is **not** sufficient and is not the
+acceptance criterion: `SFS_PSF_SNR === 28` passes unchanged after the process
+reorders its table. The required test measures a fixture frame and asserts that
+each column's value falls in a range only that metric can occupy, so a shuffle
+moves a value out of its range and fails. This is an explicit acceptance
+requirement, not a nicety — an earlier draft of this spec had PSF SNR on column
+8, which reads 0 on every frame, and no constant-pinning test would have caught
+it.
 
 The dialog, the preview control and the file operations need PixInsight and stay
 in the `IN_PIXINSIGHT` set. The delete path is tested against a directory of
@@ -244,6 +502,10 @@ measurement, and a sluggish preview would make the whole dialog feel broken. It
 is built first, as a standalone prototype, and its timing confirmed before the
 rest is written.
 
-**A channel with too few frames has no usable median.** Below roughly five
-frames the MAD is meaningless and the clip must not run: the tool reports the
-measurements and rejects nothing.
+**A channel with too few frames has no usable dispersion.** Below 10 valid
+measurements the robust clip does not run: the tool reports the numbers and rejects
+nothing. A median exists at 3 frames; a trustworthy MAD does not.
+
+**The safety rule is narrower than "nothing touches disk".** Measurements and
+digests are cached during the scan. What holds is that nothing in the source
+folders changes, and nothing destructive happens, before Apply.
