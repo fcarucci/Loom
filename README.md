@@ -144,13 +144,48 @@ still works and beats a file path for the same channel, but there is no longer a
 button to add every open view at once — it added whatever happened to be on the
 workspace, which is rarely what a run wants.
 
+**What the list tells you.** Beside the filter, size and drizzle factor:
+
+| column | |
+|---|---|
+| **Created** | when the master was stacked — a folder of restacks is otherwise distinguished only by a `(3)` in the name |
+| **FWHM**, **Ecc**, **Noise**, **Stars** | measured by SubframeSelector, each with its change against the **previous integration of the same channel** |
+
+Loom always uses the newest master — that is what a re-stack is for — but a
+newer stack is not automatically a better one, and the columns say so before the
+run rather than afterwards. A channel that went backwards is coloured. Bear in
+mind the senses differ: smaller FWHM, eccentricity and noise are better, more
+stars are better.
+
+The comparison is **within a channel**, never across. On any given rig one
+filter is simply softer than another — comparing G against R would flag a
+perfectly good G every time.
+
+Measuring costs about 16 seconds per master, so a first scan of a folder takes a
+while and the dialog says how far it has got: *Measuring masters: G (3 of 7)*.
+Everything that could change the list is disabled meanwhile, Run included.
+Results cache by path, size and modification time, so a rescan is instant and a
+re-stacked file is measured again.
+
+**The camera is reported once**, under the list, with the QE curve it resolves
+to. One session comes off one camera, so a master whose header lost `INSTRUME`
+— WBPP's own autocrop rewrites it away — takes the camera its siblings name.
+That matters more than it looks: an unnamed camera would otherwise be calibrated
+against the ideal QE curve while its siblings used the real one.
+
 **Name the project** in the box at the top. It is filled in from the folder your
 masters came from and follows the file list until you type something of your
 own; it names the exported PSB.
 
-**Set the options** (all described below), then **Run**. A Cancel window stays
-up for the duration and stops at the next checkpoint; the Process Console
-stays open throughout, one green line per operation.
+**Set the options** (all described below), then **Run**. Run is greyed out until
+there is something to run.
+
+A Cancel window stays up for the duration and stops at the next checkpoint. It
+asks before it does, because cancelling is not undoable — the cached stages
+survive, the step in flight does not — and because a modeless dialog with one
+button collects the keyboard focus, so a stray Return would otherwise discard
+the work in progress. The Process Console stays open throughout, one green line
+per operation.
 
 **On a new dataset, tick "Validate only" first.** It runs every preflight
 check — files and views present, required keywords, installed processes, the
@@ -181,11 +216,29 @@ previous session has no guaranteed meaning later.
 
 | step | what | options |
 |---|---|---|
-| **Solve** | plate solution, skipped if one is already present | — |
+| **Solve** | plate solution, skipped if one is already present. Solved with **recursive surface splines** and **verified** against the catalogue | — |
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera read from `INSTRUME` |
 | **MGC** | MultiscaleGradientCorrection against the MARS reference. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
 | **GraXpert** | background extraction. Broadband only — never narrowband | on/off, smoothing |
 | **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax |
+
+**Every solve is verified**, not just the first of a run: each channel is solved
+independently and SPFC calibrates each against its own solution, so each one is
+worth checking. Verification costs 762 ms against 959 ms for the solve itself,
+measured — cheap enough that a once-per-run latch was not worth having.
+
+The thresholds are on the median deviation in pixels, which is already the
+scale-relative form. At or above **3.0 px** the solution is wrong — that is the
+verifier's own matching tolerance, the largest deviation it can even represent.
+Above **0.315 px** it is poor: the median PixInsight published against Gaia DR3
+on a 34,000-control-point mosaic panel. Nothing is judged on the RMS, because
+both published figures are medians and RMS ≥ median by construction; the RMS is
+reported only.
+
+Recursive splines are measured rather than quoted. On NGC 5907 masterLight_L,
+5710×3182 at 0.9664″/px, against the solution WBPP shipped: median residual
+0.0190 → 0.0157 px, RMS 0.0414 → 0.0338, max 0.1411 → 0.1099. That is −17%,
+−18% and −22%.
 
 ### Across channels
 
@@ -311,11 +364,21 @@ reconstruct them.
 With it off: `L`, `RGB`, `<palette>`, and the narrowband channels themselves
 when no palette was built.
 
+The finished plates are minimised, and each one's **restore position is set to
+the centre**, staggered a title bar apart so every title stays readable and
+clickable. Where the icons themselves land is the core's business: PJSR exposes
+`iconize`, `deiconize` and `iconic` and nothing that positions an icon, so no
+script can lay them out.
+
 ## Requirements
 
-PixInsight 1.9.4 or later. Developed and run on macOS. It is written to run on
-Windows as well, but it has never been run on one — treat that as untested
-rather than as supported.
+**PixInsight 1.9.5 or later**, checked at startup: Loom refuses to run on an
+older core rather than failing later on a symbol that is not there. 1.9.5 is
+required for the astrometric solution verifier and for recursive surface
+splines, both of which Loom uses on every solve.
+
+Developed and run on macOS. It is written to run on Windows as well, but it has
+never been run on one — treat that as untested rather than as supported.
 
 The camera is read from the `INSTRUME` keyword, not assumed.
 `Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the
@@ -330,3 +393,18 @@ persisted. The dialog asks only when the last two come up empty. Preflight
 fails loudly if no route yields a database on disk.
 
 Optional tools are detected, and only what is installed is offered.
+
+**MLDenoise needs a model, and PixInsight ships none.** The process lives in the
+core `MachineLearning` module, but a fresh instance has an empty `modelPath` and
+executing it then fails outright with *"No model path specified"*. Models are
+distributed separately, as `.xmlm` containers, through the Databases repository
+under **Resources → Updates**. Loom finds one itself — the install's `library`,
+then `~/PixInsight/library`, then `~/PixInsight/models` — and offers MLDenoise
+only when module *and* model are both present, so a tool that would die mid-run
+is never in the dropdown.
+
+For the record, since the parameter names are easy to get wrong: they are
+`mask`, `maskClipLow`, `maskBackground` and `maskSmoothness`. There is no
+`linearMask`. PJSR accepts assignment to a property a process does not have
+without complaining, so measuring against that name reports "the mask changes
+nothing" with complete confidence.
