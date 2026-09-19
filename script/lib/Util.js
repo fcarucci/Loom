@@ -619,6 +619,95 @@ Util.CAMERA_QE_CURVES = [
  * Returns "" for a missing or unusable time rather than a fake one: a
  * dropped view has no file, and "" says so where 1970 would not.
  */
+/*
+ * Master quality, compared WITHIN a channel.
+ *
+ * Deliberately not across channels: on this rig G is always the softest
+ * filter -- 16.0 px against R's 14.2 on a stack judged perfectly good --
+ * so any cross-channel threshold that catches a bad G also fires on a
+ * good one. Comparing a stack against the OTHER stacks of its own channel
+ * has no such confound and answers the question that actually matters:
+ * is the one being used better or worse than the one it displaced.
+ *
+ * `psf` is the median star width in pixels, `noise` the MAD sigma, and
+ * `snr` the frame median over that noise. snr is scale-invariant -- two
+ * stacks of one channel can sit at different flux scales and both terms
+ * scale together -- which is what makes the comparison meaningful at all.
+ *
+ * The median, NOT star flux, is the signal term. Star flux was tried
+ * first and is useless here: which stars fall in the measured crop varies
+ * between two stacks, and that variation swamped a 27% difference in
+ * noise, reporting 102 against 103. The median is the same sky in both
+ * frames, so it moves only when the data does.
+ */
+/*
+ * The stacks of the same channel that were NOT chosen -- newest first.
+ *
+ * Same rank as well as same channel: a drizzled autocrop master is not
+ * comparable with a plain one, and ranking already decided which class is
+ * in play. `limit` bounds the cost, because each one costs a file open;
+ * one is enough to answer "is this better than what I had".
+ */
+Util.sameChannelAlternatives = function( candidates, pick, limit )
+{
+   if ( pick == null )
+      return [];
+   var out = [];
+   for ( var i = 0; i < candidates.length; ++i )
+   {
+      var c = candidates[i];
+      if ( !c || c.channel != pick.channel || c.path == pick.path )
+         continue;
+      if ( Util.masterVariantRank( c.drizzle, c.autocrop ) !=
+           Util.masterVariantRank( pick.drizzle, pick.autocrop ) )
+         continue;
+      out.push( c );
+   }
+   out.sort( function( a, b ) { return ( b.mtime || 0 ) - ( a.mtime || 0 ); } );
+   return ( limit == null ) ? out : out.slice( 0, limit );
+};
+
+Util.qualityDelta = function( chosen, other )
+{
+   if ( chosen == null || other == null )
+      return null;
+   function pct( a, b ) { return ( b > 0 ) ? ( 100*( a - b )/b ) : null; }
+   return { psf: pct( chosen.psf, other.psf ),
+            snr: pct( chosen.snr, other.snr ) };
+};
+
+/*
+ * The best of the alternatives, by SNR -- so the comparison is against
+ * the strongest thing available for that channel, not an arbitrary one.
+ */
+Util.bestAlternative = function( others )
+{
+   var best = null;
+   for ( var i = 0; i < others.length; ++i )
+   {
+      var o = others[i];
+      if ( o == null || !( o.snr > 0 ) )
+         continue;
+      if ( best == null || o.snr > best.snr )
+         best = o;
+   }
+   return best;
+};
+
+/*
+ * "+5%" / "-13%" / "" -- a sign is always shown, because the sign IS the
+ * message, and nothing is shown below 1% where the difference is noise in
+ * the measurement rather than in the data.
+ */
+Util.formatDelta = function( pct )
+{
+   if ( pct == null || !isFinite( pct ) )
+      return "";
+   if ( Math.abs( pct ) < 1 )
+      return "";
+   return ( pct > 0 ? "+" : "" ) + pct.toFixed( 0 ) + "%";
+};
+
 Util.formatFileTime = function( ms )
 {
    if ( ms == null || !isFinite( ms ) || ms <= 0 )

@@ -3883,6 +3883,161 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
  * carries detail; it would not be for an RGB-only image.
  * ------------------------------------------------------------------------ */
 
+/* ---------------------------------------------------------------------------
+ * Master quality, so a fresh stack that is worse than the one it displaced
+ * says so before nine minutes of processing rather than afterwards.
+ *
+ * Loom always uses the newest variant of a channel -- that is what a
+ * re-stack is for -- but on 2026-09-18 the newest G was 23% noisier and
+ * softer than the G it replaced, and the only symptom was green stars in
+ * the finished plate.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Identity of a FILE, not of a path: a re-stack writes the same name with
+ * a new size and time, and must be measured again rather than answered
+ * from the cache.
+ */
+Steps.masterQualityKey = function( path )
+{
+   try
+   {
+      var fi = new FileInfo( path );
+      var t = fi.lastModified;
+      return path + "|" + fi.size + "|" + ( t ? t.getTime() : 0 );
+   }
+   catch ( e ) { return path + "|0|0"; }
+};
+
+Steps.masterQualityCachePath = function()
+{
+   return Cache.dir() + "/master-quality.json";
+};
+
+/*
+ * Read once per script run and held in memory: the dialog asks about
+ * every master in a folder, and re-reading the file for each would be
+ * the slow part of a cheap operation.
+ */
+Steps.qualityTable = null;
+
+Steps.loadQualityTable = function()
+{
+   if ( Steps.qualityTable != null )
+      return Steps.qualityTable;
+   Steps.qualityTable = {};
+   try
+   {
+      var p = Steps.masterQualityCachePath();
+      if ( File.exists( p ) )
+         Steps.qualityTable = JSON.parse( File.readTextFile( p ) ) || {};
+   }
+   catch ( e ) { Steps.qualityTable = {}; }
+   return Steps.qualityTable;
+};
+
+Steps.saveQualityTable = function()
+{
+   try
+   {
+      Cache.ensureDir();
+      File.writeTextFile( Steps.masterQualityCachePath(),
+                          JSON.stringify( Steps.qualityTable || {} ) );
+   }
+   catch ( e )
+   {
+      // A cache that cannot be written costs a re-measurement, nothing more.
+      Util.warn( "quality", "could not save the measurements: " + e );
+   }
+};
+
+/*
+ * Measured on a central crop. A master is ~420 MB and twelve thousand
+ * pixels across; the middle 2048 square carries more than enough stars to
+ * settle a median, and the whole point is that this runs while someone is
+ * waiting at a dialog.
+ */
+Steps.MASTER_QUALITY_SAMPLE = 2048;
+
+Steps.measureMasterQuality = function( path, sampleSize )
+{
+   var table = Steps.loadQualityTable();
+   var key = Steps.masterQualityKey( path );
+   if ( table[key] != null )
+      return table[key];
+
+   var win = null;
+   try
+   {
+      var ws = ImageWindow.open( path );
+      if ( ws.length == 0 )
+         return null;
+      win = ws[0];
+      var img = win.mainView.image;
+      var S = Math.min( sampleSize || Steps.MASTER_QUALITY_SAMPLE,
+                        Math.min( img.width, img.height ) );
+      var x0 = ( img.width - S ) >> 1, y0 = ( img.height - S ) >> 1;
+      var rect = new Rect( x0, y0, x0 + S, y0 + S );
+
+      img.selectedRect = rect;
+      var med = img.median();
+      var noise = img.MAD() * 1.4826;
+      img.resetSelections();
+
+      var D = new StarDetector;
+      D.structureLayers = 5;
+      D.applyHotPixelFilter = true;
+      img.selectedRect = rect;
+      var det = D.stars( img );
+      img.resetSelections();
+      if ( det.length == 0 || !( noise > 0 ) )
+         return null;
+
+      var widths = [], cores = [];
+      det.sort( function( a, b ) { return b.flux - a.flux; } );
+      for ( var i = 0; i < det.length; ++i )
+         widths.push( Math.sqrt( det[i].size ) );
+      for ( var j = 0; j < det.length && cores.length < 200; ++j )
+      {
+         var x = Math.round( det[j].pos.x ) + rect.x0;
+         var y = Math.round( det[j].pos.y ) + rect.y0;
+         if ( x < 3 || y < 3 || x >= img.width-3 || y >= img.height-3 )
+            continue;
+         img.selectedRect = new Rect( x-2, y-2, x+3, y+3 );
+         cores.push( img.mean() - med );
+         img.resetSelections();
+      }
+      if ( cores.length == 0 )
+         return null;
+      function median( a ) { a.sort( function( p, q ) { return p - q; } );
+                             return a[ Math.floor( a.length/2 ) ]; }
+
+      /*
+       * median/noise, not star flux over noise: which stars land in the
+       * crop differs between two stacks of the same channel, and that
+       * variation swamped a 27% noise difference when this was tried the
+       * other way round. `cores` is still measured, because an empty star
+       * list means the frame is not usable for this comparison at all.
+       */
+      var q = { psf: median( widths ),
+                noise: noise,
+                snr: med/noise,
+                stars: det.length };
+      table[key] = q;
+      Steps.saveQualityTable();
+      return q;
+   }
+   catch ( e )
+   {
+      Util.warn( "quality", "could not measure " + path + ": " + e );
+      return null;
+   }
+   finally
+   {
+      try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {}
+   }
+};
+
 /*
  * Median PSF sigma of a view, via StarDetector for positions and DynamicPSF
  * for the fits. Measured on a central region: representative, and far cheaper

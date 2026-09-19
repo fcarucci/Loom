@@ -347,7 +347,7 @@ UI.SelectDialog = class extends Dialog
     * meaningful blank when it was not one. The camera is reported once,
     * for the session, below the list.
     */
-   this.tree.numberOfColumns = 5;
+   this.tree.numberOfColumns = 7;
    this.tree.setHeaderText( 0, "Filter" );
    this.tree.setHeaderText( 1, "Size" );
    this.tree.setHeaderText( 2, "Drizzle" );
@@ -355,6 +355,14 @@ UI.SelectDialog = class extends Dialog
    // When a folder holds several stacks of the same target, the creation
    // time is what tells them apart -- the names differ only by "(3)".
    this.tree.setHeaderText( 4, "Created" );
+   /*
+    * Quality, against the previous stack of the SAME channel. Loom always
+    * uses the newest -- that is what a re-stack is for -- but a newer
+    * stack is not automatically a better one, and the difference belongs
+    * on screen before the run rather than in the stars afterwards.
+    */
+   this.tree.setHeaderText( 5, "PSF" );
+   this.tree.setHeaderText( 6, "SNR" );
    this.tree.headerVisible = true;
    this.tree.rootDecoration = false;
    this.tree.alternateRowColor = true;
@@ -1510,8 +1518,29 @@ UI.SelectDialog = class extends Dialog
             drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ),
             autocrop: p.autocrop,
             mtime: p.mtime,
-            created: p.created
+            created: p.created,
+            /*
+             * Measured here, while the rejected variants of this channel
+             * are still known -- the comparison is against the stack this
+             * one displaced, and nothing downstream remembers there was
+             * one. Cached per file, so a folder is slow once.
+             */
+            quality: Steps.measureMasterQuality( p.path ),
+            delta: null
          };
+         var others = Util.sameChannelAlternatives( named, p, 1 );
+         if ( others.length > 0 )
+         {
+            var prev = Steps.measureMasterQuality( others[0].path );
+            entry.delta = Util.qualityDelta( entry.quality, prev );
+            if ( entry.delta != null )
+               Util.log( "quality", p.channel + ": PSF " +
+                  ( entry.quality ? entry.quality.psf.toFixed( 2 ) : "?" ) +
+                  " px, SNR " + ( entry.quality ? Math.round( entry.quality.snr ) : "?" ) +
+                  "  (" + ( Util.formatDelta( entry.delta.psf ) || "no change" ) +
+                  " PSF, " + ( Util.formatDelta( entry.delta.snr ) || "no change" ) +
+                  " SNR vs " + File.extractName( others[0].path ) + ")" );
+         }
          // header wins; if two names collapse onto one real channel, rank decides
          var prev = confirmed[channel];
          if ( prev == null ||
@@ -1772,6 +1801,26 @@ UI.SelectDialog = class extends Dialog
          node.setText( 2, e.drizzle || "" );
          node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
          node.setText( 4, Util.formatFileTime( e.created ) );
+         node.setText( 5, e.quality
+            ? ( e.quality.psf.toFixed( 2 ) +
+                ( e.delta && Util.formatDelta( e.delta.psf )
+                  ? "  " + Util.formatDelta( e.delta.psf ) : "" ) )
+            : "" );
+         node.setText( 6, e.quality
+            ? ( Math.round( e.quality.snr ) +
+                ( e.delta && Util.formatDelta( e.delta.snr )
+                  ? "  " + Util.formatDelta( e.delta.snr ) : "" ) )
+            : "" );
+         /*
+          * A worse stack is coloured, a better one is not: the point is to
+          * catch the case where the newest is a step backwards. Softer
+          * (psf up) or noisier (snr down) both count.
+          */
+         if ( e.delta && ( e.delta.snr < -5 || e.delta.psf > 5 ) )
+         {
+            node.setTextColor( 5, 0xffcc7722 );
+            node.setTextColor( 6, 0xffcc7722 );
+         }
 
 
          if ( e.unavailable )

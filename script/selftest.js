@@ -1600,6 +1600,76 @@ function runTests()
    check( "and neither does a missing one",
           Util.formatFileTime( null ), "" );
 
+   /*
+    * Master quality, compared WITHIN a channel.
+    *
+    * Not across channels, and the measurement is why: on this rig G is
+    * always the softest filter -- 9.85 px against R's 8.06 on a stack
+    * judged perfectly good -- so a cross-channel threshold that catches a
+    * bad G fires on a good one too. Against the stack it displaced there
+    * is no such confound. These are the real numbers from 2026-09-18,
+    * measured on the 2048 crop: the G that turned the stars green scored
+    * SNR 24.2 and PSF 10.05 where its predecessor scored 27.2 and 9.85.
+    */
+   var GOOD_G = { psf: 9.85, noise: 4.51e-5, snr: 27.2 };
+   var BAD_G  = { psf: 10.05, noise: 5.72e-5, snr: 24.2 };
+
+   check( "a noisier stack reports a lower SNR",
+          Math.round( Util.qualityDelta( BAD_G, GOOD_G ).snr ), -11 );
+   check( "and a softer one reports a wider PSF",
+          Math.round( Util.qualityDelta( BAD_G, GOOD_G ).psf ), 2 );
+   check( "the comparison reverses cleanly",
+          Util.qualityDelta( GOOD_G, BAD_G ).snr > 0, true );
+   check( "nothing to compare against is not a delta of zero",
+          Util.qualityDelta( BAD_G, null ), null );
+
+   /*
+    * The sign IS the message, so it is always shown; below 1% nothing is,
+    * because that is the measurement moving rather than the data.
+    */
+   check( "an improvement carries its sign", Util.formatDelta( 12.4 ), "+12%" );
+   check( "so does a regression", Util.formatDelta( -13.46 ), "-13%" );
+   check( "and a difference too small to mean anything is blank",
+          Util.formatDelta( 0.4 ), "" );
+   check( "as is no measurement at all", Util.formatDelta( null ), "" );
+
+   /*
+    * The best alternative is the strongest one, so the comparison is
+    * never flattered by picking a weak stack to beat.
+    */
+   check( "the strongest alternative is the one compared against",
+          Util.bestAlternative( [ { snr: 100 }, { snr: 5564 }, { snr: 900 } ] ).snr, 5564 );
+   check( "unmeasurable alternatives are ignored",
+          Util.bestAlternative( [ { snr: 0 }, null, { snr: 42 } ] ).snr, 42 );
+   check( "and no alternatives at all answers nothing",
+          Util.bestAlternative( [] ), null );
+
+   /*
+    * Alternatives are same channel AND same variant class: a drizzled
+    * autocrop master is not comparable with a plain one, and ranking has
+    * already decided which class is in play.
+    */
+   ( function()
+   {
+      var pick = { channel: "G", path: "/m/G_new.xisf", drizzle: "2x", autocrop: true, mtime: 300 };
+      var pool = [ pick,
+                   { channel: "G", path: "/m/G_old.xisf",   drizzle: "2x", autocrop: true,  mtime: 200 },
+                   { channel: "G", path: "/m/G_older.xisf", drizzle: "2x", autocrop: true,  mtime: 100 },
+                   { channel: "G", path: "/m/G_plain.xisf", drizzle: "",   autocrop: false, mtime: 250 },
+                   { channel: "R", path: "/m/R_new.xisf",   drizzle: "2x", autocrop: true,  mtime: 299 } ];
+      var alt = Util.sameChannelAlternatives( pool, pick );
+      check( "another channel is not an alternative",
+             alt.filter( function( a ) { return a.channel != "G"; } ).length, 0 );
+      check( "neither is the pick itself",
+             alt.filter( function( a ) { return a.path == pick.path; } ).length, 0 );
+      check( "nor a different variant class",
+             alt.filter( function( a ) { return a.path == "/m/G_plain.xisf"; } ).length, 0 );
+      check( "the stack it displaced comes first",
+             alt[0].path, "/m/G_old.xisf" );
+      check( "and the limit bounds how many files get opened",
+             Util.sameChannelAlternatives( pool, pick, 1 ).length, 1 );
+   } )();
+
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",
