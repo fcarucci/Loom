@@ -2946,11 +2946,18 @@ function runTests()
          cw.setStage( "test" );
          cw.setProgress( 50, "test" );
          cwOK = ( cw.cancelled === false );
+         /*
+          * The Cancel button must NOT be the dialog's default. It is the
+          * only button here, and Qt promotes a lone button to default --
+          * which makes Return, or Space while it has focus, throw away a
+          * run. That happened to a real fifteen-minute run.
+          */
+         cwOK = cwOK && ( cw.cancelButton.defaultButton === false );
          cw.cancel();
       }
       catch ( e2 ) { cwOK = false; cwErr = String( e2 ); }
-      check( "the Cancel window constructs and drives" + ( cwErr ? ": " + cwErr : "" ),
-             cwOK, true );
+      check( "the Cancel window constructs, drives, and is not keyboard-default" +
+             ( cwErr ? ": " + cwErr : "" ), cwOK, true );
    } )();
 
    check( "companion path is distinct from the stage path",

@@ -121,11 +121,52 @@ UI.CancelWindow = class extends Dialog
          "<p>Stop the run at the next checkpoint.</p>" +
          "<p>A PixInsight process already under way cannot be interrupted, " +
          "so this takes effect when the current step finishes.</p>";
+      /*
+       * NOT the default button, explicitly.
+       *
+       * This is a modeless dialog with one PushButton, and Qt promotes a
+       * lone button to the dialog's default -- so Return, or Space while
+       * it holds focus, activates it. Loom re-asserts this window at every
+       * checkpoint (processEvents, console.show), so it collects focus
+       * repeatedly during a run. A stray keystroke threw away fifteen
+       * minutes of a real run that way, with nothing in the log to say
+       * what had triggered it.
+       */
+      this.cancelButton.defaultButton = false;
+
+      /*
+       * And confirm. Cancelling is not undoable -- the stages already
+       * cached survive, but whatever was mid-flight does not -- so it is
+       * worth one question. Deliberately defaulting to No.
+       */
       this.cancelButton.onClick = function()
       {
+         var answer = StdButton_No;
+         try
+         {
+            answer = ( new MessageBox(
+               "<p>Stop this run at the next checkpoint?</p>" +
+               "<p>Stages already finished stay in the cache and will be " +
+               "reused, but the step now running is lost.</p>",
+               "Loom - cancel the run?",
+               StdIcon_Question, StdButton_No, StdButton_Yes ) ).execute();
+         }
+         catch ( e )
+         {
+            // No MessageBox (a headless run): take the click at face value.
+            answer = StdButton_Yes;
+         }
+         if ( answer != StdButton_Yes )
+            return;
+
          self.cancelled = true;
          self.stageLabel.text = "cancelling at the next checkpoint...";
          self.cancelButton.enabled = false;
+         // In the run log, so a cancelled run says so for itself rather
+         // than surfacing only as an exception with no cause.
+         try { Util.log( "pipeline", "cancel requested from the run window during: " +
+                                     ( self.lastStage || "unknown stage" ) ); }
+         catch ( e2 ) {}
       };
 
       var row = new HorizontalSizer;
