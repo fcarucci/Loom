@@ -105,12 +105,39 @@ and logged:
 FWHM 9.81 px, median 6.82, limit 7.94
 ```
 
+### Presets
+
+Three, because `k` is the one number that decides how much is dropped and
+nobody should have to reason about a robust sigma width to use this:
+
+| preset | `k` | expected loss |
+|---|---|---|
+| Lenient | 3.0 | genuine outliers only, ~1% |
+| Balanced | 2.5 | the default, ~5% |
+| Strict | 2.0 | the soft tail as well, ~15% |
+
+The percentages are the normal-distribution expectation across four metrics and
+are there to set expectations, not to promise a yield. The dialog shows the
+**actual** kept count per channel and updates it as the preset changes, so the
+names never have to carry the meaning alone — which matters, because a night
+with a genuinely tight distribution loses almost nothing even on Strict, and
+that is correct behaviour rather than a broken preset.
+
+Named Lenient / Balanced / Strict: each name says which end of the range it
+sits at, and the ordering is unambiguous. "Strict" and "Stricter" were
+considered and rejected — they read as the same thing, and leave the loose end
+without a name.
+
+A preset sets the default for every channel. A channel whose knobs have been
+touched by hand keeps them: changing the preset does not silently undo an
+explicit edit, exactly as a verdict override outranks the formula.
+
 ### Knobs
 
-Per channel, each defaulting to the above and overridable independently:
+Per channel, each defaulting to the preset and overridable independently:
 
 - the four weights
-- `k`
+- `k`, when the preset is not the right width for this channel
 - an optional hard floor or ceiling per metric, for an absolute rule that does
   not move with the night ("never keep FWHM above 9")
 - an enable, so a channel can be left alone entirely
@@ -144,7 +171,10 @@ Nothing touches disk until **Apply**.
 | G  54/70  |                                       |                  |
 | H  88/91  |                                       |  [keep this one] |
 |           +--------------------------------------+------------------+
-|           | weights | k | floors | enable        |                  |
+|  preset:  | weights | k | floors | enable        |                  |
+|  lenient  |                                       |                  |
+|  balanced |                                       |                  |
+|  strict   |                                       |                  |
 +-----------+--------------------------------------+------------------+
 ```
 
