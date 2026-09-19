@@ -1557,6 +1557,59 @@ function runTests()
     * and MLDenoise given the wrong network is a confident wrong answer,
     * where no model at all is an honest refusal.
     */
+   /*
+    * One session comes off one camera, so a master whose header lost
+    * INSTRUME -- WBPP's autocrop rewrites it away, leaving WBPPCROP as its
+    * mark -- takes the camera its siblings name. This is not cosmetic:
+    * Steps.deviceCurveForImage falls back to the ideal QE curve for an
+    * unnamed camera, so that channel would be calibrated against a
+    * different device response from the rest while the run looked clean.
+    */
+   check( "one named camera answers for the session",
+          Util.commonInstrument( [ null, "ZWO ASI2600MM Air", "" ] ),
+          "ZWO ASI2600MM Air" );
+   check( "agreement is still one answer",
+          Util.commonInstrument( [ "ASI2600MM", "ASI2600MM" ] ), "ASI2600MM" );
+   /*
+    * Disagreement must NOT be resolved by picking one. If two masters
+    * really name different cameras the premise has failed, and a
+    * confident wrong curve is worse than an admitted unknown.
+    */
+   check( "two different cameras answer nothing",
+          Util.commonInstrument( [ "ASI2600MM", "ASI1600MM" ] ), null );
+   check( "no camera at all answers nothing",
+          Util.commonInstrument( [ null, "", null ] ), null );
+   check( "and an empty list answers nothing",
+          Util.commonInstrument( [] ), null );
+
+   check( "the camera line names the resolved QE curve",
+          UI.cameraSummary( [ "ZWO ASI2600MM Air" ], "Sony IMX411/455/461/533/571" )
+             .indexOf( "Sony IMX411" ) > 0, true );
+   check( "a session with no camera says the ideal curve will be used",
+          UI.cameraSummary( [ null, null ], null ).indexOf( "ideal QE curve" ) > 0, true );
+   check( "disagreeing cameras are reported, not averaged",
+          UI.cameraSummary( [ "A", "B" ], null ).indexOf( "more than one" ) > 0, true );
+   check( "an empty list says nothing at all",
+          UI.cameraSummary( [], null ), "" );
+
+   /*
+    * Creation time, shown because a folder of restacks differs only by a
+    * "(3)" in the name.
+    */
+   check( "a creation time is date and time, fixed width",
+          Util.formatFileTime( new Date( 2026, 8, 14, 13, 2, 4 ).getTime() ),
+          "2026-09-14 13:02" );
+   check( "single digits are padded",
+          Util.formatFileTime( new Date( 2026, 0, 5, 9, 7, 0 ).getTime() ),
+          "2026-01-05 09:07" );
+   /*
+    * A dropped view has no file. Empty says so; 1970 would not.
+    */
+   check( "no time shows as nothing, not as the epoch",
+          Util.formatFileTime( 0 ), "" );
+   check( "and neither does a missing one",
+          Util.formatFileTime( null ), "" );
+
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",

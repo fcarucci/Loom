@@ -1223,6 +1223,32 @@ Pipeline.run = function( config )
                         sourceKey: sourceKey, currentKey: sourceKey };
       }
 
+      /*
+       * One session, one camera. WBPP's autocrop drops INSTRUME from the
+       * headers it rewrites, and a channel without a camera silently gets
+       * the ideal QE curve instead of the real device response -- so it
+       * would be calibrated against a different curve from its siblings
+       * while the run looks clean. Borrowing the camera the other masters
+       * name is the physically correct answer; Util.commonInstrument
+       * refuses to answer at all if they disagree.
+       */
+      var ckeys = Object.keys( chans ), known = [];
+      for ( var ci = 0; ci < ckeys.length; ++ci )
+         known.push( chans[ckeys[ci]].instrume );
+      var common = Util.commonInstrument( known );
+      if ( common != null )
+         for ( var ci2 = 0; ci2 < ckeys.length; ++ci2 )
+         {
+            var cc = chans[ckeys[ci2]];
+            if ( cc.instrume == null || cc.instrume === "" )
+            {
+               cc.instrume = common;
+               cc.instrumeInherited = true;
+               Util.log( "load", cc.key + " has no INSTRUME; taking '" + common +
+                                 "' from the other masters of this session" );
+            }
+         }
+
       // solve (skipped if already solved) + correct, broadband only, on
       // native uninterpolated pixels. Absent channels are skipped; a
       // narrowband-only run corrects L alone.

@@ -610,6 +610,79 @@ Util.CAMERA_QE_CURVES = [
    { match: [ "kaf8300" ],            curve: "KAF-8300" }
 ];
 
+/*
+ * "2026-09-14 13:02" -- date and time, no seconds and no timezone. These
+ * are stamps to compare against each other ("is this the master I stacked
+ * this afternoon?"), not timestamps to compute with, and a narrow column
+ * that always has the same width reads faster than a locale string.
+ *
+ * Returns "" for a missing or unusable time rather than a fake one: a
+ * dropped view has no file, and "" says so where 1970 would not.
+ */
+Util.formatFileTime = function( ms )
+{
+   if ( ms == null || !isFinite( ms ) || ms <= 0 )
+      return "";
+   var d = new Date( ms );
+   function p2( n ) { return ( n < 10 ? "0" : "" ) + n; }
+   return d.getFullYear() + "-" + p2( d.getMonth()+1 ) + "-" + p2( d.getDate() ) +
+          " " + p2( d.getHours() ) + ":" + p2( d.getMinutes() );
+};
+
+/*
+ * The file's creation time in milliseconds, or 0.
+ *
+ * FileFind exposes `created` and FileInfo `timeCreated`; both are real
+ * Dates on macOS. Kept in one place because the fallback matters: a file
+ * on a filesystem without a birth time reports its modification time
+ * instead, which is still the more useful of the two answers here.
+ */
+Util.fileCreatedMs = function( path, io )
+{
+   var F = io || ( typeof FileInfo != "undefined" ? FileInfo : null );
+   if ( F == null )
+      return 0;
+   try
+   {
+      var fi = new F( path );
+      var t = fi.timeCreated || fi.lastModified;
+      return t ? t.getTime() : 0;
+   }
+   catch ( e ) { return 0; }
+};
+
+/*
+ * The camera, inferred across a set of masters when a header does not
+ * carry it.
+ *
+ * WBPP's own autocrop step rewrites the header and drops INSTRUME (its
+ * mark is the WBPPCROP keyword), so one channel of a session can arrive
+ * without a camera while its siblings have one. Physically they cannot
+ * differ -- the masters of a session come off one camera -- and an
+ * unnamed camera is not a harmless blank: Steps.deviceCurveForImage
+ * falls back to the ideal QE curve, so that channel would be calibrated
+ * against a different device response from the others.
+ *
+ * Only a UNANIMOUS answer is returned. If two masters name different
+ * cameras the premise does not hold, and guessing which one is right
+ * would be worse than leaving it unknown.
+ */
+Util.commonInstrument = function( values )
+{
+   var seen = null;
+   for ( var i = 0; i < values.length; ++i )
+   {
+      var v = values[i];
+      if ( v == null || v === "" )
+         continue;
+      if ( seen == null )
+         seen = v;
+      else if ( seen != v )
+         return null;
+   }
+   return seen;
+};
+
 Util.qeCurveNameForCamera = function( instrume )
 {
    if ( instrume == null )

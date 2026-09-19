@@ -21,6 +21,36 @@ var UI = {};
  */
 UI.CAMERA_MODEL_HINT = "asi2600mm";
 
+/*
+ * The one camera line shown under the master list.
+ *
+ * Says what will actually be used, not merely what the headers contain:
+ * a camera nothing recognises resolves to the ideal QE curve, and SPFC
+ * calibrating against an idealised response instead of the real one is
+ * the failure this line exists to make visible.
+ */
+UI.cameraSummary = function( instrumes, curveName )
+{
+   var common = Util.commonInstrument( instrumes );
+   var any = false;
+   for ( var i = 0; i < instrumes.length; ++i )
+      if ( instrumes[i] != null && instrumes[i] !== "" )
+         { any = true; break; }
+
+   if ( !any )
+      return instrumes.length
+         ? "<b>Camera:</b> not named in any header \u2014 calibration will " +
+           "use the ideal QE curve"
+         : "";
+   if ( common == null )
+      return "<b>Camera:</b> the masters name more than one camera \u2014 " +
+             "check the list, they should all be from one session";
+   var line = "<b>Camera:</b> " + common;
+   if ( curveName )
+      line += " \u2192 " + curveName;
+   return line;
+};
+
 UI.instrumentMatches = function( instrume )
 {
    if ( !instrume )
@@ -269,12 +299,21 @@ UI.SelectDialog = class extends Dialog
     * ordinary master the two columns held the same letter twice. An
     * unrecognised filter is reported in the status line instead.
     */
+   /*
+    * No Camera column. One session comes off one camera, so repeating it
+    * on every row said nothing per file -- and the rows that could differ
+    * were the ones whose header had simply lost INSTRUME, which read as a
+    * meaningful blank when it was not one. The camera is reported once,
+    * for the session, below the list.
+    */
    this.tree.numberOfColumns = 5;
    this.tree.setHeaderText( 0, "Filter" );
    this.tree.setHeaderText( 1, "Size" );
    this.tree.setHeaderText( 2, "Drizzle" );
    this.tree.setHeaderText( 3, "Source" );
-   this.tree.setHeaderText( 4, "Camera" );
+   // When a folder holds several stacks of the same target, the creation
+   // time is what tells them apart -- the names differ only by "(3)".
+   this.tree.setHeaderText( 4, "Created" );
    this.tree.headerVisible = true;
    this.tree.rootDecoration = false;
    this.tree.alternateRowColor = true;
@@ -345,6 +384,16 @@ UI.SelectDialog = class extends Dialog
    this.status = new Label( this );
    this.status.useRichText = true;
    this.status.wordWrapping = true;
+
+   /*
+    * The session's camera, and the QE curve it resolves to. This is the
+    * number that actually matters: an unrecognised or absent camera means
+    * SPFC calibrates against the ideal curve rather than the real device
+    * response, and until now the only sign of that was a blank cell.
+    */
+   this.camera = new Label( this );
+   this.camera.useRichText = true;
+   this.camera.wordWrapping = true;
 
    // ---- options ----
 
@@ -1191,6 +1240,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.tree, 100 );
    this.sizer.add( listButtons );
    this.sizer.add( this.status );
+   this.sizer.add( this.camera );
    this.sizer.add( this.sharpenGroup );
    this.sizer.add( this.paletteGroup );
    this.sizer.add( nbRow );
@@ -1342,7 +1392,10 @@ UI.SelectDialog = class extends Dialog
 
          var mtime = 0;
          try { mtime = found.lastModified.getTime(); } catch ( e ) { mtime = 0; }
-         var rec = { path: dir + "/" + name, name: name, mtime: mtime };
+         var ctime = 0;
+         try { ctime = found.created.getTime(); } catch ( e ) { ctime = mtime; }
+         var rec = { path: dir + "/" + name, name: name,
+                     mtime: mtime, created: ctime };
 
          var parsed = Util.parseMasterName( name );
          if ( parsed != null && parsed.channel != null )
@@ -1415,7 +1468,8 @@ UI.SelectDialog = class extends Dialog
             height: info.height,
             drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ),
             autocrop: p.autocrop,
-            mtime: p.mtime
+            mtime: p.mtime,
+            created: p.created
          };
          // header wins; if two names collapse onto one real channel, rank decides
          var prev = confirmed[channel];
@@ -1467,7 +1521,8 @@ UI.SelectDialog = class extends Dialog
             channel: Util.channelFromFilter( filter ),
             width: info ? info.width : 0,
             height: info ? info.height : 0,
-            drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : ""
+            drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
+            created: Util.fileCreatedMs( paths[i] )
          } );
       }
       this.rebuild();
@@ -1634,6 +1689,27 @@ UI.SelectDialog = class extends Dialog
       // the derived project name follows the list, until it is typed in
       try { this.updateProjectName(); } catch ( e ) {}
       this.tree.clear();
+
+      /*
+       * One session, one camera -- so a master whose header lost INSTRUME
+       * (WBPP's autocrop rewrites it away) is shown with the camera its
+       * siblings name, in parentheses to say it was inferred rather than
+       * read. Blank here used to be the only sign of a channel that would
+       * later be calibrated against the ideal QE curve instead of the real
+       * one.
+       */
+      var known = [];
+      for ( var ki = 0; ki < this.entries.length; ++ki )
+         known.push( this.entries[ki].instrume );
+      var qe = null;
+      try
+      {
+         var cam = Util.commonInstrument( known );
+         qe = cam ? Steps.deviceCurveForImage( cam ) : null;
+      }
+      catch ( eq ) { qe = null; }
+      this.camera.text = UI.cameraSummary( known, qe ? qe.name : null );
+
       var counts = {};
       for ( var i = 0; i < this.entries.length; ++i )
       {
@@ -1654,7 +1730,8 @@ UI.SelectDialog = class extends Dialog
          node.setText( 1, ( e.width && e.height ) ? ( e.width + " x " + e.height ) : "" );
          node.setText( 2, e.drizzle || "" );
          node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
-         node.setText( 4, e.instrume !== null ? e.instrume : "" );
+         node.setText( 4, Util.formatFileTime( e.created ) );
+
 
          if ( e.unavailable )
          {
