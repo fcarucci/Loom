@@ -2330,40 +2330,41 @@ Pipeline.orderedOutputKeys = function( keys )
 };
 
 /*
- * Where each icon goes: a grid centred in `area`, kept as square as the
- * count allows.
+ * Where to put a window so it is centred in the VISIBLE WORKSPACE.
  *
- * Pure arithmetic, so the layout is testable without a workspace. `area`
- * is { x, y, width, height }, `icon` is { width, height }.
+ * `max` is the largest position the window can hold and still be fully
+ * visible, which is (workspace - window). Half of it is therefore the
+ * centred position, without ever needing to know the workspace size --
+ * which is just as well, because nothing exposes it.
  *
- * The grid is clamped to start inside the area: a large icon and a small
- * screen would otherwise place the first column off the left edge, where
- * it cannot be clicked.
+ * It is emphatically NOT the screen: availableScreenRect here reads
+ * 0,33 -> 1728,1117, while the workspace a window can occupy is
+ * 1502x1018 starting at 0,0. Centring against the screen rectangle is
+ * what put a grid of plates at y = -1227, off the top of the workspace
+ * entirely.
  */
-Pipeline.ICON_SPACING = 8;
-
-Pipeline.iconGrid = function( count, icon, area, spacing )
+Pipeline.centredPosition = function( max )
 {
-   var out = [];
-   if ( count <= 0 )
-      return out;
-   var gap = ( spacing == null ) ? Pipeline.ICON_SPACING : spacing;
-   var cols = Math.ceil( Math.sqrt( count ) );
-   var rows = Math.ceil( count / cols );
-
-   var stepX = icon.width + gap;
-   var stepY = icon.height + gap;
-   var blockW = cols * stepX - gap;
-   var blockH = rows * stepY - gap;
-
-   var originX = Math.max( area.x, Math.round( area.x + ( area.width - blockW ) / 2 ) );
-   var originY = Math.max( area.y, Math.round( area.y + ( area.height - blockH ) / 2 ) );
-
-   for ( var i = 0; i < count; ++i )
-      out.push( { x: originX + ( i % cols ) * stepX,
-                  y: originY + Math.floor( i / cols ) * stepY } );
-   return out;
+   return { x: Math.max( 0, Math.round( max.x/2 ) ),
+            y: Math.max( 0, Math.round( max.y/2 ) ) };
 };
+
+/*
+ * A coordinate far outside any workspace. fitWindow() moves a window back
+ * inside the visible area, and "only if strictly necessary" -- so parking
+ * the window out here and fitting it reports the maximum position the
+ * window can have, which is what centredPosition halves.
+ */
+Pipeline.FAR_OUTSIDE = 32000;
+
+Pipeline.centreWindow = function( w )
+{
+   w.position = new Point( Pipeline.FAR_OUTSIDE, Pipeline.FAR_OUTSIDE );
+   w.fitWindow();
+   var c = Pipeline.centredPosition( w.position );
+   w.position = new Point( c.x, c.y );
+};
+
 
 /*
  * Minimises the run's plates and lays their icons out in the middle.
@@ -2382,6 +2383,21 @@ Pipeline.iconGrid = function( count, icon, area, spacing )
  * Only the run's own outputs are touched. Windows the user already had
  * open are not Loom's to rearrange.
  */
+/*
+ * Tidy the finished plates away.
+ *
+ * PJSR CANNOT POSITION AN ICON. ImageWindow offers iconize, deiconize and
+ * iconic -- nothing else -- so where the icons land is the core's own
+ * business and no script can lay them out in a grid. An earlier version
+ * of this believed otherwise and wrote grid coordinates into
+ * window.position, which is the RESTORE position: the icons went wherever
+ * the core put them regardless, and restoring a plate opened it at
+ * (2244,-1227), off the workspace.
+ *
+ * So what is worth setting is the restore position, and it is set to the
+ * centre -- a plate reopened from its icon appears in the middle of the
+ * workspace, sized to fit, rather than wherever it was last parked.
+ */
 Pipeline.arrangeOutputs = function( results )
 {
    try
@@ -2394,43 +2410,29 @@ Pipeline.arrangeOutputs = function( results )
          return;
       keys = Pipeline.orderedOutputKeys( keys );
 
-      /*
-       * Fit the image to the window first. A plate is tens of megapixels
-       * and opens at 1:1 otherwise, showing one corner of it.
-       */
-      for ( var z = 0; z < keys.length; ++z )
-         try { results[keys[z]].zoomToOptimalFit(); }
-         catch ( e ) { /* a zoom that fails is not worth failing a run for */ }
-
-      /*
-       * The icon's size is read back from the first one rather than
-       * assumed: it follows the workspace's own icon metrics, which are
-       * not exposed anywhere.
-       */
-      var first = results[keys[0]];
-      first.iconize();
-      var g = first.geometry;
-      var icon = { width: g.width, height: g.height };
-
-      var area = Pipeline.workspaceArea();
-      var grid = Pipeline.iconGrid( keys.length, icon, area );
-
       for ( var i = 0; i < keys.length; ++i )
       {
          var w = results[keys[i]];
          try
          {
+            /*
+             * Fit the image to the window first. A plate is tens of
+             * megapixels and opens at 1:1 otherwise, showing one corner.
+             * Then centre, then iconize -- in that order, because
+             * centring depends on the size the zoom settled on.
+             */
+            w.zoomToOptimalFit();
+            Pipeline.centreWindow( w );
             if ( !w.iconic )
                w.iconize();
-            w.position = new Point( grid[i].x, grid[i].y );
          }
          catch ( e )
          {
-            Util.warn( "output", "could not place " + keys[i] + ": " + e );
+            Util.warn( "output", "could not tidy " + keys[i] + ": " + e );
          }
       }
       Util.log( "output", "minimised " + keys.length +
-                          " plate(s) into a grid in the middle" );
+                          " plate(s); each reopens centred" );
    }
    catch ( e )
    {
@@ -2439,34 +2441,6 @@ Pipeline.arrangeOutputs = function( results )
    }
 };
 
-/*
- * The rectangle to centre the icons in.
- *
- * This is the SCREEN's usable area, not PixInsight's workspace: PJSR
- * exposes no workspace geometry at all. Side panels inset the workspace,
- * so the grid can sit slightly off-centre within it. Measured rather than
- * guessed where possible -- a Dialog knows its available screen rect --
- * and a fixed fallback where a Dialog cannot be made.
- */
-Pipeline.FALLBACK_AREA = { x: 0, y: 0, width: 1280, height: 800 };
-
-Pipeline.workspaceArea = function()
-{
-   try
-   {
-      /*
-       * A Rect is x0,y0,x1,y1 -- CORNERS, not an origin and a size. y1 is
-       * the bottom edge, so the height is y1-y0. Reading y1 as a height
-       * would push the grid below the screen by the height of the menu bar.
-       */
-      var r = ( new Dialog ).availableScreenRect;
-      if ( r != null && r.x1 > r.x0 && r.y1 > r.y0 )
-         return { x: r.x0, y: r.y0,
-                  width: r.x1 - r.x0, height: r.y1 - r.y0 };
-   }
-   catch ( e ) {}
-   return Pipeline.FALLBACK_AREA;
-};
 
 /*
  * True when a window reference can still be used -- not null, not closed.

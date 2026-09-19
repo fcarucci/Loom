@@ -1323,78 +1323,36 @@ function runTests()
    Update.SCRIPT_DIR = "/x/Loom";
 
    /*
-    * Minimising the run's plates into a grid in the middle.
+    * Reopening a plate in the middle of the workspace.
     *
-    * An icon's position IS its restore position -- verified by moving an
-    * icon and deiconizing it -- so the grid decides both where the icons
-    * sit and where each plate reopens. The arithmetic is pure and tested
-    * here; the iconize/position calls themselves need a workspace.
+    * There is no grid, and there cannot be one: ImageWindow exposes
+    * iconize, deiconize and iconic and NOTHING that positions an icon, so
+    * where the icons land is the core's business. What a script can set
+    * is window.position, which is the RESTORE position -- so that is set
+    * to the centre, and a plate reopened from its icon appears in the
+    * middle rather than wherever it was last parked.
+    *
+    * `max` is the largest position a window can hold and still be fully
+    * visible, so half of it is the centre, and the workspace size never
+    * has to be known. It is NOT the screen: availableScreenRect reads
+    * 0,33 -> 1728,1117 while the workspace measures 1502x1018 from 0,0,
+    * and centring against the screen put plates at y = -1227.
     */
-   var AREA = { x: 0, y: 33, width: 1728, height: 1084 };
-   var ICON = { width: 160, height: 120 };
-
-   check( "nothing to arrange produces no positions",
-          Pipeline.iconGrid( 0, ICON, AREA ).length, 0 );
-   check( "one plate gets one position",
-          Pipeline.iconGrid( 1, ICON, AREA ).length, 1 );
-   check( "nine plates get nine",
-          Pipeline.iconGrid( 9, ICON, AREA ).length, 9 );
+   check( "half the maximum position is the centre",
+          Pipeline.centredPosition( { x: 874, y: 589 } ).x, 437 );
+   check( "and in y",
+          Pipeline.centredPosition( { x: 874, y: 589 } ).y, 295 );
    /*
-    * Kept as square as the count allows, so the block reads as a block
-    * rather than a long row that runs off the side.
+    * A window larger than the workspace reports a NEGATIVE maximum. Half
+    * of that is further off-screen still, where the title bar cannot be
+    * grabbed, so it clamps to the origin instead.
     */
-   check( "nine plates make three columns",
-          ( function()
-            {
-               var g = Pipeline.iconGrid( 9, ICON, AREA );
-               return ( g[3].y > g[0].y && g[3].x == g[0].x ) ? "wrapped at 3" : "did not wrap at 3";
-            } )(), "wrapped at 3" );
-   check( "the block is centred horizontally",
-          ( function()
-            {
-               var g = Pipeline.iconGrid( 4, ICON, AREA );   // 2 x 2
-               var left = g[0].x;
-               var right = g[1].x + ICON.width;
-               return Math.abs( ( left - AREA.x ) -
-                                ( AREA.x + AREA.width - right ) ) <= 1;
-            } )(), true );
-   check( "the block is centred vertically",
-          ( function()
-            {
-               var g = Pipeline.iconGrid( 4, ICON, AREA );
-               var top = g[0].y;
-               var bottom = g[2].y + ICON.height;
-               return Math.abs( ( top - AREA.y ) -
-                                ( AREA.y + AREA.height - bottom ) ) <= 1;
-            } )(), true );
-   /*
-    * An icon bigger than the area would otherwise be centred at a
-    * NEGATIVE coordinate, off the edge of the screen where it cannot be
-    * clicked.
-    */
-   check( "a grid too big for the area is still reachable",
-          ( function()
-            {
-               var g = Pipeline.iconGrid( 6, { width: 900, height: 700 }, AREA );
-               for ( var i = 0; i < g.length; ++i )
-                  if ( g[i].x < AREA.x || g[i].y < AREA.y )
-                     return "off screen";
-               return "on screen";
-            } )(), "on screen" );
-   check( "icons do not overlap",
-          ( function()
-            {
-               var g = Pipeline.iconGrid( 6, ICON, AREA );
-               var seen = {};
-               for ( var i = 0; i < g.length; ++i )
-               {
-                  var key = g[i].x + "," + g[i].y;
-                  if ( seen[key] )
-                     return "overlap at " + key;
-                  seen[key] = true;
-               }
-               return "distinct";
-            } )(), "distinct" );
+   check( "a window too big for the workspace stays reachable",
+          Pipeline.centredPosition( { x: -300, y: -120 } ).x, 0 );
+   check( "in both axes",
+          Pipeline.centredPosition( { x: -300, y: -120 } ).y, 0 );
+   check( "a window that exactly fills the workspace sits at the origin",
+          Pipeline.centredPosition( { x: 0, y: 0 } ).x, 0 );
 
    /*
     * A fixed order, so a given plate's icon is in the same place every
@@ -1416,17 +1374,6 @@ function runTests()
           "L,zzz_custom" );
    check( "ordering never loses or invents a plate",
           Pipeline.orderedOutputKeys( [ "b", "RGB", "a" ] ).length, 3 );
-
-   /*
-    * A Rect is corners, not an origin and a size: reading y1 as a height
-    * would push the grid off the bottom by the height of the menu bar.
-    */
-   check( "the workspace area has a positive size",
-          ( function()
-            {
-               var a = Pipeline.workspaceArea();
-               return a.width > 0 && a.height > 0;
-            } )(), true );
 
    /*
     * A cache folder that is not there disables the cache rather than
