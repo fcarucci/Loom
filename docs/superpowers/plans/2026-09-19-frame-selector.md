@@ -44,6 +44,14 @@ the preview; node 20 for the pure-logic harness (`ci/run-tests.js`).
 - **Scratch files go in `/tmp/agent-scratch`**, never in `$TMPDIR` — a script
   under the sandbox temp directory is silently not executed.
 - **Comments explain why, not what**, matching the surrounding code.
+- **ES6 classes for every PJSR subclass**: `class extends Dialog`, `super()`.
+  The `this.__base__` pattern is rejected under V8 and Loom already uses the
+  class form (`script/lib/UI.js:89`).
+- **V8 enums, not the legacy underscore constants.** Verified in the running
+  instance: `FocusStyle_Click`, `KeyModifier_Shift`, `Key_Left` and
+  `DataType_ByteArray` are all **undefined**; use `FocusStyle.Click`,
+  `KeyModifier.Shift`, `KeyCode.Left` and `DataType.ByteArray`.
+- **A namespace is `var X = {};`**, matching `Util` and `Steps`.
 - **PSF SNR is measurement column 28.** Not 8. See Task 3.
 
 ---
@@ -85,8 +93,6 @@ duplicate's pixels, renders it once, and shows it in a pannable control:
 ```javascript
 #engine v8
 #include <pjsr/UndoFlag.jsh>
-#include <pjsr/Sizer.jsh>
-#include <pjsr/FrameStyle.jsh>
 
 #define SUB "/Volumes/A008/Elephant Trunk/calibrated/Light_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-G_mono_DAY-11 - Pinnacles"
 
@@ -126,10 +132,11 @@ function stretchedBitmap( win )
    return bmp;
 }
 
-function PreviewDialog( bmp )
+var PreviewDialog = class extends Dialog
 {
-   this.__base__ = Dialog;
-   this.__base__();
+   constructor( bmp )
+   {
+   super();
    var self = this;
    this.bmp = bmp;
    this.ox = 0; this.oy = 0;          // top-left of the visible region
@@ -137,7 +144,7 @@ function PreviewDialog( bmp )
 
    this.view = new Control( this );
    this.view.setScaledMinSize( 600, 400 );
-   this.view.focusStyle = FocusStyle_Click;   // arrows need focus
+   this.view.focusStyle = FocusStyle.Click;   // arrows need focus
    this.view.onPaint = function()
    {
       var g = new Graphics( this );
@@ -159,11 +166,11 @@ function PreviewDialog( bmp )
    };
    this.view.onKeyPress = function( key, mod )
    {
-      var step = ( mod & KeyModifier_Shift ) ? this.width : Math.round( this.width/4 );
-      if ( key == Key_Left  ) { self.pan( -step, 0 ); return true; }
-      if ( key == Key_Right ) { self.pan(  step, 0 ); return true; }
-      if ( key == Key_Up    ) { self.pan( 0, -step ); return true; }
-      if ( key == Key_Down  ) { self.pan( 0,  step ); return true; }
+      var step = ( mod & KeyModifier.Shift ) ? this.width : Math.round( this.width/4 );
+      if ( key == KeyCode.Left  ) { self.pan( -step, 0 ); return true; }
+      if ( key == KeyCode.Right ) { self.pan(  step, 0 ); return true; }
+      if ( key == KeyCode.Up    ) { self.pan( 0, -step ); return true; }
+      if ( key == KeyCode.Down  ) { self.pan( 0,  step ); return true; }
       return false;                       // MUST consume handled keys only
    };
    this.pan = function( dx, dy )
@@ -177,8 +184,8 @@ function PreviewDialog( bmp )
    this.sizer.add( this.view );
    this.windowTitle = "preview prototype";
    this.adjustToContents();
-}
-PreviewDialog.prototype = new Dialog;
+   }
+};
 
 try
 {
@@ -258,7 +265,7 @@ Add to `runTests()` in `script/selftest.js`, immediately before the closing
     * Frame Selector. The decision logic is pure so that what chooses which
     * files to delete can be tested without a workspace.
     */
-   check( "Frames loads", typeof Frames, "object" );
+   check( "Frames loads", typeof Frames, "object" );   // var Frames = {}
    check( "and declares the version its numbers came from",
           Frames.MEASURE_VERSION, "v1" );
 ```
@@ -289,7 +296,7 @@ Expected: `FAILED TO LOAD` or `Frames loads: expected "object", got "undefined"`
  * The PixInsight half lives in script/FrameSelector.js.
  */
 
-function Frames() {}
+var Frames = {};
 
 /*
  * Bumped when the meaning of a stored measurement changes. A cached number
@@ -309,15 +316,33 @@ const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
                "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
 ```
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 5: Wire it into the PixInsight harness too**
+
+The node loader is not the only one. In `script/selftest.js`, add the include
+beside the others (after `lib/Steps.js`):
+
+```javascript
+#include "lib/Frames.js"
+```
+
+Without this the suite passes under node and fails in PixInsight with
+`Frames is not defined` — the two harnesses load libraries by different
+mechanisms and a library must be added to both.
+
+- [ ] **Step 6: Run both**
 
 ```bash
 node ci/run-tests.js
+rm -f /tmp/agent-scratch/lhso-selftest.txt
+/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
+  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
+head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
 
-Expected: PASS, two more assertions than before.
+Expected: both PASS, two more assertions than before.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add script/lib/Frames.js ci/run-tests.js script/selftest.js
@@ -377,8 +402,23 @@ git commit -m "Add the Frame Selector's decision library"
     * moves lands outside the range for its slot. Used by the PixInsight
     * fixture test.
     */
-   check( "FWHM and star count ranges cannot be confused",
-          Frames.PLAUSIBLE.fwhm.hi < Frames.PLAUSIBLE.stars.lo, true );
+   /*
+    * Every pair must be disjoint, not just one pair: the check exists to
+    * fail when two columns are swapped, and it can only do that if no
+    * metric's range contains another's.
+    */
+   check( "no two metric ranges overlap",
+          ( function()
+            {
+               var names = Frames.METRIC_RANGE_ORDER;
+               for ( var i = 0; i + 1 < names.length; ++i )
+               {
+                  var a = Frames.PLAUSIBLE[names[i]], b = Frames.PLAUSIBLE[names[i+1]];
+                  if ( !( a.hi < b.lo ) )
+                     return names[i] + " overlaps " + names[i+1];
+               }
+               return "disjoint";
+            } )(), "disjoint" );
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -424,12 +464,22 @@ Frames.metricsFromRow = function( row )
  * column still MEANS what it is read as. Deliberately non-overlapping
  * between metrics, so a reordered table puts a value outside its range.
  */
+/*
+ * These must not overlap, or the check they exist for cannot fail. An
+ * earlier draft had psfSNR spanning 1..1e9, which CONTAINS the whole star
+ * range -- swapping stars 10029 with PSF SNR 25502 passed both tests and
+ * proved nothing. The bounds below come from measurements of real
+ * subframes on this rig and are deliberately tight.
+ */
 Frames.PLAUSIBLE = {
-   fwhm:         { lo: 0.5,  hi: 60 },
-   eccentricity: { lo: 0,    hi: 1 },
-   stars:        { lo: 100,  hi: 500000 },
-   psfSNR:       { lo: 1,    hi: 1e9 }
+   fwhm:         { lo: 0.5,   hi: 30 },        // pixels
+   eccentricity: { lo: 0.01,  hi: 0.95 },      // a fraction, never 0 or 1
+   stars:        { lo: 200,   hi: 200000 },    // counts
+   psfSNR:       { lo: 200000, hi: 1e9 }       // far above any star count
 };
+
+/* Ascending and disjoint, so the overlap check can walk them in order. */
+Frames.METRIC_RANGE_ORDER = [ "eccentricity", "fwhm", "stars", "psfSNR" ];
 
 Frames.metricInRange = function( name, value )
 {
@@ -1201,6 +1251,15 @@ git commit -m "Decide a verdict, with the predicate stated per mode"
        */
       check( "an unreadable filter forms its own group",
              g[Frames.NO_FILTER].length, 1 );
+      /*
+       * And that group is never clipped. Without a filter there is no
+       * evidence the frames belong together, so "this night's worst" is
+       * meaningless over them -- they may be condemned by hand, never
+       * automatically.
+       */
+      check( "a group with no filter is never auto-rejected",
+             Frames.autoRejectAllowed( Frames.NO_FILTER ), false );
+      check( "a real filter is", Frames.autoRejectAllowed( "H" ), true );
 
       check( "a uniform group is comparable",
              Frames.comparability( g.H ).uniform, true );
@@ -1270,6 +1329,16 @@ Frames.groupByFilter = function( entries )
  * every metric. Any of those makes the channel's statistics meaningless, so
  * they are reported and Apply is blocked for that channel.
  */
+/*
+ * Frames with no readable FILTER are grouped so they can be SEEN, never so
+ * they can be clipped: there is no evidence they belong together, so the
+ * channel statistics that justify a deletion do not apply to them.
+ */
+Frames.autoRejectAllowed = function( filterKey )
+{
+   return filterKey != Frames.NO_FILTER;
+};
+
 Frames.comparability = function( group )
 {
    var problems = [];
@@ -1288,12 +1357,21 @@ Frames.comparability = function( group )
 
    if ( distinct( "exposure" ) > 1 )
       problems.push( "mixed exposure times" );
-   if ( distinct( "binning" ) > 1 )
+   if ( distinct( "binning" ) > 1 || distinct( "binningY" ) > 1 )
       problems.push( "mixed binning" );
+   if ( distinct( "imageType" ) > 1 )
+      problems.push( "mixed image types" );
    if ( distinct( "width" ) > 1 || distinct( "height" ) > 1 )
       problems.push( "mixed image geometry" );
    if ( distinct( "calibrated" ) > 1 )
       problems.push( "mixed calibration state" );
+   /*
+    * An ENTIRELY unknown calibration state is not uniformity, it is an
+    * absence of evidence. A group of raw and calibrated frames that all
+    * report "unknown" would otherwise pass the guard and be clipped.
+    */
+   if ( group[0].calibrated == "unknown" && distinct( "calibrated" ) == 1 )
+      problems.push( "calibration state unknown for every frame" );
 
    return { uniform: problems.length == 0, problems: problems };
 };
@@ -1316,172 +1394,7 @@ git commit -m "Group by filter, and notice when a group is not comparable"
 
 ---
 
-### Task 9: The manifest and its lifecycle
-
-**Files:**
-- Modify: `script/lib/Frames.js`
-- Modify: `script/selftest.js`
-
-**Interfaces:**
-- Consumes: `Frames.STATE`
-- Produces:
-  - `Frames.buildManifest( rows )` → `{ entries: [...], created: Number }`
-  - `Frames.manifestPending( manifest )` → `[entry]`
-  - `Frames.recordOutcome( manifest, path, outcome, detail )` → mutates in place
-  - `Frames.identityMatches( entry, current )` → Boolean
-
-- [ ] **Step 1: Write the failing tests**
-
-```javascript
-   ( function()
-   {
-      var rows = [
-         { path: "/m/a.xisf", state: Frames.STATE.REJECTED, reasons: [ "FWHM" ],
-           digest: "aaa", size: 100, mtime: 5 },
-         { path: "/m/b.xisf", state: Frames.STATE.APPROVED, reasons: [],
-           digest: "bbb", size: 100, mtime: 5 },
-         { path: "/m/c.xisf", state: Frames.STATE.UNMEASURABLE, reasons: [],
-           digest: "ccc", size: 100, mtime: 5 } ];
-      var man = Frames.buildManifest( rows );
-      /*
-       * Only rejected frames are actionable. An unmeasurable frame is never
-       * deleted automatically -- there is no measurement behind the verdict.
-       */
-      check( "only rejected frames enter the manifest", man.entries.length, 1 );
-      check( "and it is the rejected one", man.entries[0].path, "/m/a.xisf" );
-      check( "carrying the digest taken at measurement",
-             man.entries[0].digest, "aaa" );
-
-      check( "everything is pending before execution",
-             Frames.manifestPending( man ).length, 1 );
-      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
-      check( "a recorded outcome is no longer pending",
-             Frames.manifestPending( man ).length, 0 );
-      /*
-       * Resuming skips what is done. Recomputing instead would be iterative
-       * clipping: remove the worst frame and the survivors' MAD tightens, so
-       * the next pass takes the next-worst -- a frame nobody condemned.
-       */
-      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
-      check( "recording twice does not duplicate the entry", man.entries.length, 1 );
-   } )();
-
-   ( function()
-   {
-      var e = { path: "/m/a.xisf", digest: "aaa", size: 100, mtime: 5 };
-      check( "identity matches when the digest does",
-             Frames.identityMatches( e, { digest: "aaa", size: 100, mtime: 5 } ), true );
-      /*
-       * Path, size and mtime are all preservable by a replacement. The
-       * digest is what authorises a deletion.
-       */
-      check( "and fails when only the digest changed",
-             Frames.identityMatches( e, { digest: "zzz", size: 100, mtime: 5 } ), false );
-      check( "a missing current file never matches",
-             Frames.identityMatches( e, null ), false );
-   } )();
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-```bash
-node ci/run-tests.js
-```
-
-Expected: FAIL, `Frames.buildManifest is not a function`.
-
-- [ ] **Step 3: Implement**
-
-```javascript
-/*
- * The execution manifest: a copy of the review taken when Apply is
- * confirmed, immutable thereafter.
- *
- * Three layers keep this honest. The COHORT is the frames and their
- * measurements, fixed at scan time -- channel medians always come from it,
- * never from the survivors of a partial run. The REVIEW is verdicts, knobs
- * and overrides, freely editable and worth nothing until committed. The
- * MANIFEST is what executes.
- *
- * Without that separation, retrying after a partial run recomputes the
- * statistics over the survivors, which is iterative clipping: the MAD
- * tightens with every deletion and the next pass condemns a frame nobody
- * looked at.
- */
-Frames.buildManifest = function( rows )
-{
-   var entries = [];
-   for ( var i = 0; i < rows.length; ++i )
-   {
-      var r = rows[i];
-      /*
-       * The FINAL state, so a rescued frame is not deleted and a condemned
-       * one is. Reading r.state here instead would silently ignore every
-       * hand decision.
-       */
-      if ( Frames.finalState( r.state, r.override ) != Frames.STATE.REJECTED )
-         continue;
-      entries.push( { path: r.path, digest: r.digest, size: r.size,
-                      mtime: r.mtime, reasons: r.reasons || [],
-                      outcome: null, detail: "" } );
-   }
-   return { entries: entries, created: Date.now() };
-};
-
-Frames.manifestPending = function( manifest )
-{
-   var out = [];
-   for ( var i = 0; i < manifest.entries.length; ++i )
-      if ( manifest.entries[i].outcome == null )
-         out.push( manifest.entries[i] );
-   return out;
-};
-
-Frames.recordOutcome = function( manifest, path, outcome, detail )
-{
-   for ( var i = 0; i < manifest.entries.length; ++i )
-      if ( manifest.entries[i].path == path )
-      {
-         manifest.entries[i].outcome = outcome;
-         manifest.entries[i].detail = detail || "";
-         return;
-      }
-};
-
-/*
- * Identity is the digest. Path, size and modification time are all
- * preservable by a replacement, so none of them authorises a deletion.
- *
- * This does NOT close the window between the check and the unlink -- nothing
- * in PJSR locks a file. It narrows it to microseconds; the audit log is what
- * survives if something slips through.
- */
-Frames.identityMatches = function( entry, current )
-{
-   return current != null && entry != null &&
-          current.digest === entry.digest &&
-          current.size === entry.size;
-};
-```
-
-- [ ] **Step 4: Run to verify it passes**
-
-```bash
-node ci/run-tests.js
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add script/lib/Frames.js script/selftest.js
-git commit -m "Freeze decisions in a manifest so a retry cannot clip twice"
-```
-
----
-
-### Task 10: Manual overrides
+### Task 9: Manual overrides
 
 The spec gives overrides their own rules — they outrank the formula, they are
 counted separately, they survive a knob change — and every one of those is
@@ -1634,6 +1547,235 @@ git commit -m "Let a hand decision outrank the formula, and count it separately"
 
 ---
 
+### Task 10: The manifest and its lifecycle
+
+**Files:**
+- Modify: `script/lib/Frames.js`
+- Modify: `script/selftest.js`
+
+**Interfaces:**
+- Consumes: `Frames.STATE`, `Frames.finalState` (Task 9 — the manifest reads
+  the FINAL state, so overrides must already exist)
+- Produces:
+  - `Frames.PHASE = { REVIEW: "review", EXECUTING: "executing", STOPPED: "stopped", DONE: "done" }`
+  - `Frames.canEdit( phase )` → Boolean
+  - `Frames.nextPhase( phase, event )` → a phase, or null when the transition
+    is not allowed
+  - `Frames.buildManifest( rows )` → `{ entries: [...], created: Number }`
+  - `Frames.manifestPending( manifest )` → `[entry]`
+  - `Frames.recordOutcome( manifest, path, outcome, detail )` → mutates in place
+  - `Frames.identityMatches( entry, current )` → Boolean
+
+- [ ] **Step 1: Write the failing tests**
+
+```javascript
+   ( function()
+   {
+      var rows = [
+         { path: "/m/a.xisf", state: Frames.STATE.REJECTED, reasons: [ "FWHM" ],
+           digest: "aaa", size: 100, mtime: 5 },
+         { path: "/m/b.xisf", state: Frames.STATE.APPROVED, reasons: [],
+           digest: "bbb", size: 100, mtime: 5 },
+         { path: "/m/c.xisf", state: Frames.STATE.UNMEASURABLE, reasons: [],
+           digest: "ccc", size: 100, mtime: 5 } ];
+      var man = Frames.buildManifest( rows );
+      /*
+       * Only rejected frames are actionable. An unmeasurable frame is never
+       * deleted automatically -- there is no measurement behind the verdict.
+       */
+      check( "only rejected frames enter the manifest", man.entries.length, 1 );
+      check( "and it is the rejected one", man.entries[0].path, "/m/a.xisf" );
+      check( "carrying the digest taken at measurement",
+             man.entries[0].digest, "aaa" );
+
+      /*
+    * The lifecycle, as a state machine rather than a paragraph. The review
+    * is editable only in REVIEW: otherwise a knob change could alter the
+    * decisions of a manifest that is already deleting files.
+    */
+   check( "the review starts editable", Frames.canEdit( Frames.PHASE.REVIEW ), true );
+   check( "and is locked while executing",
+          Frames.canEdit( Frames.PHASE.EXECUTING ), false );
+   check( "a stopped run is still locked",
+          Frames.canEdit( Frames.PHASE.STOPPED ), false );
+   check( "committing enters execution",
+          Frames.nextPhase( Frames.PHASE.REVIEW, "commit" ), Frames.PHASE.EXECUTING );
+   check( "a stopped run may be resumed",
+          Frames.nextPhase( Frames.PHASE.STOPPED, "resume" ), Frames.PHASE.EXECUTING );
+   check( "or abandoned, which is the only way back to editing",
+          Frames.nextPhase( Frames.PHASE.STOPPED, "abandon" ), Frames.PHASE.REVIEW );
+   /*
+    * There is no edit transition out of EXECUTING, and no second commit:
+    * pressing Apply twice must not run two manifests over one cohort.
+    */
+   check( "a second commit while executing is refused",
+          Frames.nextPhase( Frames.PHASE.EXECUTING, "commit" ), null );
+
+   check( "everything is pending before execution",
+             Frames.manifestPending( man ).length, 1 );
+      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
+      check( "a recorded outcome is no longer pending",
+             Frames.manifestPending( man ).length, 0 );
+      /*
+       * Resuming skips what is done. Recomputing instead would be iterative
+       * clipping: remove the worst frame and the survivors' MAD tightens, so
+       * the next pass takes the next-worst -- a frame nobody condemned.
+       */
+      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
+      check( "recording twice does not duplicate the entry", man.entries.length, 1 );
+   } )();
+
+   ( function()
+   {
+      var e = { path: "/m/a.xisf", digest: "aaa", size: 100, mtime: 5 };
+      check( "identity matches when the digest does",
+             Frames.identityMatches( e, { digest: "aaa", size: 100, mtime: 5 } ), true );
+      /*
+       * Path, size and mtime are all preservable by a replacement. The
+       * digest is what authorises a deletion.
+       */
+      check( "and fails when only the digest changed",
+             Frames.identityMatches( e, { digest: "zzz", size: 100, mtime: 5 } ), false );
+      check( "a missing current file never matches",
+             Frames.identityMatches( e, null ), false );
+   } )();
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+node ci/run-tests.js
+```
+
+Expected: FAIL, `Frames.buildManifest is not a function`.
+
+- [ ] **Step 3: Implement**
+
+```javascript
+/*
+ * The execution manifest: a copy of the review taken when Apply is
+ * confirmed, immutable thereafter.
+ *
+ * Three layers keep this honest. The COHORT is the frames and their
+ * measurements, fixed at scan time -- channel medians always come from it,
+ * never from the survivors of a partial run. The REVIEW is verdicts, knobs
+ * and overrides, freely editable and worth nothing until committed. The
+ * MANIFEST is what executes.
+ *
+ * Without that separation, retrying after a partial run recomputes the
+ * statistics over the survivors, which is iterative clipping: the MAD
+ * tightens with every deletion and the next pass condemns a frame nobody
+ * looked at.
+ */
+/*
+ * The execution lifecycle. Written as a table because the prose version of
+ * this ("decisions are frozen") did not say what happens when someone edits
+ * a knob after a partial run, and that is exactly the case that would
+ * reintroduce iterative clipping.
+ */
+Frames.PHASE = { REVIEW: "review", EXECUTING: "executing",
+                 STOPPED: "stopped", DONE: "done" };
+
+Frames.canEdit = function( phase ) { return phase == Frames.PHASE.REVIEW; };
+
+Frames.nextPhase = function( phase, event )
+{
+   var T = {};
+   T[Frames.PHASE.REVIEW]    = { commit: Frames.PHASE.EXECUTING };
+   T[Frames.PHASE.EXECUTING] = { stop: Frames.PHASE.STOPPED,
+                                 finish: Frames.PHASE.DONE };
+   T[Frames.PHASE.STOPPED]   = { resume: Frames.PHASE.EXECUTING,
+                                 abandon: Frames.PHASE.REVIEW };
+   T[Frames.PHASE.DONE]      = { review: Frames.PHASE.REVIEW };
+   var row = T[phase] || {};
+   return ( row[event] != null ) ? row[event] : null;
+};
+
+Frames.buildManifest = function( rows )
+{
+   var entries = [];
+   for ( var i = 0; i < rows.length; ++i )
+   {
+      var r = rows[i];
+      /*
+       * The FINAL state, so a rescued frame is not deleted and a condemned
+       * one is. Reading r.state here instead would silently ignore every
+       * hand decision.
+       */
+      if ( Frames.finalState( r.state, r.override ) != Frames.STATE.REJECTED )
+         continue;
+      /*
+       * A SNAPSHOT, deep-copied. Sharing the review's reasons array would
+       * let a later edit change what the "frozen" manifest says, and the
+       * audit record must survive the review being edited.
+       *
+       * The automatic verdict and the override are both recorded: if a
+       * rescued frame later turns out to have been the bad one, the log
+       * says who chose it.
+       */
+      entries.push( { path: r.path, channel: r.channel || "",
+                      digest: r.digest, size: r.size, mtime: r.mtime,
+                      autoVerdict: r.state,
+                      override: r.override || null,
+                      reasons: ( r.reasons || [] ).slice(),
+                      outcome: null, detail: "" } );
+   }
+   return { entries: entries, created: Date.now() };
+};
+
+Frames.manifestPending = function( manifest )
+{
+   var out = [];
+   for ( var i = 0; i < manifest.entries.length; ++i )
+      if ( manifest.entries[i].outcome == null )
+         out.push( manifest.entries[i] );
+   return out;
+};
+
+Frames.recordOutcome = function( manifest, path, outcome, detail )
+{
+   for ( var i = 0; i < manifest.entries.length; ++i )
+      if ( manifest.entries[i].path == path )
+      {
+         manifest.entries[i].outcome = outcome;
+         manifest.entries[i].detail = detail || "";
+         return;
+      }
+};
+
+/*
+ * Identity is the digest. Path, size and modification time are all
+ * preservable by a replacement, so none of them authorises a deletion.
+ *
+ * This does NOT close the window between the check and the unlink -- nothing
+ * in PJSR locks a file. It narrows it to microseconds; the audit log is what
+ * survives if something slips through.
+ */
+Frames.identityMatches = function( entry, current )
+{
+   return current != null && entry != null &&
+          current.digest === entry.digest &&
+          current.size === entry.size;
+};
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+```bash
+node ci/run-tests.js
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add script/lib/Frames.js script/selftest.js
+git commit -m "Freeze decisions in a manifest so a retry cannot clip twice"
+```
+
+---
+
 ### Task 11: The SubframeSelector driver
 
 **Files:**
@@ -1643,7 +1785,9 @@ git commit -m "Let a hand decision outrank the formula, and count it separately"
 **Interfaces:**
 - Consumes: `Frames.COL`, `Frames.metricsFromRow`, `Frames.metricInRange`
 - Produces:
-  - `FrameSelector.measure( paths )` → `{ <path>: metrics }`, missing paths absent
+  - `FrameSelector.measure( paths )` → `{ <path>: metrics }` with missing paths
+    absent, or **`null`** when the channel must be abandoned (an unexpected or
+    duplicated result path)
   - `FrameSelector.MEASURE_ROUTINE = 0`
 
 - [ ] **Step 1: Write the failing test**
@@ -1657,9 +1801,15 @@ Inside the `IN_PIXINSIGHT` block in `script/selftest.js`:
        * === 28 passes unchanged after the process reorders its table -- so
        * the ranges are checked instead, and they do not overlap.
        */
+      /*
+       * A missing fixture must FAIL, not skip. An assertion that silently
+       * disappears when a path is absent is how column-meaning coverage
+       * evaporates on another machine.
+       */
       var fixture = Steps.firstExistingPath( [
          "/Volumes/A008/Elephant Trunk/master/" +
          "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-R_mono_drizzle_2x_(1)_autocrop.xisf" ] );
+      check( "the measurement fixture is present", fixture != null, true );
       if ( fixture != null )
       {
          var measured = FrameSelector.measure( [ fixture ] );
@@ -1675,6 +1825,16 @@ Inside the `IN_PIXINSIGHT` block in `script/selftest.js`:
                    Frames.metricInRange( "psfSNR", m.psfSNR ), true );
             check( "eccentricity is a fraction",
                    Frames.metricInRange( "eccentricity", m.eccentricity ), true );
+            /*
+             * And prove the check can fail: put the star count where PSF SNR
+             * is read from and the range test must reject it. Without this
+             * the four assertions above could all pass on ranges too loose
+             * to discriminate.
+             */
+            check( "a star count in the PSF SNR slot is rejected",
+                   Frames.metricInRange( "psfSNR", m.stars ), false );
+            check( "and an FWHM in the star slot",
+                   Frames.metricInRange( "stars", m.fwhm ), false );
          }
       }
 ```
@@ -1703,8 +1863,7 @@ Create `script/FrameSelector.js`:
                removes the ones this night's own statistics condemn.
 
 #include <pjsr/UndoFlag.jsh>
-#include <pjsr/Sizer.jsh>
-#include <pjsr/FrameStyle.jsh>
+#include <pjsr/DataType.jsh>
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/CryptographicHash.jsh>
@@ -1736,21 +1895,31 @@ FrameSelector.MEASURE_ROUTINE = 0;
  * A path with no result row is simply absent from the returned map; the
  * caller turns that into an unmeasurable entry.
  */
+/*
+ * ONE place that configures the process, so the settings that produce a
+ * measurement and the settings that key its cache entry cannot drift apart.
+ */
+FrameSelector.newMeasureProcess = function()
+{
+   var P = new SubframeSelector;
+   P.routine = FrameSelector.MEASURE_ROUTINE;
+   P.nonInteractive = true;
+   P.subframeScale = 1;
+   P.scaleUnit = 0;
+   return P;
+};
+
 FrameSelector.measure = function( paths )
 {
    var out = {};
    if ( paths == null || paths.length == 0 )
       return out;
 
-   var P = new SubframeSelector;
+   var P = FrameSelector.newMeasureProcess();
    var rows = [];
    for ( var i = 0; i < paths.length; ++i )
       rows.push( [ true, paths[i], "", "" ] );   // four values per row, checked
    P.subframes = rows;
-   P.routine = FrameSelector.MEASURE_ROUTINE;
-   P.nonInteractive = true;
-   P.subframeScale = 1;
-   P.scaleUnit = 0;
 
    if ( !P.executeGlobal() )
    {
@@ -1760,15 +1929,30 @@ FrameSelector.measure = function( paths )
    if ( P.measurements == null )
       return out;
 
+   /*
+    * A result path must be one we ASKED for. Checking only for duplicates
+    * lets an unexpected path through, and an empty one be silently dropped
+    * -- either way the channel's statistics would be computed over a set
+    * that is not the set on screen.
+    */
+   var asked = {};
+   for ( var a = 0; a < paths.length; ++a )
+      asked[paths[a]] = true;
+
    for ( var r = 0; r < P.measurements.length; ++r )
    {
       var m = Frames.metricsFromRow( P.measurements[r] );
-      if ( m.path == null || m.path === "" )
-         continue;
+      if ( m.path == null || m.path === "" || !asked[m.path] )
+      {
+         Util.error( "frames", "SubframeSelector returned an unexpected path (" +
+                               m.path + "); abandoning this channel" );
+         return null;                    // null = the channel failed
+      }
       if ( out[m.path] != null )
       {
-         Util.warn( "frames", "two measurements for " + m.path + "; skipping the channel" );
-         return {};
+         Util.error( "frames", "two measurements for " + m.path +
+                               "; abandoning this channel" );
+         return null;
       }
       out[m.path] = m;
    }
@@ -1870,7 +2054,7 @@ FrameSelector.digest = function( path )
          return null;
       var f = new File;
       f.openForReading( path );
-      var bytes = f.read( DataType_ByteArray, f.size );
+      var bytes = f.read( DataType.ByteArray, f.size );
       f.close();
       return ( new CryptographicHash( CryptographicHash.SHA1 ) ).hash( bytes ).toHex();
    }
@@ -1963,9 +2147,25 @@ FrameSelector.saveTable = function()
  * file is not reused -- the numbers that produced a verdict always describe
  * the bytes that verdict will be applied to.
  */
+/*
+ * The configuration is part of the key, not just the bytes.
+ *
+ * A measurement taken under different SubframeSelector settings is not
+ * comparable with a fresh one, and WBPP folds SS.toSource() into its own
+ * measurement cache for exactly this reason. Without it, changing a setting
+ * silently reuses numbers taken under the old one.
+ */
+FrameSelector.configSignature = function()
+{
+   var P = FrameSelector.newMeasureProcess();
+   return ( new CryptographicHash( CryptographicHash.SHA1 ) )
+             .hash( ByteArray.stringToUTF8( P.toSource() ) ).toHex().substring( 0, 12 );
+};
+
 FrameSelector.measurementKey = function( identity )
 {
-   return Frames.MEASURE_VERSION + "|" + identity.digest;
+   return Frames.MEASURE_VERSION + "|" + FrameSelector.configSignature() +
+          "|" + identity.digest;
 };
 
 FrameSelector.cachedMeasurement = function( identity )
@@ -2007,7 +2207,171 @@ git commit -m "Key measurements by a whole-file digest, not by path"
 
 ---
 
-### Task 13: Deleting, with an audit log that precedes the unlink
+### Task 13: The scan, binding measurements to the bytes measured
+
+Without this, nothing guarantees that the metrics behind a verdict describe the
+file the verdict is applied to. Measure A, have it replaced by B, fingerprint B,
+and the manifest would authorise deleting B on A's numbers.
+
+**Files:**
+- Modify: `script/FrameSelector.js`
+- Modify: `script/selftest.js`
+
+**Interfaces:**
+- Consumes: `FrameSelector.measure`, `FrameSelector.fileIdentity`,
+  `FrameSelector.cachedMeasurement`, `Frames.groupByFilter`
+- Produces:
+  - `FrameSelector.scan( folder )` → `{ channels: { <filter>: { entries, metrics, problems } }, unstable: [path] }`
+
+- [ ] **Step 1: Write the failing test**
+
+Inside `IN_PIXINSIGHT`, using copies in scratch:
+
+```javascript
+      ( function()
+      {
+         var dir = "/tmp/agent-scratch/fs-scan-test";
+         if ( !File.directoryExists( dir ) )
+            File.createDirectory( dir, true );
+         var p = dir + "/unstable.txt";
+         File.writeTextFile( p, "first" );
+         var before = FrameSelector.fileIdentity( p );
+         File.writeTextFile( p, "secnd" );        // same length, new content
+         var after = FrameSelector.fileIdentity( p );
+         /*
+          * The identity check the scan relies on must notice a replacement
+          * that preserves the length -- which is the only kind that matters,
+          * because a size change would be caught anyway.
+          */
+         check( "a same-length replacement changes identity",
+                before.digest != after.digest, true );
+         File.remove( p );
+      } )();
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+```bash
+rm -f /tmp/agent-scratch/lhso-selftest.txt
+/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
+  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
+head -4 /tmp/agent-scratch/lhso-selftest.txt
+```
+
+Expected: FAIL until Task 12's `fileIdentity` is present; if Task 12 is done it
+passes immediately and the real work is Step 3.
+
+- [ ] **Step 3: Implement the scan**
+
+```javascript
+/*
+ * Fingerprint, measure, fingerprint again.
+ *
+ * A frame whose identity differs across the measurement is UNSTABLE: something
+ * rewrote it while we were reading it, so its numbers describe bytes that are
+ * no longer there. It is excluded from the cohort entirely rather than being
+ * shown with numbers that cannot be acted on.
+ */
+FrameSelector.scan = function( folder )
+{
+   var paths = [], find = new FileFind;
+   if ( find.begin( folder + "/*" ) )
+      do
+      {
+         if ( find.isFile && /\.(xisf|fits?|fit)$/i.test( find.name ) )
+            paths.push( folder + "/" + find.name );
+      }
+      while ( find.next() );
+
+   var before = {}, entries = [];
+   for ( var i = 0; i < paths.length; ++i )
+   {
+      var id = FrameSelector.fileIdentity( paths[i] );
+      if ( id == null )
+         continue;
+      before[paths[i]] = id;
+      var e = FrameSelector.entryFor( paths[i] );
+      e.identity = id;
+      entries.push( e );
+   }
+
+   var groups = Frames.groupByFilter( entries );
+   var channels = {}, unstable = [];
+
+   var keys = Object.keys( groups );
+   for ( var g = 0; g < keys.length; ++g )
+   {
+      var group = groups[keys[g]], need = [], metrics = {};
+      for ( var j = 0; j < group.length; ++j )
+      {
+         var cached = FrameSelector.cachedMeasurement( group[j].identity );
+         if ( cached != null )
+            metrics[group[j].path] = cached;
+         else
+            need.push( group[j].path );
+      }
+      if ( need.length > 0 )
+      {
+         var measured = FrameSelector.measure( need );
+         if ( measured == null )          // the channel was abandoned
+         {
+            channels[keys[g]] = { entries: group, metrics: {},
+                                  problems: [ "measurement failed" ] };
+            continue;
+         }
+         for ( var k = 0; k < need.length; ++k )
+         {
+            var path = need[k];
+            var now = FrameSelector.fileIdentity( path );
+            if ( now == null || now.digest != before[path].digest )
+            {
+               unstable.push( path );
+               continue;                  // measured bytes are gone
+            }
+            if ( measured[path] != null )
+            {
+               /* stored without the path: identical bytes elsewhere must not
+                  come back naming the first file */
+               var m = measured[path];
+               var stored = { fwhm: m.fwhm, eccentricity: m.eccentricity,
+                              noise: m.noise, stars: m.stars, psfSNR: m.psfSNR };
+               FrameSelector.storeMeasurement( before[path], stored );
+               metrics[path] = stored;
+            }
+         }
+      }
+      var cmp = Frames.comparability( group );
+      channels[keys[g]] = { entries: group, metrics: metrics,
+                            problems: cmp.problems };
+   }
+   return { channels: channels, unstable: unstable };
+};
+```
+
+- [ ] **Step 4: Run both suites**
+
+```bash
+node ci/run-tests.js
+rm -f /tmp/agent-scratch/lhso-selftest.txt
+/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
+  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
+head -4 /tmp/agent-scratch/lhso-selftest.txt
+```
+
+Expected: both PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add script/FrameSelector.js script/selftest.js
+git commit -m "Scan by fingerprinting around the measurement"
+```
+
+---
+
+### Task 14: Deleting, with an audit log that precedes the unlink
 
 **Files:**
 - Modify: `script/FrameSelector.js`
@@ -2126,9 +2490,38 @@ FrameSelector.writeManifestLog = function( manifest, path )
  * the log cannot be written, nothing is deleted: an unrecorded deletion is
  * worse than a deferred one.
  */
+/*
+ * Append one entry's fate to the journal and flush it. Returns false if the
+ * record could not be written, which stops the run.
+ */
+FrameSelector.appendOutcome = function( logPath, manifest, path )
+{
+   try
+   {
+      var e = null;
+      for ( var i = 0; i < manifest.entries.length; ++i )
+         if ( manifest.entries[i].path == path )
+            { e = manifest.entries[i]; break; }
+      if ( e == null )
+         return false;
+      var f = new File;
+      f.openForReadWrite( logPath );
+      f.seekEnd();
+      f.outTextLn( e.outcome + "\t" + e.path + "\t" + e.digest + "\t" + e.detail );
+      f.flush();
+      f.close();
+      return true;
+   }
+   catch ( ex )
+   {
+      Util.error( "frames", "could not append to the journal: " + ex );
+      return false;
+   }
+};
+
 FrameSelector.execute = function( manifest )
 {
-   var result = { deleted: 0, skipped: 0, failed: 0 };
+   var result = { deleted: 0, skipped: 0, failed: 0, stopped: false };
    var pending = Frames.manifestPending( manifest );
    if ( pending.length == 0 )
       return result;
@@ -2151,8 +2544,17 @@ FrameSelector.execute = function( manifest )
                                "changed on disk since it was measured" );
          Util.warn( "frames", "skipped " + e.path + ": it changed since measurement" );
          ++result.skipped;
+         if ( !FrameSelector.appendOutcome( logPath, manifest, e.path ) )
+            { result.stopped = true; return result; }
          continue;
       }
+      /*
+       * Journalled one entry at a time, before moving on. Writing every
+       * outcome at the END loses the whole record if the run is interrupted
+       * mid-way -- which is precisely when the record is needed. If the
+       * journal cannot be appended, the run STOPS: continuing would delete
+       * files nothing is recording.
+       */
       try
       {
          File.remove( e.path );
@@ -2164,20 +2566,13 @@ FrameSelector.execute = function( manifest )
          Frames.recordOutcome( manifest, e.path, "failed", String( ex ) );
          ++result.failed;
       }
+      if ( !FrameSelector.appendOutcome( logPath, manifest, e.path ) )
+      {
+         Util.error( "frames", "stopping: the journal could not be appended" );
+         result.stopped = true;
+         return result;
+      }
    }
-
-   var done = [];
-   for ( var j = 0; j < manifest.entries.length; ++j )
-   {
-      var m = manifest.entries[j];
-      done.push( m.path + "\t" + ( m.outcome || "pending" ) + "\t" + m.detail );
-   }
-   try
-   {
-      File.writeTextFile( logPath + ".outcome",
-                          done.join( "\n" ) + "\n" );
-   }
-   catch ( e2 ) { Util.warn( "frames", "could not write the outcome log: " + e2 ); }
 
    Util.log( "frames", result.deleted + " deleted, " + result.skipped +
                        " skipped, " + result.failed + " failed; log " + logPath );
@@ -2211,7 +2606,7 @@ git commit -m "Delete only what the digest still matches, and log it first"
 
 ---
 
-### Task 14: The preview control
+### Task 15: The preview control
 
 **Files:**
 - Modify: `script/FrameSelector.js`
@@ -2239,7 +2634,7 @@ Inside `IN_PIXINSIGHT`:
              * Arrow keys must not reach the frame table underneath, so the
              * control takes focus on click and consumes the keys it handles.
              */
-            ok = ok && ( pv.focusStyle == FocusStyle_Click );
+            ok = ok && ( pv.focusStyle == FocusStyle.Click );
             ok = ok && ( typeof pv.load == "function" );
             ok = ok && ( typeof pv.dispose == "function" );
             /* Panning with nothing loaded must not throw. */
@@ -2282,10 +2677,11 @@ frame's window and bitmap held at a time.
  * a blit. Exactly one frame's window and bitmap are held: a 26 MP ARGB
  * bitmap is about 104 MB, and browsing a folder must not accumulate them.
  */
-FrameSelector.PreviewControl = function( parent )
+FrameSelector.PreviewControl = class extends Control
 {
-   this.__base__ = Control;
-   this.__base__( parent );
+   constructor( parent )
+   {
+   super( parent );
 
    var self = this;
    this.bmp = null;
@@ -2297,7 +2693,7 @@ FrameSelector.PreviewControl = function( parent )
    this.ly = 0;
 
    this.setScaledMinSize( 420, 360 );
-   this.focusStyle = FocusStyle_Click;     // arrows need focus; a click gives it
+   this.focusStyle = FocusStyle.Click;     // arrows need focus; a click gives it
 
    this.dispose = function()
    {
@@ -2403,19 +2799,19 @@ FrameSelector.PreviewControl = function( parent )
     */
    this.onKeyPress = function( key, modifiers )
    {
-      var step = ( modifiers & KeyModifier_Shift ) ? this.width
+      var step = ( modifiers & KeyModifier.Shift ) ? this.width
                                                    : Math.round( this.width/4 );
-      if ( key == Key_Left  ) { self.pan( -step, 0 ); return true; }
-      if ( key == Key_Right ) { self.pan(  step, 0 ); return true; }
-      if ( key == Key_Up    ) { self.pan( 0, -step ); return true; }
-      if ( key == Key_Down  ) { self.pan( 0,  step ); return true; }
+      if ( key == KeyCode.Left  ) { self.pan( -step, 0 ); return true; }
+      if ( key == KeyCode.Right ) { self.pan(  step, 0 ); return true; }
+      if ( key == KeyCode.Up    ) { self.pan( 0, -step ); return true; }
+      if ( key == KeyCode.Down  ) { self.pan( 0,  step ); return true; }
       return false;
    };
 
    this.onMouseWheel = function( x, y, delta )
    { self.setFit( !self.fit ); return true; };
+   }
 };
-FrameSelector.PreviewControl.prototype = new Control;
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -2440,7 +2836,7 @@ git commit -m "Add the 1:1 preview, stretching pixels because render ignores an 
 
 ---
 
-### Task 15: The dialog
+### Task 16: The dialog
 
 **Files:**
 - Modify: `script/FrameSelector.js`
@@ -2535,7 +2931,7 @@ git commit -m "Add the review dialog, locked while an execution runs"
 
 ---
 
-### Task 16: Export to another folder
+### Task 17: Export to another folder
 
 **Files:**
 - Modify: `script/FrameSelector.js`
@@ -2544,7 +2940,9 @@ git commit -m "Add the review dialog, locked while an execution runs"
 **Interfaces:**
 - Consumes: `Frames.STATE`
 - Produces:
-  - `FrameSelector.outputMapping( approved, destination )` → `{ mapping, collisions, aliased }`
+  - `Frames.outputMapping( approved, destination, extension )` → `{ mapping, collisions, aliased }`
+    — pure, so the collision rule is tested under node, where `FrameSelector`
+    is never loaded
   - `FrameSelector.exportApproved( approved, destination )` → `{ written, failed, skipped }`
 
 - [ ] **Step 1: Write the failing tests**
@@ -2562,12 +2960,12 @@ Pure, so outside `IN_PIXINSIGHT`:
        * channel. Writing both would leave one output and, if originals were
        * ever deleted, would destroy the frame that lost the race.
        */
-      var r = FrameSelector.outputMapping(
-         [ "/a/Light_0001_c.xisf", "/b/Light_0001_c.xisf" ], "/dest" );
+      var r = Frames.outputMapping(
+         [ "/a/Light_0001_c.xisf", "/b/Light_0001_c.xisf" ], "/dest", ".xisf" );
       check( "a name collision is detected", r.collisions.length, 1 );
 
-      var ok = FrameSelector.outputMapping(
-         [ "/a/one.xisf", "/a/two.xisf" ], "/dest" );
+      var ok = Frames.outputMapping(
+         [ "/a/one.xisf", "/a/two.xisf" ], "/dest", ".xisf" );
       check( "distinct names map cleanly", ok.collisions.length, 0 );
       check( "and land in the destination",
              ok.mapping["/a/one.xisf"], "/dest/one.xisf" );
@@ -2577,7 +2975,15 @@ Pure, so outside `IN_PIXINSIGHT`:
        * and "the original" the same file.
        */
       check( "the destination may not be the source",
-             FrameSelector.outputMapping( [ "/a/one.xisf" ], "/a" ).aliased, true );
+             Frames.outputMapping( [ "/a/one.xisf" ], "/a", ".xisf" ).aliased, true );
+      /*
+       * The output EXTENSION is part of the mapping, because converting on
+       * output creates collisions the source names do not show: a.fit and
+       * a.xisf both become a.xisf.
+       */
+      check( "a conversion collision is detected",
+             Frames.outputMapping( [ "/a/one.fit", "/a/one.xisf" ],
+                                   "/dest", ".xisf" ).collisions.length, 1 );
    } )();
 ```
 
@@ -2652,7 +3058,7 @@ git commit -m "Map outputs before writing, and refuse a collision"
 
 ---
 
-### Task 17: Version gate, registration and documentation
+### Task 18: Version gate, registration and documentation
 
 **Files:**
 - Modify: `script/FrameSelector.js`
