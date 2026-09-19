@@ -5,6 +5,7 @@
 #include <pjsr/DataType.jsh>
 #include <pjsr/FrameStyle.jsh>
 #include <pjsr/StdButton.jsh>
+#include <pjsr/StdCursor.jsh>
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/TextAlign.jsh>
 
@@ -1659,6 +1660,41 @@ function runTests()
    check( "as is no measurement at all", Util.formatDelta( null ), "" );
 
    /*
+    * A scan of seven masters holds the dialog for two minutes, so the
+    * progress line has to say both what is being measured and how much of
+    * the wait is left. The count is what a spinner cannot give.
+    */
+   check( "a scan says what it is measuring and how far along it is",
+          Util.scanProgressMessage( "Measuring masters", "G", 3, 7 ),
+          "Measuring masters: G (3 of 7)" );
+   check( "the second measurement of a master says which one it is",
+          Util.scanProgressMessage( "Measuring masters", "G vs the previous stack", 3, 7 ),
+          "Measuring masters: G vs the previous stack (3 of 7)" );
+   check( "reading headers is a different action, same shape",
+          Util.scanProgressMessage( "Reading masters", "M31_G.xisf", 1, 4 ),
+          "Reading masters: M31_G.xisf (1 of 4)" );
+   /*
+    * Before the first master is reached there is nothing to count, and
+    * "(0 of 7)" reads as a stall rather than as a start.
+    */
+   check( "with nothing counted yet only the action is shown",
+          Util.scanProgressMessage( "Measuring masters", null, null, null ),
+          "Measuring masters" );
+   check( "an unknown channel does not leave a dangling colon",
+          Util.scanProgressMessage( "Measuring masters", "  ", 2, 5 ),
+          "Measuring masters (2 of 5)" );
+   check( "and a count with no total is no count",
+          Util.scanProgressMessage( "Measuring masters", "G", 2, 0 ),
+          "Measuring masters: G" );
+   /*
+    * The count is clamped because the alternative -- "8 of 7" -- reads as
+    * a bug at exactly the moment the user is watching the line.
+    */
+   check( "the count never overruns its total",
+          Util.scanProgressMessage( "Measuring masters", "G", 9, 7 ),
+          "Measuring masters: G (7 of 7)" );
+
+   /*
     * Alternatives are same channel AND same variant class: a drizzled
     * autocrop master is not comparable with a plain one, and ranking has
     * already decided which class is in play.
@@ -1692,6 +1728,24 @@ function runTests()
    check( "FWHM is column 5", Steps.SFS_FWHM, 5 );
    check( "eccentricity is column 6", Steps.SFS_ECCENTRICITY, 6 );
    check( "and routine 0 is the one that measures", Steps.SFS_MEASURE, 0 );
+
+   /*
+    * Run is disabled when there is nothing to run. A view that has since
+    * been closed is listed so its absence is visible, but it is not
+    * something to process -- a list of only those is empty in the only
+    * sense that matters.
+    */
+   check( "an empty list has nothing to run",
+          Util.runnableEntryCount( [] ), 0 );
+   check( "a missing list has nothing to run",
+          Util.runnableEntryCount( null ), 0 );
+   check( "two usable masters count",
+          Util.runnableEntryCount( [ { channel: "H" }, { channel: "O" } ] ), 2 );
+   check( "a closed view does not count",
+          Util.runnableEntryCount( [ { channel: "H", unavailable: true } ] ), 0 );
+   check( "and is not counted among usable ones",
+          Util.runnableEntryCount( [ { channel: "H" },
+                                     { channel: "O", unavailable: true } ] ), 1 );
 
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
@@ -3021,6 +3075,37 @@ function runTests()
              offState, false );
       check( "stretch-dependent controls are enabled when the stretch is on",
              onState, true );
+
+      /*
+       * Run must be dead while a scan measures, and alive again afterwards
+       * even if the scan threw -- a dialog left disabled can only be
+       * escaped by cancelling out of it.
+       */
+      var busyOK = true, busyErr = "";
+      var runDuring = null, runAfter = null, statusDuring = "";
+      try
+      {
+         var s = new UI.SelectDialog( cfg() );
+         try
+         {
+            s.setBusy( Util.scanProgressMessage( "Measuring masters", "G", 1, 3 ) );
+            runDuring = s.runButton.enabled;
+            statusDuring = s.status.text;
+            throw new Error( "scan failed" );
+         }
+         catch ( eScan ) {}
+         finally { s.setBusy( null ); }
+         runAfter = s.runButton.enabled;
+         busyOK = ( s.addMastersButton.enabled === true &&
+                    s.clearButton.enabled === true );
+      }
+      catch ( e3 ) { busyOK = false; busyErr = String( e3 ); }
+      check( "the busy state sets and clears without throwing" +
+             ( busyErr ? ": " + busyErr : "" ), busyOK, true );
+      check( "Run is dead while masters are being measured", runDuring, false );
+      check( "and alive again after a scan that threw", runAfter, true );
+      check( "and the progress line is on screen meanwhile",
+             statusDuring.indexOf( "1 of 3" ) >= 0, true );
 
       var cwOK = true, cwErr = "";
       try

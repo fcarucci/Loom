@@ -711,6 +711,45 @@ Util.formatDelta = function( pct )
    return ( pct > 0 ? "+" : "" ) + pct.toFixed( 0 ) + "%";
 };
 
+/*
+ * "Measuring masters: G (3 of 7)".
+ *
+ * A count, not a spinner. Each master costs a SubframeSelector execution
+ * of around sixteen seconds, so a folder of seven holds the dialog for two
+ * minutes; the only thing worth saying during that is how much of the wait
+ * is left. The count is per master rather than per folder, because a
+ * per-folder message never changes and so answers nothing.
+ */
+/*
+ * How many entries could actually be processed.
+ *
+ * A view that has since been closed is listed so its absence is visible,
+ * but it is not something to run on -- and a list made only of those is a
+ * list with nothing in it, however many rows it shows.
+ */
+Util.runnableEntryCount = function( entries )
+{
+   if ( entries == null )
+      return 0;
+   var n = 0;
+   for ( var i = 0; i < entries.length; ++i )
+      if ( entries[i] != null && !entries[i].unavailable )
+         ++n;
+   return n;
+};
+
+Util.scanProgressMessage = function( action, label, done, total )
+{
+   var text = String( action );
+   var name = ( label == null ) ? "" : String( label ).trim();
+   if ( name )
+      text += ": " + name;
+   var n = Number( done ), t = Number( total );
+   if ( isFinite( n ) && isFinite( t ) && n > 0 && t > 0 )
+      text += " (" + Math.min( n, t ) + " of " + t + ")";
+   return text;
+};
+
 Util.formatFileTime = function( ms )
 {
    if ( ms == null || !isFinite( ms ) || ms <= 0 )

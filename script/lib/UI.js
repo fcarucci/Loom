@@ -231,6 +231,8 @@ UI.SelectDialog = class extends Dialog
 
    // entries: { source:"file"|"view", ref:<path or view id>, filter, channel, instrume }
    this.entries = [];
+   /* No scan is running yet; Run's state is decided by updateRunEnabled. */
+   this.busy = false;
 
    /*
     * The title carries the version AND the commit: the updater installs
@@ -1382,6 +1384,71 @@ UI.SelectDialog = class extends Dialog
       this.rebuild();
    }
 
+   /*
+    * Marks the dialog busy while a scan measures masters, and says what it
+    * is doing.
+    *
+    * processEvents() is the whole point. A script owns PixInsight's main
+    * thread, so setting status.text during a minutes-long loop assigns the
+    * string and never paints it: the dialog shows the message it had when
+    * the scan started and looks like it has stopped responding.
+    *
+    * Run is disabled along with the list buttons because a scan leaves the
+    * list half built, and a run started over it silently uses whichever
+    * masters happened to be in place.
+    *
+    * A null message means no longer busy, and deliberately leaves
+    * status.text alone -- the caller replaces it with its own summary, and
+    * blanking it here would flash the label empty in between.
+    */
+   setBusy( message )
+   {
+      var busy = message != null;
+      this.busy = busy;
+      var buttons = [ this.addFilesButton, this.addMastersButton,
+                      this.addViewsButton, this.removeButton, this.clearButton ];
+      for ( var i = 0; i < buttons.length; ++i )
+         if ( buttons[i] != null )
+            buttons[i].enabled = !busy;
+      /*
+       * Run is not simply the inverse of busy: an empty list is also
+       * nothing to run. Deciding it in one place stops the two rules from
+       * fighting -- un-busying after a scan that added nothing must not
+       * re-enable Run.
+       */
+      this.updateRunEnabled();
+
+      /*
+       * Underscores, and from a header -- the exception to this engine's
+       * dot-form constants. There is no StdCursor object at all: these are
+       * preprocessor macros in pjsr/StdCursor.jsh, which the entry points
+       * include. Probed, because the dot form was the assumption and it
+       * throws through the Cursor( Bitmap ) overload rather than saying so.
+       */
+      this.cursor = new Cursor( busy ? StdCursor_Wait : StdCursor_Arrow );
+
+      if ( busy )
+         this.status.text = "<b>" + message + "</b>";
+      CoreApplication.processEvents();
+   }
+
+   /*
+    * Run is enabled only when there is something to run and nothing in
+    * progress. Pressing it with an empty list produced a validation box
+    * saying what the greyed-out button now says by itself.
+    */
+   updateRunEnabled()
+   {
+      if ( this.runButton == null )
+         return;
+      var n = Util.runnableEntryCount( this.entries );
+      this.runButton.enabled = !this.busy && n > 0;
+      this.runButton.toolTip = ( n > 0 )
+         ? "<p>Process the masters listed above.</p>"
+         : "<p>Add at least one master first \u2014 <b>Add Files</b>, " +
+           "<b>Scan Masters Folder</b> or <b>Add Open Views</b>.</p>";
+   }
+
    /* Reads FILTER/INSTRUME for a path and appends an entry. */
    /*
     * Scans a folder of WBPP masters and adds the best one per filter.
@@ -1486,68 +1553,89 @@ UI.SelectDialog = class extends Dialog
       // Phase 2: confirm the winners only.
       var confirmed = {}, opened = 0, corrected = [];
       var keys = Object.keys( picks );
-      for ( var i = 0; i < keys.length; ++i )
+      /*
+       * The candidate list is known before any measuring starts, so the
+       * wait can be counted out rather than merely spun. The finally is
+       * what keeps a failed read from leaving the dialog permanently
+       * disabled.
+       */
+      this.setBusy( Util.scanProgressMessage( "Measuring masters", null, null, null ) );
+      try
       {
-         var p = picks[keys[i]];
-         var info = null;
-         try { info = Pipeline.readImageInfo( p.path ); } catch ( e ) { info = null; }
-         ++opened;
-         if ( info == null )
-            continue;
-
-         var kws = info.keywords;
-         if ( !Util.isMasterLight( p.name, Util.keywordValue( kws, "IMAGETYP" ) ) )
+         for ( var i = 0; i < keys.length; ++i )
          {
-            ++skipped;
-            continue;
-         }
+            var p = picks[keys[i]];
+            var info = null;
+            try { info = Pipeline.readImageInfo( p.path ); } catch ( e ) { info = null; }
+            ++opened;
+            if ( info == null )
+               continue;
 
-         var filter = Util.keywordValue( kws, "FILTER" );
-         var channel = Util.channelFromFilter( filter );
-         if ( channel == null )
-            continue;
-         if ( channel != p.channel )
-            corrected.push( p.name + ": name says " + p.channel + ", header says " + channel );
+            var kws = info.keywords;
+            if ( !Util.isMasterLight( p.name, Util.keywordValue( kws, "IMAGETYP" ) ) )
+            {
+               ++skipped;
+               continue;
+            }
 
-         var entry = {
-            source: "file",
-            ref: p.path,
-            label: File.extractName( p.path ) + File.extractExtension( p.path ),
-            filter: filter,
-            instrume: Util.keywordValue( kws, "INSTRUME" ),
-            channel: channel,
-            width: info.width,
-            height: info.height,
-            drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ),
-            autocrop: p.autocrop,
-            mtime: p.mtime,
-            created: p.created,
-            /*
-             * Measured here, while the rejected variants of this channel
-             * are still known -- the comparison is against the stack this
-             * one displaced, and nothing downstream remembers there was
-             * one. Cached per file, so a folder is slow once.
-             */
-            quality: Steps.measureMasterFWHM( p.path ),
-            delta: null
-         };
-         var others = Util.sameChannelAlternatives( named, p, 1 );
-         if ( others.length > 0 )
-         {
-            var prev = Steps.measureMasterFWHM( others[0].path );
-            entry.delta = Util.qualityDelta( entry.quality, prev );
-            if ( entry.delta != null )
-               Util.log( "quality", p.channel + ": FWHM " +
-                  ( entry.quality ? entry.quality.fwhm.toFixed( 2 ) : "?" ) +
-                  " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
-                  " vs " + File.extractName( others[0].path ) + ")" );
+            var filter = Util.keywordValue( kws, "FILTER" );
+            var channel = Util.channelFromFilter( filter );
+            if ( channel == null )
+               continue;
+            if ( channel != p.channel )
+               corrected.push( p.name + ": name says " + p.channel + ", header says " + channel );
+
+            this.setBusy( Util.scanProgressMessage( "Measuring masters", channel,
+                                                    i+1, keys.length ) );
+            var entry = {
+               source: "file",
+               ref: p.path,
+               label: File.extractName( p.path ) + File.extractExtension( p.path ),
+               filter: filter,
+               instrume: Util.keywordValue( kws, "INSTRUME" ),
+               channel: channel,
+               width: info.width,
+               height: info.height,
+               drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ),
+               autocrop: p.autocrop,
+               mtime: p.mtime,
+               created: p.created,
+               /*
+                * Measured here, while the rejected variants of this channel
+                * are still known -- the comparison is against the stack this
+                * one displaced, and nothing downstream remembers there was
+                * one. Cached per file, so a folder is slow once.
+                */
+               quality: Steps.measureMasterFWHM( p.path ),
+               delta: null
+            };
+            var others = Util.sameChannelAlternatives( named, p, 1 );
+            if ( others.length > 0 )
+            {
+               // Its own message: this is a second full measurement, so the
+               // line would otherwise sit unchanged for twice as long as the
+               // count implies.
+               this.setBusy( Util.scanProgressMessage( "Measuring masters",
+                                channel + " vs the previous stack", i+1, keys.length ) );
+               var prev = Steps.measureMasterFWHM( others[0].path );
+               entry.delta = Util.qualityDelta( entry.quality, prev );
+               if ( entry.delta != null )
+                  Util.log( "quality", p.channel + ": FWHM " +
+                     ( entry.quality ? entry.quality.fwhm.toFixed( 2 ) : "?" ) +
+                     " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
+                     " vs " + File.extractName( others[0].path ) + ")" );
+            }
+            // header wins; if two names collapse onto one real channel, rank decides
+            var prev = confirmed[channel];
+            if ( prev == null ||
+                 Util.masterVariantRank( entry.drizzle, entry.autocrop ) >
+                 Util.masterVariantRank( prev.drizzle, prev.autocrop ) )
+               confirmed[channel] = entry;
          }
-         // header wins; if two names collapse onto one real channel, rank decides
-         var prev = confirmed[channel];
-         if ( prev == null ||
-              Util.masterVariantRank( entry.drizzle, entry.autocrop ) >
-              Util.masterVariantRank( prev.drizzle, prev.autocrop ) )
-            confirmed[channel] = entry;
+      }
+      finally
+      {
+         this.setBusy( null );
       }
 
       var added = [], ckeys = Object.keys( confirmed );
@@ -1577,24 +1665,42 @@ UI.SelectDialog = class extends Dialog
 
    addFiles( paths )
    {
-      for ( var i = 0; i < paths.length; ++i )
+      /*
+       * A single file is not a wait, and restore() adds them one at a time
+       * while the dialog is still being built -- pumping events there would
+       * paint a half-constructed window.
+       */
+      var report = paths.length > 1;
+      try
       {
-         var info = null;
-         try { info = Pipeline.readImageInfo( paths[i] ); } catch ( e ) { info = null; }
-         var kws = info ? info.keywords : null;
-         var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
-         this.entries.push( {
-            source: "file",
-            ref: paths[i],
-            label: File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
-            filter: filter,
-            instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
-            channel: Util.channelFromFilter( filter ),
-            width: info ? info.width : 0,
-            height: info ? info.height : 0,
-            drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
-            created: Util.fileCreatedMs( paths[i] )
-         } );
+         for ( var i = 0; i < paths.length; ++i )
+         {
+            if ( report )
+               this.setBusy( Util.scanProgressMessage( "Reading masters",
+                                File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
+                                i+1, paths.length ) );
+            var info = null;
+            try { info = Pipeline.readImageInfo( paths[i] ); } catch ( e ) { info = null; }
+            var kws = info ? info.keywords : null;
+            var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
+            this.entries.push( {
+               source: "file",
+               ref: paths[i],
+               label: File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
+               filter: filter,
+               instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
+               channel: Util.channelFromFilter( filter ),
+               width: info ? info.width : 0,
+               height: info ? info.height : 0,
+               drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
+               created: Util.fileCreatedMs( paths[i] )
+            } );
+         }
+      }
+      finally
+      {
+         if ( report )
+            this.setBusy( null );
       }
       this.rebuild();
    }
@@ -1759,6 +1865,9 @@ UI.SelectDialog = class extends Dialog
    {
       // the derived project name follows the list, until it is typed in
       try { this.updateProjectName(); } catch ( e ) {}
+      // every path that changes the list ends here, so this is the one
+      // place Run's state has to be refreshed
+      try { this.updateRunEnabled(); } catch ( e ) {}
       this.tree.clear();
 
       /*

@@ -12,6 +12,7 @@
 
 #include <pjsr/DataType.jsh>
 #include <pjsr/StdButton.jsh>
+#include <pjsr/StdCursor.jsh>
 #include <pjsr/StdIcon.jsh>
 
 #include "lib/Util.js"

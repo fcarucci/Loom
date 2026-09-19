@@ -202,6 +202,8 @@ global.FrameStyle_Sunken = 1; global.FrameStyle_Box = 2;
 global.StdButton_Ok = 1; global.StdButton_Cancel = 2; global.StdButton_Yes = 3;
 global.StdButton_No = 4; global.StdIcon_Error = 1; global.StdIcon_Warning = 2;
 global.StdIcon_Information = 3; global.StdIcon_Question = 4;
+// the real values, read off pjsr/StdCursor.jsh
+global.StdCursor_Arrow = 1; global.StdCursor_Wait = 15;
 global.DataType_Boolean = 1; global.DataType_String = 2; global.DataType_Double = 3;
 global.UndoFlag_NoSwapFile = 1;
 
