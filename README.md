@@ -234,11 +234,6 @@ on a 34,000-control-point mosaic panel. Nothing is judged on the RMS, because
 both published figures are medians and RMS ≥ median by construction; the RMS is
 reported only.
 
-Recursive splines are measured rather than quoted. On NGC 5907 masterLight_L,
-5710×3182 at 0.9664″/px, against the solution WBPP shipped: median residual
-0.0190 → 0.0157 px, RMS 0.0414 → 0.0338, max 0.1411 → 0.1099. That is −17%,
-−18% and −22%.
-
 ### Across channels
 
 | step | what | options |
