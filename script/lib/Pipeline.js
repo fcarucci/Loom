@@ -2350,18 +2350,41 @@ Pipeline.centredPosition = function( max )
 };
 
 /*
- * A coordinate far outside any workspace. fitWindow() moves a window back
- * inside the visible area, and "only if strictly necessary" -- so parking
- * the window out here and fitting it reports the maximum position the
- * window can have, which is what centredPosition halves.
+ * One title bar down and to the right, the way a window manager cascades.
+ * Measured off this workspace's own frames; it only has to be large
+ * enough that the title of the window underneath stays readable.
  */
+Pipeline.CASCADE_STEP = 52;
+
+/*
+ * Staggered, and the stagger itself centred.
+ *
+ * Plates all placed at the exact centre sit perfectly on top of one
+ * another, so the ones underneath are invisible and unclickable. Offset
+ * each by one step and the whole run reads as a deck: every title is
+ * legible, and the order is OUTPUT_ORDER, so a given plate is always in
+ * the same place in the pile.
+ *
+ * The offsets are centred on zero -- index (count-1)/2 gets none -- so
+ * the deck as a whole stays in the middle of the workspace rather than
+ * starting there and drifting off the bottom right.
+ */
+Pipeline.staggeredPosition = function( max, index, count, step )
+{
+   var d = ( step == null ) ? Pipeline.CASCADE_STEP : step;
+   var off = Math.round( ( index - ( count - 1 )/2 ) * d );
+   var c = Pipeline.centredPosition( max );
+   function clamp( v, hi ) { return Math.max( 0, Math.min( v, Math.max( 0, hi ) ) ); }
+   return { x: clamp( c.x + off, max.x ), y: clamp( c.y + off, max.y ) };
+};
+
 Pipeline.FAR_OUTSIDE = 32000;
 
-Pipeline.centreWindow = function( w )
+Pipeline.centreWindow = function( w, index, count )
 {
    w.position = new Point( Pipeline.FAR_OUTSIDE, Pipeline.FAR_OUTSIDE );
    w.fitWindow();
-   var c = Pipeline.centredPosition( w.position );
+   var c = Pipeline.staggeredPosition( w.position, index || 0, count || 1 );
    w.position = new Point( c.x, c.y );
 };
 
@@ -2422,7 +2445,7 @@ Pipeline.arrangeOutputs = function( results )
              * centring depends on the size the zoom settled on.
              */
             w.zoomToOptimalFit();
-            Pipeline.centreWindow( w );
+            Pipeline.centreWindow( w, i, keys.length );
             if ( !w.iconic )
                w.iconize();
          }
@@ -2432,7 +2455,7 @@ Pipeline.arrangeOutputs = function( results )
          }
       }
       Util.log( "output", "minimised " + keys.length +
-                          " plate(s); each reopens centred" );
+                          " plate(s); they reopen staggered around the middle" );
    }
    catch ( e )
    {

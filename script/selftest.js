@@ -1355,6 +1355,49 @@ function runTests()
           Pipeline.centredPosition( { x: 0, y: 0 } ).x, 0 );
 
    /*
+    * Staggered, not stacked. Plates all at the exact centre sit on top of
+    * one another, so every title but the last is hidden and unclickable.
+    */
+   var MAX = { x: 874, y: 589 };
+   check( "a single plate is simply centred",
+          Pipeline.staggeredPosition( MAX, 0, 1 ).x, 437 );
+   check( "two plates do not share a position",
+          Pipeline.staggeredPosition( MAX, 0, 2 ).x !=
+          Pipeline.staggeredPosition( MAX, 1, 2 ).x, true );
+   check( "consecutive plates are one step apart",
+          Pipeline.staggeredPosition( MAX, 1, 3 ).x -
+          Pipeline.staggeredPosition( MAX, 0, 3 ).x, Pipeline.CASCADE_STEP );
+   check( "and step down as well as across",
+          Pipeline.staggeredPosition( MAX, 1, 3 ).y -
+          Pipeline.staggeredPosition( MAX, 0, 3 ).y, Pipeline.CASCADE_STEP );
+   /*
+    * The DECK is centred, not its first plate: an odd count puts the
+    * middle plate dead centre, and the pile stays in the middle of the
+    * workspace instead of starting there and running off the bottom
+    * right.
+    */
+   check( "the middle plate of an odd deck is the centred one",
+          Pipeline.staggeredPosition( MAX, 1, 3 ).x, 437 );
+   check( "and the deck straddles the centre evenly",
+          Pipeline.staggeredPosition( MAX, 0, 3 ).x + 
+          Pipeline.staggeredPosition( MAX, 2, 3 ).x, 874 );
+   /*
+    * A deck longer than the workspace would otherwise walk its last
+    * plates off the edge, where they cannot be reached at all.
+    */
+   check( "no plate is placed outside the workspace",
+          ( function()
+            {
+               for ( var i = 0; i < 40; ++i )
+               {
+                  var p = Pipeline.staggeredPosition( MAX, i, 40 );
+                  if ( p.x < 0 || p.y < 0 || p.x > MAX.x || p.y > MAX.y )
+                     return "escaped at " + i;
+               }
+               return "all reachable";
+            } )(), "all reachable" );
+
+   /*
     * A fixed order, so a given plate's icon is in the same place every
     * run and can be found by position rather than by reading labels.
     */
