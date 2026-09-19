@@ -1601,48 +1601,62 @@ function runTests()
           Util.formatFileTime( null ), "" );
 
    /*
-    * Master quality, compared WITHIN a channel.
+    * Master quality, compared WITHIN a channel, on FWHM.
     *
     * Not across channels, and the measurement is why: on this rig G is
-    * always the softest filter -- 9.85 px against R's 8.06 on a stack
-    * judged perfectly good -- so a cross-channel threshold that catches a
-    * bad G fires on a good one too. Against the stack it displaced there
-    * is no such confound. These are the real numbers from 2026-09-18,
-    * measured on the 2048 crop: the G that turned the stars green scored
-    * SNR 24.2 and PSF 10.05 where its predecessor scored 27.2 and 9.85.
+    * always the softest filter, so a cross-channel threshold that catches
+    * a bad G fires on a good one too. Against the stack it displaced
+    * there is no such confound.
+    *
+    * FWHM only. An SNR comparison was built and abandoned: every form of
+    * it needs the two stacks on a common flux scale, and two stacks of
+    * one channel do not have one -- between two S masters the stars moved
+    * 30% and the sky 50%. A sky-based definition reported -57% for a
+    * stack that had improved, because a better night has a DARKER sky.
+    * FWHM assumes nothing about scale.
     */
-   var GOOD_G = { psf: 9.85, noise: 4.51e-5, snr: 27.2 };
-   var BAD_G  = { psf: 10.05, noise: 5.72e-5, snr: 24.2 };
+   var SHARP = { fwhm: 8.06, eccentricity: 0.48, noise: 1.50e-5, stars: 15164 };
+   var SOFT  = { fwhm: 8.93, eccentricity: 0.53, noise: 1.65e-5, stars: 13304 };
 
-   check( "a noisier stack reports a lower SNR",
-          Math.round( Util.qualityDelta( BAD_G, GOOD_G ).snr ), -11 );
-   check( "and a softer one reports a wider PSF",
-          Math.round( Util.qualityDelta( BAD_G, GOOD_G ).psf ), 2 );
-   check( "the comparison reverses cleanly",
-          Util.qualityDelta( GOOD_G, BAD_G ).snr > 0, true );
+   check( "a softer stack reports a larger FWHM",
+          Math.round( Util.qualityDelta( SOFT, SHARP ).fwhm ), 11 );
+   check( "and the comparison reverses cleanly",
+          Util.qualityDelta( SHARP, SOFT ).fwhm < 0, true );
+   check( "eccentricity is carried alongside it",
+          Math.round( Util.qualityDelta( SOFT, SHARP ).eccentricity ), 10 );
+   check( "so is the noise",
+          Math.round( Util.qualityDelta( SOFT, SHARP ).noise ), 10 );
+   /*
+    * The senses differ, which is the reason these are four columns and
+    * not one score: fewer stars is a LOSS, so its delta is negative where
+    * the other three are positive for the same worse stack.
+    */
+   check( "and the star count, which runs the other way",
+          Math.round( Util.qualityDelta( SOFT, SHARP ).stars ), -12 );
    check( "nothing to compare against is not a delta of zero",
-          Util.qualityDelta( BAD_G, null ), null );
+          Util.qualityDelta( SOFT, null ), null );
+   check( "an unmeasurable stack does not produce a percentage",
+          Util.qualityDelta( { fwhm: 0 }, SHARP ).fwhm, null );
+
+   /*
+    * Smaller is better, so the sharpest alternative is the one to beat.
+    */
+   check( "the sharpest alternative is the one compared against",
+          Util.bestAlternative( [ { fwhm: 9.5 }, { fwhm: 8.06 }, { fwhm: 12 } ] ).fwhm, 8.06 );
+   check( "unmeasurable alternatives are ignored",
+          Util.bestAlternative( [ { fwhm: 0 }, null, { fwhm: 8.9 } ] ).fwhm, 8.9 );
+   check( "and no alternatives at all answers nothing",
+          Util.bestAlternative( [] ), null );
 
    /*
     * The sign IS the message, so it is always shown; below 1% nothing is,
     * because that is the measurement moving rather than the data.
     */
-   check( "an improvement carries its sign", Util.formatDelta( 12.4 ), "+12%" );
-   check( "so does a regression", Util.formatDelta( -13.46 ), "-13%" );
+   check( "a regression carries its sign", Util.formatDelta( 12.4 ), "+12%" );
+   check( "so does an improvement", Util.formatDelta( -13.46 ), "-13%" );
    check( "and a difference too small to mean anything is blank",
           Util.formatDelta( 0.4 ), "" );
    check( "as is no measurement at all", Util.formatDelta( null ), "" );
-
-   /*
-    * The best alternative is the strongest one, so the comparison is
-    * never flattered by picking a weak stack to beat.
-    */
-   check( "the strongest alternative is the one compared against",
-          Util.bestAlternative( [ { snr: 100 }, { snr: 5564 }, { snr: 900 } ] ).snr, 5564 );
-   check( "unmeasurable alternatives are ignored",
-          Util.bestAlternative( [ { snr: 0 }, null, { snr: 42 } ] ).snr, 42 );
-   check( "and no alternatives at all answers nothing",
-          Util.bestAlternative( [] ), null );
 
    /*
     * Alternatives are same channel AND same variant class: a drizzled
@@ -1666,9 +1680,18 @@ function runTests()
              alt.filter( function( a ) { return a.path == "/m/G_plain.xisf"; } ).length, 0 );
       check( "the stack it displaced comes first",
              alt[0].path, "/m/G_old.xisf" );
-      check( "and the limit bounds how many files get opened",
+      check( "and the limit bounds how many measurements get made",
              Util.sameChannelAlternatives( pool, pick, 1 ).length, 1 );
    } )();
+
+   /*
+    * The SubframeSelector column indices, read off a live measurement
+    * rather than assumed. If a future version reorders them, this fails
+    * here rather than reporting a noise figure as an FWHM.
+    */
+   check( "FWHM is column 5", Steps.SFS_FWHM, 5 );
+   check( "eccentricity is column 6", Steps.SFS_ECCENTRICITY, 6 );
+   check( "and routine 0 is the one that measures", Steps.SFS_MEASURE, 0 );
 
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
@@ -3521,7 +3544,8 @@ function main()
    catch ( e )
    {
       aborted = true;
-      FAILURES.push( "EXCEPTION: " + e.toString() );
+      FAILURES.push( "EXCEPTION: " + e.toString() +
+                     ( e.stack ? "\n" + e.stack.split( "\n" ).slice( 0, 4 ).join( "\n" ) : "" ) );
    }
    finally { restoreLogging(); }
 

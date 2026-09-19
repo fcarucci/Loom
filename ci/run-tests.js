@@ -166,6 +166,7 @@ try
 catch ( e )
 {
    console.error( "the suite threw: " + ( e && e.message ? e.message : e ) );
+   if ( e && e.stack ) console.error( e.stack );
    process.exit( 1 );
 }
 

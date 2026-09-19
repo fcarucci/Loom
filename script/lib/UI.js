@@ -347,7 +347,7 @@ UI.SelectDialog = class extends Dialog
     * meaningful blank when it was not one. The camera is reported once,
     * for the session, below the list.
     */
-   this.tree.numberOfColumns = 7;
+   this.tree.numberOfColumns = 9;
    this.tree.setHeaderText( 0, "Filter" );
    this.tree.setHeaderText( 1, "Size" );
    this.tree.setHeaderText( 2, "Drizzle" );
@@ -356,13 +356,16 @@ UI.SelectDialog = class extends Dialog
    // time is what tells them apart -- the names differ only by "(3)".
    this.tree.setHeaderText( 4, "Created" );
    /*
-    * Quality, against the previous stack of the SAME channel. Loom always
-    * uses the newest -- that is what a re-stack is for -- but a newer
-    * stack is not automatically a better one, and the difference belongs
-    * on screen before the run rather than in the stars afterwards.
+    * FWHM, as SubframeSelector measures it, with its change against the
+    * previous stack of the SAME channel. Loom always uses the newest --
+    * that is what a re-stack is for -- but a newer stack is not
+    * automatically a better one, and the difference belongs on screen
+    * before the run rather than in the stars afterwards.
     */
-   this.tree.setHeaderText( 5, "PSF" );
-   this.tree.setHeaderText( 6, "SNR" );
+   this.tree.setHeaderText( 5, "FWHM" );
+   this.tree.setHeaderText( 6, "Ecc" );
+   this.tree.setHeaderText( 7, "Noise" );
+   this.tree.setHeaderText( 8, "Stars" );
    this.tree.headerVisible = true;
    this.tree.rootDecoration = false;
    this.tree.alternateRowColor = true;
@@ -1525,21 +1528,19 @@ UI.SelectDialog = class extends Dialog
              * one displaced, and nothing downstream remembers there was
              * one. Cached per file, so a folder is slow once.
              */
-            quality: Steps.measureMasterQuality( p.path ),
+            quality: Steps.measureMasterFWHM( p.path ),
             delta: null
          };
          var others = Util.sameChannelAlternatives( named, p, 1 );
          if ( others.length > 0 )
          {
-            var prev = Steps.measureMasterQuality( others[0].path );
+            var prev = Steps.measureMasterFWHM( others[0].path );
             entry.delta = Util.qualityDelta( entry.quality, prev );
             if ( entry.delta != null )
-               Util.log( "quality", p.channel + ": PSF " +
-                  ( entry.quality ? entry.quality.psf.toFixed( 2 ) : "?" ) +
-                  " px, SNR " + ( entry.quality ? Math.round( entry.quality.snr ) : "?" ) +
-                  "  (" + ( Util.formatDelta( entry.delta.psf ) || "no change" ) +
-                  " PSF, " + ( Util.formatDelta( entry.delta.snr ) || "no change" ) +
-                  " SNR vs " + File.extractName( others[0].path ) + ")" );
+               Util.log( "quality", p.channel + ": FWHM " +
+                  ( entry.quality ? entry.quality.fwhm.toFixed( 2 ) : "?" ) +
+                  " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
+                  " vs " + File.extractName( others[0].path ) + ")" );
          }
          // header wins; if two names collapse onto one real channel, rank decides
          var prev = confirmed[channel];
@@ -1801,25 +1802,40 @@ UI.SelectDialog = class extends Dialog
          node.setText( 2, e.drizzle || "" );
          node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
          node.setText( 4, Util.formatFileTime( e.created ) );
-         node.setText( 5, e.quality
-            ? ( e.quality.psf.toFixed( 2 ) +
-                ( e.delta && Util.formatDelta( e.delta.psf )
-                  ? "  " + Util.formatDelta( e.delta.psf ) : "" ) )
-            : "" );
-         node.setText( 6, e.quality
-            ? ( Math.round( e.quality.snr ) +
-                ( e.delta && Util.formatDelta( e.delta.snr )
-                  ? "  " + Util.formatDelta( e.delta.snr ) : "" ) )
-            : "" );
+         /*
+          * The four SubframeSelector figures, each with its change
+          * against the previous integration of the same channel. Shown
+          * separately rather than combined because their senses differ:
+          * smaller FWHM, eccentricity and noise are better, more stars
+          * are better.
+          */
+         function cell( value, delta, digits )
+         {
+            if ( value == null )
+               return "";
+            var d = Util.formatDelta( delta );
+            return value.toFixed( digits ) + ( d ? "  " + d : "" );
+         }
+         var q = e.quality, dq = e.delta;
+         node.setText( 5, q ? cell( q.fwhm, dq && dq.fwhm, 2 ) : "" );
+         node.setText( 6, q ? cell( q.eccentricity, dq && dq.eccentricity, 3 ) : "" );
+         node.setText( 7, q ? ( q.noise != null
+            ? q.noise.toExponential( 2 ) +
+              ( Util.formatDelta( dq && dq.noise ) ? "  " + Util.formatDelta( dq.noise ) : "" )
+            : "" ) : "" );
+         node.setText( 8, q ? cell( q.stars, dq && dq.stars, 0 ) : "" );
          /*
           * A worse stack is coloured, a better one is not: the point is to
           * catch the case where the newest is a step backwards. Softer
           * (psf up) or noisier (snr down) both count.
           */
-         if ( e.delta && ( e.delta.snr < -5 || e.delta.psf > 5 ) )
+         if ( e.delta )
          {
-            node.setTextColor( 5, 0xffcc7722 );
-            node.setTextColor( 6, 0xffcc7722 );
+            // Smaller is better for the first three, larger for stars.
+            if ( e.delta.fwhm > 5 )         node.setTextColor( 5, 0xffcc7722 );
+            if ( e.delta.eccentricity > 5 ) node.setTextColor( 6, 0xffcc7722 );
+            if ( e.delta.noise > 5 )        node.setTextColor( 7, 0xffcc7722 );
+            if ( e.delta.stars < -5 )       node.setTextColor( 8, 0xffcc7722 );
          }
 
 

@@ -3898,15 +3898,24 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
  * a new size and time, and must be measured again rather than answered
  * from the cache.
  */
+Steps.MASTER_QUALITY_VERSION = "v3";
+
 Steps.masterQualityKey = function( path )
 {
    try
    {
       var fi = new FileInfo( path );
       var t = fi.lastModified;
-      return path + "|" + fi.size + "|" + ( t ? t.getTime() : 0 );
+      /*
+       * The version prefix is not decoration. What this measures has
+       * changed twice, and a cached number from an older definition
+       * compared against a fresh one is exactly the quiet wrongness the
+       * column exists to report.
+       */
+      return Steps.MASTER_QUALITY_VERSION + "|" + path + "|" + fi.size +
+             "|" + ( t ? t.getTime() : 0 );
    }
-   catch ( e ) { return path + "|0|0"; }
+   catch ( e ) { return Steps.MASTER_QUALITY_VERSION + "|" + path + "|0|0"; }
 };
 
 Steps.masterQualityCachePath = function()
@@ -3952,77 +3961,68 @@ Steps.saveQualityTable = function()
 };
 
 /*
- * Measured on a central crop. A master is ~420 MB and twelve thousand
- * pixels across; the middle 2048 square carries more than enough stars to
- * settle a median, and the whole point is that this runs while someone is
- * waiting at a dialog.
+ * Global FWHM of a master, measured by SubframeSelector.
+ *
+ * SubframeSelector rather than a hand-rolled fit, because it is the tool
+ * whose numbers the owner already knows from WBPP: an FWHM that does not
+ * agree with the one in the subframe table is a number nobody can act on.
+ * It also measures the whole frame, which a central crop cannot -- two
+ * masters whose autocrop trimmed them differently do not share a centre,
+ * and star fields are not uniform.
+ *
+ * FWHM and eccentricity only. An SNR comparison between two stacks was
+ * tried at length and abandoned: every form of it needs the two frames on
+ * a common flux scale, and two stacks of one channel do not have one --
+ * between two S masters the stars moved 30% and the sky 50%, so no single
+ * factor describes the pair, and sky-, star- and noise-based definitions
+ * each got some channels right and some wrong. FWHM needs no such
+ * assumption. It is seeing and optics, in pixels, directly comparable
+ * between any two stacks of the same rig.
+ *
+ * The measurement columns are positional; these indices were read off a
+ * live run rather than assumed.
  */
-Steps.MASTER_QUALITY_SAMPLE = 2048;
+Steps.SFS_FWHM = 5;
+Steps.SFS_ECCENTRICITY = 6;
+Steps.SFS_NOISE = 12;
+Steps.SFS_STARS = 14;
 
-Steps.measureMasterQuality = function( path, sampleSize )
+/* SubframeSelector.routine: 0 measures. Verified by execution -- 1 and 2
+   are the preview and output routines and refuse with "No measurements
+   have been made". */
+Steps.SFS_MEASURE = 0;
+
+Steps.measureMasterFWHM = function( path )
 {
    var table = Steps.loadQualityTable();
    var key = Steps.masterQualityKey( path );
    if ( table[key] != null )
       return table[key];
 
-   var win = null;
    try
    {
-      var ws = ImageWindow.open( path );
-      if ( ws.length == 0 )
-         return null;
-      win = ws[0];
-      var img = win.mainView.image;
-      var S = Math.min( sampleSize || Steps.MASTER_QUALITY_SAMPLE,
-                        Math.min( img.width, img.height ) );
-      var x0 = ( img.width - S ) >> 1, y0 = ( img.height - S ) >> 1;
-      var rect = new Rect( x0, y0, x0 + S, y0 + S );
-
-      img.selectedRect = rect;
-      var med = img.median();
-      var noise = img.MAD() * 1.4826;
-      img.resetSelections();
-
-      var D = new StarDetector;
-      D.structureLayers = 5;
-      D.applyHotPixelFilter = true;
-      img.selectedRect = rect;
-      var det = D.stars( img );
-      img.resetSelections();
-      if ( det.length == 0 || !( noise > 0 ) )
-         return null;
-
-      var widths = [], cores = [];
-      det.sort( function( a, b ) { return b.flux - a.flux; } );
-      for ( var i = 0; i < det.length; ++i )
-         widths.push( Math.sqrt( det[i].size ) );
-      for ( var j = 0; j < det.length && cores.length < 200; ++j )
-      {
-         var x = Math.round( det[j].pos.x ) + rect.x0;
-         var y = Math.round( det[j].pos.y ) + rect.y0;
-         if ( x < 3 || y < 3 || x >= img.width-3 || y >= img.height-3 )
-            continue;
-         img.selectedRect = new Rect( x-2, y-2, x+3, y+3 );
-         cores.push( img.mean() - med );
-         img.resetSelections();
-      }
-      if ( cores.length == 0 )
-         return null;
-      function median( a ) { a.sort( function( p, q ) { return p - q; } );
-                             return a[ Math.floor( a.length/2 ) ]; }
-
+      var P = new SubframeSelector;
       /*
-       * median/noise, not star flux over noise: which stars land in the
-       * crop differs between two stacks of the same channel, and that
-       * variation swamped a 27% noise difference when this was tried the
-       * other way round. `cores` is still measured, because an empty star
-       * list means the frame is not usable for this comparison at all.
+       * Four values per row, and the count is checked by the process:
+       * enabled, path, local normalization data, drizzle data.
        */
-      var q = { psf: median( widths ),
-                noise: noise,
-                snr: med/noise,
-                stars: det.length };
+      P.subframes = [ [ true, path, "", "" ] ];
+      P.routine = Steps.SFS_MEASURE;
+      P.nonInteractive = true;
+      P.subframeScale = 1;          // pixels, so the figure is scale-free
+      P.scaleUnit = 0;
+      if ( !P.executeGlobal() )
+         return null;
+      if ( P.measurements == null || P.measurements.length == 0 )
+         return null;
+
+      var m = P.measurements[0];
+      var q = { fwhm: m[Steps.SFS_FWHM],
+                eccentricity: m[Steps.SFS_ECCENTRICITY],
+                noise: m[Steps.SFS_NOISE],
+                stars: m[Steps.SFS_STARS] };
+      if ( !( q.fwhm > 0 ) )
+         return null;
       table[key] = q;
       Steps.saveQualityTable();
       return q;
@@ -4032,10 +4032,6 @@ Steps.measureMasterQuality = function( path, sampleSize )
       Util.warn( "quality", "could not measure " + path + ": " + e );
       return null;
    }
-   finally
-   {
-      try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {}
-   }
 };
 
 /*
@@ -4043,13 +4039,19 @@ Steps.measureMasterQuality = function( path, sampleSize )
  * for the fits. Measured on a central region: representative, and far cheaper
  * than fitting every star in a 12006x7834 frame.
  */
-Steps.measurePSF = function( view, sampleSize )
+Steps.measurePSF = function( view, sampleSize, wholeFrame )
 {
    Util.reportStage( "measuring PSF \u2192 " + view.id );
    var img = view.image;
-   var S = Math.min( sampleSize || 1200, Math.min( img.width, img.height ) );
-   var rect = new Rect( (img.width-S) >> 1, (img.height-S) >> 1,
-                        ((img.width-S) >> 1) + S, ((img.height-S) >> 1) + S );
+   var rect;
+   if ( wholeFrame )
+      rect = new Rect( 0, 0, img.width, img.height );
+   else
+   {
+      var S = Math.min( sampleSize || 1200, Math.min( img.width, img.height ) );
+      rect = new Rect( (img.width-S) >> 1, (img.height-S) >> 1,
+                       ((img.width-S) >> 1) + S, ((img.height-S) >> 1) + S );
+   }
 
    var D = new StarDetector;
    D.structureLayers = 5;

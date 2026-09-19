@@ -623,30 +623,28 @@ Util.CAMERA_QE_CURVES = [
  * Master quality, compared WITHIN a channel.
  *
  * Deliberately not across channels: on this rig G is always the softest
- * filter -- 16.0 px against R's 14.2 on a stack judged perfectly good --
+ * filter -- 9.85 px against R's 8.06 on a stack judged perfectly good --
  * so any cross-channel threshold that catches a bad G also fires on a
  * good one. Comparing a stack against the OTHER stacks of its own channel
  * has no such confound and answers the question that actually matters:
  * is the one being used better or worse than the one it displaced.
  *
- * `psf` is the median star width in pixels, `noise` the MAD sigma, and
- * `snr` the frame median over that noise. snr is scale-invariant -- two
- * stacks of one channel can sit at different flux scales and both terms
- * scale together -- which is what makes the comparison meaningful at all.
+ * The four figures SubframeSelector reports, in the units its own
+ * subframe table shows: FWHM, eccentricity, noise and star count.
  *
- * The median, NOT star flux, is the signal term. Star flux was tried
- * first and is useless here: which stars fall in the measured crop varies
- * between two stacks, and that variation swamped a 27% difference in
- * noise, reporting 102 against 103. The median is the same sky in both
- * frames, so it moves only when the data does.
+ * The SENSE differs between them, which is why nothing here tries to
+ * reduce them to one score: smaller is better for FWHM, eccentricity and
+ * noise, but LARGER is better for the star count. A negative delta is an
+ * improvement in the first three and a regression in the last.
  */
 /*
  * The stacks of the same channel that were NOT chosen -- newest first.
  *
  * Same rank as well as same channel: a drizzled autocrop master is not
  * comparable with a plain one, and ranking already decided which class is
- * in play. `limit` bounds the cost, because each one costs a file open;
- * one is enough to answer "is this better than what I had".
+ * in play. `limit` bounds the cost, because each one costs a
+ * SubframeSelector measurement; one is enough to answer "is this better
+ * than what I had".
  */
 Util.sameChannelAlternatives = function( candidates, pick, limit )
 {
@@ -671,14 +669,19 @@ Util.qualityDelta = function( chosen, other )
 {
    if ( chosen == null || other == null )
       return null;
-   function pct( a, b ) { return ( b > 0 ) ? ( 100*( a - b )/b ) : null; }
-   return { psf: pct( chosen.psf, other.psf ),
-            snr: pct( chosen.snr, other.snr ) };
+   function pct( a, b ) { return ( a > 0 && b > 0 ) ? ( 100*( a - b )/b ) : null; }
+   return { fwhm:         pct( chosen.fwhm, other.fwhm ),
+            eccentricity: pct( chosen.eccentricity, other.eccentricity ),
+            noise:        pct( chosen.noise, other.noise ),
+            stars:        pct( chosen.stars, other.stars ) };
 };
 
 /*
- * The best of the alternatives, by SNR -- so the comparison is against
- * the strongest thing available for that channel, not an arbitrary one.
+ * The sharpest alternative, so the comparison is against the best thing
+ * available for that channel rather than an arbitrary one. SMALLER IS
+ * BETTER for FWHM, which is the opposite of the SNR this replaced -- a
+ * comparison left pointing the wrong way would quietly flatter every new
+ * stack.
  */
 Util.bestAlternative = function( others )
 {
@@ -686,9 +689,9 @@ Util.bestAlternative = function( others )
    for ( var i = 0; i < others.length; ++i )
    {
       var o = others[i];
-      if ( o == null || !( o.snr > 0 ) )
+      if ( o == null || !( o.fwhm > 0 ) )
          continue;
-      if ( best == null || o.snr > best.snr )
+      if ( best == null || o.fwhm < best.fwhm )
          best = o;
    }
    return best;
