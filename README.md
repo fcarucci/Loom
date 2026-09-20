@@ -358,11 +358,11 @@ reconstruct them.
 With it off: `L`, `RGB`, `<palette>`, and the narrowband channels themselves
 when no palette was built.
 
-The finished plates are minimised, and each one's **restore position is set to
-the centre**, staggered a title bar apart so every title stays readable and
-clickable. Where the icons themselves land is the core's business: PJSR exposes
-`iconize`, `deiconize` and `iconic` and nothing that positions an icon, so no
-script can lay them out.
+The finished plates are **left open and cascaded**. Each is fitted to its
+window, then offset a title bar from the last, with the cascade centred as a
+block so the deck sits in the middle of the workspace. They are raised in a
+fixed order, so a given plate is always at the same depth in the pile and the
+palette ends on top.
 
 ## Frame Selector
 

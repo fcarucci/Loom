@@ -2607,24 +2607,10 @@ Pipeline.centreWindow = function( w, index, count )
 
 
 /*
- * Minimises the run's plates and lays their icons out in the middle.
- *
- * An icon's position IS its restore position -- verified 2026-09-17 by
- * moving an icon and deiconizing it, which came back at the icon's
- * coordinates and not at the window's former ones. So a centred grid of
- * icons buys the "opens somewhere sensible" behaviour for nothing: each
- * plate reopens near the middle, offset from its neighbours, instead of
- * every one landing on top of the last.
- *
- * There is no hook to run code when the user opens an icon, which is why
- * everything that makes a window pleasant to open -- the zoom above all --
- * has to be done here, BEFORE it is iconized.
+ * Leave the finished plates open, cascaded.
  *
  * Only the run's own outputs are touched. Windows the user already had
  * open are not Loom's to rearrange.
- */
-/*
- * Leave the finished plates open, cascaded.
  *
  * They were minimised for a while, which kept the workspace tidy and made
  * every result invisible: the point of a run is to look at what came out.
