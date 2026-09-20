@@ -1511,18 +1511,36 @@ UI.SelectDialog = class extends Dialog
        * the filter against the FILTER keyword, which remains authoritative.
        * If a header disagrees with its filename the header wins -- the name
        * was a hint that got us to the right file quickly, nothing more.
-       *
-       * Files whose names carry no FILTER token are deferred: they are only
-       * opened if some channel ended up with no candidate at all, so an
-       * oddly-named master is still found without paying for it every time.
        */
-      var named = [], unnamed = [], total = 0, skipped = 0;
-      var found = new FileFind;
-      if ( !found.begin( dir + "/*" ) )
+      var scan = this.scanMasterFolder( dir );
+      if ( scan == null )
       {
          this.status.text = "<b>Nothing readable in that folder.</b>";
          return;
       }
+
+      var picks = Util.selectMasters( scan.named );
+      // Only fall back to opening unnamed files when a channel is missing.
+      if ( Object.keys( picks ).length == 0 && scan.unnamed.length > 0 )
+         picks = this.resolveUnnamedMasters( scan );
+
+      var confirm = this.confirmMasters( picks, scan.named );
+      var added = this.adoptMasters( confirm.confirmed );
+
+      this.rebuild();
+      this.reportScan( scan, confirm, added );
+   }
+
+   /*
+    * Phase 1: rank every candidate from its filename alone. Returns null
+    * when the folder holds nothing readable at all.
+    */
+   scanMasterFolder( dir )
+   {
+      var named = [], unnamed = [], total = 0, skipped = 0;
+      var found = new FileFind;
+      if ( !found.begin( dir + "/*" ) )
+         return null;
       do
       {
          var name = found.name;
@@ -1557,29 +1575,40 @@ UI.SelectDialog = class extends Dialog
       }
       while ( found.next() );
 
-      var picks = Util.selectMasters( named );
+      return { named: named, unnamed: unnamed, total: total, skipped: skipped };
+   }
 
-      // Only fall back to opening unnamed files when a channel is missing.
-      if ( Object.keys( picks ).length == 0 && unnamed.length > 0 )
+   /*
+    * Files whose names carry no FILTER token are deferred: they are only
+    * opened if some channel ended up with no candidate at all, so an
+    * oddly-named master is still found without paying for it every time.
+    * Promotes whatever it can identify into `scan.named` and re-picks.
+    */
+   resolveUnnamedMasters( scan )
+   {
+      for ( var u = 0; u < scan.unnamed.length; ++u )
       {
-         for ( var u = 0; u < unnamed.length; ++u )
-         {
-            var ui = null;
-            try { ui = Pipeline.readImageInfo( unnamed[u].path ); } catch ( e ) { ui = null; }
-            if ( ui == null ) continue;
-            var uf = Util.keywordValue( ui.keywords, "FILTER" );
-            var uc = Util.channelFromFilter( uf );
-            if ( uc == null ) continue;
-            unnamed[u].channel  = uc;
-            unnamed[u].drizzle  = Util.drizzleLabel( Util.keywordValue( ui.keywords, "XPIXSZ" ) );
-            unnamed[u].autocrop = Util.isAutocropName( unnamed[u].name );
-            named.push( unnamed[u] );
-         }
-         picks = Util.selectMasters( named );
+         var rec = scan.unnamed[u];
+         var ui = null;
+         try { ui = Pipeline.readImageInfo( rec.path ); } catch ( e ) { ui = null; }
+         if ( ui == null ) continue;
+         var uc = Util.channelFromFilter( Util.keywordValue( ui.keywords, "FILTER" ) );
+         if ( uc == null ) continue;
+         rec.channel  = uc;
+         rec.drizzle  = Util.drizzleLabel( Util.keywordValue( ui.keywords, "XPIXSZ" ) );
+         rec.autocrop = Util.isAutocropName( rec.name );
+         scan.named.push( rec );
       }
+      return Util.selectMasters( scan.named );
+   }
 
-      // Phase 2: confirm the winners only.
-      var confirmed = {}, opened = 0, corrected = [];
+   /*
+    * Phase 2: open the winners only, and confirm each against its FILTER
+    * keyword. The header is authoritative; a disagreement is reported.
+    */
+   confirmMasters( picks, named )
+   {
+      var confirmed = {}, opened = 0, skipped = 0, corrected = [];
       var keys = Object.keys( picks );
       /*
        * The candidate list is known before any measuring starts, so the
@@ -1611,48 +1640,12 @@ UI.SelectDialog = class extends Dialog
             if ( channel == null )
                continue;
             if ( channel != p.channel )
-               corrected.push( p.name + ": name says " + p.channel + ", header says " + channel );
+               corrected.push( p.name + ": name says " + p.channel +
+                               ", header says " + channel );
 
-            this.setBusy( Util.scanProgressMessage( "Measuring masters", channel,
-                                                    i+1, keys.length ) );
-            var entry = {
-               source: "file",
-               ref: p.path,
-               label: File.extractName( p.path ) + File.extractExtension( p.path ),
-               filter: filter,
-               instrume: Util.keywordValue( kws, "INSTRUME" ),
-               channel: channel,
-               width: info.width,
-               height: info.height,
-               drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ),
-               autocrop: p.autocrop,
-               mtime: p.mtime,
-               created: p.created,
-               /*
-                * Measured here, while the rejected variants of this channel
-                * are still known -- the comparison is against the stack this
-                * one displaced, and nothing downstream remembers there was
-                * one. Cached per file, so a folder is slow once.
-                */
-               quality: Steps.measureMasterFWHM( p.path ),
-               delta: null
-            };
-            var others = Util.sameChannelAlternatives( named, p, 1 );
-            if ( others.length > 0 )
-            {
-               // Its own message: this is a second full measurement, so the
-               // line would otherwise sit unchanged for twice as long as the
-               // count implies.
-               this.setBusy( Util.scanProgressMessage( "Measuring masters",
-                                channel + " vs the previous stack", i+1, keys.length ) );
-               var prev = Steps.measureMasterFWHM( others[0].path );
-               entry.delta = Util.qualityDelta( entry.quality, prev );
-               if ( entry.delta != null )
-                  Util.log( "quality", p.channel + ": FWHM " +
-                     ( entry.quality ? entry.quality.fwhm.toFixed( 2 ) : "?" ) +
-                     " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
-                     " vs " + File.extractName( others[0].path ) + ")" );
-            }
+            var entry = this.measureMaster( p, info, channel, filter, named,
+                                            i + 1, keys.length );
+
             // header wins; if two names collapse onto one real channel, rank decides
             var prev = confirmed[channel];
             if ( prev == null ||
@@ -1666,6 +1659,66 @@ UI.SelectDialog = class extends Dialog
          this.setBusy( null );
       }
 
+      return { confirmed: confirmed, opened: opened,
+               skipped: skipped, corrected: corrected };
+   }
+
+   /*
+    * Build one confirmed master's entry, including its measured quality and
+    * the delta against the stack this file displaces.
+    */
+   measureMaster( p, info, channel, filter, named, index, count )
+   {
+      this.setBusy( Util.scanProgressMessage( "Measuring masters", channel,
+                                              index, count ) );
+      var entry = {
+         source: "file",
+         ref: p.path,
+         label: File.extractName( p.path ) + File.extractExtension( p.path ),
+         filter: filter,
+         instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
+         channel: channel,
+         width: info.width,
+         height: info.height,
+         drizzle: Util.drizzleLabel( Util.keywordValue( info.keywords, "XPIXSZ" ) ),
+         autocrop: p.autocrop,
+         mtime: p.mtime,
+         created: p.created,
+         /*
+          * Measured here, while the rejected variants of this channel
+          * are still known -- the comparison is against the stack this
+          * one displaced, and nothing downstream remembers there was
+          * one. Cached per file, so a folder is slow once.
+          */
+         quality: Steps.measureMasterFWHM( p.path ),
+         delta: null
+      };
+
+      var others = Util.sameChannelAlternatives( named, p, 1 );
+      if ( others.length == 0 )
+         return entry;
+
+      // Its own message: this is a second full measurement, so the
+      // line would otherwise sit unchanged for twice as long as the
+      // count implies.
+      this.setBusy( Util.scanProgressMessage( "Measuring masters",
+                       channel + " vs the previous stack", index, count ) );
+      var prev = Steps.measureMasterFWHM( others[0].path );
+      entry.delta = Util.qualityDelta( entry.quality, prev );
+      if ( entry.delta != null )
+         Util.log( "quality", p.channel + ": FWHM " +
+            ( entry.quality ? entry.quality.fwhm.toFixed( 2 ) : "?" ) +
+            " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
+            " vs " + File.extractName( others[0].path ) + ")" );
+      return entry;
+   }
+
+   /*
+    * Take the confirmed masters into the entry list, one per channel,
+    * displacing whatever held that channel before.
+    */
+   adoptMasters( confirmed )
+   {
       var added = [], ckeys = Object.keys( confirmed );
       for ( var c = 0; c < ckeys.length; ++c )
       {
@@ -1679,15 +1732,19 @@ UI.SelectDialog = class extends Dialog
          added.push( ckeys[c] + " (" + ( pick.drizzle ? pick.drizzle + " " : "" ) +
                      ( pick.autocrop ? "autocrop" : "full" ) + ")" );
       }
+      return added;
+   }
 
-      this.rebuild();
-      var detail = "<i>(" + total + " files, " + named.length + " named candidates, " +
-                   opened + " opened, " + skipped + " skipped)</i>";
+   reportScan( scan, confirm, added )
+   {
+      var detail = "<i>(" + scan.total + " files, " + scan.named.length +
+                   " named candidates, " + confirm.opened + " opened, " +
+                   ( scan.skipped + confirm.skipped ) + " skipped)</i>";
       this.status.text = added.length
          ? ( "<b>Loaded " + added.length + " master" + ( added.length == 1 ? "" : "s" ) +
              ":</b> " + added.sort().join( ", " ) + "  " + detail +
-             ( corrected.length ? "<br/><b>Filter from header, not name:</b> " +
-                                  corrected.join( "; " ) : "" ) )
+             ( confirm.corrected.length ? "<br/><b>Filter from header, not name:</b> " +
+                                          confirm.corrected.join( "; " ) : "" ) )
          : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail );
    }
 
