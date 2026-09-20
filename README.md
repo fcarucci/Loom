@@ -382,7 +382,7 @@ with the subframe table is one nobody can act on.
 
 Grouping is by the raw `FILTER` keyword. A channel whose frames differ in
 exposure, binning, geometry or calibration state is reported as not comparable
-and marked `[mixed]` — a shorter exposure legitimately loses on SNR, and
+— a shorter exposure legitimately loses on SNR, and
 clipping it against the rest means less than it appears to. It is a warning,
 not a veto: the figures are still shown and Run still acts on them, because a
 tool that measures frames and then refuses to act on its own measurements is an
@@ -477,8 +477,15 @@ nothing it does can reject. The plot and the table are two views of one
 selection: the selected frame is ringed, and clicking a point selects its row.
 
 The preview is 1:1. **Double click** switches between the whole frame and 1:1;
-**swipe** or **drag** moves around, **Shift** for sideways, or the arrow keys
-after clicking the image. Changing frame keeps the view where it was — the
+**drag** the image, use the **scroll bars**, or the arrow keys after clicking
+it — Shift for a page at a time.
+
+A two-finger swipe does not move the preview, and cannot be made to.
+PixInsight delivers a swipe to a script as a wheel event carrying a single
+delta with no orientation, so a sideways swipe arrives with nothing in it;
+and no touch, gesture or pan handler exists on any scriptable control, with
+`ImageWindow/TouchEvents` enabled or not. The gesture is consumed by the core
+for image windows and never reaches a script. Changing frame keeps the view where it was — the
 frames of a channel are registered to each other, so the same offset shows the
 same stars, which is the only way to compare them.
 

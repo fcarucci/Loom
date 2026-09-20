@@ -4607,6 +4607,11 @@ function runTests()
          var full = new FrameSelector.Dialog( pState );
          full.refresh();                       // the summary, the label, the plot
          ok = ok && ( full.frameTree.numberOfChildren == 6 );
+         /*
+          * The review opens on a frame, not on an empty pane -- so the
+          * constructor itself drives selectRow, the preview and the ring.
+          */
+         ok = ok && ( full.plot.selected == 0 );
          full.selectRow( 0 );                  // the table, the preview, the ring
          full.plot.onPick( 2 );                // as a click on the plot arrives
          /*
@@ -4620,15 +4625,15 @@ function runTests()
          full.cancel();
 
          /*
-          * The preview is a ScrollBox so Qt does the scrolling: the
-          * wheel event PixInsight delivers carries one delta and no
-          * orientation, so a control that handles the wheel itself can
-          * never see a sideways swipe. Installing an onMouseWheel handler
-          * here is precisely what broke it.
+          * The preview is a ScrollBox, and the wheel is handled here
+          * because a trackpad's pixel deltas are far below the notch the
+          * box expects. The event carries one delta and no orientation, so
+          * a sideways swipe arrives with nothing to act on.
           */
          var pv = new FrameSelector.PreviewControl( dlg );
          ok = ok && ( typeof pv.viewport == "object" );
          ok = ok && ( typeof pv.maxHorizontalScrollPosition == "number" );
+         // No wheel handler, by decision: it can only ever do one axis.
          ok = ok && ( pv.viewport.onMouseWheel == null );
          pv.setFit( true );
          ok = ok && ( pv.maxHorizontalScrollPosition == 0 );

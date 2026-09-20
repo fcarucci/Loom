@@ -809,12 +809,19 @@ Frames.comparability = function( group )
    if ( distinct( "calibrated" ) > 1 )
       problems.push( "mixed calibration state" );
    /*
-    * An ENTIRELY unknown calibration state is not uniformity, it is an
-    * absence of evidence. A group of raw and calibrated frames that all
-    * report "unknown" would otherwise pass the guard and be clipped.
+    * A uniformly unknown calibration state is NOT reported.
+    *
+    * It was, on the argument that absence of evidence is not uniformity.
+    * In practice a frame is "calibrated" only if its name ends _c or it
+    * carries a readable HISTORY keyword, so an ordinary folder has every
+    * frame unknown and every channel was flagged -- a warning that fires
+    * on everything says nothing about anything.
+    *
+    * And the argument was weak: frames equally unknown are still being
+    * compared like with like. A genuine mixture of raw and calibrated is
+    * caught by the distinct() test above, which is evidence rather than
+    * the lack of it.
     */
-   if ( group[0].calibrated == "unknown" && distinct( "calibrated" ) == 1 )
-      problems.push( "calibration state unknown for every frame" );
 
    return { uniform: problems.length == 0, problems: problems };
 };

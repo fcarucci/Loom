@@ -589,19 +589,29 @@ FrameSelector.execute = function( manifest )
  */
 FrameSelector.LABEL_GAP = 13;
 
+/*
+ * Pixels one scrolling unit moves the preview: an arrow button on a
+ * scroll bar, or a press of Left/Right/Up/Down. The default of 1 made
+ * either of those look broken.
+ */
+FrameSelector.SCROLL_LINE = 48;
+
 /* Radius of the ring round the selected frame: clear of a 4px marker. */
 FrameSelector.PICK_RADIUS = 6;
 
 /*
  * A 1:1 pannable preview.
  *
- * A ScrollBox, not a bare Control, and that is the whole reason it scrolls
- * properly. PixInsight's wheel event carries ONE delta and no orientation
- * -- the C++ API is MouseWheel( ..., int32 delta, ... ) -- so a control
- * handling the wheel itself can never see a sideways swipe. A ScrollBox
- * does not handle the wheel itself: Qt scrolls it, in whichever direction
- * the gesture went. So no onMouseWheel handler is installed here, on
- * purpose; installing one is what broke horizontal scrolling before.
+ * A ScrollBox, so the frame can be moved with bars as well as by dragging.
+ *
+ * A two-finger swipe does NOT move it, and cannot be made to. PixInsight
+ * delivers a swipe as a wheel event carrying one delta and no orientation
+ * -- MouseWheel( ..., int32 delta, ... ) -- so a sideways swipe arrives
+ * as delta = 0, measured over 1535 events. Enumerating Dialog, Control,
+ * ScrollBox and its viewport on the running core, with the
+ * ImageWindow/TouchEvents preference ON, finds no touch, gesture, pan or
+ * swipe handler on any of them: the core consumes the gesture for image
+ * windows and never forwards it to a script.
  *
  * Rendered once per selected frame rather than once per paint, so panning
  * is a blit. The prototype measured 341 ms from open to a drawn bitmap on
@@ -628,9 +638,22 @@ FrameSelector.PreviewControl = class extends ScrollBox
       this.viewport.focusStyle = FocusStyle.Click;   // arrows need focus
       this.viewport.toolTip =
          "<p><b>Double click</b> to switch between the whole frame and 1:1.</p>" +
-         "<p>At 1:1: <b>swipe</b> in any direction, <b>drag</b>, or the " +
-         "<b>arrow keys</b> after clicking the image.</p>";
+         "<p>At 1:1: <b>drag</b> the image, use the <b>scroll bars</b>, or the " +
+         "<b>arrow keys</b> after clicking it. A two-finger swipe does " +
+         "nothing here -- PixInsight does not pass the gesture to a script.</p>";
 
+      /*
+       * NO wheel handler is installed here, by decision.
+       *
+       * It was measured working for vertical swipes -- a trackpad reports
+       * pixels in `delta`, and this scrolled by them directly -- but it can
+       * never do sideways: the API passes a single delta with no
+       * orientation, so a horizontal swipe arrives as delta = 0 with
+       * nothing in it to act on.
+       *
+       * Panning is the scroll bars, a drag, or the arrow keys, all of
+       * which work the same in both directions.
+       */
       this.viewport.onPaint = function() { self.paintViewport(); };
       this.viewport.onResize = function() { self.layOutScroll(); };
 
@@ -726,6 +749,46 @@ FrameSelector.PreviewControl = class extends ScrollBox
          this.setVerticalScrollRange( 0,
             Math.max( 0, this.bmp.height - this.viewport.height ) );
       }
+      /*
+       * The scrolling STEP, which is what was actually wrong.
+       *
+       * These default to lineWidth/lineHeight = 1 and pageWidth/pageHeight
+       * = 10. A wheel notch scrolls three lines, so on a 4150-pixel range
+       * the default moved the image three pixels: scrolling worked the
+       * whole time and was indistinguishable from nothing happening.
+       * Measured off a loaded preview, not guessed.
+       *
+       * On a ScrollBox lineWidth is the horizontal scrolling unit -- an
+       * arrow button, or Left/Right -- and not Frame's border width, which
+       * it shadows. The wheel multiplies the same unit.
+       *
+       * A page is what the viewport shows, which is what paging means
+       * everywhere else.
+       */
+      this.lineWidth = FrameSelector.SCROLL_LINE;
+      this.lineHeight = FrameSelector.SCROLL_LINE;
+      this.pageWidth = Math.max( 1, this.viewport.width );
+      this.pageHeight = Math.max( 1, this.viewport.height );
+
+      /*
+       * The bars are shown explicitly, matching the range that exists,
+       * rather than left to automatic mode.
+       *
+       * Three reasons, and the last is the one that matters. They say a
+       * frame is bigger than its window, which nothing else on screen
+       * does. They can be dragged, which is a way round the wheel
+       * whatever it turns out to deliver. And a scroll area with no live
+       * scroll bar has nothing for a wheel event to act on -- so if the
+       * gesture is arriving and doing nothing, this is what it was
+       * missing.
+       */
+      try
+      {
+         this.showScrollBars( this.maxHorizontalScrollPosition > 0,
+                              this.maxVerticalScrollPosition > 0 );
+      }
+      catch ( e ) { /* a bar that will not show must not stop the preview */ }
+
       this.viewport.update();
    }
 
@@ -755,18 +818,35 @@ FrameSelector.PreviewControl = class extends ScrollBox
             return;
          if ( this.fit )
          {
+            /*
+             * Centred, not pinned to the corner. A frame is 3:2 and the
+             * pane is nearly square, so fitting leaves a band of unused
+             * height -- all of it below the image, which reads as a
+             * picture that failed to load rather than one that fits.
+             */
             var s = Math.min( vw/this.bmp.width, vh/this.bmp.height );
-            g.drawScaledBitmap(
-               new Rect( 0, 0, Math.round( this.bmp.width*s ),
-                               Math.round( this.bmp.height*s ) ), this.bmp );
+            var fw = Math.round( this.bmp.width*s );
+            var fh = Math.round( this.bmp.height*s );
+            var fx = Math.round( ( vw - fw )/2 );
+            var fy = Math.round( ( vh - fh )/2 );
+            g.drawScaledBitmap( new Rect( fx, fy, fx + fw, fy + fh ), this.bmp );
             return;
          }
          /*
           * Offset by the scroll position, the way PixInsight's own
           * ImageView does it, so what Qt scrolled is what gets drawn.
+          *
+          * On an axis with nothing to scroll the image is narrower than
+          * the pane, so it is centred on that axis instead -- the same
+          * rule ImageView applies.
           */
-         g.translateTransformation( -this.horizontalScrollPosition,
-                                    -this.verticalScrollPosition );
+         var ox = ( this.maxHorizontalScrollPosition > 0 )
+                  ? -this.horizontalScrollPosition
+                  : Math.round( ( vw - this.bmp.width )/2 );
+         var oy = ( this.maxVerticalScrollPosition > 0 )
+                  ? -this.verticalScrollPosition
+                  : Math.round( ( vh - this.bmp.height )/2 );
+         g.translateTransformation( ox, oy );
          g.drawBitmap( 0, 0, this.bmp );
       }
       catch ( e ) { /* a preview that cannot paint must not stop the review */ }
@@ -1117,7 +1197,21 @@ FrameSelector.Dialog = class extends Dialog
     * preview and the plot's ring are updated here rather than left to a
     * handler that will not run.
     */
-   selectRow( index )
+   /* Which row the table has selected, or -1. */
+   selectedRowIndex()
+   {
+      if ( this.frameTree == null )
+         return -1;
+      var n = this.frameTree.selectedNodes;
+      return ( n.length && n[0].rowIndex != null ) ? n[0].rowIndex : -1;
+   }
+
+   /*
+    * `reload` is false when only the table was rebuilt and the same frame
+    * is still selected -- re-reading a 26 MP frame to show what is already
+    * on screen would make every knob cost a disk read.
+    */
+   selectRow( index, reload )
    {
       if ( this.frameTree == null ||
            index < 0 || index >= this.frameTree.numberOfChildren )
@@ -1133,7 +1227,7 @@ FrameSelector.Dialog = class extends Dialog
        */
       this.frameTree.currentNode = node;
       node.selected = true;
-      if ( node.rowRef )
+      if ( reload !== false && node.rowRef )
          this.preview.load( node.rowRef.path );
       this.plot.setSelected( index );
    }
@@ -1486,8 +1580,7 @@ FrameSelector.Dialog = class extends Dialog
                node.channelKey = key;
                var c = Frames.counts( ch.rows );
                node.setText( 0, Frames.summaryLine( key, c ) +
-                                ( ch.settings.enabled ? "" : "  [off]" ) +
-                                ( ch.problems.length ? "  [mixed]" : "" ) );
+                                ( ch.settings.enabled ? "" : "  [off]" ) );
                if ( key == self.current )
                   node.selected = true;
             }
@@ -1648,8 +1741,16 @@ FrameSelector.Dialog = class extends Dialog
                if ( ch.settings.enabled && ch.problems.length && c.rejected )
                   mixed.push( key );
             }
+            /*
+             * fillFrames rebuilds every node, which drops the selection --
+             * so changing a knob used to blank the preview and the ring and
+             * leave the table looking at nothing.
+             */
+            var keep = self.selectedRowIndex();
             self.fillChannels();
             self.fillFrames();
+            if ( keep >= 0 )
+               self.selectRow( keep, false/*reload*/ );
             self.fillPlot();
             self.syncKnobs();
             self.summaryLabel.text =
@@ -1912,6 +2013,16 @@ FrameSelector.Dialog = class extends Dialog
 
       this.refresh();
       this.adjustToContents();
+
+      /*
+       * Open on the first frame rather than on an empty pane.
+       *
+       * The preview is the reason to look at a frame at all, and it used
+       * to stay blank until a row was clicked -- so the review opened
+       * showing a table, a plot and a hole. The first row is as good a
+       * starting point as any and costs one image read.
+       */
+      this.selectRow( 0 );
    }
 };
 
