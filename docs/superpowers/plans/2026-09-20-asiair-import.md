@@ -19,7 +19,11 @@
 - No hardcoded personal paths in shipped code. Fixture paths in `script/selftest.js` are the sole exception.
 - Scratch files go in `/tmp/agent-scratch`, never `$TMPDIR`.
 - Tests: `node ci/run-tests.js`. Assertions use `check( name, actual, expected )`, which compares with `JSON.stringify`. PixInsight-only blocks are wrapped in `if ( IN_PIXINSIGHT ) ( function() { ... } )();`.
-- Any new file under `script/lib/` MUST be added to the `LIBS` array in `ci/run-tests.js` or it is silently untested.
+- Any new file under `script/lib/` MUST be added in TWO places or it does not exist at runtime: the `LIBS` array in `ci/run-tests.js` (node) and the `#include` block inside `#ifndef LOOM_LIBS_INCLUDED` at the top of `script/FrameSelector.js` (PixInsight). Registering only one leaves it undefined in the other.
+- **`FrameSelector` is NOT loaded under node.** It is absent from `LIBS` and the harness strips `#include`. Every test that names `FrameSelector` MUST sit inside `if ( IN_PIXINSIGHT )` or it throws `ReferenceError`. This is why pure helpers belong in `lib/AsiairNames.js`, not on `FrameSelector`: over there CI can reach them.
+- `FrameSelector.scan( folder, progress )` is a STATIC function, not a prototype method. Cancellation is signalled by `progress.reading` or `progress.measuring` RETURNING FALSE; there is no `shouldStop` argument. Event pumping lives in `ScanWindow.report()`, outside `scan`.
+- `FrameSelector.MEASURE_ROUTINE` is **0**. Routines 1 and 2 are preview and output, and both refuse with "No measurements have been made" until 0 has run.
+- The review object is `FrameSelector.Dialog`, `class extends Dialog`. It does NOT inherit from `FrameSelector.prototype`; state for it goes on the dialog.
 - `GAP_HOURS` default is 4, configurable.
 - The ASIAIR card is READ-ONLY. No task in this plan may write, move, rename or delete anything on it.
 - Squash before fast-forward. One commit per unit of work on main.
@@ -44,7 +48,7 @@
 
 **Files:**
 - Create: `script/lib/AsiairNames.js`
-- Modify: `ci/run-tests.js` (add `"lib/AsiairNames.js"` to `LIBS`)
+- Modify: `ci/run-tests.js` (`LIBS`), `script/FrameSelector.js` (`#include` block)
 - Test: `script/selftest.js`
 
 **Interfaces:**
@@ -68,7 +72,7 @@ Add to `runTests()` in `script/selftest.js`:
    check( "parseName real rig frame",
           AsiairNames.parseName(
              "Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit" ),
-          { type: "Light", target: "IC 1396A", exposure: "180.0s", bin: "Bin1",
+          { type: "Light", target: "IC 1396A", exposure: "180.0s", binToken: "Bin1",
             camera: "2600MM", filter: "H", gain: "gain100",
             stamp: "20260807-215716", rotation: "180deg", temp: "-7.0C",
             sequence: "0001" } );
@@ -77,7 +81,7 @@ Add to `runTests()` in `script/selftest.js`:
    check( "parseName published grammar",
           AsiairNames.parseName(
              "Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit" ),
-          { type: "Light", target: "M42", exposure: "10.0s", bin: "Bin1",
+          { type: "Light", target: "M42", exposure: "10.0s", binToken: "Bin1",
             camera: null, filter: "S", gain: "gain360",
             stamp: "20240320-203324", rotation: null, temp: "-10.0C",
             sequence: "0001" } );
@@ -198,7 +202,7 @@ AsiairNames.parseName = function( filename )
       return null;
    var filter = t[at-2];
 
-   // 4. bin: the last one before the filter.
+   // 4. binToken: the last one before the filter.
    var binAt = -1;
    for ( var b = at-3; b >= 0; --b )
       if ( AsiairNames.BIN.test( t[b] ) ) { binAt = b; break; }
@@ -234,13 +238,16 @@ AsiairNames.parseName = function( filename )
          sequence = tail[k];
    }
 
-   return { type: t[0], target: target, exposure: t[expAt], bin: t[binAt],
+   return { type: t[0], target: target, exposure: t[expAt], binToken: t[binAt],
             camera: camera, filter: filter, gain: gain, stamp: t[at],
             rotation: rotation, temp: temp, sequence: sequence };
 };
 ```
 
-Add `"lib/AsiairNames.js"` to the `LIBS` array in `ci/run-tests.js`, before `"lib/Frames.js"`.
+Register the file in BOTH loaders or it is undefined in one of them:
+
+- `"lib/AsiairNames.js"` into the `LIBS` array in `ci/run-tests.js`, before `"lib/Frames.js"`.
+- `#include "lib/AsiairNames.js"` into the `#ifndef LOOM_LIBS_INCLUDED` block at the top of `script/FrameSelector.js`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -264,7 +271,9 @@ git commit -m "Parse ASIAIR frame names by anchor rather than by position"
 
 **Interfaces:**
 - Consumes: `parseName().stamp` from Task 1.
-- Produces: `AsiairNames.stampKey( stamp ) -> Number | null` -- minutes since an arbitrary fixed origin, computed with `Date.UTC` on the wall-clock components. `null` for an unparseable or impossible stamp.
+- Produces: `AsiairNames.stampKey( stamp ) -> Number | null` -- SECONDS since an arbitrary fixed origin, computed with `Date.UTC` on the wall-clock components. `null` for an unparseable or impossible stamp.
+
+Seconds, not minutes. Flooring to minutes loses the threshold: two lights four hours and fifty-nine seconds apart round to exactly four hours and stay in one session, when the rule says over four hours splits.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -282,18 +291,28 @@ git commit -m "Parse ASIAIR frame names by anchor rather than by position"
    check( "stampKey difference is one hour",
           AsiairNames.stampKey( "20260807-220000" ) -
           AsiairNames.stampKey( "20260807-210000" ),
-          60 );
+          3600 );
 
    check( "stampKey crosses midnight",
           AsiairNames.stampKey( "20260808-003000" ) -
           AsiairNames.stampKey( "20260807-233000" ),
-          60 );
+          3600 );
 
    // The DST case: wall-clock arithmetic, so 4.5 hours stays 4.5 hours
    check( "stampKey ignores DST",
           AsiairNames.stampKey( "20260308-050000" ) -
           AsiairNames.stampKey( "20260308-003000" ),
-          270 );
+          16200 );
+
+   /*
+    * Seconds, not minutes. Flooring to minutes would make this pair four
+    * hours apart exactly, and a threshold of "more than four hours" would
+    * then keep in one session two runs that are demonstrably not.
+    */
+   check( "stampKey keeps seconds",
+          AsiairNames.stampKey( "20260921-000059" ) -
+          AsiairNames.stampKey( "20260920-200000" ),
+          4*3600 + 59 );
 
    check( "stampKey rejects rubbish", AsiairNames.stampKey( "nonsense" ), null );
    check( "stampKey rejects month 13", AsiairNames.stampKey( "20261301-000000" ), null );
@@ -312,7 +331,7 @@ Append to `script/lib/AsiairNames.js`:
 
 ```js
 /*
- * A comparison key in minutes, from the wall-clock components via
+ * A comparison key in SECONDS, from the wall-clock components via
  * Date.UTC. Deliberately not `new Date( "..." )`: that resolves against
  * the importing machine's zone, so the same card would cluster
  * differently on a laptop in another timezone, and a DST transition would
@@ -341,7 +360,7 @@ AsiairNames.stampKey = function( stamp )
    if ( back.getUTCMonth() != mo-1 || back.getUTCDate() != d )
       return null;
 
-   return Math.floor( ms / 60000 );
+   return Math.floor( ms / 1000 );
 };
 ```
 
@@ -405,6 +424,10 @@ git commit -m "Key ASIAIR timestamps by wall clock, not by local time"
    check( "four hours and a minute splits",
           AsiairNames.sessions( [ lightAt( "20260920-200000" ),
                                   lightAt( "20260921-000100" ) ], 4 ).length, 2 );
+   // and the seconds matter, which is why the key is not floored to minutes
+   check( "four hours and a MINUTE's worth of seconds splits",
+          AsiairNames.sessions( [ lightAt( "20260920-200000" ),
+                                  lightAt( "20260921-000059" ) ], 4 ).length, 2 );
 
    // Input order must not matter
    check( "unsorted input clusters the same",
@@ -441,7 +464,7 @@ AsiairNames.GAP_HOURS = 4;
  */
 AsiairNames.sessions = function( frames, gapHours )
 {
-   var gap = ( gapHours == null ? AsiairNames.GAP_HOURS : gapHours ) * 60;
+   var gap = ( gapHours == null ? AsiairNames.GAP_HOURS : gapHours ) * 3600;
 
    var usable = [];
    for ( var i = 0; i < frames.length; ++i )
@@ -488,7 +511,9 @@ git commit -m "Cluster ASIAIR lights into observing sessions"
 
 **Interfaces:**
 - Consumes: `sessions()` from Task 3.
-- Produces: `AsiairNames.nights( sessions ) -> [ { sessionIndex, target, first, last, count, filters: [], date } ]`, one per (session, target), ordered by `first` then `target`. `date` is `"YYYY-MM-DD"` taken from the night's first frame. `filters` is sorted and unique.
+- Produces: `AsiairNames.nights( sessions ) -> [ { sessionIndex, target, first, last, count, filters: [], date, frames: [] } ]`, one per (session, target), ordered by `first` then `target`. `date` is `"YYYY-MM-DD"` taken from the night's first frame. `filters` is sorted and unique.
+
+`frames` is not decoration. Without it a selected night is only a label, and the caller has to go back through the session and re-filter by target to find out which files it means. Carrying the frames is what makes a night something that can be handed to `scanPaths`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -515,6 +540,15 @@ git commit -m "Cluster ASIAIR lights into observing sessions"
    check( "a night lists its filters, sorted and unique", nn[0].filters, [ "H", "O" ] );
    check( "a night carries its date", nn[0].date, "2026-09-20" );
    check( "a night knows its session", nn[2].sessionIndex, 1 );
+
+   /*
+    * A night carries its own frames. A label alone cannot be handed to
+    * scanPaths, and making the caller re-filter the session by target is
+    * the same lookup written twice.
+    */
+   check( "a night carries its frames", nn[0].frames.length, 2 );
+   check( "and only its own target's",
+          nn[0].frames[0].target, "IC 1396A" );
 
    /*
     * Two sessions on the SAME calendar date must stay two rows. This is
@@ -571,7 +605,8 @@ AsiairNames.nights = function( sessions )
          out.push( { sessionIndex: s, target: order[k],
                      first: g[0].key, last: g[g.length-1].key,
                      count: g.length, filters: filters,
-                     date: AsiairNames.dateOf( g[0].stamp ) } );
+                     date: AsiairNames.dateOf( g[0].stamp ),
+                     frames: g } );
       }
    }
    out.sort( function( a, b ) {
@@ -633,16 +668,36 @@ git commit -m "Split each ASIAIR session into a night per target"
     * sessions ending 06:00 and starting 20:00, the midpoint is 13:00, and
     * a batch running 12:59 to 13:01 would send one flat each way.
     */
+   /*
+    * The session fixture needs frames no more than GAP_HOURS apart, or it
+    * is not one session. 20:00 -> 06:00 in four steps is; 20:00 -> 06:00
+    * in one is four separate sessions, which is what a careless fixture
+    * here produced and what the straddle assertion failed to notice
+    * because it only counted the result array.
+    */
    var sess = AsiairNames.sessions( [
-      lightAt( "20260920-200000" ), lightAt( "20260921-060000" ),
-      lightAt( "20260921-200000" ), lightAt( "20260922-020000" ) ], 4 );
+      lightAt( "20260920-200000" ), lightAt( "20260920-230000" ),
+      lightAt( "20260921-020000" ), lightAt( "20260921-060000" ),
+      lightAt( "20260921-200000" ), lightAt( "20260921-230000" ),
+      lightAt( "20260922-020000" ) ], 4 );
    check( "two sessions for the straddle case", sess.length, 2 );
+   check( "the first ends at dawn",
+          sess[0].last, AsiairNames.stampKey( "20260921-060000" ) );
+   check( "the second starts at dusk",
+          sess[1].first, AsiairNames.stampKey( "20260921-200000" ) );
 
+   // midpoint between 06:00 and 20:00 is 13:00
    var straddle = AsiairNames.flatBatches( [
       flatAt( "20260921-125900", "H" ), flatAt( "20260921-130100", "H" ) ], 4 );
    check( "the straddling flats are one batch", straddle.length, 1 );
-   check( "and go whole to one session",
-          AsiairNames.assignBatches( straddle, sess ).length, 1 );
+   check( "and the batch keeps both flats", straddle[0].frames.length, 2 );
+   /*
+    * Counting the assignments proves nothing -- one batch always yields
+    * one assignment. The point is that BOTH flats went to the same place,
+    * which is what assigning per batch rather than per flat guarantees.
+    */
+   check( "and go whole to a single session",
+          AsiairNames.assignBatches( straddle, sess ), [ 0 ] );
 
    // Dawn flats go to the session that just ended
    check( "dawn flats attach to the session just ended",
@@ -692,6 +747,11 @@ AsiairNames.flatBatches = function( flats, gapHours )
  * flat on its own distance would bisect a batch lying across the midpoint
  * between two sessions, which is the one thing a batch must never do:
  * half a flat set calibrates nothing.
+ *
+ * A batch sitting exactly on the midpoint is equidistant from both. The
+ * tie goes to the EARLIER session -- `<` rather than `<=` in the
+ * comparison below. Any rule would do; having one written down is what
+ * stops the answer depending on iteration order.
  */
 AsiairNames.assignBatches = function( batches, sessions )
 {
@@ -735,7 +795,9 @@ git commit -m "Assign whole flat batches to their nearest ASIAIR session"
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks at call time -- this is a pure match over already-read header records.
-- Produces: `AsiairNames.matchFlats( lightFilters, flatRecords ) -> [ { filter, flats: [], strength } ]`, one entry per entry in `lightFilters`, in that order. `strength` is `"exact"`, `"weak"` or `"missing"`. A record is `{ path, filter, bin, camera, rotation }`, all read from FITS headers.
+- Produces: `AsiairNames.matchFlats( lightFilters, flatRecords ) -> [ { filter, flats: [], strength } ]`, one entry per entry in `lightFilters`, in that order. `strength` is `"exact"`, `"weak"` or `"missing"`. A record is `{ path, filter, binning, camera, rotation }`.
+
+The field is `binning`, NOT `bin`, because that is what `FrameSelector.entryFor` already calls it. Two names for one field is how `undefined == undefined` gets to report an exact match between frames that share nothing. Task 10 builds the adapter that fills these records.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -750,16 +812,16 @@ git commit -m "Assign whole flat batches to their nearest ASIAIR session"
     * check can get them back.
     */
    var cand = [
-      { path: "/f/h1.fit", filter: "H", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { path: "/f/h2.fit", filter: "H", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { path: "/f/o1.fit", filter: "O", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { path: "/f/rot.fit", filter: "S", bin: "Bin1", camera: "2600MM", rotation: "090deg" }
+      { path: "/f/h1.fit", filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/h2.fit", filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/o1.fit", filter: "O", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/rot.fit", filter: "S", binning: "1", camera: "2600MM", rotation: "090deg" }
    ];
    var want = [
-      { filter: "H", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { filter: "O", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { filter: "S", bin: "Bin1", camera: "2600MM", rotation: "180deg" },
-      { filter: "L", bin: "Bin1", camera: "2600MM", rotation: "180deg" }
+      { filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "O", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "S", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "L", binning: "1", camera: "2600MM", rotation: "180deg" }
    ];
    var m = AsiairNames.matchFlats( want, cand );
 
@@ -784,20 +846,20 @@ git commit -m "Assign whole flat batches to their nearest ASIAIR session"
     * rather than silently accepted or silently discarded.
     */
    var weak = AsiairNames.matchFlats(
-      [ { filter: "H", bin: "Bin1", camera: "2600MM", rotation: "180deg" } ],
-      [ { path: "/f/x.fit", filter: "H", bin: "Bin1", camera: null, rotation: null } ] );
+      [ { filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" } ],
+      [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ] );
    check( "a half-specified flat is a weak match", weak[0].strength, "weak" );
    check( "but it is still offered", weak[0].flats.length, 1 );
 
    var bare = AsiairNames.matchFlats(
-      [ { filter: "H", bin: "Bin1", camera: null, rotation: null } ],
-      [ { path: "/f/x.fit", filter: "H", bin: "Bin1", camera: null, rotation: null } ] );
+      [ { filter: "H", binning: "1", camera: null, rotation: null } ],
+      [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ] );
    check( "absent on both sides is not compared", bare[0].strength, "exact" );
 
-   check( "a mismatched bin never matches",
+   check( "a mismatched binning never matches",
           AsiairNames.matchFlats(
-             [ { filter: "H", bin: "Bin2", camera: null, rotation: null } ],
-             [ { path: "/f/x.fit", filter: "H", bin: "Bin1", camera: null, rotation: null } ]
+             [ { filter: "H", binning: "2", camera: null, rotation: null } ],
+             [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ]
           )[0].strength, "missing" );
 ```
 
@@ -810,7 +872,7 @@ Expected: FAIL, `AsiairNames.matchFlats is not a function`.
 
 ```js
 /*
- * Filter and bin must agree. Camera and rotation must agree WHERE BOTH
+ * Filter and binning must agree. Camera and rotation must agree WHERE BOTH
  * sides state them -- a rotation change puts the dust somewhere else, and
  * the real filenames carry the angle, so this is worth checking. Stated
  * on one side only is "weak": offered, flagged, and droppable, because
@@ -831,7 +893,7 @@ AsiairNames.matchFlats = function( lightFilters, flatRecords )
       for ( var j = 0; j < flatRecords.length; ++j )
       {
          var f = flatRecords[j];
-         if ( f.filter != want.filter || f.bin != want.bin )
+         if ( f.filter != want.filter || f.binning != want.binning )
             continue;
 
          var soft = false, hard = false;
@@ -874,7 +936,7 @@ git commit -m "Match ASIAIR flats on header filter, bin, camera and rotation"
 
 **Files:**
 - Create: `script/lib/Asiair.js`
-- Modify: `ci/run-tests.js` (add `"lib/Asiair.js"` to `LIBS`)
+- Modify: `ci/run-tests.js` (`LIBS`), `script/FrameSelector.js` (`#include` block)
 - Test: `script/selftest.js`
 
 **Interfaces:**
@@ -975,7 +1037,7 @@ Asiair.detect = function( shouldStop )
 };
 ```
 
-Add `"lib/Asiair.js"` to `LIBS` in `ci/run-tests.js`, after `"lib/AsiairNames.js"`.
+Register it in BOTH loaders: `"lib/Asiair.js"` into `LIBS` in `ci/run-tests.js` after `"lib/AsiairNames.js"`, and `#include "lib/Asiair.js"` into the `#ifndef LOOM_LIBS_INCLUDED` block in `script/FrameSelector.js`.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -1000,6 +1062,8 @@ git commit -m "Detect an ASIAIR card by its layout, not by its volume name"
 **Interfaces:**
 - Consumes: `AsiairNames.parseName`, `AsiairNames.stampKey`, `Asiair.looksLikeCard`.
 - Produces: `Asiair.scanCard( root, onProgress, shouldStop ) -> { lights: [], flats: [], unparseable: [], cancelled: Boolean, removed: Boolean }`. Each entry is `parseName()`'s result plus `{ path, key, source }`, where `source` is `"Plan"` or `"Autorun"`.
+
+Three things the walk owes its caller beyond the frames: it pumps events so the UI stays alive, it notices a card pulled out MID-walk and not only at the start, and it reports a frame whose stamp is impossible rather than letting clustering drop it in silence.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1033,8 +1097,33 @@ git commit -m "Detect an ASIAIR card by its layout, not by its volume name"
        */
       check( "a foreign file is reported", r.unparseable.length, 1 );
 
+      /*
+       * A name that PARSES but carries an impossible date is worse than
+       * one that does not parse at all: it becomes a frame with a null
+       * key, and clustering then drops it without a word. It is reported
+       * as unparseable, which is what it is.
+       */
+      var bad = "/tmp/agent-scratch/asiair-card-bad";
+      File.createDirectory( bad + "/Plan/Light/M42", true );
+      File.writeTextFile( bad + "/Plan/Light/M42/" +
+         "Light_M42_10.0s_Bin1_S_gain360_20260230-203324_-10.0C_0001.fit", "x" );
+      var rb = Asiair.scanCard( bad );
+      check( "an impossible date is reported", rb.unparseable.length, 1 );
+      check( "and is not passed on as a frame", rb.lights.length, 0 );
+
       check( "a card that is not there reads as removed",
              Asiair.scanCard( "/tmp/agent-scratch/no-card" ).removed, true );
+
+      /*
+       * A card pulled out mid-walk must read as REMOVED, not as a short
+       * but successful scan. Silently returning half a night is how a
+       * missing frame gets blamed on the review.
+       */
+      check( "removal mid-walk is noticed",
+             Asiair.scanCard( root, function() {
+                File.remove( root + "/.probe" );   // see implementation
+                return true;
+             } ).removed != null, true );
    } )();
 ```
 
@@ -1083,14 +1172,35 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
          var path = dir + "/" + find.name;
          var f = AsiairNames.parseName( find.name );
          if ( f == null ) { out.unparseable.push( path ); continue; }
+
+         /*
+          * A parseable name with an impossible date yields a null key,
+          * and clustering drops null keys silently. Report it here, where
+          * the filename is still in hand to name in the report.
+          */
+         var key = AsiairNames.stampKey( f.stamp );
+         if ( key == null ) { out.unparseable.push( path ); continue; }
+
          f.path = path;
          f.source = source;
-         f.key = AsiairNames.stampKey( f.stamp );
+         f.key = key;
          if ( target != null )
             f.target = target;
          into.push( f );
+
+         /*
+          * Pump, then re-check the card. A walk that never yields leaves
+          * the dialog frozen; a walk that does not re-check reports half
+          * a night as a complete one when the card is unplugged.
+          */
          if ( onProgress )
             onProgress( out.lights.length + out.flats.length );
+         CoreApplication.processEvents();
+         if ( !Asiair.looksLikeCard( root ) )
+         {
+            out.removed = true;
+            return false;
+         }
       }
       while ( find.next() );
       return true;
@@ -1138,55 +1248,321 @@ git commit -m "Walk an ASIAIR card without recursing"
 
 ---
 
-### Task 9: `scanPaths` -- an explicit-path entry point
+### Task 9: Pure helpers that CI can reach
 
 **Files:**
-- Modify: `script/FrameSelector.js` (around the existing `scan` at line ~390)
+- Modify: `script/lib/AsiairNames.js`
 - Test: `script/selftest.js`
 
 **Interfaces:**
-- Produces: `FrameSelector.prototype.scanPaths( paths, ... )` with the same contract `scan( folder )` has today. `scan( folder )` becomes a caller of it.
+- Produces: `AsiairNames.isInside( path, root ) -> Boolean` and `AsiairNames.manifest( approvedLights, flatMatches, destination ) -> { lights: [{src,dst}], flats: [{src,dst}], collisions: [] }`.
 
-This task changes NO behaviour. It is a refactor whose only job is to make a night expressible, and its test is a regression guard.
+These are pure, so they live here rather than on `FrameSelector`. `FrameSelector` is not in `LIBS` and the harness strips `#include`, so anything hung off it is invisible to node — and "is this path on the card" is the last rule in the feature that should be untested.
+
+- [ ] **Step 1: Write the failing tests**
+
+```js
+   /* ---- containment ------------------------------------------------------ */
+
+   /*
+    * Comparison is on path COMPONENTS, not characters. A prefix test calls
+    * /Volumes/ASIAIR-backup a child of /Volumes/ASIAIR, and refusing a
+    * perfectly good destination is as wrong as accepting a bad one.
+    */
+   check( "a folder inside the root is inside",
+          AsiairNames.isInside( "/Volumes/ASIAIR/export", "/Volumes/ASIAIR" ), true );
+   check( "the root is inside itself",
+          AsiairNames.isInside( "/Volumes/ASIAIR", "/Volumes/ASIAIR" ), true );
+   check( "a folder elsewhere is not",
+          AsiairNames.isInside( "/Volumes/A008/M42", "/Volumes/ASIAIR" ), false );
+   check( "a sibling sharing a prefix is not",
+          AsiairNames.isInside( "/Volumes/ASIAIR-backup", "/Volumes/ASIAIR" ), false );
+   check( "a trailing slash changes nothing",
+          AsiairNames.isInside( "/Volumes/ASIAIR/", "/Volumes/ASIAIR" ), true );
+
+   /* ---- the import manifest ---------------------------------------------- */
+
+   /*
+    * Flats follow the LIGHTS THAT SURVIVED. A filter whose lights were all
+    * rejected gets no flats: calibration frames for data that is not there
+    * are just clutter in the destination.
+    */
+   var man = AsiairNames.manifest(
+      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit",
+          filter: "S" } ],
+      [ { filter: "S", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" } ] },
+        { filter: "L", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_L_gain100_20240320-233500_-10.5C_0001.fit" } ] } ],
+      "/dest" );
+
+   check( "the approved light is written", man.lights.length, 1 );
+   check( "into a Light folder", man.lights[0].dst,
+          "/dest/Light/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.xisf" );
+   check( "its flats come along", man.flats.length, 1 );
+   check( "into a Flat folder", man.flats[0].dst,
+          "/dest/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.xisf" );
+   check( "a filter with no surviving lights brings no flats",
+          man.flats[0].src.indexOf( "_L_" ) < 0, true );
+
+   /*
+    * Two sources landing on one output name cannot be resolved by
+    * overwriting: whichever is written second wins and a frame is lost
+    * without a word. Refused outright, whatever the overwrite setting.
+    */
+   var clash = AsiairNames.manifest(
+      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" },
+        { path: "/c/Autorun/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" } ],
+      [], "/dest" );
+   check( "a source collision is caught", clash.collisions.length, 1 );
+   check( "and nothing at all is scheduled", clash.lights.length, 0 );
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `node ci/run-tests.js 2>&1 | tail -20`
+Expected: FAIL, `AsiairNames.isInside is not a function`.
+
+- [ ] **Step 3: Implement**
+
+```js
+/*
+ * Containment on components. A character prefix test would call
+ * /Volumes/ASIAIR-backup a child of /Volumes/ASIAIR.
+ */
+AsiairNames.isInside = function( path, root )
+{
+   function parts( p )
+   {
+      var out = String( p ).split( "/" );
+      while ( out.length && out[out.length-1] == "" )
+         out.pop();
+      return out;
+   }
+   var a = parts( path ), b = parts( root );
+   if ( a.length < b.length )
+      return false;
+   for ( var i = 0; i < b.length; ++i )
+      if ( a[i] != b[i] )
+         return false;
+   return true;
+};
+
+/*
+ * Built ONCE at Run, with the lights and the flats frozen together, so the
+ * flat set cannot drift from the light set while the copy proceeds.
+ */
+AsiairNames.manifest = function( approvedLights, flatMatches, destination )
+{
+   function xisf( p )
+   {
+      var name = p.split( "/" ).pop();
+      return name.replace( /\.(fit|fits)$/i, ".xisf" );
+   }
+
+   var surviving = Object.create( null );
+   var lights = [];
+   for ( var i = 0; i < approvedLights.length; ++i )
+   {
+      surviving[approvedLights[i].filter] = true;
+      lights.push( { src: approvedLights[i].path,
+                     dst: destination + "/Light/" + xisf( approvedLights[i].path ) } );
+   }
+
+   var flats = [];
+   for ( var m = 0; m < flatMatches.length; ++m )
+   {
+      if ( !( flatMatches[m].filter in surviving ) )
+         continue;
+      for ( var f = 0; f < flatMatches[m].flats.length; ++f )
+      {
+         var src = flatMatches[m].flats[f].path;
+         flats.push( { src: src, dst: destination + "/Flat/" + xisf( src ) } );
+      }
+   }
+
+   // Two sources, one destination. Overwriting cannot resolve it.
+   var seen = Object.create( null ), collisions = [];
+   var all = lights.concat( flats );
+   for ( var k = 0; k < all.length; ++k )
+   {
+      if ( all[k].dst in seen )
+         collisions.push( { dst: all[k].dst, a: seen[all[k].dst], b: all[k].src } );
+      else
+         seen[all[k].dst] = all[k].src;
+   }
+   if ( collisions.length )
+      return { lights: [], flats: [], collisions: collisions };
+
+   return { lights: lights, flats: flats, collisions: [] };
+};
+```
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `node ci/run-tests.js 2>&1 | tail -20`
+Expected: `PASS`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add script/lib/AsiairNames.js script/selftest.js
+git commit -m "Decide containment and the import manifest where CI can see them"
+```
+
+---
+
+### Task 10: The header adapter
+
+**Files:**
+- Modify: `script/lib/Asiair.js`
+- Test: `script/selftest.js` (PixInsight-only — it reads real headers)
+
+**Interfaces:**
+- Consumes: `FrameSelector.entryFor`, `Util.keywordValue`, the parsed frame from Task 8.
+- Produces: `Asiair.describe( frame ) -> { path, filter, binning, camera, rotation }`, shaped for `AsiairNames.matchFlats`.
+
+`entryFor` returns `{ path, filter, exposure, binning, binningY, imageType, width, height, calibrated }`. It has **no `bin`, no `camera` and no `rotation`**. Handing its output straight to `matchFlats` would compare two `undefined` fields and call every mismatch exact — a silent pass that pairs any flat with any light.
+
+- [ ] **Step 1: Write the failing test**
+
+Inside `if ( IN_PIXINSIGHT )`, call `Asiair.describe` on a real ASIAIR frame and assert `filter` and `binning` came from the header, `camera` from `INSTRUME`, and `rotation` from the filename. Then assert that `matchFlats` rejects a pair whose `binning` differs — the case that silently passed before the adapter existed.
+
+- [ ] **Step 2: Run under PixInsight to verify it fails**
+
+Expected: FAIL, `Asiair.describe is not a function`.
+
+- [ ] **Step 3: Implement**
+
+```js
+/*
+ * Each field from the best source available, which is NOT the same source
+ * for all four:
+ *
+ *   filter, binning  header. Authoritative, and what WBPP will read.
+ *   camera           header INSTRUME, falling back to the filename token.
+ *   rotation         FILENAME ONLY. There is no standard FITS keyword for
+ *                    a rotator angle and it is not established that the
+ *                    ASIAIR writes one. Comparing filenames is sound here
+ *                    because both sides come off the same card with the
+ *                    same naming: it is name against name, not name
+ *                    against header.
+ *
+ * Without this adapter, entryFor's records reach matchFlats with no `bin`,
+ * no `camera` and no `rotation`, two undefineds compare equal, and every
+ * mismatched flat reads as an exact match.
+ */
+Asiair.describe = function( frame )
+{
+   var e = FrameSelector.entryFor( frame.path );
+   var info = null;
+   try { info = Pipeline.readImageInfo( frame.path ); } catch ( err ) { info = null; }
+   var instrume = ( info && info.keywords )
+                ? Util.keywordValue( info.keywords, "INSTRUME" ) : null;
+
+   return { path: frame.path,
+            filter:   e.filter,
+            binning:  e.binning,
+            camera:   instrume || frame.camera,
+            rotation: frame.rotation };
+};
+```
+
+Change `AsiairNames.matchFlats` to compare `binning` rather than `bin`, and update Task 6's tests to match. Both sides must use one field name; two names is exactly how the undefined-equals-undefined bug gets in.
+
+- [ ] **Step 4: Run under PixInsight to verify it passes**
+
+Expected: `PASS`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add script/lib/Asiair.js script/lib/AsiairNames.js script/selftest.js
+git commit -m "Describe a card frame the way the flat matcher needs it"
+```
+
+---
+
+### Task 11: `scanPaths` — an explicit-path entry point
+
+**Files:**
+- Modify: `script/FrameSelector.js` (`FrameSelector.scan` at ~line 390)
+- Test: `script/selftest.js` (PixInsight-only — `FrameSelector` is not loaded under node)
+
+**Interfaces:**
+- Produces: `FrameSelector.scanPaths( paths, progress )`, a STATIC function with the same contract `FrameSelector.scan( folder, progress )` has today. `scan` becomes a caller of it.
+
+This task changes NO behaviour. Its job is to make a night expressible; its test is a regression guard.
 
 - [ ] **Step 1: Read the existing contract**
 
-Run: `sed -n '380,470p' script/FrameSelector.js`
+Run: `sed -n '390,440p' script/FrameSelector.js`
 
-Note every element of it: the `reading` and `measuring` progress callbacks, the `CoreApplication.processEvents` pumping, the Cancel check, and the shape of the cancelled result. All of them must survive. "Thin wrapper" must NOT become "drops the progress bar and ignores Cancel" -- ordinary folder scanning is this feature's most-used path and a silent regression there is worse than the new feature is good.
+The real shape, which the extraction must preserve exactly:
+
+- `FrameSelector.scan = function( folder, progress )` — static, two arguments.
+- It calls `FrameSelector.cohortFrom( FrameSelector.frameFilesIn( folder ), progress ? progress.reading : null )`.
+- **Cancellation is a callback RETURNING FALSE** — `progress.reading` and `progress.measuring`. There is no `shouldStop` argument. Do not invent one.
+- A cancelled scan returns `{ channels: {}, unstable: [], cancelled: true }`.
+- Event pumping happens in `ScanWindow.report()`, OUTSIDE `scan`. Do not add pumping here.
 
 - [ ] **Step 2: Write the failing test**
 
 ```js
-   /* ---- scanPaths keeps the whole of scan's contract ---------------------- */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      /*
+       * A night is a filtered list of paths that may span Plan and
+       * Autorun, so scan( folder ) cannot express it. Extracting
+       * scanPaths is the smallest change that can -- and the risk is not
+       * the new path, it is silently dropping progress or cancellation
+       * from the old one, which is the most-used path in the feature.
+       */
+      check( "scanPaths exists", typeof FrameSelector.scanPaths, "function" );
+      check( "scan survives", typeof FrameSelector.scan, "function" );
 
-   /*
-    * A night is a filtered list of paths that may span Plan and Autorun,
-    * so scan( folder ) cannot express it. Extracting scanPaths is the
-    * smallest change that can -- and the risk is not the new path, it is
-    * silently dropping progress or Cancel from the old one.
-    */
-   check( "scanPaths exists", typeof FrameSelector.prototype.scanPaths, "function" );
-   check( "scan still exists", typeof FrameSelector.prototype.scan, "function" );
+      var seen = 0;
+      var progress = { reading: function() { ++seen; return true; },
+                       measuring: function() { return true; } };
+      FrameSelector.scanPaths( [], progress );
+
+      // cancelling is a reading callback that returns false
+      var cancelled = FrameSelector.scanPaths(
+         [ "/nowhere/a.fit" ],
+         { reading: function() { return false; }, measuring: function() { return true; } } );
+      check( "a false reading callback cancels", cancelled.cancelled, true );
+      check( "and yields no channels", Object.keys( cancelled.channels ).length, 0 );
+   } )();
 ```
 
-Plus, inside the existing `if ( IN_PIXINSIGHT )` populated-dialog block, assert that a `scanPaths` call over two explicit paths reports progress at least once and honours a `shouldStop` that returns true immediately.
+- [ ] **Step 3: Run under PixInsight to verify it fails**
 
-- [ ] **Step 3: Run to verify it fails**
-
-Run: `node ci/run-tests.js 2>&1 | tail -20`
-Expected: FAIL on `scanPaths exists`.
+Expected: FAIL, `scanPaths exists`.
 
 - [ ] **Step 4: Implement**
 
-Move the body of `scan` into `scanPaths( paths, ... )`, keeping every callback and the Cancel check exactly as they are. Reduce `scan( folder )` to enumerating the folder into a path array and delegating.
+```js
+/*
+ * The body that used to be scan()'s. A night is a filtered list of paths
+ * spanning Plan and Autorun, which a single folder cannot express.
+ */
+FrameSelector.scanPaths = function( paths, progress )
+{
+   var cohort = FrameSelector.cohortFrom( paths, progress ? progress.reading : null );
+   if ( cohort.cancelled )
+      return { channels: {}, unstable: [], cancelled: true };
+   /* ...the rest of the existing body, unchanged... */
+};
 
-- [ ] **Step 5: Run the whole suite under node AND under PixInsight**
+FrameSelector.scan = function( folder, progress )
+{
+   return FrameSelector.scanPaths( FrameSelector.frameFilesIn( folder ), progress );
+};
+```
 
-Run: `node ci/run-tests.js 2>&1 | tail -20`
-Expected: `PASS`, with the run count up by 2 and NOTHING else changed.
+- [ ] **Step 5: Run the whole suite both ways**
 
-Then dispatch `script/selftest.js` to the already-running PixInsight — do not launch a second instance — and confirm the dialog tests still pass.
+Run: `node ci/run-tests.js 2>&1 | tail -20` — expect `PASS`, unchanged count.
+
+Then dispatch `script/selftest.js` to the ALREADY-RUNNING PixInsight — never launch a second instance — and confirm the dialog tests still pass.
 
 - [ ] **Step 6: Commit**
 
@@ -1197,36 +1573,76 @@ git commit -m "Let the Frame Selector scan an explicit list of frames"
 
 ---
 
-### Task 10: The night picker dialog
+### Task 12: The night picker dialog
 
 **Files:**
 - Create: `script/lib/NightDialog.js`
+- Modify: `ci/run-tests.js` (`LIBS`), `script/FrameSelector.js` (`#include` block)
 - Test: `script/selftest.js` (PixInsight-only)
 
 **Interfaces:**
-- Consumes: `Asiair.scanCard`, `AsiairNames.sessions`, `nights`, `flatBatches`, `assignBatches`.
-- Produces: `NightDialog( cardRoot )` with `execute()` and, on accept, `selectedNight` (a night record) and `selectedFlats` (an array of flat records the observer left ticked).
+- Consumes: `Asiair.scanCard`, `AsiairNames.sessions/nights/flatBatches/assignBatches`, `Asiair.describe`, `AsiairNames.matchFlats`.
+- Produces: `NightDialog( cardRoot )` with `execute()`, and on accept `selectedNight` (a night record, including its `frames`) and `selectedFlats` (the flat records left ticked).
+
+- [ ] **Step 1: Register the file in both loaders**
+
+Add `"lib/NightDialog.js"` to `LIBS` in `ci/run-tests.js` AND `#include "lib/NightDialog.js"` to the `#ifndef LOOM_LIBS_INCLUDED` block in `script/FrameSelector.js`. Registering only one leaves it undefined in the other, which reads as a mysteriously absent class.
+
+- [ ] **Step 2: Write the failing test**
+
+Inside `if ( IN_PIXINSIGHT )`, build a scratch card under `/tmp/agent-scratch` with two targets and a flat batch, construct `NightDialog` against it, and assert the tree lists the expected target/night rows and that the flat summary reports the expected per-filter counts and strengths. **Do NOT call `execute()`** — a modal dialog stops an unattended suite dead, and this has already happened once in this project.
+
+- [ ] **Step 3: Run under PixInsight to verify it fails**
+
+Expected: FAIL, `NightDialog is not defined`.
+
+- [ ] **Step 4: Implement**
+
+- `#include <pjsr/Sizer.jsh>`, `<pjsr/FrameStyle.jsh>`, `<pjsr/TextAlign.jsh>`, `<pjsr/StdButton.jsh>`, `<pjsr/StdIcon.jsh>` — every macro family used, in THIS file. The suite includes headers itself and will mask a missing include until a user hits it.
+- A `TreeBox` of targets, each with its nights as children: date, clock span, frame count, filters.
+- A flats panel for the selected night: one row per light filter with count, time, `strength`, and a tick to drop a set. `strength === "missing"` shows in red and stays visible.
+- **Every event handler body wrapped in try/catch.** An exception escaping a Qt handler unwinds through a destructor into `std::terminate` and kills PixInsight. This has cost this project two crashes already.
+- `TreeBox.selectedNodes` is READ-ONLY. Use `currentNode` and `node.selected = true`.
+- Never call `super.cancel()` on a native `Dialog` method — it throws. Release, then cancel.
+
+- [ ] **Step 5: Run under PixInsight to verify it passes**
+
+Expected: `PASS`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add script/lib/NightDialog.js ci/run-tests.js script/FrameSelector.js script/selftest.js
+git commit -m "Pick a target and a night off the card"
+```
+
+---
+
+### Task 13: Wiring it into the application
+
+**Files:**
+- Modify: `script/FrameSelector.js` (`main()` at ~line 2700, `FrameSelector.Dialog`)
+- Test: `script/selftest.js` (PixInsight-only)
+
+**Interfaces:**
+- Consumes: `Asiair.detect`, `NightDialog`, `FrameSelector.scanPaths`.
+- Produces: import mode reaching the user.
+
+Without this task every helper in the plan exists and none of it is reachable. `main()` today opens a folder chooser and calls `buildState( folder, progress )`; nothing routes a card into it.
 
 - [ ] **Step 1: Write the failing test**
 
-Inside `if ( IN_PIXINSIGHT )`, build a scratch card under `/tmp/agent-scratch` with two targets and a flat batch, construct `NightDialog` against it, and assert the tree lists the expected target/night rows and that each night's flat summary reports the expected per-filter counts. Do NOT call `execute()` — a modal dialog in a test run stops the suite.
+Inside `if ( IN_PIXINSIGHT )`, assert `typeof FrameSelector.buildStateFromNight === "function"`, and that building a state from a scratch-card night yields the expected channels — without opening any dialog.
 
 - [ ] **Step 2: Run under PixInsight to verify it fails**
 
-Dispatch `script/selftest.js` to the running instance.
-Expected: FAIL, `NightDialog is not defined`.
+Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Create `script/lib/NightDialog.js`. Requirements:
-
-- `#include <pjsr/Sizer.jsh>`, `<pjsr/FrameStyle.jsh>`, `<pjsr/TextAlign.jsh>`, `<pjsr/StdButton.jsh>`, `<pjsr/StdIcon.jsh>` — every macro family used, in THIS file. The suite includes headers itself and will mask a missing include.
-- A `TreeBox` of targets, each with its nights as children: date, clock span, frame count, filters.
-- A flats panel for the selected night: one row per light filter, showing count, time, `strength`, and a tick to drop a set.
-- A filter with `strength === "missing"` is shown in red and stays visible.
-- **Every event handler body wrapped in try/catch.** An exception escaping a Qt handler unwinds through a destructor into `std::terminate` and takes PixInsight with it. This has already cost this project two crashes.
-- `TreeBox.selectedNodes` is READ-ONLY. Use `currentNode` and `node.selected = true`.
-- Do not call `super.cancel()` on a native `Dialog` method — it throws. Release, then cancel.
+- On open, `Asiair.detect()`. If a card is found, offer to import from it; otherwise the folder chooser behaves exactly as it does today. Detection must never block startup on a card being absent.
+- On accepting a `NightDialog`, map the night's `frames` to their `path`s and call `FrameSelector.scanPaths( paths, progress )`, then build state from the result.
+- `importMode`, the card root and the selected flats are stored on the `FrameSelector.Dialog` INSTANCE. `FrameSelector.Dialog` is `class extends Dialog` and does **not** inherit from `FrameSelector.prototype`; a flag put there is permanently `undefined`, and a destructive path guarded by `!this.importMode` would then never be guarded at all.
 
 - [ ] **Step 4: Run under PixInsight to verify it passes**
 
@@ -1235,67 +1651,52 @@ Expected: `PASS`.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add script/lib/NightDialog.js script/selftest.js
-git commit -m "Pick a target and a night off the card"
+git add script/FrameSelector.js script/selftest.js
+git commit -m "Offer the card when one is plugged in"
 ```
 
 ---
 
-### Task 11: Import mode, and never writing to the card
+### Task 14: Never writing to the card
 
 **Files:**
 - Modify: `script/FrameSelector.js`
 - Test: `script/selftest.js`
 
 **Interfaces:**
-- Consumes: `NightDialog`, `scanPaths`.
-- Produces: `FrameSelector.prototype.importMode` (Boolean), `FrameSelector.resolvePath( p ) -> String`, `FrameSelector.destinationIsOnCard( dest, cardRoot ) -> Boolean`.
+- Consumes: `AsiairNames.isInside` from Task 9.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
+
+Inside `if ( IN_PIXINSIGHT )`: create a scratch card, create a destination whose `Light` subfolder is a SYMLINK into the card, and assert the import refuses before writing anything.
 
 ```js
-   /* ---- the card is never written to ------------------------------------- */
-
-   /*
-    * A mandatory destination does not by itself protect the card.
-    * Comparing the two chosen directories as strings passes
-    * /Volumes/ASIAIR/export, and passes a symlink pointing into the card.
-    * Both paths are resolved first, and the check is containment.
-    */
-   check( "a folder inside the card is refused",
-          FrameSelector.destinationIsOnCard( "/Volumes/ASIAIR/export", "/Volumes/ASIAIR" ),
-          true );
-   check( "the card root itself is refused",
-          FrameSelector.destinationIsOnCard( "/Volumes/ASIAIR", "/Volumes/ASIAIR" ),
-          true );
-   check( "a folder elsewhere is allowed",
-          FrameSelector.destinationIsOnCard( "/Volumes/A008/M42", "/Volumes/ASIAIR" ),
-          false );
-   /*
-    * A prefix match on the raw strings would call this a hit. The check
-    * is on path COMPONENTS, not on characters.
-    */
-   check( "a sibling with a shared prefix is allowed",
-          FrameSelector.destinationIsOnCard( "/Volumes/ASIAIR-backup", "/Volumes/ASIAIR" ),
-          false );
+      /*
+       * A mandatory destination does not by itself protect the card.
+       * <dest> can pass while <dest>/Light is a symlink into
+       * Plan/Light/M42 on the card, and the write lands there. So every
+       * OUTPUT path is resolved and checked, not just the destination.
+       */
+      check( "a symlinked Light folder is refused",
+             FrameSelector.outputsAreSafe( "/tmp/agent-scratch/dest-symlink",
+                                           "/tmp/agent-scratch/asiair-card" ),
+             false );
 ```
 
-Plus a PixInsight-only assertion that a symlink at `/tmp/agent-scratch/link-to-card` pointing at a scratch card resolves and is refused.
+- [ ] **Step 2: Run under PixInsight to verify it fails**
 
-- [ ] **Step 2: Run to verify they fail**
-
-Run: `node ci/run-tests.js 2>&1 | tail -20`
-Expected: FAIL, `FrameSelector.destinationIsOnCard is not a function`.
+Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-- `destinationIsOnCard` resolves both paths, splits on `/`, and tests component-wise containment.
-- In import mode, Run stays disabled until a destination is chosen AND `destinationIsOnCard` is false, with the reason shown.
-- The destructive same-folder path (`convertInPlace` and delete-in-place) is gated on `!this.importMode`. Gate on the MODE, not on a path comparison: a mode flag cannot be defeated by a symlink.
+- `FrameSelector.outputsAreSafe( destination, cardRoot )` resolves the destination AND `<dest>/Light` and `<dest>/Flat`, and returns false if `AsiairNames.isInside` holds for any of them.
+- Re-check immediately before each write, not only at Run: a symlink can be created between the two moments.
+- In import mode, Run stays disabled until a destination is chosen and `outputsAreSafe` holds, with the reason shown.
+- The destructive path — `convertInPlace` and delete-in-place inside `FrameSelector.Dialog.commit()` at ~line 1914 — is gated on `!this.importMode`, read off the dialog instance. Gate on the MODE, not on a path comparison: a mode flag cannot be defeated by a symlink.
+- **Wrap the existing Run handler.** `this.applyButton.onClick = function() { self.commit(); };` at ~line 1496 calls `commit()` with no catch. Tasks 14-16 add path resolution, manifest construction, conversion and verification underneath it — every one of them able to throw, and an exception escaping a Qt handler kills PixInsight. Wrap the body in try/catch and report the failure in the dialog.
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 4: Run under PixInsight to verify it passes**
 
-Run: `node ci/run-tests.js 2>&1 | tail -20`
 Expected: `PASS`.
 
 - [ ] **Step 5: Commit**
@@ -1307,68 +1708,32 @@ git commit -m "Refuse to write anything back to the ASIAIR card"
 
 ---
 
-### Task 12: Writing the Light and Flat folders
+### Task 15: Writing the Light and Flat folders
 
 **Files:**
 - Modify: `script/FrameSelector.js`
-- Test: `script/selftest.js`
+- Test: `script/selftest.js` (PixInsight-only)
 
 **Interfaces:**
-- Consumes: `AsiairNames.matchFlats`, import mode from Task 11.
-- Produces: `FrameSelector.importManifest( approvedLights, flatMatches ) -> { lights: [ {src,dst} ], flats: [ {src,dst} ], collisions: [] }` and `FrameSelector.convertFlats( paths, destination )`.
+- Consumes: `AsiairNames.manifest` (Task 9), `approvedPaths`, `entryFor`.
+- Produces: `FrameSelector.approvedLightRecords()`, `FrameSelector.convertFlats( paths, destination )`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
-```js
-   /* ---- the import manifest ---------------------------------------------- */
+`AsiairNames.manifest` wants `{ path, filter }` records, but `approvedPaths()` returns an array of **strings** and review rows carry `channel`, not `filter`. Assert that `approvedLightRecords()` returns `{ path, filter }` pairs for a populated dialog, and that a filter whose rows are all rejected does not appear.
 
-   /*
-    * Flats follow the LIGHTS THAT SURVIVED. A filter whose lights were
-    * all rejected gets no flats: copying calibration frames for data that
-    * is not there is just clutter in the destination.
-    */
-   var man = FrameSelector.importManifest(
-      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit",
-          filter: "S" } ],
-      [ { filter: "S", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" } ] },
-        { filter: "L", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_L_gain100_20240320-233500_-10.5C_0001.fit" } ] } ],
-      "/dest" );
+- [ ] **Step 2: Run under PixInsight to verify it fails**
 
-   check( "the approved light is written", man.lights.length, 1 );
-   check( "into a Light folder",
-          man.lights[0].dst, "/dest/Light/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.xisf" );
-   check( "its flats come along", man.flats.length, 1 );
-   check( "into a Flat folder",
-          man.flats[0].dst, "/dest/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.xisf" );
-
-   /*
-    * Two sources landing on one output name cannot be resolved by
-    * overwriting: whichever is written second wins and a frame is lost
-    * without a word. Refused outright, whatever the overwrite setting.
-    */
-   var clash = FrameSelector.importManifest(
-      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" },
-        { path: "/c/Autorun/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" } ],
-      [], "/dest" );
-   check( "a source collision is caught", clash.collisions.length, 1 );
-   check( "and nothing is scheduled", clash.lights.length, 0 );
-```
-
-- [ ] **Step 2: Run to verify they fail**
-
-Run: `node ci/run-tests.js 2>&1 | tail -20`
-Expected: FAIL, `FrameSelector.importManifest is not a function`.
+Expected: FAIL, `FrameSelector.approvedLightRecords is not a function`.
 
 - [ ] **Step 3: Implement**
 
-- `importManifest` builds both lists, rewrites the extension to `.xisf`, and detects two sources mapping to one destination. Any collision empties the schedule.
-- The manifest is built ONCE at Run and both lists are frozen together, so the flat set cannot drift from the light set mid-copy.
-- `convertFlats` opens and saves. It MUST NOT call `FrameSelector.runOutputRoutine`: that runs SubframeSelector routine 1 first — the comment in the source says "Measuring first is not optional" — which means star detection, and a flat has no stars to detect.
+- `approvedLightRecords()` walks the same rows `approvedPaths()` does and returns `{ path, filter }`, taking the filter from the channel the row sits in.
+- `convertFlats` opens and saves. It MUST NOT call `FrameSelector.runOutputRoutine`: that runs `FrameSelector.MEASURE_ROUTINE`, which is **0**, before setting routine 2 for output — routines 1 and 2 refuse with "No measurements have been made" until it has. Measuring means star detection, and a flat has no stars.
 - For lights, pass an explicit empty output postfix. SubframeSelector's default is `_a`, and the expected-output mapping must be built with the same postfix or the accounting of what was written is wrong.
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 4: Run under PixInsight to verify it passes**
 
-Run: `node ci/run-tests.js 2>&1 | tail -20`
 Expected: `PASS`.
 
 - [ ] **Step 5: Commit**
@@ -1380,19 +1745,18 @@ git commit -m "Write approved lights and their flats into the destination"
 
 ---
 
-### Task 13: Verifying what was written
+### Task 16: Verifying what was written
 
 **Files:**
 - Modify: `script/FrameSelector.js`
 - Test: `script/selftest.js` (PixInsight-only — this opens real images)
 
 **Interfaces:**
-- Consumes: the manifest from Task 12.
 - Produces: `FrameSelector.verifyImported( src, dst ) -> { ok, reason }`.
 
 - [ ] **Step 1: Write the failing test**
 
-Inside `if ( IN_PIXINSIGHT )`, write a real frame out as XISF, verify it passes, then write a file of the right geometry with `FILTER` stripped and assert it fails with a reason naming `FILTER`.
+Write a real frame out as XISF, verify it passes, then write a file of the right geometry with `FILTER` stripped and assert it fails with a reason naming `FILTER`. Then assert the failed file is **gone** afterwards.
 
 - [ ] **Step 2: Run under PixInsight to verify it fails**
 
@@ -1400,10 +1764,10 @@ Expected: FAIL, `FrameSelector.verifyImported is not a function`.
 
 - [ ] **Step 3: Implement**
 
-- Reopen the written file. Compare geometry as `Cache.verifyStoredFile` does, AND check that `FILTER`, `EXPTIME`, `GAIN`, `DATE-OBS` survived, plus the CFA keywords where the source had them.
+- Reopen the written file. Compare geometry as `Cache.verifyStoredFile` does, AND check that `FILTER`, `EXPTIME`, `GAIN` and `DATE-OBS` survived, plus the CFA keywords where the source had them.
 - **A file that fails verification is DELETED before the failure is reported.** Leaving it permanently blocks the retry: the existing output path has `if ( !overwrite && File.exists( ... ) ) blocked.push( src )`, so the half-written file would refuse its own replacement forever.
-- `ImageWindow.open` raises a MODAL error box for a missing file. Check `File.exists` first — an unattended test run that stops on a modal box looks like a hang.
-- Record in a comment that this cannot detect altered pixels: converting to XISF re-encodes, so the copy cannot be hashed against the card. That is an accepted limit of the XISF choice, not an oversight.
+- `ImageWindow.open` raises a MODAL error box for a missing file. Check `File.exists` first — an unattended run stopped on a modal box looks exactly like a hang.
+- Record in a comment that this cannot detect altered pixels: converting to XISF re-encodes, so the copy cannot be hashed against the card. An accepted limit of the XISF choice, not an oversight.
 
 - [ ] **Step 4: Run under PixInsight to verify it passes**
 
@@ -1418,14 +1782,14 @@ git commit -m "Verify each imported frame, and clear it away when it fails"
 
 ---
 
-### Task 14: Documentation and release
+### Task 17: Documentation and release
 
 **Files:**
 - Modify: `README.md`, `script/lib/Util.js`
 
 - [ ] **Step 1: Write the README section**
 
-Under the existing Frame Selector section, add "Importing from an ASIAIR". Cover: plugging in over USB-C; detection by layout rather than volume name; the target/night list and what a night means; that flats are matched on header filter, bin, camera and rotation, and that a rotation change between lights and flats is reported rather than accepted; that a destination is mandatory and the card is never written to; the `Light`/`Flat` layout; and the three accepted limits from the spec, stated plainly.
+Under the existing Frame Selector section, add "Importing from an ASIAIR". Cover: plugging in over USB-C; detection by layout rather than volume name; the target/night list and what a night means; that flats are matched on header filter and binning, header-or-filename camera, and filename rotation, and that a rotation change between lights and flats is reported rather than accepted; that a destination is mandatory and the card is never written to; the `Light`/`Flat` layout; and the three accepted limits from the spec, stated plainly.
 
 - [ ] **Step 2: Bump the version**
 
@@ -1433,14 +1797,13 @@ Under the existing Frame Selector section, add "Importing from an ASIAIR". Cover
 
 - [ ] **Step 3: Run the whole suite both ways**
 
-Run: `node ci/run-tests.js 2>&1 | tail -20`
-Expected: `PASS`, zero failures.
+Run: `node ci/run-tests.js 2>&1 | tail -20` — expect `PASS`, zero failures.
 
 Then dispatch `script/selftest.js` to the running PixInsight and confirm the same.
 
 **Read the output.** Do not pipe it through `grep -E "^PASS|^FAIL"` inside an `&&` chain: that pattern matches FAIL too, the chain continues, and this project has already committed twice with failing tests that way.
 
-- [ ] **Step 4: Squash and commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add README.md script/lib/Util.js
@@ -1455,14 +1818,16 @@ Squash the branch to one commit before fast-forwarding to main, then tag:
 git tag v0.2.0 && git push origin main --tags && git push github main --tags
 ```
 
-CI builds and publishes the zip from the tag. That is the only way a release is ever built.
+CI builds and publishes the zip from the tag. That is the only place a release is ever built.
 
 ---
 
 ## Self-Review
 
-**Spec coverage.** Filename parsing T1; timestamps T2; sessions T3; nights T4; flat batching and assignment T5; flat matching T6; detection T7; the tree walk T8; `scanPaths` T9; the dialog T10; mandatory destination and card protection T11; the Light/Flat split, collisions and flats-without-measurement T12; verification and cleanup T13; docs T14. The three accepted limits are recorded in code comments in T13 and in the README in T14.
+**Spec coverage.** Parsing T1; timestamps T2; sessions T3; nights T4; flat batching and assignment T5; flat matching T6; detection T7; the tree walk T8; containment and the manifest T9; the header adapter T10; `scanPaths` T11; the dialog T12; wiring into `main()` T13; card protection T14; the Light/Flat split T15; verification T16; docs T17. The three accepted limits are in code comments in T16 and in the README in T17.
 
-**Placeholders.** None. Every code step carries the code. T10 and T13 describe tests rather than quoting them, because both need a live `ImageWindow` and a real frame, and inventing that fixture text here would be a guess at what the machine has — the requirements those tests must meet are listed instead.
+**Placeholders.** None in the pure tasks. T10 and T12-T16 describe their tests rather than quoting them, because each needs a live `ImageWindow`, a real ASIAIR frame or a constructed dialog; inventing that fixture text here would be a guess at what the machine holds. The requirements those tests must meet are listed instead.
 
-**Type consistency.** `parseName` returns the same eleven fields everywhere. `stampKey` returns minutes, and `sessions`/`flatBatches`/`assignBatches` all compare in minutes. `matchFlats` takes header records `{ path, filter, bin, camera, rotation }` and T12's manifest consumes `{ filter, flats: [ { path } ] }`, which is what it returns. `scanCard` adds `{ path, key, source }` to a parsed frame, and T3's `sessions` needs only `key`, which it has.
+**Type consistency.** `parseName` returns the same eleven fields throughout. `stampKey` returns SECONDS, and `sessions`/`flatBatches`/`assignBatches` all compare in seconds against `gapHours * 3600`. The binning field is called `binning` everywhere — matching `entryFor` — in `matchFlats`, in `Asiair.describe` and in T6's tests; `bin` appears nowhere, which is what stops two undefineds comparing equal. `matchFlats` takes `{ path, filter, binning, camera, rotation }`, exactly what `Asiair.describe` produces. `AsiairNames.manifest` takes `{ path, filter }` records, exactly what T15's `approvedLightRecords()` produces — not the bare strings `approvedPaths()` returns. Nights carry `frames`, which T13 maps to paths for `scanPaths`.
+
+**Loader registration.** `AsiairNames.js` T1, `Asiair.js` T7, `NightDialog.js` T12 — each registered in BOTH `LIBS` and the `#include` block. Every test naming `FrameSelector` sits inside `if ( IN_PIXINSIGHT )`, because `FrameSelector` is not loaded under node.
