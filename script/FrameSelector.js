@@ -826,6 +826,19 @@ FrameSelector.PreviewControl = class extends ScrollBox
        * in size, so the same offset shows the same part of the sky.
        * layOutScroll clamps it in case this frame is smaller.
        */
+      /*
+       * Checked before opening, because ImageWindow.open raises a MODAL
+       * error box for a file that is not there -- one the user has to
+       * dismiss, per frame. A frame can vanish between the scan and the
+       * review, and that is a preview which does not appear, not a dialog
+       * demanding attention.
+       */
+      if ( !File.exists( path ) )
+      {
+         Util.warn( "frames", "no preview, the file is gone: " + path );
+         return false;
+      }
+
       var win = null;
       try
       {
