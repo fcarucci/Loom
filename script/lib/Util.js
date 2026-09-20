@@ -738,6 +738,25 @@ Util.runnableEntryCount = function( entries )
    return n;
 };
 
+/*
+ * Shorten a name to `max` characters by dropping the FRONT, not the middle
+ * and not the end.
+ *
+ * Subframe names are a long shared prefix -- target, exposure, binning,
+ * camera -- followed by the only part that differs: the timestamp and the
+ * sequence number. Eliding the middle or the tail throws that away and
+ * leaves a column of identical-looking rows; eliding the head keeps
+ * exactly the part that identifies the frame.
+ */
+Util.elideHead = function( text, max )
+{
+   var t = ( text == null ) ? "" : String( text );
+   var n = Number( max );
+   if ( !isFinite( n ) || n < 4 || t.length <= n )
+      return t;
+   return "..." + t.substring( t.length - ( n - 3 ) );
+};
+
 Util.scanProgressMessage = function( action, label, done, total )
 {
    var text = String( action );

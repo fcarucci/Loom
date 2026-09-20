@@ -258,7 +258,14 @@ Frames.columnOf = function( frames, metric )
  * Every gate for a channel, or none at all below the minimum count. The
  * caller cannot accidentally apply a gate built from four frames.
  */
-Frames.relativeGates = function( frames, k )
+/*
+ * `gating` names the metrics allowed to reject. A metric left out is
+ * measured, scored and plotted as before, but its gate is inactive -- so
+ * it cannot condemn a frame, and the plot draws no band for it. Omitting
+ * the argument gates on everything, which is what the metric-level tests
+ * below assume.
+ */
+Frames.relativeGates = function( frames, k, gating )
 {
    var valid = Frames.validOnly( frames );
    if ( valid.length < Frames.MIN_FRAMES )
@@ -268,6 +275,13 @@ Frames.relativeGates = function( frames, k )
    for ( var m = 0; m < Frames.METRICS.length; ++m )
    {
       var name = Frames.METRICS[m];
+      if ( gating != null && !gating[name] )
+      {
+         gates[name] = { active: false, limit: null,
+                         median: Frames.median( Frames.columnOf( valid, name ) ),
+                         sigma: null, reason: "not used as a gate" };
+         continue;
+      }
       gates[name] = Frames.gate( Frames.columnOf( valid, name ), name, k );
    }
    return gates;
@@ -281,6 +295,32 @@ Frames.relativeGates = function( frames, k )
  */
 Frames.DEFAULT_WEIGHTS = { psfSNR: 0.5, fwhm: 0.3, eccentricity: 0.1,
                            stars: 0.1 };
+
+/*
+ * Which metrics may REJECT a frame, as opposed to merely rank it.
+ *
+ * PSF SNR is off, and that is the whole point of the distinction.
+ * Integration weights each frame by its signal -- WBPP's default is PSF
+ * Signal Weight -- so a faint frame already contributes in proportion to
+ * what it is worth. With that weighting the stack's SNR goes as the root
+ * of the sum of the frames' squared SNRs, which every frame with signal
+ * increases: deleting a faint one throws away signal that was already
+ * being discounted correctly.
+ *
+ * FWHM and eccentricity are on because no weight repairs them. The
+ * stacked PSF is a weighted blend of the frames' own, and weight follows
+ * signal, not sharpness -- so a soft frame with good SNR earns a HIGH
+ * weight and blurs the result. That is what rejection is for.
+ *
+ * Star count is on as the evidence of transparency that FWHM does not
+ * carry: cloud takes stars out of a frame without widening the ones that
+ * remain, and it brings gradients that do not average away.
+ *
+ * SNR stays available, because a frame far below the rest usually means
+ * something was wrong rather than merely dim.
+ */
+Frames.DEFAULT_GATING = { psfSNR: false, fwhm: true, eccentricity: true,
+                          stars: true };
 
 /*
  * Two stops either side of typical. Beyond that the frame's ranking is not
@@ -345,6 +385,13 @@ Frames.MODE = { RELATIVE: "relative", ABSOLUTE: "absolute", BOTH: "both" };
 Frames.defaultSettings = function()
 {
    return { mode: Frames.MODE.RELATIVE,
+            /*
+             * Per channel, not per folder. A night's L and its Ha are not
+             * the same population -- one can be tight and the other ragged
+             * -- and one preset over both either spares the bad channel or
+             * cuts into the good one.
+             */
+            preset: Frames.DEFAULT_PRESET,
             k: Frames.PRESETS[Frames.DEFAULT_PRESET],
             kEdited: false,
             weights: { psfSNR: Frames.DEFAULT_WEIGHTS.psfSNR,
@@ -352,6 +399,15 @@ Frames.defaultSettings = function()
                        eccentricity: Frames.DEFAULT_WEIGHTS.eccentricity,
                        stars: Frames.DEFAULT_WEIGHTS.stars },
             limits: {},              // metric -> { lo?, hi? }
+            /*
+             * Copied, never shared: a preset that handed out the same
+             * object gave every channel one set of knobs, and changing a
+             * channel changed them all. That bug has been here once.
+             */
+            gating: { psfSNR: Frames.DEFAULT_GATING.psfSNR,
+                      fwhm: Frames.DEFAULT_GATING.fwhm,
+                      eccentricity: Frames.DEFAULT_GATING.eccentricity,
+                      stars: Frames.DEFAULT_GATING.stars },
             enabled: true };
 };
 
@@ -385,6 +441,9 @@ Frames.applyPreset = function( settings, preset )
       for ( var i = 0; i < keys.length; ++i )
          out.limits[keys[i]] = Frames.copyOf( out.limits[keys[i]] );
    }
+   if ( settings.gating != null )
+      out.gating = Frames.copyOf( settings.gating );
+   out.preset = preset;
    if ( !settings.kEdited && Frames.PRESETS[preset] != null )
       out.k = Frames.PRESETS[preset];
    return out;
@@ -393,10 +452,181 @@ Frames.applyPreset = function( settings, preset )
 Frames.METRIC_LABEL = { psfSNR: "PSF SNR", fwhm: "FWHM",
                         eccentricity: "eccentricity", stars: "stars" };
 
-/* Rejections from this channel's own spread: only an ACTIVE gate can reject. */
-Frames.relativeReasons = function( metrics, gates )
+/* The same metrics as column headings, where width is scarce. */
+Frames.METRIC_HEADING = { psfSNR: "PSF SNR", fwhm: "FWHM",
+                          eccentricity: "ecc", stars: "stars" };
+
+/*
+ * The review's columns, derived from METRICS rather than written out
+ * beside them. The verdict names the metrics that condemned a frame and
+ * the table colours those cells, so the two orders have to agree; deriving
+ * both from one list is what stops them drifting apart.
+ */
+/*
+ * No verdict column. It repeated what the row already says -- a red cross
+ * by the name, the offending measurement in red -- at the cost of the
+ * width the names needed. The wording behind it, which is worth having
+ * when a frame is borderline, is the row's tooltip instead.
+ */
+Frames.FRAME_COLUMNS = [ "Frame" ]
+   .concat( Frames.METRICS.map( function( m ) { return Frames.METRIC_HEADING[m]; } ) )
+   .concat( [ "score" ] );
+
+/*
+ * The range a frame's measurement may sit in and still be kept.
+ *
+ * Shown as a band behind the plot, so "why is that one out" is answered
+ * by looking rather than by reading the verdict column. A null end is
+ * unbounded: a relative gate only ever cuts from one side, because only
+ * one direction of a metric is worse.
+ */
+Frames.acceptedBand = function( metric, gates, settings )
 {
-   var reasons = [];
+   var lo = null, hi = null;
+
+   if ( settings.mode != Frames.MODE.ABSOLUTE )
+   {
+      var g = gates ? gates[metric] : null;
+      if ( g != null && g.active )
+      {
+         if ( Frames.WORSE_WHEN[metric] == "higher" )
+            hi = g.limit;
+         else
+            lo = g.limit;
+      }
+   }
+   if ( settings.mode != Frames.MODE.RELATIVE )
+   {
+      var lim = settings.limits ? settings.limits[metric] : null;
+      if ( lim != null )
+      {
+         // The tighter of the two wins: in BOTH mode a frame has to pass
+         // the gate AND the limit, so the band is their intersection.
+         if ( lim.lo != null )
+            lo = ( lo == null ) ? lim.lo : Math.max( lo, lim.lo );
+         if ( lim.hi != null )
+            hi = ( hi == null ) ? lim.hi : Math.min( hi, lim.hi );
+      }
+   }
+   return { lo: lo, hi: hi };
+};
+
+/*
+ * The point nearest a click, by horizontal position alone.
+ *
+ * Only x matters: the points are one per frame along the axis, so the
+ * nearest column IS the frame meant -- and requiring the click to land
+ * near the marker vertically would make a frame at the top of the plot
+ * harder to pick than one in the middle.
+ *
+ * Returns -1 when there is nothing to pick or the click is outside.
+ */
+Frames.pointAt = function( x, left, plotWidth, count )
+{
+   if ( count <= 0 || plotWidth <= 0 )
+      return -1;
+   /*
+    * Rejected BEFORE rounding, not after. Rounding pulls an outside click
+    * back into range -- a click in the left margin, where the axis
+    * numbers are, rounded to 0 and selected the first frame.
+    */
+   if ( x < left || x > left + plotWidth )
+      return -1;
+   if ( count == 1 )
+      return 0;
+   var t = ( x - left ) / plotWidth;
+   return Math.max( 0, Math.min( count - 1, Math.round( t * ( count - 1 ) ) ) );
+};
+
+/*
+ * Which of a set of labels can be drawn without landing on each other.
+ *
+ * The plot labels the axis at top and bottom and the band's own limits,
+ * and a limit near either extreme puts two numbers in the same few
+ * pixels -- unreadable, and worse than showing one. Entries are given in
+ * order of importance and the first to claim a position keeps it: a
+ * threshold outranks the extreme it sits near, because the extreme is
+ * only the data's edge while the threshold is the decision.
+ */
+Frames.spacedLabels = function( entries, gap )
+{
+   var out = [], used = [];
+   var g = ( gap == null ) ? 12 : gap;
+   for ( var i = 0; i < entries.length; ++i )
+   {
+      var y = entries[i].y, clear = true;
+      for ( var u = 0; u < used.length; ++u )
+         if ( Math.abs( used[u] - y ) < g )
+         {
+            clear = false;
+            break;
+         }
+      if ( clear )
+      {
+         used.push( y );
+         out.push( entries[i] );
+      }
+   }
+   return out;
+};
+
+/*
+ * Vertical extent of the plot: every point visible, the band's edges
+ * visible, and a margin so nothing is drawn on the frame itself. A band
+ * edge far outside the data is deliberately included -- a gate nothing
+ * comes close to is worth seeing as exactly that.
+ */
+Frames.plotBounds = function( values, band )
+{
+   var lo = null, hi = null;
+   function take( v )
+   {
+      if ( v == null || !isFinite( v ) )
+         return;
+      lo = ( lo == null ) ? v : Math.min( lo, v );
+      hi = ( hi == null ) ? v : Math.max( hi, v );
+   }
+   for ( var i = 0; i < values.length; ++i )
+      take( values[i] );
+   if ( band != null )
+   {
+      take( band.lo );
+      take( band.hi );
+    }
+   if ( lo == null )
+      return { lo: 0, hi: 1 };
+   if ( hi == lo )
+   {
+      // A channel whose frames all measure the same is not an error; it
+      // still has to occupy a height rather than collapse to a line.
+      var d = ( hi == 0 ) ? 0.5 : Math.abs( hi ) * 0.05;
+      return { lo: lo - d, hi: hi + d };
+   }
+   var pad = ( hi - lo ) * 0.08;
+   return { lo: lo - pad, hi: hi + pad };
+};
+
+/* Column showing `metric`, or null when it has none. */
+Frames.metricColumn = function( metric )
+{
+   var i = Frames.METRICS.indexOf( metric );
+   return ( i < 0 ) ? null : i + 1;
+};
+
+/* The trailing column, by the same rule. */
+Frames.SCORE_COLUMN = Frames.METRICS.length + 1;
+
+/* Rejections from this channel's own spread: only an ACTIVE gate can reject. */
+/*
+ * A failure names the metric it came from, not only its sentence.
+ *
+ * The review colours the offending measurement, and deciding which column
+ * that is by reading the sentence back would tie the display to the exact
+ * wording of a message. The metric travels with the text instead.
+ */
+Frames.relativeFailures = function( metrics, gates )
+{
+   var out = [];
    for ( var m = 0; m < Frames.METRICS.length; ++m )
    {
       var name = Frames.METRICS[m], g = gates[name];
@@ -405,30 +635,45 @@ Frames.relativeReasons = function( metrics, gates )
       var v = metrics[name];
       var bad = ( Frames.WORSE_WHEN[name] == "higher" ) ? v > g.limit : v < g.limit;
       if ( bad )
-         reasons.push( Frames.METRIC_LABEL[name] + " " + Frames.round( v ) +
-                       ", median " + Frames.round( g.median ) +
-                       ", limit " + Frames.round( g.limit ) );
+         out.push( { metric: name,
+                     text: Frames.METRIC_LABEL[name] + " " + Frames.round( v ) +
+                           ", median " + Frames.round( g.median ) +
+                           ", limit " + Frames.round( g.limit ) } );
    }
-   return reasons;
+   return out;
+};
+
+Frames.relativeReasons = function( metrics, gates )
+{
+   return Frames.relativeFailures( metrics, gates ).map(
+      function( f ) { return f.text; } );
 };
 
 /* Rejections from a hard limit: only a CONFIGURED limit can reject. */
-Frames.absoluteReasons = function( metrics, limits )
+Frames.absoluteFailures = function( metrics, limits )
 {
-   var reasons = [];
+   var out = [];
    for ( var a = 0; a < Frames.METRICS.length; ++a )
    {
       var an = Frames.METRICS[a], lim = limits[an];
       if ( lim == null )
          continue;
       if ( lim.hi != null && metrics[an] > lim.hi )
-         reasons.push( Frames.METRIC_LABEL[an] + " " + Frames.round( metrics[an] ) +
-                       " above the limit of " + Frames.round( lim.hi ) );
+         out.push( { metric: an,
+                     text: Frames.METRIC_LABEL[an] + " " + Frames.round( metrics[an] ) +
+                           " above the limit of " + Frames.round( lim.hi ) } );
       if ( lim.lo != null && metrics[an] < lim.lo )
-         reasons.push( Frames.METRIC_LABEL[an] + " " + Frames.round( metrics[an] ) +
-                       " below the limit of " + Frames.round( lim.lo ) );
+         out.push( { metric: an,
+                     text: Frames.METRIC_LABEL[an] + " " + Frames.round( metrics[an] ) +
+                           " below the limit of " + Frames.round( lim.lo ) } );
    }
-   return reasons;
+   return out;
+};
+
+Frames.absoluteReasons = function( metrics, limits )
+{
+   return Frames.absoluteFailures( metrics, limits ).map(
+      function( f ) { return f.text; } );
 };
 
 /*
@@ -446,14 +691,30 @@ Frames.verdict = function( metrics, gates, settings )
       return { state: Frames.STATE.UNMEASURABLE,
                reasons: [ "a metric is missing or not positive" ] };
 
-   var reasons = [];
+   var failures = [];
    if ( settings.mode != Frames.MODE.ABSOLUTE )
-      reasons = reasons.concat( Frames.relativeReasons( metrics, gates ) );
+      failures = failures.concat( Frames.relativeFailures( metrics, gates ) );
    if ( settings.mode != Frames.MODE.RELATIVE )
-      reasons = reasons.concat( Frames.absoluteReasons( metrics, settings.limits ) );
+      failures = failures.concat( Frames.absoluteFailures( metrics, settings.limits ) );
+
+   /*
+    * `failing` is deduplicated: a metric can fail the relative gate and the
+    * absolute limit at once in BOTH mode, and the review would otherwise be
+    * told to colour the same column twice.
+    */
+   var reasons = [], failing = [], seen = Object.create( null );
+   for ( var i = 0; i < failures.length; ++i )
+   {
+      reasons.push( failures[i].text );
+      if ( !seen[failures[i].metric] )
+      {
+         seen[failures[i].metric] = true;
+         failing.push( failures[i].metric );
+      }
+   }
 
    return { state: reasons.length ? Frames.STATE.REJECTED : Frames.STATE.APPROVED,
-            reasons: reasons };
+            reasons: reasons, failing: failing };
 };
 
 /* Three significant figures, so a reason reads as a sentence. */
@@ -515,7 +776,9 @@ Frames.autoRejectAllowed = function( filterKey )
  * legitimately loses on SNR and star count; a different binning makes pixel
  * FWHM incomparable; an uncalibrated frame among calibrated ones differs in
  * every metric. Any of those makes the channel's statistics meaningless, so
- * they are reported and Apply is blocked for that channel.
+ * they are reported, and the figures are to be read knowing it. They are
+ * not withheld: a tool that measures frames and then refuses to act on
+ * its own measurements is an obstacle, not a safeguard.
  */
 Frames.comparability = function( group )
 {
@@ -716,6 +979,60 @@ Frames.identityMatches = function( entry, current )
           current.size === entry.size;
 };
 
+/*
+ * The part of each name that actually differs.
+ *
+ * Subframes of one channel share everything but a timestamp and a
+ * sequence number: target, exposure, binning, camera, filter, gain. Shown
+ * whole in a column too narrow for them, the shared head is all that
+ * fits and every row reads "Light_...a.xisf" -- identical, and useless
+ * for telling one frame from another.
+ *
+ * Dropping the common prefix leaves exactly what identifies each frame.
+ * The prefix is cut at the last separator inside it, so a name never
+ * starts mid-token: with 0009 and 0010 present the raw common prefix ends
+ * "..._00", and cutting there would show "09" and "10".
+ *
+ * Returns the full names unchanged when there is nothing to gain -- one
+ * frame, or no shared head.
+ */
+Frames.SEPARATORS = "_-.";
+
+Frames.shortNames = function( paths )
+{
+   var names = [];
+   for ( var i = 0; i < paths.length; ++i )
+      names.push( Frames.outputName( paths[i] ) );
+   if ( names.length < 2 )
+      return names;
+
+   var prefix = names[0];
+   for ( var n = 1; n < names.length && prefix.length > 0; ++n )
+   {
+      var j = 0, other = names[n];
+      while ( j < prefix.length && j < other.length && prefix.charAt( j ) == other.charAt( j ) )
+         ++j;
+      prefix = prefix.substring( 0, j );
+   }
+   // Back up to a separator so the remainder starts at a whole token.
+   var cut = -1;
+   for ( var k = 0; k < prefix.length; ++k )
+      if ( Frames.SEPARATORS.indexOf( prefix.charAt( k ) ) >= 0 )
+         cut = k;
+   if ( cut < 0 )
+      return names;
+
+   var out = [];
+   for ( var m = 0; m < names.length; ++m )
+   {
+      var short_ = names[m].substring( cut + 1 );
+      // Never hand back nothing: a name identical to the prefix keeps its
+      // whole self rather than becoming an empty cell.
+      out.push( short_.length ? short_ : names[m] );
+   }
+   return out;
+};
+
 Frames.outputName = function( path )
 {
    var i = Math.max( path.lastIndexOf( "/" ), path.lastIndexOf( "\\" ) );
@@ -739,6 +1056,65 @@ Frames.outputName = function( path )
  * This lives in Frames rather than FrameSelector because it is pure and the
  * collision rule is what most needs testing; node never loads FrameSelector.
  */
+/*
+ * Is the chosen destination one of the folders the frames came from?
+ *
+ * The same test outputMapping calls `aliased`, exposed so the review can
+ * say what will happen BEFORE Apply is pressed rather than refusing
+ * afterwards. Choosing the input folder is not a mistake -- it is how you
+ * ask for the frames to be culled where they are -- but it means
+ * something entirely different from copying, and the dialog has to say so.
+ */
+/* Extension every output carries, whatever the input was. */
+Frames.XISF = ".xisf";
+
+/*
+ * Which of these frames are not already XISF.
+ *
+ * Converting in place is a no-op for a folder of XISF, and saying so
+ * costs nothing while running SubframeSelector over them to discover it
+ * costs a pass over every file. A frame already in the target format is
+ * not work to be done.
+ */
+Frames.needingXisf = function( paths )
+{
+   var out = [];
+   for ( var i = 0; i < paths.length; ++i )
+   {
+      var e = File.extractExtension( paths[i] );
+      if ( String( e ).toLowerCase() != Frames.XISF )
+         out.push( paths[i] );
+   }
+   return out;
+};
+
+/* The frames grouped by the folder they live in. */
+Frames.byDirectory = function( paths )
+{
+   var dirs = Object.create( null ), order = [];
+   for ( var i = 0; i < paths.length; ++i )
+   {
+      var d = File.extractDirectory( paths[i] );
+      if ( dirs[d] == null )
+      {
+         dirs[d] = [];
+         order.push( d );
+      }
+      dirs[d].push( paths[i] );
+   }
+   return { dirs: dirs, order: order };
+};
+
+Frames.destinationIsSource = function( paths, destination )
+{
+   if ( destination == null )
+      return false;
+   for ( var i = 0; i < paths.length; ++i )
+      if ( File.extractDirectory( paths[i] ) == destination )
+         return true;
+   return false;
+};
+
 Frames.outputMapping = function( approved, destination, extension )
 {
    var mapping = {}, taken = {}, collisions = [], aliased = false;

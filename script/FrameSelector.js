@@ -8,6 +8,8 @@
 #include <pjsr/DataType.jsh>
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
+#include <pjsr/TextAlign.jsh>
+#include <pjsr/BrushStyle.jsh>
 #include <pjsr/CryptographicHash.jsh>
 
 /*
@@ -293,11 +295,25 @@ FrameSelector.frameFilesIn = function( folder )
  * rather than carried with an unknown identity: there would be nothing to
  * compare against afterwards, so nothing could authorise deleting it.
  */
-FrameSelector.cohortFrom = function( paths )
+/*
+ * Reading the cohort is the slow, silent part: every frame is digested
+ * whole, so a folder of 34 subframes reads several gigabytes before
+ * SubframeSelector has even started. `progress` is called once per file
+ * BEFORE that file is read -- so the label names what is being read now,
+ * and a path that turns out to be unreadable still advances the count.
+ * Returning false from it abandons the scan.
+ */
+FrameSelector.cohortFrom = function( paths, progress )
 {
-   var entries = [], before = {};
+   var entries = [], before = {}, cancelled = false;
    for ( var i = 0; i < paths.length; ++i )
    {
+      if ( progress != null &&
+           progress( i + 1, paths.length, File.extractName( paths[i] ) ) === false )
+      {
+         cancelled = true;
+         break;
+      }
       var id = FrameSelector.fileIdentity( paths[i] );
       if ( id == null )
          continue;
@@ -306,7 +322,7 @@ FrameSelector.cohortFrom = function( paths )
       e.identity = id;
       entries.push( e );
    }
-   return { entries: entries, before: before };
+   return { entries: entries, before: before, cancelled: cancelled };
 };
 
 /*
@@ -371,15 +387,22 @@ FrameSelector.measureGroup = function( group, before )
    return { metrics: metrics, unstable: unstable };
 };
 
-FrameSelector.scan = function( folder )
+FrameSelector.scan = function( folder, progress )
 {
-   var cohort = FrameSelector.cohortFrom( FrameSelector.frameFilesIn( folder ) );
+   var cohort = FrameSelector.cohortFrom( FrameSelector.frameFilesIn( folder ),
+                                          progress ? progress.reading : null );
+   if ( cohort.cancelled )
+      return { channels: {}, unstable: [], cancelled: true };
+
    var groups = Frames.groupByFilter( cohort.entries );
    var channels = {}, unstable = [];
 
    var keys = Object.keys( groups );
    for ( var g = 0; g < keys.length; ++g )
    {
+      if ( progress != null && progress.measuring != null &&
+           progress.measuring( g + 1, keys.length, keys[g] ) === false )
+         return { channels: channels, unstable: unstable, cancelled: true };
       var group = groups[keys[g]];
       var measured = FrameSelector.measureGroup( group, cohort.before );
       if ( measured == null )             // the channel was abandoned
@@ -392,7 +415,7 @@ FrameSelector.scan = function( folder )
       channels[keys[g]] = { entries: group, metrics: measured.metrics,
                             problems: Frames.comparability( group ).problems };
    }
-   return { channels: channels, unstable: unstable };
+   return { channels: channels, unstable: unstable, cancelled: false };
 };
 
 /*
@@ -560,169 +583,292 @@ FrameSelector.execute = function( manifest )
  * Exactly one frame's window and bitmap are held: a 26 MP ARGB bitmap is
  * about 104 MB, and browsing a folder must not accumulate them.
  */
-FrameSelector.PreviewControl = class extends Control
+/*
+ * How close two of the plot's numbers may come before one is dropped.
+ * A line of text is about this tall, so anything closer overlaps.
+ */
+FrameSelector.LABEL_GAP = 13;
+
+/* Radius of the ring round the selected frame: clear of a 4px marker. */
+FrameSelector.PICK_RADIUS = 6;
+
+/*
+ * A 1:1 pannable preview.
+ *
+ * A ScrollBox, not a bare Control, and that is the whole reason it scrolls
+ * properly. PixInsight's wheel event carries ONE delta and no orientation
+ * -- the C++ API is MouseWheel( ..., int32 delta, ... ) -- so a control
+ * handling the wheel itself can never see a sideways swipe. A ScrollBox
+ * does not handle the wheel itself: Qt scrolls it, in whichever direction
+ * the gesture went. So no onMouseWheel handler is installed here, on
+ * purpose; installing one is what broke horizontal scrolling before.
+ *
+ * Rendered once per selected frame rather than once per paint, so panning
+ * is a blit. The prototype measured 341 ms from open to a drawn bitmap on
+ * a 26 MP sub and 0 ms to pan and repaint, against a 1.5 s gate.
+ *
+ * Exactly one frame's window and bitmap are held: a 26 MP ARGB bitmap is
+ * about 104 MB, and browsing a folder must not accumulate them.
+ */
+FrameSelector.PreviewControl = class extends ScrollBox
 {
    constructor( parent )
    {
-   super( parent );
+      super( parent );
+      var self = this;
+      this.bmp = null;
+      this.fit = false;
+      this.dragging = false;
+      this.lx = 0;
+      this.ly = 0;
 
-   var self = this;
-   this.bmp = null;
-   this.ox = 0;
-   this.oy = 0;
-   this.fit = false;
-   this.dragging = false;
-   this.lx = 0;
-   this.ly = 0;
+      this.tracking = true;
+      this.setScaledMinSize( 420, 360 );
 
-   this.setScaledMinSize( 420, 360 );
-   this.focusStyle = FocusStyle.Click;     // arrows need focus; a click gives it
+      this.viewport.focusStyle = FocusStyle.Click;   // arrows need focus
+      this.viewport.toolTip =
+         "<p><b>Double click</b> to switch between the whole frame and 1:1.</p>" +
+         "<p>At 1:1: <b>swipe</b> in any direction, <b>drag</b>, or the " +
+         "<b>arrow keys</b> after clicking the image.</p>";
 
+      this.viewport.onPaint = function() { self.paintViewport(); };
+      this.viewport.onResize = function() { self.layOutScroll(); };
 
+      /*
+       * Repaint whenever Qt moves the scroll position.
+       *
+       * The viewport is painted by hand, offset by the scroll position, so
+       * a scroll that does not repaint shows the same pixels and looks
+       * exactly like a gesture that did nothing. Qt scrolls the box, but
+       * only this puts the result on screen.
+       */
+      this.onHorizontalScrollPosUpdated = function() { self.viewport.update(); };
+      this.onVerticalScrollPosUpdated = function() { self.viewport.update(); };
+      this.onViewportScrolled = function() { self.viewport.update(); };
 
+      // Established once at construction, as MaskMerge's does.
+      this.layOutScroll();
 
+      this.viewport.onMousePress = function( x, y )
+      { self.dragging = true; self.lx = x; self.ly = y; };
 
+      this.viewport.onMouseRelease = function() { self.dragging = false; };
 
-   this.setFit = function( on ) { self.fit = !!on; self.update(); };
-
-   this.onPaint = function()
-   {
-      var g = new Graphics( this );
-      try
+      this.viewport.onMouseMove = function( x, y )
       {
-         g.fillRect( 0, 0, this.width, this.height, new Brush( 0xff101010 ) );
-         if ( self.bmp == null )
+         if ( !self.dragging )
             return;
-         if ( self.fit )
-         {
-            var s = Math.min( this.width/self.bmp.width, this.height/self.bmp.height );
-            g.drawScaledBitmap(
-               new Rect( 0, 0, Math.round( self.bmp.width*s ),
-                               Math.round( self.bmp.height*s ) ), self.bmp );
-         }
-         else
-            g.drawBitmapRect( 0, 0, self.bmp,
-               new Rect( self.ox, self.oy,
-                         Math.min( self.ox + self.viewportWidth(),  self.bmp.width ),
-                         Math.min( self.oy + self.viewportHeight(), self.bmp.height ) ) );
-      }
-      finally { g.end(); }
-   };
+         self.pan( self.lx - x, self.ly - y );
+         self.lx = x; self.ly = y;
+      };
 
-   this.onMousePress = function( x, y )
-   { self.dragging = true; self.lx = x; self.ly = y; };
+      /*
+       * Two ways of looking at a frame -- is the field right, and are the
+       * stars right -- and this switches between them without a button
+       * taking up room beside the image.
+       */
+      this.viewport.onMouseDoubleClick = function()
+      {
+         self.setFit( !self.fit );
+         self.dragging = false;     // the double click delivered a press first
+         return true;
+      };
 
-   this.onMouseRelease = function() { self.dragging = false; };
+      /*
+       * Returning true CONSUMES the key. Without that the frame table also
+       * acts on the same arrow press and the selection moves underneath
+       * the preview.
+       */
+      this.viewport.onKeyPress = function( key, modifiers )
+      {
+         var step = ( modifiers & KeyModifier.Shift ) ? self.viewport.width
+                                                      : Math.round( self.viewport.width/4 );
+         if ( key == KeyCode.Left  ) { self.pan( -step, 0 ); return true; }
+         if ( key == KeyCode.Right ) { self.pan(  step, 0 ); return true; }
+         if ( key == KeyCode.Up    ) { self.pan( 0, -step ); return true; }
+         if ( key == KeyCode.Down  ) { self.pan( 0,  step ); return true; }
+         return false;
+      };
+   }
 
-   this.onMouseMove = function( x, y )
+   setFit( on )
    {
-      if ( !self.dragging )
-         return;
-      self.pan( self.lx - x, self.ly - y );
-      self.lx = x; self.ly = y;
-   };
+      this.fit = !!on;
+      this.layOutScroll();
+   }
 
    /*
-    * Returning true CONSUMES the key. Without that the frame table below
-    * also acts on the same arrow press and the selection moves underneath
-    * the preview.
+    * The scrollable extent is the bitmap beyond the viewport. Setting it to
+    * zero when the whole frame is shown is what stops a fitted image from
+    * scrolling around inside its own window.
     */
-   this.onKeyPress = function( key, modifiers )
+   layOutScroll()
    {
-      var step = ( modifiers & KeyModifier.Shift ) ? this.width
-                                                   : Math.round( this.width/4 );
-      if ( key == KeyCode.Left  ) { self.pan( -step, 0 ); return true; }
-      if ( key == KeyCode.Right ) { self.pan(  step, 0 ); return true; }
-      if ( key == KeyCode.Up    ) { self.pan( 0, -step ); return true; }
-      if ( key == KeyCode.Down  ) { self.pan( 0,  step ); return true; }
-      return false;
-   };
+      /*
+       * setHorizontalScrollRange, not an assignment to
+       * maxHorizontalScrollPosition.
+       *
+       * Assigning the maximum left the box with nothing to scroll -- no
+       * gesture did anything at all. The range setters are what
+       * PixInsight's own scrolling views use (MaskMerge's initScrollBars
+       * is the same three lines), and they are what establishes the range
+       * the scroll bars and the wheel work against.
+       */
+      if ( this.bmp == null || this.fit )
+      {
+         this.setHorizontalScrollRange( 0, 0 );
+         this.setVerticalScrollRange( 0, 0 );
+      }
+      else
+      {
+         this.setHorizontalScrollRange( 0,
+            Math.max( 0, this.bmp.width  - this.viewport.width ) );
+         this.setVerticalScrollRange( 0,
+            Math.max( 0, this.bmp.height - this.viewport.height ) );
+      }
+      this.viewport.update();
+   }
 
-   this.onMouseWheel = function( x, y, delta )
-   { self.setFit( !self.fit ); return true; };
+   /* Drag and the arrow keys move the same scroll positions the wheel does. */
+   pan( dx, dy )
+   {
+      if ( this.bmp == null || this.fit )
+         return;
+      this.horizontalScrollPosition =
+         Math.max( 0, Math.min( this.horizontalScrollPosition + dx,
+                                this.maxHorizontalScrollPosition ) );
+      this.verticalScrollPosition =
+         Math.max( 0, Math.min( this.verticalScrollPosition + dy,
+                                this.maxVerticalScrollPosition ) );
+      this.viewport.update();
+   }
+
+   paintViewport()
+   {
+      var g = null;
+      try
+      {
+         g = new Graphics( this.viewport );
+         var vw = this.viewport.width, vh = this.viewport.height;
+         g.fillRect( 0, 0, vw, vh, new Brush( 0xff101010 ) );
+         if ( this.bmp == null )
+            return;
+         if ( this.fit )
+         {
+            var s = Math.min( vw/this.bmp.width, vh/this.bmp.height );
+            g.drawScaledBitmap(
+               new Rect( 0, 0, Math.round( this.bmp.width*s ),
+                               Math.round( this.bmp.height*s ) ), this.bmp );
+            return;
+         }
+         /*
+          * Offset by the scroll position, the way PixInsight's own
+          * ImageView does it, so what Qt scrolled is what gets drawn.
+          */
+         g.translateTransformation( -this.horizontalScrollPosition,
+                                    -this.verticalScrollPosition );
+         g.drawBitmap( 0, 0, this.bmp );
+      }
+      catch ( e ) { /* a preview that cannot paint must not stop the review */ }
+      finally { if ( g != null ) try { g.end(); } catch ( e2 ) {} }
    }
 
    dispose()
    {
-      var self = this;
-         self.bmp = null;                     // the only reference; let it go
+      this.bmp = null;                     // the only reference; let it go
+   }
+
+   /*
+    * Detach everything before the widget tree is destroyed.
+    *
+    * These handlers are JS closures held by C++ controls. Qt destroys the
+    * viewport as a child of this box, and a handler reached during that
+    * teardown runs against a half-destroyed object -- which throws, in a
+    * destructor, which terminates the process. Closing the review took
+    * PixInsight with it.
+    *
+    * The bitmap goes too: a 26 MP frame is about 104 MB, and it has no
+    * business outliving the dialog that was showing it.
+    */
+   release()
+   {
+      try
+      {
+         this.bmp = null;
+         this.onHorizontalScrollPosUpdated = null;
+         this.onVerticalScrollPosUpdated = null;
+         this.onViewportScrolled = null;
+         var v = this.viewport;
+         if ( v != null )
+         {
+            v.onPaint = null;
+            v.onResize = null;
+            v.onMousePress = null;
+            v.onMouseMove = null;
+            v.onMouseRelease = null;
+            v.onMouseDoubleClick = null;
+            v.onKeyPress = null;
+         }
+      }
+      catch ( e ) { /* releasing must never be the thing that fails */ }
    }
 
    load( path )
    {
       var self = this;
-         self.dispose();
-         self.ox = self.oy = 0;
-         var win = null;
-         try
-         {
-            var ws = ImageWindow.open( path );
-            if ( ws.length == 0 )
-               return false;
-            win = ws[0];
-            var img = win.mainView.image;
-            var med = img.median(), mad = img.MAD()*1.4826;
-            var shadows = Math.max( 0, med - 2.8*mad );
-            var midtone = Math.mtf( 0.25, Math.max( 1e-8, med - shadows ) );
-
-            var dup = new ImageWindow( img.width, img.height, img.numberOfChannels,
-                                       img.bitsPerSample, img.isReal, img.isColor,
-                                       Util.freeWindowId( "fs_preview" ) );
-            dup.mainView.beginProcess( UndoFlag_NoSwapFile );
-            dup.mainView.image.assign( img );
-            dup.mainView.endProcess();
-
-            var H = new HistogramTransformation;
-            H.H = [ [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ],
-                    [ shadows, midtone, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ] ];
-            H.executeOn( dup.mainView );
-
-            self.bmp = dup.mainView.image.render();
-            dup.forceClose();
-            self.update();
-            return true;
-         }
-         catch ( e )
-         {
-            Util.warn( "frames", "could not preview " + path + ": " + e );
-            return false;
-         }
-         finally
-         {
-            try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {}
-         }
-   }
-
+      self.dispose();
       /*
-       * The visible region is measured in BITMAP pixels, and a bitmap pixel is
-       * a physical display pixel while the control's width is in logical ones.
-       * The prototype measured physicalPixelRatio as 1 on this display, not the
-       * 2 the plan assumed, so the ratio is read rather than hardcoded.
+       * The scroll position is DELIBERATELY not reset.
+       *
+       * Comparing frames means looking at the same stars in each, and
+       * returning to the corner on every selection made that impossible.
+       * The frames of a channel are registered to each other and identical
+       * in size, so the same offset shows the same part of the sky.
+       * layOutScroll clamps it in case this frame is smaller.
        */
-   viewportWidth()
-   {
-      var self = this;
-         return Math.round( self.width * ( self.bmp ? self.bmp.physicalPixelRatio : 1 ) );
-   }
+      var win = null;
+      try
+      {
+         var ws = ImageWindow.open( path );
+         if ( ws.length == 0 )
+            return false;
+         win = ws[0];
+         var img = win.mainView.image;
+         var med = img.median(), mad = img.MAD()*1.4826;
+         var shadows = Math.max( 0, med - 2.8*mad );
+         var midtone = Math.mtf( 0.25, Math.max( 1e-8, med - shadows ) );
 
-   viewportHeight()
-   {
-      var self = this;
-         return Math.round( self.height * ( self.bmp ? self.bmp.physicalPixelRatio : 1 ) );
-   }
+         /*
+          * Stretched before rendering: Image.render() does NOT apply an
+          * STF, so a linear sub renders as a black rectangle.
+          */
+         var dup = new ImageWindow( img.width, img.height, img.numberOfChannels,
+                                    img.bitsPerSample, img.isReal, img.isColor,
+                                    Util.freeWindowId( "fs_preview" ) );
+         dup.mainView.beginProcess( UndoFlag_NoSwapFile );
+         dup.mainView.image.assign( img );
+         dup.mainView.endProcess();
 
-   pan( dx, dy )
-   {
-      var self = this;
-         if ( self.bmp == null )
-            return;
-         self.ox = Math.max( 0, Math.min( self.ox + dx,
-                      Math.max( 0, self.bmp.width  - self.viewportWidth()  ) ) );
-         self.oy = Math.max( 0, Math.min( self.oy + dy,
-                      Math.max( 0, self.bmp.height - self.viewportHeight() ) ) );
-         self.update();
-   }
+         var H = new HistogramTransformation;
+         H.H = [ [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ],
+                 [ shadows, midtone, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ] ];
+         H.executeOn( dup.mainView );
 
+         self.bmp = dup.mainView.image.render();
+         dup.forceClose();
+         self.layOutScroll();
+         return true;
+      }
+      catch ( e )
+      {
+         Util.warn( "frames", "could not preview " + path + ": " + e );
+         return false;
+      }
+      finally
+      {
+         try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {}
+      }
+   }
 };
 
 /* ------------------------------------------------------------------------
@@ -732,6 +878,13 @@ FrameSelector.PreviewControl = class extends Control
 FrameSelector.emptyState = function( folder )
 {
    return { folder: folder, channels: {}, order: [],
+            /*
+             * The folder that was scanned, which means "cull these where
+             * they are" -- the same thing the tool did before it could
+             * write anywhere else. Pointing it somewhere else is what
+             * turns it into a copy; there is no separate mode to choose.
+             */
+            destination: folder,
             preset: Frames.DEFAULT_PRESET,
             phase: Frames.PHASE.REVIEW, locked: false,
             manifest: null, unstable: [] };
@@ -759,7 +912,7 @@ FrameSelector.newChannel = function( key, entries, metrics, problems )
                    override: null, score: null } );
    }
    return { key: key, entries: entries, metrics: metrics,
-            problems: problems || [], accepted: false,
+            problems: problems || [],
             settings: Frames.defaultSettings(), rows: rows };
 };
 
@@ -776,7 +929,12 @@ FrameSelector.recompute = function( ch )
       if ( ch.rows[i].metrics != null )
          cohort.push( ch.rows[i].metrics );
 
-   var gates = Frames.relativeGates( cohort, ch.settings.k );
+   var gates = Frames.relativeGates( cohort, ch.settings.k, ch.settings.gating );
+   /*
+    * Kept on the channel: the plot draws the band these define, and
+    * recomputing them there would be a second place for k to be read.
+    */
+   ch.gates = gates;
    var meds = Frames.medians( cohort );
    /*
     * A disabled channel is untouched in every mode, and a group with no
@@ -795,20 +953,27 @@ FrameSelector.recompute = function( ch )
       {
          row.state = Frames.STATE.UNMEASURABLE;
          row.reasons = [ "no measurement" ];
+         row.failing = [];
          continue;
       }
       var v = Frames.verdict( row.metrics, gates, ch.settings );
       var suppressed = !mayReject && v.state == Frames.STATE.REJECTED;
       row.state   = suppressed ? Frames.STATE.APPROVED : v.state;
       row.reasons = suppressed ? [] : v.reasons;
+      /*
+       * Cleared with the reasons when a rejection is suppressed: the
+       * channel is not being acted on, so there is nothing to mark.
+       */
+      row.failing = suppressed ? [] : v.failing;
    }
    return ch;
 };
 
-FrameSelector.buildState = function( folder )
+FrameSelector.buildState = function( folder, progress )
 {
    var state = FrameSelector.emptyState( folder );
-   var scan = FrameSelector.scan( folder );
+   var scan = FrameSelector.scan( folder, progress );
+   state.cancelled = !!scan.cancelled;
    state.unstable = scan.unstable;
    var keys = Object.keys( scan.channels );
    keys.sort();
@@ -861,6 +1026,7 @@ FrameSelector.Dialog = class extends Dialog
    this.buildFrameTable();
    this.buildPreviewPane();
    this.buildKnobPanel();
+   this.buildPlotPane();
    this.buildActionRow();
    this.wireBehaviour();
    this.layOut();
@@ -883,19 +1049,144 @@ FrameSelector.Dialog = class extends Dialog
          {
             self.current = n[0].channelKey;
             self.fillFrames();
+            self.fillPlot();
             self.syncKnobs();
          }
       };
    }
 
    /* The frame table for the selected channel. */
+   /*
+    * The measurement plot, with the metric it shows chosen by a combo --
+    * four metrics is too many for a button that cycles, and the combo says
+    * which one is on screen without being read twice.
+    */
+   buildPlotPane()
+   {
+      var self = this;
+
+      this.plotCombo = new ComboBox( this );
+      for ( var m = 0; m < Frames.METRICS.length; ++m )
+         this.plotCombo.addItem( Frames.METRIC_LABEL[Frames.METRICS[m]] );
+      this.plotCombo.currentItem = 0;
+      this.plotCombo.toolTip = "<p>Which measurement the plot below shows.</p>";
+      this.plotCombo.onItemSelected = function() { self.fillPlot(); };
+
+      this.plotLabel = new Label( this );
+      this.plotLabel.text = "Plot:";
+      this.plotLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+
+      this.plotBandLabel = new Label( this );
+      this.plotBandLabel.useRichText = true;
+      this.plotBandLabel.text = "";
+
+      var head = new HorizontalSizer;
+      head.spacing = 6;
+      head.add( this.plotLabel );
+      head.add( this.plotCombo );
+      head.addSpacing( 8 );
+      head.add( this.plotBandLabel );
+      head.addStretch();
+
+      this.plot = new FrameSelector.Plot( this );
+      this.plot.onPick = function( index ) { self.selectRow( index ); };
+
+      this.plotPane = new VerticalSizer;
+      this.plotPane.spacing = 4;
+      this.plotPane.add( head );
+      this.plotPane.add( this.plot );
+   }
+
+   /*
+    * Move the table's selection to a row, as though it had been clicked.
+    *
+    * Assigning currentNode does not fire onNodeSelectionUpdated, so the
+    * preview and the plot's ring are updated here rather than left to a
+    * handler that will not run.
+    */
+   selectRow( index )
+   {
+      if ( this.frameTree == null ||
+           index < 0 || index >= this.frameTree.numberOfChildren )
+         return;
+      var node = this.frameTree.child( index );
+      if ( node == null )
+         return;
+      /*
+       * currentNode and node.selected, NOT an assignment to selectedNodes:
+       * that property is read-only, and assigning it threw from inside the
+       * plot's click handler -- an exception crossing back into Qt, which
+       * takes the process with it.
+       */
+      this.frameTree.currentNode = node;
+      node.selected = true;
+      if ( node.rowRef )
+         this.preview.load( node.rowRef.path );
+      this.plot.setSelected( index );
+   }
+
+   /*
+    * Pick the folder the approved frames are written to. A destination
+    * inside the source folder is refused later by exportApproved, which
+    * checks it against every source directory rather than trusting this.
+    */
+   chooseDestination()
+   {
+      if ( !this.editable() )
+         return;
+      var gd = new GetDirectoryDialog;
+      gd.caption = "Folder for the approved frames";
+      if ( gd.execute() )
+         this.state.destination = gd.directoryPath;
+   }
+
+   /* The metric the combo currently names. */
+   plotMetric()
+   {
+      var i = this.plotCombo ? this.plotCombo.currentItem : 0;
+      return Frames.METRICS[( i >= 0 && i < Frames.METRICS.length ) ? i : 0];
+   }
+
+   fillPlot()
+   {
+      if ( this.plot == null )
+         return;
+      var ch = this.channel();
+      var metric = this.plotMetric();
+      if ( ch == null )
+      {
+         this.plot.setSeries( [], metric, null );
+         this.plotBandLabel.text = "";
+         return;
+      }
+      var band = Frames.acceptedBand( metric, ch.gates, ch.settings );
+      this.plot.setSeries( ch.rows, metric, band );
+      /*
+       * Re-applied after a rebuild: refresh() repopulates the table, and
+       * the ring has to follow the row that is still selected.
+       */
+      var sel = this.frameTree ? this.frameTree.selectedNodes : [];
+      this.plot.setSelected( ( sel.length && sel[0].rowIndex != null )
+                             ? sel[0].rowIndex : -1 );
+      /*
+       * The band in words as well as grey. An open end reads as "no limit"
+       * rather than as a number, which is what an inactive gate means.
+       */
+      this.plotBandLabel.text =
+         "<i>keeps " +
+         ( band.lo == null ? "anything" : "&ge; " + Frames.round( band.lo ) ) +
+         ( band.hi == null ? "" : ( band.lo == null ? "&le; " + Frames.round( band.hi )
+                                                    : " and &le; " + Frames.round( band.hi ) ) ) +
+         "</i>";
+   }
+
    buildFrameTable()
    {
       var self = this;
       this.frameTree = new TreeBox( this );
       this.frameTree.alternateRowColor = true;
-      this.frameTree.numberOfColumns = 7;
-      var heads = [ "Frame", "PSF SNR", "FWHM", "ecc", "stars", "score", "verdict" ];
+      var heads = Frames.FRAME_COLUMNS;
+      this.frameTree.numberOfColumns = heads.length;
       for ( var h = 0; h < heads.length; ++h )
          this.frameTree.setHeaderText( h, heads[h] );
       this.frameTree.setScaledMinWidth( 560 );
@@ -903,7 +1194,12 @@ FrameSelector.Dialog = class extends Dialog
       {
          var n = self.frameTree.selectedNodes;
          if ( n.length && n[0].rowRef )
+         {
             self.preview.load( n[0].rowRef.path );
+            self.plot.setSelected( n[0].rowIndex );
+         }
+         else
+            self.plot.setSelected( -1 );
       };
       /*
        * Space toggles the override on the selected row. Returning true
@@ -947,21 +1243,25 @@ FrameSelector.Dialog = class extends Dialog
       var presetNames = [ "lenient", "balanced", "strict" ];
       for ( var p = 0; p < presetNames.length; ++p )
          this.presetCombo.addItem( presetNames[p] );
-      this.presetCombo.currentItem = presetNames.indexOf( this.state.preset );
+      this.presetCombo.currentItem = presetNames.indexOf( Frames.DEFAULT_PRESET );
+      this.presetCombo.toolTip =
+         "<p>How hard this channel is cut. Each channel has its own: a " +
+         "night's L and its Ha are not the same population.</p>";
       this.presetCombo.onItemSelected = function( i )
       {
          if ( !self.editable() )
             return;
-         self.state.preset = presetNames[i];
          /*
-          * A preset sets k for every channel whose k has not been edited by
-          * hand. An edited value stands; editing a WEIGHT does not pin k.
+          * THIS channel only. It used to set every channel at once, so
+          * tightening a ragged Ha also cut into a clean L.
+          *
+          * A preset sets k unless k has been edited by hand; an edited
+          * value stands, and editing a WEIGHT does not pin k.
           */
-         for ( var k = 0; k < self.state.order.length; ++k )
-         {
-            var c = self.state.channels[self.state.order[k]];
-            c.settings = Frames.applyPreset( c.settings, presetNames[i] );
-         }
+         var ch = self.channel();
+         if ( ch == null )
+            return;
+         ch.settings = Frames.applyPreset( ch.settings, presetNames[i] );
          self.refresh();
       };
 
@@ -1009,16 +1309,40 @@ FrameSelector.Dialog = class extends Dialog
          self.refresh();
       };
 
-      this.acceptMixedCheck = new CheckBox( this );
-      this.acceptMixedCheck.text = "Accept a mixed channel";
-      this.acceptMixedCheck.onCheck = function( checked )
-      {
-         var ch = self.channel();
-         if ( ch == null || !self.editable() )
-            return;
-         ch.accepted = checked;
-         self.refresh();
-      };
+      /*
+       * Which metrics may reject, per channel. Separate from the weights:
+       * a metric can rank frames without being allowed to delete one, and
+       * PSF SNR is exactly that case -- integration already weights by
+       * signal, so a faint frame is discounted rather than discarded.
+       */
+      this.gateChecks = {};
+      for ( var gi = 0; gi < Frames.METRICS.length; ++gi )
+         ( function( metric )
+         {
+            var cb = new CheckBox( self );
+            cb.text = Frames.METRIC_HEADING[metric];
+            cb.toolTip = ( metric == "psfSNR" )
+               ? ( "<p>Off by default. Integration weights each frame by its " +
+                   "signal, so a faint frame already counts for less -- " +
+                   "deleting it throws away signal that was being discounted " +
+                   "correctly. Turn it on to catch a frame far below the rest, " +
+                   "which usually means cloud rather than a dim night.</p>" )
+               : ( "<p>Reject frames on " + Frames.METRIC_LABEL[metric] +
+                   ". No weighting repairs this one, so a bad frame degrades " +
+                   "the stack however little it is weighted.</p>" );
+            cb.onCheck = function( checked )
+            {
+               var ch = self.channel();
+               if ( ch == null || !self.editable() )
+                  return;
+               ch.settings.gating[metric] = checked;
+               self.refresh();
+            };
+            self.gateChecks[metric] = cb;
+         } )( Frames.METRICS[gi] );
+
+      this.gateLabel = new Label( this );
+      this.gateLabel.text = "reject on:";
 
       this.problemsLabel = new Label( this );
       this.problemsLabel.wordWrapping = true;
@@ -1032,13 +1356,49 @@ FrameSelector.Dialog = class extends Dialog
    buildActionRow()
    {
       var self = this;
+
+      /*
+       * Where the frames go. There is no mode to pick: the destination
+       * starts as the folder they came from, which means culling them
+       * where they are, and pointing it elsewhere makes it a copy that
+       * leaves every original alone. One control, and a sentence saying
+       * which of the two it currently means.
+       */
+      this.destLabelPrefix = new Label( this );
+      this.destLabelPrefix.text = "output:";
+
+      this.destButton = new PushButton( this );
+      this.destButton.text = "Folder...";
+      this.destButton.toolTip =
+         "<p>Leave it on the folder the frames came from to cull them where " +
+         "they are. Point it anywhere else and the kept frames are copied " +
+         "there instead, and every original is left alone.</p>";
+      this.destButton.onClick = function() { self.chooseDestination(); self.refresh(); };
+
+      this.destLabel = new Label( this );
+      this.destLabel.useRichText = true;
+      this.destLabel.text = "";
+
       this.applyButton = new PushButton( this );
-      this.applyButton.text = "Apply";
+      /*
+       * "Run", not a name for whichever action is armed. The label beside
+       * the folder says what will happen; a button that renames itself
+       * moves that sentence somewhere it is easy to miss.
+       */
+      this.applyButton.text = "Run";
       this.applyButton.onClick = function() { self.commit(); };
 
       this.closeButton = new PushButton( this );
       this.closeButton.text = "Close";
-      this.closeButton.onClick = function() { self.cancel(); };
+      /*
+       * Released on the way out, NOT by overriding cancel(). Dialog.cancel
+       * is a native method and super.cancel() threw from it, which broke
+       * the dialog outright -- caught only because the suite builds one and
+       * closes it.
+       */
+      this.closeButton.onClick = function() { self.release(); self.cancel(); };
+      // The window's own close box does not go through the Close button.
+      this.onClose = function() { self.release(); };
    }
 
    /* What every control does, and how the table is refreshed. */
@@ -1114,7 +1474,7 @@ FrameSelector.Dialog = class extends Dialog
                var c = Frames.counts( ch.rows );
                node.setText( 0, Frames.summaryLine( key, c ) +
                                 ( ch.settings.enabled ? "" : "  [off]" ) +
-                                ( ch.problems.length && !ch.accepted ? "  [mixed]" : "" ) );
+                                ( ch.problems.length ? "  [mixed]" : "" ) );
                if ( key == self.current )
                   node.selected = true;
             }
@@ -1127,25 +1487,67 @@ FrameSelector.Dialog = class extends Dialog
             var ch = self.channel();
             if ( ch == null )
                return;
+            /*
+             * Names are shortened against the whole channel, not one at a
+             * time: what can be dropped is what every frame here shares.
+             */
+            var paths = [];
+            for ( var pn = 0; pn < ch.rows.length; ++pn )
+               paths.push( ch.rows[pn].path );
+            var shortNames = Frames.shortNames( paths );
+
             for ( var i = 0; i < ch.rows.length; ++i )
             {
                var row = ch.rows[i];
                var node = new TreeBoxNode( self.frameTree );
                node.rowRef = row;
-               node.setText( 0, Frames.outputName( row.path ) );
+               node.rowIndex = i;      // which point on the plot this row is
+               node.setText( 0, shortNames[i] );
                if ( row.metrics != null )
                {
-                  node.setText( 1, Frames.round( row.metrics.psfSNR ) );
-                  node.setText( 2, Frames.round( row.metrics.fwhm ) );
-                  node.setText( 3, Frames.round( row.metrics.eccentricity ) );
-                  node.setText( 4, String( row.metrics.stars ) );
+                  for ( var mc = 0; mc < Frames.METRICS.length; ++mc )
+                  {
+                     var mn = Frames.METRICS[mc], mv = row.metrics[mn];
+                     node.setText( Frames.metricColumn( mn ),
+                        ( mn == "stars" ) ? String( mv ) : Frames.round( mv ) );
+                  }
                }
-               node.setText( 5, ( row.score == null ) ? "-" : Frames.round( row.score ) );
+               node.setText( Frames.SCORE_COLUMN,
+                             ( row.score == null ) ? "-" : Frames.round( row.score ) );
                var final = Frames.finalState( row.state, row.override );
                var mark = ( row.override == Frames.OVERRIDE.RESCUED ) ? " (rescued)"
                         : ( row.override == Frames.OVERRIDE.CONDEMNED ) ? " (condemned)" : "";
-               node.setText( 6, final + mark +
+               /*
+                * The verdict in words goes on the row rather than into a
+                * column of its own -- alongside the name, so hovering a
+                * frame answers both "which file" and "why".
+                */
+               node.setToolTip( 0, row.path + "\n" + final + mark +
                                 ( row.reasons.length ? ": " + row.reasons.join( "; " ) : "" ) );
+
+               /*
+                * A discarded frame is marked twice over: an X beside its
+                * name, so the rows to lose are findable at a glance, and
+                * the measurement that condemned it in red, so the reason
+                * is visible without reading the verdict column. A frame
+                * condemned by hand has no failing measurement, and
+                * correctly gets the mark with nothing coloured.
+                */
+               var rejected = ( final == Frames.STATE.REJECTED );
+               var ico = FrameSelector.markIcon( rejected );
+               if ( ico != null )
+                  node.setIcon( 0, ico );
+
+               if ( rejected )
+               {
+                  var failing = row.failing || [];
+                  for ( var f = 0; f < failing.length; ++f )
+                  {
+                     var col = Frames.metricColumn( failing[f] );
+                     if ( col != null )
+                        node.setTextColor( col, FrameSelector.REJECT_COLOUR );
+                  }
+               }
             }
    }
 
@@ -1160,27 +1562,39 @@ FrameSelector.Dialog = class extends Dialog
             }
             self.kEdit.setValue( ch.settings.k );
             self.enabledCheck.checked = ch.settings.enabled;
-            self.acceptMixedCheck.checked = ch.accepted;
-            self.acceptMixedCheck.enabled = ch.problems.length > 0;
             self.modeCombo.currentItem =
                FrameSelector.MODE_NAMES.indexOf( ch.settings.mode );
+            var names = [ "lenient", "balanced", "strict" ];
+            var pi = names.indexOf( ch.settings.preset );
+            if ( pi >= 0 )
+               self.presetCombo.currentItem = pi;
+            for ( var gm = 0; gm < Frames.METRICS.length; ++gm )
+            {
+               var mk = Frames.METRICS[gm];
+               if ( self.gateChecks[mk] != null )
+                  self.gateChecks[mk].checked = !!ch.settings.gating[mk];
+            }
             /*
              * A mixed channel says what is mixed. "Not comparable" without the
              * reason leaves someone to guess whether to trust it.
              */
             self.problemsLabel.text = ch.problems.length
                ? ( "Not comparable: " + ch.problems.join( ", " ) +
-                   ". Apply is blocked for this channel until it is accepted or the "
-                   + "folder is narrowed." )
+                   ". The figures for this channel compare frames that are not "
+                   + "alike; look before running." )
                : ( ch.settings.kEdited ? "k has been set by hand for this channel; a "
                                        + "preset will not change it." : "" );
    }
 
          /*
-          * Which rows an Apply is allowed to act on, and the per-channel tally the
-          * confirmation shows. A disabled channel contributes nothing, and neither
-          * does one that is not comparable until somebody has accepted it by hand;
+          * Which rows a Run acts on, and the per-channel tally the
+          * confirmation shows. A channel switched off contributes nothing;
           * buildManifest then decides row by row within what is left.
+          *
+          * A channel whose frames are not comparable is NOT withheld. The
+          * mixture is reported, loudly, and the decision is the user's --
+          * a tool that measures frames and then refuses to act on its own
+          * measurements is only an obstacle.
           *
           * Separated from commit so that what the confirmation is counting can be
           * asked for without putting a modal box on screen.
@@ -1193,9 +1607,7 @@ FrameSelector.Dialog = class extends Dialog
             {
                var key = self.state.order[i], ch = self.state.channels[key];
                if ( !ch.settings.enabled )
-                  continue;                    // a disabled channel is untouched
-               if ( ch.problems.length && !ch.accepted )
-                  continue;
+                  continue;                    // a channel switched off is untouched
                var c = Frames.counts( ch.rows );
                if ( c.rejected )
                   perChannel.push( key + ": " + c.rejected );
@@ -1210,7 +1622,7 @@ FrameSelector.Dialog = class extends Dialog
    refresh()
    {
       var self = this;
-            var total = 0, condemned = 0, blocked = [];
+            var total = 0, condemned = 0, mixed = [];
             for ( var i = 0; i < self.state.order.length; ++i )
             {
                var key = self.state.order[i], ch = self.state.channels[key];
@@ -1219,28 +1631,179 @@ FrameSelector.Dialog = class extends Dialog
                total += c.total;
                if ( ch.settings.enabled )
                   condemned += c.rejected;
-               if ( ch.settings.enabled && ch.problems.length && !ch.accepted && c.rejected )
-                  blocked.push( key );
+               // Reported, not withheld.
+               if ( ch.settings.enabled && ch.problems.length && c.rejected )
+                  mixed.push( key );
             }
             self.fillChannels();
             self.fillFrames();
+            self.fillPlot();
             self.syncKnobs();
-            self.blocked = blocked;
             self.summaryLabel.text =
                total + " frame(s), " + condemned + " to remove" +
                ( self.state.unstable.length
                  ? "; " + self.state.unstable.length +
                    " changed while being measured and were excluded" : "" ) +
-               ( blocked.length ? "; blocked: " + blocked.join( ", " ) : "" );
-            self.applyButton.enabled = self.editable() && condemned > 0 && blocked.length == 0;
+               ( mixed.length ? ( "; " + mixed.join( ", " ) +
+                                  " not comparable -- check before running" ) : "" ) +
+               ( self.copyingOut()
+                 ? ( "; " + ( total - condemned ) + " approved to copy" ) : "" );
+            /*
+             * Run is enabled when there is something to do, and nothing
+             * else. A channel that is not comparable is reported and left
+             * to the user; it does not disable the button.
+             */
+            var copying = self.copyingOut();
+            var approved = total - condemned;
+            self.applyButton.enabled = self.editable() &&
+               ( copying ? ( approved > 0 && self.state.destination != null )
+                         : condemned > 0 );
+
+            self.destButton.enabled = self.editable();
+            /*
+             * Say which of the two things Apply will do. The destructive
+             * one must never be reached by a label that implies the other.
+             */
+            if ( self.destinationIsSource() )
+            {
+               var toConvert = Frames.needingXisf( self.approvedPaths() ).length;
+               self.destLabel.text =
+                  "<i>" + Util.elideHead( self.state.destination, 40 ) + "</i> " +
+                  "&mdash; <b>the folder the frames are in.</b> Nothing is " +
+                  "copied; the " + condemned + " rejected frame(s) are " +
+                  "<b>deleted</b> where they are" +
+                  ( toConvert ? ( ", and " + toConvert +
+                                  " kept frame(s) converted to XISF in place" ) : "" ) +
+                  ".";
+            }
+            else if ( self.state.destination == null )
+               self.destLabel.text = "<i>no folder chosen</i>";
+            else
+               self.destLabel.text =
+                  "<i>" + Util.elideHead( self.state.destination, 40 ) +
+                  "</i> &mdash; the " + approved + " kept frame(s) are copied " +
+                  "there; nothing is deleted.";
    }
 
    /* Snapshot the review into a manifest and run it. */
+   /* Every frame in the review, whatever its verdict. */
+   allPaths()
+   {
+      var out = [];
+      for ( var i = 0; i < this.state.order.length; ++i )
+      {
+         var ch = this.state.channels[this.state.order[i]];
+         for ( var r = 0; r < ch.rows.length; ++r )
+            out.push( ch.rows[r].path );
+      }
+      return out;
+   }
+
+   /*
+    * The chosen folder is where the frames already are, so there is
+    * nothing to copy: the request is to cull them where they sit.
+    */
+   destinationIsSource()
+   {
+      return Frames.destinationIsSource( this.allPaths(), this.state.destination );
+   }
+
+   /*
+    * Let go of every control's handlers before the dialog is destroyed.
+    * Safe to call twice: closing by the button and by the window's close
+    * box both arrive here.
+    */
+   release()
+   {
+      try
+      {
+         if ( this.preview != null ) this.preview.release();
+         if ( this.plot != null ) this.plot.release();
+         if ( this.frameTree != null ) this.frameTree.onNodeSelectionUpdated = null;
+         if ( this.channelTree != null ) this.channelTree.onNodeSelectionUpdated = null;
+      }
+      catch ( e ) {}
+   }
+
+   /*
+    * True when Run writes copies instead of deleting originals.
+    *
+    * Choosing the input folder deliberately falls back to the deleting
+    * path rather than being refused: copying a file onto itself is not
+    * what was meant by it.
+    */
+   copyingOut()
+   {
+      return this.state.destination != null && !this.destinationIsSource();
+   }
+
+   /*
+    * Write the approved frames to the chosen folder. Nothing is deleted,
+    * so this asks once and reports rather than demanding the confirmation
+    * the destructive path needs.
+    */
+   /* The frames that survive, across every channel being acted on. */
+   approvedPaths()
+   {
+      var approved = [];
+      for ( var i = 0; i < this.state.order.length; ++i )
+      {
+         var ch = this.state.channels[this.state.order[i]];
+         if ( !ch.settings.enabled )
+            continue;
+         for ( var r = 0; r < ch.rows.length; ++r )
+         {
+            var row = ch.rows[r];
+            if ( Frames.finalState( row.state, row.override ) != Frames.STATE.REJECTED )
+               approved.push( row.path );
+         }
+      }
+      return approved;
+   }
+
+   /*
+    * What a finished run converted, said plainly. Nothing to convert is
+    * not worth a message of its own -- the deletion already reported.
+    */
+   reportOutcome( result )
+   {
+      var c = result ? result.converted : null;
+      if ( c == null || ( c.converted == 0 && c.failed == 0 && c.refused == null ) )
+         return;
+      var message = ( c.refused != null )
+         ? ( "Nothing was converted: " + c.refused )
+         : ( c.converted + " frame(s) converted to XISF in place" +
+             ( c.alreadyXisf ? ( "; " + c.alreadyXisf + " already were" ) : "" ) +
+             ( c.failed ? ( "\n\n" + c.failed + " could not be converted." ) : "" ) );
+      ( new MessageBox( message, "Loom Frame Selector", StdIcon_Information,
+                        StdButton_Ok ) ).execute();
+   }
+
+   commitCopy()
+   {
+      var approved = this.approvedPaths();
+      if ( approved.length == 0 )
+         return null;
+
+      var result = FrameSelector.exportApproved( approved, this.state.destination,
+                                                 false/*overwrite*/ );
+      var message = ( result.refused != null )
+         ? ( "Nothing was written: " + result.refused )
+         : ( result.written + " frame(s) written to\n" + this.state.destination +
+             ( result.failed ? ( "\n\n" + result.failed + " could not be written." )
+                             : "" ) );
+      ( new MessageBox( message, "Loom Frame Selector", StdIcon_Information,
+                        StdButton_Ok ) ).execute();
+      return result;
+   }
+
    commit()
    {
       var self = this;
             if ( !self.editable() )
                return null;
+            if ( self.copyingOut() )
+               return self.commitCopy();
             var committable = self.committableRows();
             var manifest = Frames.buildManifest( committable.rows );
             if ( manifest.entries.length == 0 )
@@ -1258,9 +1821,23 @@ FrameSelector.Dialog = class extends Dialog
             self.state.locked = true;
             self.state.manifest = manifest;
             var result = FrameSelector.execute( manifest );
+
+            /*
+             * Asked for the input folder as the destination: the rejected
+             * frames have just gone, and what remains is converted where it
+             * sits. A folder already in XISF is a no-op, which is the
+             * common case and costs nothing to say.
+             *
+             * After the deletion, deliberately: converting a frame that is
+             * about to be removed is work thrown away.
+             */
+            if ( self.destinationIsSource() )
+               result.converted = FrameSelector.convertInPlace( self.approvedPaths() );
+
             self.state.phase = Frames.nextPhase( self.state.phase,
                                                  result.stopped ? "stop" : "finish" );
             self.refresh();
+            self.reportOutcome( result );
             return result;
    }
 
@@ -1278,7 +1855,10 @@ FrameSelector.Dialog = class extends Dialog
       knobs.add( this.modeCombo );
       knobs.add( this.kEdit );
       knobs.add( this.enabledCheck );
-      knobs.add( this.acceptMixedCheck );
+      knobs.addSpacing( 10 );
+      knobs.add( this.gateLabel );
+      for ( var gk = 0; gk < Frames.METRICS.length; ++gk )
+         knobs.add( this.gateChecks[Frames.METRICS[gk]] );
       knobs.addStretch();
 
       var previewSide = new VerticalSizer;
@@ -1293,6 +1873,13 @@ FrameSelector.Dialog = class extends Dialog
       middle.add( this.frameTree, 100 );
       middle.add( previewSide );
 
+      var dest = new HorizontalSizer;
+      dest.spacing = 6;
+      dest.add( this.destLabelPrefix );
+      dest.add( this.destButton );
+      dest.add( this.destLabel );
+      dest.addStretch();
+
       var buttons = new HorizontalSizer;
       buttons.spacing = 6;
       buttons.addStretch();
@@ -1303,9 +1890,11 @@ FrameSelector.Dialog = class extends Dialog
       this.sizer.margin = 8;
       this.sizer.spacing = 6;
       this.sizer.add( middle, 100 );
+      this.sizer.add( this.plotPane );
       this.sizer.add( knobs );
       this.sizer.add( this.problemsLabel );
       this.sizer.add( this.summaryLabel );
+      this.sizer.add( dest );
       this.sizer.add( buttons );
 
       this.refresh();
@@ -1338,7 +1927,7 @@ FrameSelector.exportSplit = function( approved, map, overwrite )
  * measurements have been made". False means that measurement pass failed,
  * so nothing was written.
  */
-FrameSelector.runOutputRoutine = function( sources, destination, overwrite )
+FrameSelector.runOutputRoutine = function( sources, destination, overwrite, postfix )
 {
    var P = FrameSelector.newMeasureProcess();
    var rows = [];
@@ -1351,8 +1940,101 @@ FrameSelector.runOutputRoutine = function( sources, destination, overwrite )
    P.routine = 2;                         // output
    P.outputDirectory = destination;
    P.overwriteExistingFiles = !!overwrite;
+   /*
+    * The postfix is stated rather than left to the process. Its default is
+    * "_a", which is right when writing beside the originals and wrong when
+    * converting them: a.fit would become a_a.xisf, and the conversion
+    * would rename as well as convert.
+    */
+   if ( postfix != null )
+      P.outputPostfix = postfix;
    P.executeGlobal();
    return true;
+};
+
+/*
+ * Convert frames to XISF where they already are, and remove what they
+ * were converted from.
+ *
+ * Only for a destination that IS the source folder, where copying makes
+ * no sense. A folder already in XISF is untouched and reports as such --
+ * the conversion is the work, not the walk over the list.
+ *
+ * The original is deleted only once its replacement has been confirmed on
+ * disk, so a failed write costs nothing.
+ */
+FrameSelector.convertInPlace = function( paths )
+{
+   var result = { converted: 0, failed: 0, alreadyXisf: 0,
+                  refused: null, outcomes: {} };
+   if ( paths == null || paths.length == 0 )
+      return result;
+
+   var todo = Frames.needingXisf( paths );
+   result.alreadyXisf = paths.length - todo.length;
+   if ( todo.length == 0 )
+      return result;                       // nothing to do, and that is fine
+
+   var grouped = Frames.byDirectory( todo );
+   for ( var g = 0; g < grouped.order.length; ++g )
+   {
+      var dir = grouped.order[g], group = grouped.dirs[dir];
+
+      /*
+       * a.fit and a.fits in one folder both become a.xisf. Converting
+       * either would destroy the other's output, so neither is attempted.
+       */
+      var map = Frames.outputMapping( group, dir, Frames.XISF );
+      if ( map.collisions.length > 0 )
+      {
+         result.refused = "two or more frames would convert to the same name: " +
+                          map.collisions.join( ", " );
+         Util.error( "frames", result.refused );
+         return result;
+      }
+
+      try
+      {
+         if ( !FrameSelector.runOutputRoutine( group, dir, true/*overwrite*/,
+                                               ""/*postfix*/ ) )
+         {
+            result.refused = "the measurement pass failed";
+            return result;
+         }
+      }
+      catch ( e )
+      {
+         result.refused = String( e );
+         Util.error( "frames", "conversion failed: " + e );
+         return result;
+      }
+
+      for ( var i = 0; i < group.length; ++i )
+      {
+         var src = group[i], out = map.mapping[src];
+         if ( !File.exists( out ) )
+         {
+            result.outcomes[src] = "not converted";
+            ++result.failed;
+            Util.warn( "frames", "not converted, left alone: " + src );
+            continue;
+         }
+         try
+         {
+            File.remove( src );
+            result.outcomes[src] = "converted";
+            ++result.converted;
+         }
+         catch ( e2 )
+         {
+            // The XISF is there; only the original is left behind.
+            result.outcomes[src] = "converted, original kept";
+            ++result.failed;
+            Util.warn( "frames", "converted but could not remove " + src + ": " + e2 );
+         }
+      }
+   }
+   return result;
 };
 
 /*
@@ -1428,6 +2110,469 @@ FrameSelector.exportApproved = function( approved, destination, overwrite )
    return result;
 };
 
+/*
+ * Progress while a folder is read.
+ *
+ * The scan runs before the review dialog exists, and it is the slow part:
+ * every frame is digested whole, then each channel is measured. Without
+ * this the tool sits silent for minutes on a real folder with nothing on
+ * screen to say it is working, or how far along it is.
+ *
+ * Modeless and always on top, like the pipeline's own run window. The bar
+ * is drawn rather than composed from a control because PJSR has no
+ * progress bar of its own.
+ */
+/*
+ * The reject mark, drawn rather than taken from PixInsight's resources.
+ *
+ * Drawing it is what makes it certain: a named resource has to exist in
+ * whichever build is running, and the one this needs -- a small red X --
+ * cannot be confirmed without looking at it. Built once and reused for
+ * every row.
+ */
+FrameSelector.REJECT_COLOUR = 0xffcc2222;
+FrameSelector.MARK_SIZE = 12;
+
+FrameSelector.rejectIcon = function()
+{
+   if ( FrameSelector._rejectIcon != null )
+      return FrameSelector._rejectIcon;
+   try
+   {
+      var s = FrameSelector.MARK_SIZE, pad = 3;
+      var b = new Bitmap( s, s );
+      b.fill( 0x00000000 );                     // transparent, not white
+      var g = new Graphics( b );
+      try
+      {
+         g.antialiasing = true;
+         g.pen = new Pen( FrameSelector.REJECT_COLOUR, 2 );
+         g.drawLine( pad, pad, s - pad - 1, s - pad - 1 );
+         g.drawLine( s - pad - 1, pad, pad, s - pad - 1 );
+      }
+      finally { g.end(); }
+      FrameSelector._rejectIcon = b;
+   }
+   catch ( e )
+   {
+      // A mark that cannot be drawn must not cost the review its rows.
+      FrameSelector._rejectIcon = null;
+   }
+   return FrameSelector._rejectIcon;
+};
+
+/*
+ * An empty mark of the same size, for the frames that are kept.
+ *
+ * Every row carries one. Setting an icon only on the rejected rows
+ * indents those rows alone, so the names no longer share a left edge and
+ * the column reads as ragged -- the marked rows stand out by being moved
+ * rather than by being marked.
+ */
+FrameSelector.blankIcon = function()
+{
+   if ( FrameSelector._blankIcon != null )
+      return FrameSelector._blankIcon;
+   try
+   {
+      var b = new Bitmap( FrameSelector.MARK_SIZE, FrameSelector.MARK_SIZE );
+      b.fill( 0x00000000 );
+      FrameSelector._blankIcon = b;
+   }
+   catch ( e ) { FrameSelector._blankIcon = null; }
+   return FrameSelector._blankIcon;
+};
+
+/* The mark a row carries: the cross when it is going, a spacer when not. */
+FrameSelector.markIcon = function( rejected )
+{
+   return rejected ? FrameSelector.rejectIcon() : FrameSelector.blankIcon();
+};
+
+/*
+ * The plot's palette. On paper rather than on the dialog's own dark
+ * background: a measurement plot is read, and these are the contrasts a
+ * chart is normally printed with.
+ */
+FrameSelector.PLOT_COLOURS = {
+   PAPER:  0xffffffff,
+   BAND:   0xffe6e6e6,   // the range that keeps a frame
+   AXIS:   0xff9a9a9a,
+   EDGE:   0xff6e6e6e,   // the band's own limits, drawn and labelled
+   INK:    0xff404040,   // the axis numbers
+   LINE:   0xff1f6fb4,
+   REJECT: 0xffcc2222,
+   /* The selected frame's ring, matching the table's highlight. */
+   PICKED: 0xffe07000
+};
+
+/*
+ * A measurement plotted across the channel's frames, the way
+ * SubframeSelector shows one: frame order along the bottom, the value up
+ * the side, and the range that keeps a frame drawn as a band behind it.
+ *
+ * Drawn, because PJSR has no plot control. The geometry lives in Frames
+ * (acceptedBand, plotBounds) so what decides the picture can be tested
+ * without a window; this only paints what those return.
+ */
+FrameSelector.Plot = class extends Frame
+{
+   constructor( parent )
+   {
+      super( parent );
+      var self = this;
+      this.rows = [];
+      this.metric = Frames.METRICS[0];
+      this.band = { lo: null, hi: null };
+      this.selected = -1;
+      this.setScaledMinHeight( 150 );
+      this.geom = null;
+      this.onPick = null;                  // set by the dialog
+      this.onMousePress = function( x )
+      {
+         if ( self.geom == null || self.onPick == null )
+            return;
+         var i = Frames.pointAt( x, self.geom.left, self.geom.width,
+                                 self.rows.length );
+         if ( i >= 0 )
+            self.onPick( i );
+      };
+      this.toolTip =
+         "<p>Each frame's measurement, in table order. The grey band is the " +
+         "range that keeps a frame; a red cross is one that will be deleted.</p>" +
+         "<p><b>Click</b> a point to select that frame in the list.</p>";
+      this.onPaint = function() { self.paint(); };
+   }
+
+   /*
+    * NOT called show(). Frame inherits Control.show(), which takes no
+    * arguments, and overriding it made the dialog fail to build at all
+    * with "Control.show(): Wrong number of arguments" -- the framework
+    * calls show() itself when the pane is laid out.
+    */
+   setSeries( rows, metric, band )
+   {
+      this.rows = rows || [];
+      this.metric = metric;
+      this.band = band || { lo: null, hi: null };
+      this.repaint();
+   }
+
+   /* Detached before teardown, for the reason PreviewControl.release states. */
+   release()
+   {
+      try
+      {
+         this.rows = [];
+         this.onPick = null;
+         this.onPaint = null;
+         this.onMousePress = null;
+      }
+      catch ( e ) {}
+   }
+
+   /*
+    * Ring the frame the table has selected, so the row and the point are
+    * the same frame without counting along the line to find it.
+    */
+   setSelected( index )
+   {
+      var i = ( index == null ) ? -1 : index;
+      if ( i === this.selected )
+         return;                            // no repaint for no change
+      this.selected = i;
+      this.repaint();
+   }
+
+   paint()
+   {
+      var g = null;
+      try
+      {
+         g = new Graphics( this );
+         g.antialiasing = true;
+         var W = this.width, H = this.height;
+         g.fillRect( 0, 0, W, H, new Brush( FrameSelector.PLOT_COLOURS.PAPER ) );
+
+         var L = 52, R = 8, T = 10, B = 18;      // room for the value labels
+         var pw = Math.max( 1, W - L - R ), ph = Math.max( 1, H - T - B );
+         /*
+          * Kept for the hit test: a click has to map back through exactly
+          * the geometry the points were drawn with, not a second copy of
+          * the arithmetic that could drift from it.
+          */
+         this.geom = { left: L, width: pw };
+
+         var values = [];
+         for ( var i = 0; i < this.rows.length; ++i )
+            values.push( this.rows[i].metrics ? this.rows[i].metrics[this.metric] : null );
+         var bounds = Frames.plotBounds( values, this.band );
+         var span = ( bounds.hi - bounds.lo ) || 1;
+
+         function yOf( v ) { return T + ph - ( ( v - bounds.lo ) / span ) * ph; }
+         function xOf( i )
+         {
+            return ( values.length < 2 ) ? ( L + pw/2 )
+                                         : ( L + ( i / ( values.length - 1 ) ) * pw );
+         }
+
+         // The accepted band. An open end runs to the edge of the plot,
+         // which is what "no limit on this side" looks like.
+         var bTop = ( this.band.hi != null ) ? yOf( this.band.hi ) : T;
+         var bBot = ( this.band.lo != null ) ? yOf( this.band.lo ) : T + ph;
+         if ( bBot > bTop )
+            g.fillRect( L, Math.max( T, bTop ), L + pw, Math.min( T + ph, bBot ),
+                        new Brush( FrameSelector.PLOT_COLOURS.BAND ) );
+
+         g.pen = new Pen( FrameSelector.PLOT_COLOURS.AXIS );
+         g.drawRect( L, T, L + pw, T + ph );
+
+         // The band's edges, labelled -- a band with no number on it does
+         // not say what the threshold actually is.
+         var edges = [ this.band.lo, this.band.hi ];
+         var wanted = [];
+         for ( var e = 0; e < edges.length; ++e )
+            if ( edges[e] != null )
+            {
+               var ye = yOf( edges[e] );
+               if ( ye >= T && ye <= T + ph )
+               {
+                  g.pen = new Pen( FrameSelector.PLOT_COLOURS.EDGE );
+                  g.drawLine( L, ye, L + pw, ye );
+                  // First in the list, so a threshold keeps its number
+                  // when the axis extreme would land on top of it.
+                  wanted.push( { y: ye + 4, text: Frames.round( edges[e] ),
+                                 edge: true } );
+               }
+            }
+         wanted.push( { y: T + 8,  text: Frames.round( bounds.hi ) } );
+         wanted.push( { y: T + ph, text: Frames.round( bounds.lo ) } );
+
+         var labels = Frames.spacedLabels( wanted, FrameSelector.LABEL_GAP );
+         for ( var li = 0; li < labels.length; ++li )
+         {
+            g.pen = new Pen( labels[li].edge ? FrameSelector.PLOT_COLOURS.EDGE
+                                             : FrameSelector.PLOT_COLOURS.INK );
+            g.drawText( 2, labels[li].y, labels[li].text );
+         }
+
+         /*
+          * The line first, the markers over it.
+          *
+          * Drawn in one pass so a gap in the data breaks the line rather
+          * than being bridged: an unmeasurable frame has no value, and
+          * joining across it would draw a trend through a frame that was
+          * never measured.
+          */
+         g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE, 1 );
+         var prevX = null, prevY = null;
+         for ( var j = 0; j < values.length; ++j )
+         {
+            if ( values[j] == null || !isFinite( values[j] ) )
+            {
+               prevX = null;
+               continue;
+            }
+            var jx = xOf( j ), jy = yOf( values[j] );
+            if ( prevX != null )
+               g.drawLine( prevX, prevY, jx, jy );
+            prevX = jx; prevY = jy;
+         }
+
+         for ( var k = 0; k < values.length; ++k )
+         {
+            if ( values[k] == null || !isFinite( values[k] ) )
+               continue;
+            var x = xOf( k ), y = yOf( values[k] );
+            var row = this.rows[k];
+            var rejected = ( Frames.finalState( row.state, row.override ) ==
+                             Frames.STATE.REJECTED );
+            if ( rejected )
+            {
+               // The same mark as the table's, for the same reason: the
+               // frames about to be deleted are the ones worth finding.
+               g.pen = new Pen( FrameSelector.PLOT_COLOURS.REJECT, 2 );
+               g.drawLine( x-4, y-4, x+4, y+4 );
+               g.drawLine( x+4, y-4, x-4, y+4 );
+            }
+            else
+            {
+               g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE );
+               g.brush = new Brush( FrameSelector.PLOT_COLOURS.LINE );
+               g.fillRect( x-2, y-2, x+2, y+2 );
+            }
+         }
+
+         /*
+          * The selection last, so the ring is never drawn under a marker
+          * or the line. An empty brush, or the circle would fill and hide
+          * the very point it is pointing at.
+          */
+         var sel = this.selected;
+         if ( sel >= 0 && sel < values.length &&
+              values[sel] != null && isFinite( values[sel] ) )
+         {
+            g.pen = new Pen( FrameSelector.PLOT_COLOURS.PICKED, 2 );
+            g.brush = new Brush( FrameSelector.PLOT_COLOURS.PICKED,
+                                 BrushStyle_Empty );
+            g.drawCircle( xOf( sel ), yOf( values[sel] ),
+                          FrameSelector.PICK_RADIUS );
+         }
+      }
+      catch ( e )
+      {
+         // A plot that cannot draw must not cost the review its table.
+      }
+      finally
+      {
+         if ( g != null ) try { g.end(); } catch ( e2 ) {}
+      }
+   }
+};
+
+/*
+ * How much of a frame's name the scan window can show. Measured against
+ * its 460px line at the default UI font rather than guessed generously:
+ * too many characters is a clipped line, which is the bug this replaced.
+ */
+FrameSelector.SCAN_NAME_CHARS = 58;
+
+FrameSelector.ScanWindow = class extends Dialog
+{
+   constructor()
+   {
+      super();
+      var self = this;
+      this.cancelled = false;
+      this.fraction = 0;
+
+      this.windowTitle = "Loom Frame Selector - scanning";
+
+      this.stageLabel = new Label( this );
+      this.stageLabel.useRichText = true;
+      this.stageLabel.text = "starting...";
+      /*
+       * Two lines, always, and never wrapped.
+       *
+       * The window is fixed-size, so whatever does not fit is clipped. A
+       * subframe name runs to about eighty characters, which wrapped onto a
+       * third line and took the count with it -- the one part of the line
+       * that actually has to be readable. The count now has a line of its
+       * own and the name is elided to fit on the other.
+       */
+      this.stageLabel.wordWrapping = false;
+      this.stageLabel.setScaledMinWidth( 460 );
+      this.stageLabel.setScaledMinHeight( 36 );
+
+      this.bar = new Frame( this );
+      this.bar.setScaledFixedHeight( 16 );
+      this.bar.setScaledMinWidth( 460 );
+      this.bar.onPaint = function()
+      {
+         try
+         {
+            var g = new Graphics( this );
+            try
+            {
+               var w = this.width, h = this.height;
+               g.fillRect( 0, 0, w, h, new Brush( 0xff202020 ) );
+               var filled = Math.round( w * Math.max( 0, Math.min( 1, self.fraction ) ) );
+               if ( filled > 0 )
+                  g.fillRect( 0, 0, filled, h, new Brush( 0xff3c8cd8 ) );
+               g.pen = new Pen( 0xff606060 );
+               g.drawRect( 0, 0, w - 1, h - 1 );
+            }
+            finally { g.end(); }
+         }
+         catch ( e ) { /* a bar that cannot paint must not stop the scan */ }
+      };
+
+      this.cancelButton = new PushButton( this );
+      this.cancelButton.text = "Cancel";
+      this.cancelButton.defaultButton = false;
+      this.cancelButton.toolTip =
+         "<p>Stop reading this folder. Nothing has been changed on disk: " +
+         "the scan only measures.</p>";
+      this.cancelButton.onClick = function()
+      {
+         /*
+          * No confirmation, unlike the pipeline's run window. A scan has
+          * written nothing and thrown nothing away, so there is no cost to
+          * weigh -- asking twice would just be in the way.
+          */
+         self.cancelled = true;
+         self.stageLabel.text = "stopping...";
+         self.cancelButton.enabled = false;
+      };
+
+      var row = new HorizontalSizer;
+      row.addStretch();
+      row.add( this.cancelButton );
+
+      this.sizer = new VerticalSizer;
+      this.sizer.margin = 8;
+      this.sizer.spacing = 6;
+      this.sizer.add( this.stageLabel );
+      this.sizer.add( this.bar );
+      this.sizer.addSpacing( 4 );
+      this.sizer.add( row );
+
+      this.adjustToContents();
+      this.setFixedSize();
+   }
+
+   /*
+    * Returns false once Cancel has been pressed, which is what the scan
+    * reads to know it should stop.
+    */
+   report( phase, done, total, label )
+   {
+      try
+      {
+         this.fraction = ( total > 0 ) ? ( done / total ) : 0;
+         /*
+          * Count first and on its own line: it is what the window is for.
+          * The name goes second, where clipping costs least, elided from
+          * the front so the timestamp and sequence number survive.
+          */
+         this.stageLabel.text =
+            "<b>" + phase + " (" + done + " of " + total + ")</b><br>" +
+            Util.elideHead( label, FrameSelector.SCAN_NAME_CHARS );
+         this.bar.repaint();
+         CoreApplication.processEvents();
+      }
+      catch ( e ) {}
+      return !this.cancelled;
+   }
+
+   /* Detached before teardown, for the reason PreviewControl.release states. */
+   release()
+   {
+      try
+      {
+         this.bar.onPaint = null;
+         this.cancelButton.onClick = null;
+      }
+      catch ( e ) {}
+   }
+
+   /* The pair of callbacks FrameSelector.scan expects. */
+   callbacks()
+   {
+      var self = this;
+      return {
+         reading: function( done, total, name )
+         {
+            return self.report( "Reading", done, total, name );
+         },
+         measuring: function( done, total, filter )
+         {
+            return self.report( "Measuring", done, total, filter );
+         }
+      };
+   }
+};
+
 FrameSelector.main = function()
 {
    var gd = new GetDirectoryDialog;
@@ -1435,7 +2580,35 @@ FrameSelector.main = function()
    if ( !gd.execute() )
       return;
 
-   var state = FrameSelector.buildState( gd.directory );
+   /*
+    * directoryPath, not directory: the older name is deprecated in 1.9.5
+    * and warns on every run. Loom requires 1.9.5, so the new name is
+    * always there.
+    */
+
+   var progress = new FrameSelector.ScanWindow;
+   var state;
+   try
+   {
+      progress.show();
+      CoreApplication.processEvents();
+      state = FrameSelector.buildState( gd.directoryPath, progress.callbacks() );
+   }
+   finally
+   {
+      // Always, and before anything modal: a progress window left on top
+      // of a message box is one the user cannot get past.
+      try { progress.hide(); } catch ( e ) {}
+      /*
+       * And its handlers, rather than waiting for the collector to destroy
+       * a window that still has JS attached to it.
+       */
+      try { progress.release(); } catch ( e ) {}
+   }
+
+   if ( state.cancelled )
+      return;
+
    if ( state.order.length == 0 )
    {
       ( new MessageBox( "No readable frames in that folder.",

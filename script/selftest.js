@@ -3918,6 +3918,599 @@ function runTests()
     * breakages reached the user as constructor errors that no pure-function
     * test could see, which is why this is here rather than assumed.
     */
+   /*
+    * Every entry point includes the headers for the macros it uses.
+    *
+    * This suite cannot catch a missing header by running the code: it
+    * includes FrameSelector.js AFTER its own headers, so a macro this file
+    * imports is defined for everything below it. That is exactly how
+    * TextAlign_Right reached a release -- 939 assertions passed while the
+    * real script died on its first line of layout, because only the suite
+    * had included TextAlign.jsh.
+    *
+    * So the check is made against the SOURCE instead: for each entry
+    * point, follow its library includes, collect the macro families used,
+    * and require the matching header somewhere in that set. Constants of
+    * the form Name_Member are preprocessor macros from pjsr/Name.jsh --
+    * unlike the dot forms, which the engine defines itself.
+    */
+   ( function()
+   {
+      var ENTRY_POINTS = [ "Loom.js", "FrameSelector.js" ];
+      /*
+       * Families this engine provides as objects rather than macros are
+       * excluded: KeyCode and DataType have dot forms, and a name like
+       * Math_PI or a plain identifier with an underscore is not a macro.
+       * The list is deliberately of families that HAVE a pjsr header.
+       */
+      var FAMILIES = [ "TextAlign", "StdCursor", "FrameStyle", "StdButton",
+                       "BrushStyle",
+                       "StdIcon", "UndoFlag", "DataType", "CryptographicHash",
+                       "Sizer", "FocusStyle", "ImageOp", "ColorSpace",
+                       "SampleType", "MaskMode", "NumericControl" ];
+
+      function sourceOf( rel )
+      {
+         try { return File.readTextFile( LOOM_DIR + "/" + rel ); }
+         catch ( e ) { return ""; }
+      }
+
+      /* An entry point plus everything it pulls in from lib/. */
+      function wholeSource( entry )
+      {
+         var text = sourceOf( entry );
+         var libs = text.match( /#include\s+"lib\/[A-Za-z0-9_]+\.js"/g ) || [];
+         for ( var i = 0; i < libs.length; ++i )
+         {
+            var m = libs[i].match( /lib\/[A-Za-z0-9_]+\.js/ );
+            if ( m )
+               text += "\n" + sourceOf( m[0] );
+         }
+         return text;
+      }
+
+      for ( var e = 0; e < ENTRY_POINTS.length; ++e )
+      {
+         var entry = ENTRY_POINTS[e];
+         var text = wholeSource( entry );
+         check( entry + " was read", text.length > 0, true );
+
+         var missing = [];
+         for ( var f = 0; f < FAMILIES.length; ++f )
+         {
+            var fam = FAMILIES[f];
+            /*
+             * The macro form only. `TextAlign.Right` and the string
+             * "TextAlign" in a comment are not uses of the macro, and a
+             * word boundary keeps MaskMode_ from matching XMaskMode_.
+             */
+            var used = ( new RegExp( "\\b" + fam + "_[A-Za-z0-9_]+" ) ).test( text );
+            if ( !used )
+               continue;
+            var has = ( new RegExp( "#include\\s+<pjsr/" + fam + "\\.jsh>" ) ).test( text );
+            if ( !has )
+               missing.push( fam );
+         }
+         check( entry + " includes a header for every macro family it uses",
+                missing.join( ", " ), "" );
+      }
+
+      /*
+       * And the check itself has to be able to fail, or it is decoration:
+       * a family that is used with no header must be reported.
+       */
+      var pretend = 'this.x = TextAlign_Right;\n#include <pjsr/StdIcon.jsh>\n';
+      check( "a macro with no header is detected",
+             ( /\bTextAlign_[A-Za-z0-9_]+/ ).test( pretend ) &&
+             !( /#include\s+<pjsr\/TextAlign\.jsh>/ ).test( pretend ), true );
+   } )();
+
+   /*
+    * The frame column shows what differs between frames, not what they
+    * share. Whole names are far wider than the column, so the table
+    * elided them to "Light_...a.xisf" on every row -- identical, and
+    * useless for telling one frame from another.
+    */
+   ( function()
+   {
+      var base = "/f/Light_IC 1396A_180.0s_Bin1_2600MM_S_gain100_20260918-";
+      var got = Frames.shortNames( [ base + "040548_180deg_-7.0C_0030_a.xisf",
+                                     base + "040931_180deg_-7.0C_0031_a.xisf",
+                                     base + "041314_180deg_-7.0C_0032_a.xisf" ] );
+      check( "the shared head is dropped", got[0], "040548_180deg_-7.0C_0030_a.xisf" );
+      check( "every row keeps its own tail", got[2],
+             "041314_180deg_-7.0C_0032_a.xisf" );
+      check( "and the rows differ from one another", got[0] != got[1], true );
+
+      /*
+       * The cut lands on a separator, so a name never starts mid-token.
+       * With 0009 and 0010 the raw common prefix ends "_00", and cutting
+       * there would show "09" and "10" -- true, and unreadable.
+       */
+      var seq = Frames.shortNames( [ "/f/Light_H_0009_c.xisf",
+                                     "/f/Light_H_0010_c.xisf" ] );
+      check( "a name starts at a whole token", seq[0], "0009_c.xisf" );
+      check( "and so does its neighbour", seq[1], "0010_c.xisf" );
+
+      // One frame has nothing to compare against.
+      check( "a single frame keeps its name",
+             Frames.shortNames( [ "/f/Light_H_0009_c.xisf" ] )[0],
+             "Light_H_0009_c.xisf" );
+      check( "an empty channel is empty", Frames.shortNames( [] ).length, 0 );
+
+      /*
+       * Names with no shared head are already distinct; shortening them
+       * would only remove information.
+       */
+      var un = Frames.shortNames( [ "/f/alpha.xisf", "/f/beta.xisf" ] );
+      check( "unrelated names are left whole", un[0], "alpha.xisf" );
+
+      /*
+       * A name that IS the shared prefix must not become an empty cell.
+       */
+      var same = Frames.shortNames( [ "/f/Light_H_0009.xisf",
+                                      "/f/Light_H_0009.xisf.bak" ] );
+      check( "no row is left with an empty name",
+             same[0].length > 0 && same[1].length > 0, true );
+   } )();
+
+   /*
+    * A frame's name is shortened from the FRONT.
+    *
+    * Subframe names share a long prefix -- target, exposure, binning,
+    * camera -- and differ only in the timestamp and sequence number at the
+    * end. Eliding the tail, or the middle, drops exactly the part that
+    * says which frame this is.
+    */
+   ( function()
+   {
+      var name = "Light_IC 1396A_180.0s_Bin1_2600MM_S_gain100_" +
+                 "20260918-040548_180deg_-7.0C_0030_a";
+      var short_ = Util.elideHead( name, 40 );
+      check( "the name is cut to the limit", short_.length, 40 );
+      check( "the sequence number survives",
+             short_.indexOf( "_0030_a" ) >= 0, true );
+      check( "and the cut is marked", short_.substring( 0, 3 ), "..." );
+      check( "a name that fits is left alone",
+             Util.elideHead( "short.xisf", 40 ), "short.xisf" );
+      check( "a name exactly at the limit is left alone",
+             Util.elideHead( "abcd", 4 ), "abcd" );
+      check( "an absent name does not throw", Util.elideHead( null, 20 ), "" );
+      check( "a nonsense limit leaves the name whole",
+             Util.elideHead( name, 0 ), name );
+   } )();
+
+   /*
+    * Converting in place is work only where the format differs. A folder
+    * already in XISF is a no-op, and saying so costs nothing -- running
+    * SubframeSelector over it to find out costs a pass over every file.
+    */
+   ( function()
+   {
+      var mixed = [ "/d/a.fit", "/d/b.xisf", "/d/c.fits", "/d/e.XISF" ];
+      var todo = Frames.needingXisf( mixed );
+      check( "only the non-XISF frames need converting", todo.length, 2 );
+      check( "the FITS ones are chosen", todo.join( "," ), "/d/a.fit,/d/c.fits" );
+      /*
+       * Case does not decide a format. An .XISF frame is already XISF, and
+       * "converting" it would rewrite a file for nothing.
+       */
+      check( "an upper-case extension counts as XISF",
+             Frames.needingXisf( [ "/d/e.XISF" ] ).length, 0 );
+      check( "a folder already in XISF needs nothing",
+             Frames.needingXisf( [ "/d/b.xisf" ] ).length, 0 );
+      check( "and no frames at all need nothing",
+             Frames.needingXisf( [] ).length, 0 );
+
+      /*
+       * Grouped by folder, because each conversion writes into the folder
+       * its own sources came from.
+       */
+      var g = Frames.byDirectory( [ "/d/one/a.fit", "/d/two/b.fit",
+                                    "/d/one/c.fit" ] );
+      check( "frames are grouped by folder", g.order.length, 2 );
+      check( "the first folder keeps both of its frames",
+             g.dirs["/d/one"].length, 2 );
+      check( "and the folders are in the order first seen",
+             g.order.join( "," ), "/d/one,/d/two" );
+      /*
+       * A folder named after a prototype member must not collide with one:
+       * the same bare-object trap as groupByFilter.
+       */
+      var proto = Frames.byDirectory( [ "/constructor/a.fit" ] );
+      check( "a folder named like a prototype member still groups",
+             proto.dirs["/constructor"].length, 1 );
+
+      /*
+       * Two frames converting to one name would destroy each other's
+       * output, so the pair is refused rather than half done.
+       */
+      var clash = Frames.outputMapping( [ "/d/a.fit", "/d/a.fits" ], "/d",
+                                        Frames.XISF );
+      check( "a conversion collision is seen before anything is written",
+             clash.collisions.length, 1 );
+   } )();
+
+   /*
+    * Choosing the folder the frames are already in is not a mistake -- it
+    * is how you ask for them to be culled where they sit -- but it means
+    * the opposite of copying, and must be recognised BEFORE Apply so the
+    * dialog can say which of the two it will do.
+    */
+   ( function()
+   {
+      var paths = [ "/data/night/a_c.xisf", "/data/night/b_c.xisf" ];
+      check( "the input folder is recognised as a source",
+             Frames.destinationIsSource( paths, "/data/night" ), true );
+      check( "another folder is not",
+             Frames.destinationIsSource( paths, "/data/culled" ), false );
+      /*
+       * A folder BELOW the source is a different folder: files written
+       * there cannot overwrite their own originals.
+       */
+      check( "a subfolder of the source is not the source",
+             Frames.destinationIsSource( paths, "/data/night/kept" ), false );
+      check( "no destination is not a source",
+             Frames.destinationIsSource( paths, null ), false );
+      check( "and neither is one with no frames to compare",
+             Frames.destinationIsSource( [], "/data/night" ), false );
+
+      /*
+       * The same rule outputMapping uses, so the sentence the dialog shows
+       * and the refusal the export would raise cannot disagree.
+       */
+      var map = Frames.outputMapping( paths, "/data/night", ".xisf" );
+      check( "outputMapping agrees it is aliased", map.aliased, true );
+      check( "and disagrees for a different folder",
+             Frames.outputMapping( paths, "/data/culled", ".xisf" ).aliased, false );
+   } )();
+
+   /*
+    * A click on the plot picks a frame. The inverse of how the points are
+    * placed, so the column clicked is the frame meant; only x is
+    * considered, or a point near the top of the plot would be harder to
+    * hit than one in the middle.
+    */
+   ( function()
+   {
+      var L = 52, pw = 400, n = 5;   // points at 52, 152, 252, 352, 452
+      check( "the first point is picked at the left edge",
+             Frames.pointAt( L, L, pw, n ), 0 );
+      check( "the last at the right edge", Frames.pointAt( L + pw, L, pw, n ), 4 );
+      check( "and the middle in between",
+             Frames.pointAt( L + pw/2, L, pw, n ), 2 );
+      check( "a click nearer one point than the next takes that one",
+             Frames.pointAt( L + 160, L, pw, n ), 2 );
+      check( "and just short of halfway takes the earlier one",
+             Frames.pointAt( L + 140, L, pw, n ), 1 );
+
+      check( "a click left of the plot picks nothing",
+             Frames.pointAt( L - 40, L, pw, n ), -1 );
+      check( "and one past the right picks nothing",
+             Frames.pointAt( L + pw + 40, L, pw, n ), -1 );
+
+      /*
+       * A lone frame occupies the whole width, so anywhere inside picks
+       * it -- the general formula would divide by zero.
+       */
+      check( "a single frame is picked anywhere",
+             Frames.pointAt( L + 200, L, pw, 1 ), 0 );
+      check( "an empty channel picks nothing",
+             Frames.pointAt( L + 200, L, pw, 0 ), -1 );
+      check( "and a plot with no width picks nothing",
+             Frames.pointAt( L, L, 0, 5 ), -1 );
+   } )();
+
+   /*
+    * Two of the plot's numbers must never land on each other.
+    *
+    * The axis is labelled at both extremes and the band at its limits, so
+    * a limit close to an extreme drew "0.768" and "0.729" in the same few
+    * pixels. Order is priority: a threshold outranks the extreme it sits
+    * near, because the extreme is only where the data stops while the
+    * threshold is the decision being made.
+    */
+   ( function()
+   {
+      var gap = 13;
+      var kept = Frames.spacedLabels(
+         [ { y: 120, text: "0.768", edge: true },   // the band limit
+           { y: 10,  text: "0.900" },               // top of the axis
+           { y: 126, text: "0.729" } ], gap );      // bottom, too close
+      check( "the colliding label is dropped", kept.length, 2 );
+      check( "and the threshold is the one kept", kept[0].text, "0.768" );
+      check( "the far label survives", kept[1].text, "0.900" );
+
+      // Nothing overlapping: everything is drawn.
+      check( "well separated labels are all kept",
+             Frames.spacedLabels( [ { y: 10 }, { y: 60 }, { y: 120 } ], gap ).length, 3 );
+
+      // Exactly the gap apart is far enough; one pixel less is not.
+      check( "a label exactly a gap away is kept",
+             Frames.spacedLabels( [ { y: 10 }, { y: 10 + gap } ], gap ).length, 2 );
+      check( "and one pixel closer is not",
+             Frames.spacedLabels( [ { y: 10 }, { y: 9 + gap } ], gap ).length, 1 );
+
+      check( "nothing to place is not an error",
+             Frames.spacedLabels( [], gap ).length, 0 );
+   } )();
+
+   /*
+    * PSF SNR ranks frames but does not delete them.
+    *
+    * Integration weights each frame by its signal -- WBPP's default is PSF
+    * Signal Weight -- so a faint frame already contributes in proportion
+    * to what it is worth, and the stack's SNR goes as the root of the sum
+    * of squared frame SNRs. Every frame with signal raises that, so
+    * deleting a faint one costs signal for nothing. FWHM, eccentricity and
+    * star count are gated because no weighting repairs them.
+    */
+   ( function()
+   {
+      check( "PSF SNR does not reject by default",
+             Frames.DEFAULT_GATING.psfSNR, false );
+      check( "FWHM does", Frames.DEFAULT_GATING.fwhm, true );
+      check( "eccentricity does", Frames.DEFAULT_GATING.eccentricity, true );
+      check( "star count does", Frames.DEFAULT_GATING.stars, true );
+      check( "but PSF SNR still carries the most ranking weight",
+             Frames.DEFAULT_WEIGHTS.psfSNR > Frames.DEFAULT_WEIGHTS.fwhm, true );
+
+      /*
+       * An ungated metric produces an INACTIVE gate rather than being
+       * skipped somewhere downstream, so everything that reads a gate --
+       * the verdict, the reasons and the plot's band -- follows from one
+       * decision.
+       */
+      var frames = [];
+      for ( var i = 0; i < 12; ++i )
+         frames.push( { psfSNR: 13 + (i%3)*0.2, fwhm: 3.8 + (i%4)*0.05,
+                        eccentricity: 0.6 + (i%3)*0.01, stars: 8900 + i*10 } );
+      frames.push( { psfSNR: 2.0, fwhm: 3.8, eccentricity: 0.6, stars: 8900 } );
+
+      var gates = Frames.relativeGates( frames, 2.5, Frames.DEFAULT_GATING );
+      check( "the ungated metric has no active gate", gates.psfSNR.active, false );
+      check( "and says why", gates.psfSNR.reason, "not used as a gate" );
+      check( "a gated metric still has one", gates.fwhm.active, true );
+
+      var settings = Frames.defaultSettings();
+      var v = Frames.verdict( frames[frames.length-1], gates, settings );
+      check( "a frame that is only faint is kept", v.state, Frames.STATE.APPROVED );
+      check( "and nothing is marked against it", v.failing.length, 0 );
+
+      // The plot draws no band for a metric that cannot reject.
+      var band = Frames.acceptedBand( "psfSNR", gates, settings );
+      check( "an ungated metric has no band", band.lo + "/" + band.hi, "null/null" );
+
+      // Turned on, it gates like any other.
+      var on = Frames.relativeGates( frames, 2.5,
+                 { psfSNR: true, fwhm: true, eccentricity: true, stars: true } );
+      check( "switching it on gates on it", on.psfSNR.active, true );
+      check( "and the faint frame is then rejected",
+             Frames.verdict( frames[frames.length-1], on, settings ).state,
+             Frames.STATE.REJECTED );
+   } )();
+
+   /*
+    * A preset belongs to a channel, not to the folder. A night's L and its
+    * Ha are different populations: one preset over both either spares the
+    * ragged channel or cuts into the clean one.
+    */
+   ( function()
+   {
+      var a = Frames.defaultSettings(), b = Frames.defaultSettings();
+      check( "a channel starts on the default preset", a.preset,
+             Frames.DEFAULT_PRESET );
+
+      var strict = Frames.applyPreset( a, "strict" );
+      check( "a preset is recorded on the channel", strict.preset, "strict" );
+      check( "and sets its k", strict.k, Frames.PRESETS.strict );
+      check( "the other channel is untouched", b.preset, Frames.DEFAULT_PRESET );
+      check( "and keeps its own k", b.k, Frames.PRESETS[Frames.DEFAULT_PRESET] );
+
+      /*
+       * Settings are copied, never shared. A preset that handed back the
+       * same objects gave every channel one set of knobs; that has
+       * happened here before.
+       */
+      strict.gating.fwhm = false;
+      check( "gating is not shared with the settings it came from",
+             a.gating.fwhm, true );
+
+      // An edited k stands against a preset.
+      var pinned = Frames.defaultSettings();
+      pinned.kEdited = true;
+      pinned.k = 1.75;
+      var after = Frames.applyPreset( pinned, "lenient" );
+      check( "a k set by hand survives a preset", after.k, 1.75 );
+      check( "though the preset is still recorded", after.preset, "lenient" );
+   } )();
+
+   /*
+    * The plot's band is the range that keeps a frame. A relative gate cuts
+    * from one side only -- there is no such thing as too FEW stars and too
+    * many at once -- so the other end is unbounded and must stay null
+    * rather than becoming a number the plot would draw a line at.
+    */
+   ( function()
+   {
+      var gates = { fwhm:   { active: true, median: 3.83, limit: 4.01 },
+                    stars:  { active: true, median: 8900, limit: 7000 },
+                    psfSNR: { active: false, median: 13.4, limit: 12.0 } };
+
+      var rel = { mode: Frames.MODE.RELATIVE, limits: {} };
+      var f = Frames.acceptedBand( "fwhm", gates, rel );
+      check( "FWHM is capped above", f.hi, 4.01 );
+      check( "and open below", f.lo, null );
+
+      var st = Frames.acceptedBand( "stars", gates, rel );
+      check( "stars are floored below", st.lo, 7000 );
+      check( "and open above", st.hi, null );
+
+      check( "an inactive gate bounds nothing",
+             Frames.acceptedBand( "psfSNR", gates, rel ).hi, null );
+
+      var abs = { mode: Frames.MODE.ABSOLUTE, limits: { fwhm: { lo: 2, hi: 5 } } };
+      var a = Frames.acceptedBand( "fwhm", gates, abs );
+      check( "absolute mode uses the limits", a.lo + "," + a.hi, "2,5" );
+
+      /*
+       * In BOTH a frame has to pass the gate AND the limit, so the band is
+       * their intersection -- the tighter end wins on each side.
+       */
+      var both = Frames.acceptedBand( "fwhm", gates,
+                   { mode: Frames.MODE.BOTH, limits: { fwhm: { lo: 2, hi: 5 } } } );
+      check( "both modes take the tighter cap", both.hi, 4.01 );
+      check( "and keep the only floor there is", both.lo, 2 );
+
+      /*
+       * Vertical extent. The band's edge is included even when no frame
+       * comes near it: a gate nothing approaches is worth seeing as that.
+       */
+      var b = Frames.plotBounds( [ 3.8, 3.9, 4.06 ], { lo: null, hi: 4.01 } );
+      check( "the bounds contain the data", b.lo < 3.8 && b.hi > 4.06, true );
+      var far = Frames.plotBounds( [ 3.8, 3.9 ], { lo: null, hi: 9 } );
+      check( "and contain a distant band edge", far.hi >= 9, true );
+      check( "an open end adds nothing",
+             Frames.plotBounds( [ 1, 2 ], { lo: null, hi: null } ).hi > 2, true );
+
+      // A channel whose frames all measure the same still needs a height.
+      var flat = Frames.plotBounds( [ 4, 4, 4 ], null );
+      check( "a flat channel still has an extent", flat.hi > flat.lo, true );
+      check( "no data at all is still a drawable range",
+             Frames.plotBounds( [], null ).hi, 1 );
+      check( "and so is a channel of nulls",
+             Frames.plotBounds( [ null, null ], null ).hi, 1 );
+   } )();
+
+   /*
+    * A verdict says WHICH measurement condemned the frame, not only why in
+    * words. The review colours that column red, and picking the column by
+    * reading the sentence back would tie the display to the wording.
+    */
+   ( function()
+   {
+      var gates = {
+         psfSNR:       { active: true, median: 13.4, limit: 12.0 },
+         fwhm:         { active: true, median: 3.83, limit: 4.01 },
+         eccentricity: { active: true, median: 0.60, limit: 0.75 },
+         stars:        { active: true, median: 8900, limit: 7000 } };
+      var settings = { mode: Frames.MODE.RELATIVE, limits: {} };
+
+      // The frame from the screenshot: only FWHM is over its limit.
+      var wide = Frames.verdict( { psfSNR: 13.36, fwhm: 4.06,
+                                   eccentricity: 0.590, stars: 8206 },
+                                 gates, settings );
+      check( "a frame over the FWHM limit is rejected", wide.state,
+             Frames.STATE.REJECTED );
+      check( "and names FWHM as the cause", wide.failing.join( "," ), "fwhm" );
+
+      var good = Frames.verdict( { psfSNR: 13.64, fwhm: 3.80,
+                                   eccentricity: 0.593, stars: 9034 },
+                                 gates, settings );
+      check( "an approved frame has nothing to mark", good.failing.length, 0 );
+
+      // Two bad metrics, both named, in metric order.
+      var bad = Frames.verdict( { psfSNR: 10.0, fwhm: 4.50,
+                                  eccentricity: 0.60, stars: 8900 },
+                                gates, settings );
+      check( "every failing measurement is named", bad.failing.join( "," ),
+             "psfSNR,fwhm" );
+
+      /*
+       * In BOTH mode a metric can fail the relative gate and the absolute
+       * limit at once. It is one column, so it must be named once.
+       */
+      var dup = Frames.verdict( { psfSNR: 13.4, fwhm: 4.50,
+                                  eccentricity: 0.60, stars: 8900 },
+                                gates,
+                                { mode: Frames.MODE.BOTH,
+                                  limits: { fwhm: { hi: 4.2 } } } );
+      check( "a metric failing twice is named once", dup.failing.join( "," ), "fwhm" );
+      check( "but both sentences are kept", dup.reasons.length, 2 );
+
+      /*
+       * The column map is what turns those names into cells. Wrong indices
+       * would colour the wrong measurement, which is worse than none.
+       */
+      check( "PSF SNR is column 1", Frames.metricColumn( "psfSNR" ), 1 );
+      check( "FWHM is column 2", Frames.metricColumn( "fwhm" ), 2 );
+      check( "eccentricity is column 3", Frames.metricColumn( "eccentricity" ), 3 );
+      check( "stars is column 4", Frames.metricColumn( "stars" ), 4 );
+      check( "a metric with no column says so",
+             Frames.metricColumn( "noise" ), null );
+      /*
+       * Headings and columns come from one list, so a metric added to
+       * METRICS cannot land in the table without a heading or push the
+       * verdict column out from under the code that writes it.
+       */
+      check( "the headings cover every metric plus name and score",
+             Frames.FRAME_COLUMNS.length, Frames.METRICS.length + 2 );
+      check( "FWHM's heading sits in FWHM's column",
+             Frames.FRAME_COLUMNS[Frames.metricColumn( "fwhm" )], "FWHM" );
+      check( "the score is the last column",
+             Frames.SCORE_COLUMN, Frames.FRAME_COLUMNS.length - 1 );
+      /*
+       * There is no verdict column: the cross and the reddened measurement
+       * say it, and the wording is the row's tooltip.
+       */
+      check( "no verdict column is claimed",
+             typeof Frames.VERDICT_COLUMN, "undefined" );
+   } )();
+
+   /*
+    * Reading a folder reports progress per file.
+    *
+    * The scan is silent for minutes on a real folder -- every frame is
+    * digested whole before any measuring starts -- so the count has to
+    * advance per file, and it has to advance BEFORE the file is read: a
+    * label naming the file already read is a label naming the wrong one.
+    * These paths do not exist, which is the point: an unreadable file must
+    * still advance the count rather than stalling it.
+    *
+    * PixInsight only: FrameSelector.js is an entry point, not a library,
+    * so the node harness never loads it.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var seen = [];
+      var paths = [ "/nope/a_c.xisf", "/nope/b_c.xisf", "/nope/c_c.xisf" ];
+      var cohort = FrameSelector.cohortFrom( paths, function( done, total, name )
+      {
+         seen.push( done + "/" + total + " " + name );
+         return true;
+      } );
+      check( "every file is reported, readable or not", seen.length, 3 );
+      check( "the count starts at one, not zero", seen[0], "1/3 a_c" );
+      check( "and ends at the total", seen[2], "3/3 c_c" );
+      check( "a scan that is not stopped is not cancelled", cohort.cancelled, false );
+
+      /*
+       * Cancel stops the read where it is. Without this the button would
+       * be decoration and the remaining gigabytes would still be read.
+       */
+      var count = 0;
+      var stopped = FrameSelector.cohortFrom( paths, function()
+      {
+         ++count;
+         return false;
+      } );
+      check( "returning false stops the read", count, 1 );
+      check( "and the cohort says it was cancelled", stopped.cancelled, true );
+
+      // No callback at all is the headless case, and must still work.
+      var plain = FrameSelector.cohortFrom( paths );
+      check( "a scan with no progress callback still runs", plain.cancelled, false );
+
+      /*
+       * A cancelled read must not be presented as an empty folder: the
+       * caller opens a "no readable frames" box on an empty result, and
+       * saying that about a scan the user stopped is a lie.
+       */
+      check( "the message names the phase and the count",
+             Util.scanProgressMessage( "Reading", "a_c", 2, 7 ),
+             "Reading: a_c (2 of 7)" );
+   } )();
+
    if ( IN_PIXINSIGHT ) ( function()
    {
       /*
@@ -3941,6 +4534,131 @@ function runTests()
          ok = ok && ( typeof dlg.refresh == "function" );
          ok = ok && ( typeof dlg.commit == "function" );
          dlg.cancel();
+
+         /*
+          * The scan window is built before the review dialog exists, so a
+          * constructor error in it breaks the tool before anything is on
+          * screen -- the exact failure this block was added for.
+          */
+         var sw = new FrameSelector.ScanWindow;
+         ok = ok && ( typeof sw.report == "function" );
+         var cb = sw.callbacks();
+         ok = ok && ( typeof cb.reading == "function" );
+         ok = ok && ( typeof cb.measuring == "function" );
+         // Reporting drives the label and repaints the bar; it must not throw.
+         ok = ok && ( cb.reading( 1, 4, "frame_c" ) === true );
+         ok = ok && ( cb.measuring( 1, 2, "H" ) === true );
+         sw.cancelled = true;
+         ok = ok && ( cb.reading( 2, 4, "frame_c" ) === false );
+
+         /*
+          * The plot is drawn, so a painting error is a constructor-class
+          * failure: it reaches the user as a blank dialog, not an exception.
+          */
+         /*
+          * Copying the approved frames out was implemented and reachable
+          * from nothing, leaving deleting in place as the only action the
+          * dialog offered -- the one that cannot be undone.
+          */
+         ok = ok && ( typeof dlg.chooseDestination == "function" );
+         ok = ok && ( typeof dlg.commitCopy == "function" );
+         ok = ok && ( typeof dlg.approvedPaths == "function" );
+         ok = ok && ( typeof FrameSelector.convertInPlace == "function" );
+         // Nothing to convert must not run a measurement pass.
+         var none = FrameSelector.convertInPlace( [] );
+         ok = ok && ( none.converted == 0 && none.refused == null );
+         /*
+          * Pointing the destination somewhere makes it a copy; there is no
+          * mode to set. Whether a destination IS the source folder is
+          * decided by Frames.destinationIsSource against the frames' own
+          * paths, and is tested there -- this dialog has no frames, so
+          * there is nothing here for that test to compare against.
+          */
+         dlg.state.destination = "/tmp/agent-scratch/elsewhere";
+         ok = ok && ( dlg.copyingOut() === true );
+         dlg.state.destination = null;
+         ok = ok && ( dlg.copyingOut() === false );
+
+         /*
+          * A dialog with FRAMES IN IT, refreshed and clicked.
+          *
+          * The empty dialog above proves the constructor runs and nothing
+          * else. Two exceptions reached the user through code it never
+          * touches -- a stale variable in refresh's summary, and an
+          * assignment to TreeBox.selectedNodes, which is read-only. Both
+          * threw from inside a Qt event handler, and an exception crossing
+          * back into Qt terminates PixInsight rather than being caught.
+          * Closing the review killed the application.
+          */
+         var pEntries = [], pMetrics = {};
+         for ( var pf = 0; pf < 6; ++pf )
+         {
+            var pp = "/nowhere/frame_" + pf + "_c.xisf";
+            pEntries.push( { path: pp, identity: { digest: "d" + pf, size: 1, mtime: 1 } } );
+            pMetrics[pp] = { psfSNR: 13 + (pf%3), fwhm: 3.8 + (pf%5)*0.3,
+                             eccentricity: 0.6, stars: 8900 - pf*40 };
+         }
+         var pState = FrameSelector.emptyState( "/nowhere" );
+         pState.channels.H = FrameSelector.recompute(
+            FrameSelector.newChannel( "H", pEntries, pMetrics,
+                                      [ "calibration state unknown for every frame" ] ) );
+         pState.order.push( "H" );
+
+         var full = new FrameSelector.Dialog( pState );
+         full.refresh();                       // the summary, the label, the plot
+         ok = ok && ( full.frameTree.numberOfChildren == 6 );
+         full.selectRow( 0 );                  // the table, the preview, the ring
+         full.plot.onPick( 2 );                // as a click on the plot arrives
+         /*
+          * And with the destination pointing at the frames' own folder,
+          * which is the branch that names a count and was where the stale
+          * variable lived.
+          */
+         pState.destination = "/nowhere";
+         full.refresh();
+         full.release();
+         full.cancel();
+
+         /*
+          * The preview is a ScrollBox so Qt does the scrolling: the
+          * wheel event PixInsight delivers carries one delta and no
+          * orientation, so a control that handles the wheel itself can
+          * never see a sideways swipe. Installing an onMouseWheel handler
+          * here is precisely what broke it.
+          */
+         var pv = new FrameSelector.PreviewControl( dlg );
+         ok = ok && ( typeof pv.viewport == "object" );
+         ok = ok && ( typeof pv.maxHorizontalScrollPosition == "number" );
+         ok = ok && ( pv.viewport.onMouseWheel == null );
+         pv.setFit( true );
+         ok = ok && ( pv.maxHorizontalScrollPosition == 0 );
+
+         var plot = new FrameSelector.Plot( dlg );
+         plot.setSeries( [ { metrics: { psfSNR: 13, fwhm: 3.8, eccentricity: 0.6,
+                                   stars: 9000 },
+                        state: Frames.STATE.APPROVED, override: null },
+                      { metrics: { psfSNR: 12, fwhm: 4.4, eccentricity: 0.7,
+                                   stars: 8000 },
+                        state: Frames.STATE.REJECTED, override: null } ],
+                    "fwhm", { lo: null, hi: 4.01 } );
+         ok = ok && ( typeof plot.paint == "function" );
+         // Painting with nothing to show must not throw either.
+         plot.setSeries( [], "fwhm", { lo: null, hi: null } );
+         ok = ok && ( typeof FrameSelector.rejectIcon == "function" );
+         /*
+          * show() must remain Control's. Shadowing it with a data-setting
+          * method broke the whole dialog, which is the kind of failure a
+          * plot control has no business causing.
+          */
+         ok = ok && ( plot.setSeries !== plot.show );
+         /*
+          * Picking a point selects a row, and a ring follows the table's
+          * selection -- both directions of the same link.
+          */
+         ok = ok && ( typeof dlg.selectRow == "function" );
+         ok = ok && ( typeof dlg.plot.onPick == "function" );
+         plot.setSelected( 1 );
+         ok = ok && ( plot.selected == 1 );
       }
       catch ( e ) { ok = false; err = String( e ); }
       check( "the frame selector dialog builds" + ( err ? ": " + err : "" ),

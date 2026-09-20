@@ -382,14 +382,19 @@ with the subframe table is one nobody can act on.
 
 Grouping is by the raw `FILTER` keyword. A channel whose frames differ in
 exposure, binning, geometry or calibration state is reported as not comparable
-and Apply is blocked for it until you accept it explicitly — a shorter exposure
-legitimately loses on SNR, and clipping it against the rest is meaningless.
-Frames with no readable filter are shown but never auto-rejected.
+and marked `[mixed]` — a shorter exposure legitimately loses on SNR, and
+clipping it against the rest means less than it appears to. It is a warning,
+not a veto: the figures are still shown and Run still acts on them, because a
+tool that measures frames and then refuses to act on its own measurements is an
+obstacle rather than a safeguard. Frames with no readable filter are shown but
+never auto-rejected.
 
 ### The presets
 
 Three, because `k` — the width of the robust gate, in normalised MADs — is the
-one number that decides how much is dropped.
+one number that decides how much is dropped. **Each channel has its own**: a
+night's L and its Ha are not the same population, and one preset over both
+either spares the ragged channel or cuts into the clean one.
 
 | preset | `k` | asymptotic | at 20 frames | at 10 frames |
 |---|---|---|---|---|
@@ -405,6 +410,37 @@ Below **10 valid measurements** in a channel the robust clip does not run at
 all. A median exists at three frames; a dispersion worth deleting files over
 does not.
 
+### What may reject a frame
+
+Four measurements are taken and all four are scored, but only three of them
+may *delete* anything. Scoring ranks; gating rejects; they are not the same
+question.
+
+| measurement | ranks | rejects by default |
+|---|---|---|
+| PSF SNR | yes, most heavily | **no** |
+| FWHM | yes | yes |
+| eccentricity | yes | yes |
+| stars | yes | yes |
+
+**PSF SNR is off because integration already handles it.** ImageIntegration
+weights each frame by its signal — WBPP's default is PSF Signal Weight — so the
+stack's SNR goes as the root of the sum of the frames' squared SNRs. Every
+frame carrying signal raises that sum, so deleting a faint one throws away
+signal that was already being discounted in proportion to its worth. On a
+measured 126-frame channel, dropping the two faintest cost about 0.4% SNR and
+bought nothing.
+
+**FWHM and eccentricity are on because no weighting repairs them.** The stacked
+PSF is a weighted blend of the frames' own, and weight follows signal rather
+than sharpness — so a soft frame with good SNR earns a *high* weight and blurs
+the result. That is the case rejection exists for. Star count is on as the
+evidence of transparency that FWHM does not carry: cloud removes stars without
+widening the ones left behind, and brings gradients that do not average away.
+
+PSF SNR remains available per channel, because a frame far below the rest
+usually means something went wrong rather than that the night was dim.
+
 ### Relative, absolute, or both
 
 A clip on a channel's own median and MAD is scale-invariant, so **Relative**
@@ -417,6 +453,34 @@ So **Absolute** turns the robust gate off and rejects only on the hard limits
 you set. **It is the only mode that can keep an entire good night.** Absolute
 with no limits configured is a valid "keep everything" setting, not an error.
 **Both** rejects on either condition.
+
+### Reading the review
+
+Reading a folder digests every frame whole before any measuring starts, so it
+is the slow part — a window reports the phase, the count and the file, and can
+be stopped. Nothing has been written at that point; a scan only measures.
+
+The frame column shows what differs between frames rather than what they share.
+Subframe names differ only in a timestamp and a sequence number, so the common
+prefix is dropped; the whole path is on the row's tooltip.
+
+A frame that will be deleted carries a red cross beside its name, and the
+measurement that condemned it is shown in red — the verdict names the metrics
+it turned on, so the column marked is the one that decided. Every row carries a
+mark, an empty one where the frame is kept, so the names keep a shared left
+edge.
+
+Under the table, the selected channel's measurements are plotted in frame
+order, with the range that keeps a frame drawn as a band behind them; the combo
+chooses which measurement. A metric that is not gated has no band, because
+nothing it does can reject. The plot and the table are two views of one
+selection: the selected frame is ringed, and clicking a point selects its row.
+
+The preview is 1:1. **Double click** switches between the whole frame and 1:1;
+**swipe** or **drag** moves around, **Shift** for sideways, or the arrow keys
+after clicking the image. Changing frame keeps the view where it was — the
+frames of a channel are registered to each other, so the same offset shows the
+same stars, which is the only way to compare them.
 
 ### Deleting
 
