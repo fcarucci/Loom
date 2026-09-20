@@ -2341,6 +2341,76 @@ function runTests()
                                    "/dest", ".xisf" ).collisions.length, 1 );
    } )();
 
+   /*
+    * A cache entry is recorded only once it has been proved readable.
+    *
+    * saveAs says nothing when a write goes wrong, so the sidecar used to be
+    * written regardless and the broken entry was found by the NEXT run --
+    * which could only respond by silently redoing the work. These drive
+    * Cache.store through a stubbed verifier, because the real one opens an
+    * image and there is no workspace here.
+    */
+   ( function()
+   {
+      var realVerify = Cache.verifyStoredFile;
+      var realDir = Cache.overrideDir;
+      var dir = "/tmp/agent-scratch/loom-cache-verify";
+      try
+      {
+         if ( !File.directoryExists( dir ) )
+            File.createDirectory( dir );
+         Cache.setDir( dir );
+
+         var key = "0123456789abcdef0123456789abcdef01234567";
+         var written = [];
+         var win = { saveAs: function( path )
+                     {
+                        written.push( path );
+                        File.writeTextFile( path, "pretend image" );
+                     } };
+
+         // A write that reads back: the entry and its sidecar are recorded.
+         Cache.verifyStoredFile = function() { return null; };
+         var good = Cache.store( key, win, { stage: "test" } );
+         check( "a verified entry is recorded", good, Cache.pathFor( key ) );
+         check( "and its sidecar is written",
+                File.exists( Cache.metaPathFor( key ) ), true );
+
+         // A write that does not read back: nothing is left behind.
+         File.remove( Cache.metaPathFor( key ) );
+         Cache.verifyStoredFile = function() { return "it contains no readable image"; };
+         var bad = Cache.store( key, win, { stage: "test" } );
+         check( "an entry that will not read back is not recorded", bad, null );
+         check( "the unreadable file is removed",
+                File.exists( Cache.pathFor( key ) ), false );
+         /*
+          * The sidecar is what makes a broken entry look valid, so its
+          * absence is the property that actually matters here.
+          */
+         check( "and no sidecar is left claiming it is good",
+                File.exists( Cache.metaPathFor( key ) ), false );
+
+         // The same rule for a companion.
+         var cbad = Cache.storeCompanion( key, "stars", win );
+         check( "an unreadable companion is not recorded", cbad, null );
+         check( "and its file is removed too",
+                File.exists( Cache.companionPathFor( key, "stars" ) ), false );
+
+         Cache.verifyStoredFile = function() { return null; };
+         var cgood = Cache.storeCompanion( key, "stars", win );
+         check( "a verified companion is recorded", cgood,
+                Cache.companionPathFor( key, "stars" ) );
+         try { File.remove( Cache.companionPathFor( key, "stars" ) ); } catch ( e ) {}
+         try { File.remove( Cache.pathFor( key ) ); } catch ( e ) {}
+         try { File.remove( Cache.metaPathFor( key ) ); } catch ( e ) {}
+      }
+      finally
+      {
+         Cache.verifyStoredFile = realVerify;
+         Cache.setDir( realDir );
+      }
+   } )();
+
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",

@@ -217,6 +217,18 @@ Cache.storeCompanion = function( key, name, window )
    var path = Cache.companionPathFor( key, name );
    window.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                   false/*strict*/, false/*noWarnings*/ );
+
+   /*
+    * Verified on the same rule as the entry it belongs to. A companion that
+    * will not load is how a run ends with every starless plate present and
+    * no stars plate at all.
+    */
+   var bad = Cache.verifyStoredFile( path, window );
+   if ( bad != null )
+   {
+      Cache.discardUnreadable( path, key + "." + name, bad );
+      return null;
+   }
    return path;
 };
 
@@ -320,12 +332,85 @@ Cache.clear = function()
  * preserves the astrometric solution and image properties -- FITS would
  * silently drop them, and the pipeline depends on the solution surviving.
  */
+/*
+ * Prove a stored entry reads back before it is recorded as one.
+ *
+ * saveAs reports nothing useful when a write goes wrong: Cache.store used
+ * to call it and then write the sidecar unconditionally, so a bad write
+ * became an entry that looked completely valid. The cost landed on the NEXT
+ * run, which found the key, failed to open the file, and silently rebuilt
+ * whatever the entry was meant to save -- observed as a finished run whose
+ * successor redid the entire HSO palette and the RGB tail.
+ *
+ * The check is a real ImageWindow.open, the same call Cache.load makes,
+ * because anything weaker is a guess about what the reader will accept. A
+ * size test cannot be used: XISF may be written compressed, so a valid file
+ * is legitimately smaller than its pixel data and the guard would reject
+ * every entry and disable the cache entirely.
+ *
+ * It costs one extra read of what was just written, and only on a MISS --
+ * the path that already paid for the processing.
+ *
+ * Returns null when the entry is good, or a reason when it is not.
+ */
+Cache.verifyStoredFile = function( path, window )
+{
+   if ( !File.exists( path ) )
+      return "it was not written at all";
+   var back = null;
+   try
+   {
+      var ws = ImageWindow.open( path );
+      if ( ws == null || ws.length == 0 )
+         return "it contains no readable image";
+      back = ws[0];
+      var a = back.mainView.image, b = window.mainView.image;
+      if ( a.width != b.width || a.height != b.height ||
+           a.numberOfChannels != b.numberOfChannels )
+         return "it reads back as " + a.width + "x" + a.height + "x" +
+                a.numberOfChannels + ", not the " + b.width + "x" + b.height +
+                "x" + b.numberOfChannels + " that was saved";
+      return null;
+   }
+   catch ( e )
+   {
+      return String( e );
+   }
+   finally
+   {
+      if ( back != null )
+         try { back.forceClose(); } catch ( e ) {}
+   }
+};
+
+/*
+ * Discard an entry that will not read back, loudly. Leaving it in place is
+ * the one outcome that must not happen: it is indistinguishable from a good
+ * entry until the next run tries to use it.
+ */
+Cache.discardUnreadable = function( path, key, reason )
+{
+   Util.error( "cache", String( key ).substring( 0, 12 ) +
+      " was written but will not read back (" + reason + "); discarding it " +
+      "rather than leaving a broken entry for the next run" );
+   try { File.remove( path ); }
+   catch ( e ) { Util.warn( "cache", "could not remove " + path + ": " + e ); }
+};
+
 Cache.store = function( key, window, meta )
 {
    Cache.ensureDir();
    var path = Cache.pathFor( key );
    window.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                   false/*strict*/, false/*noWarnings*/ );
+
+   var bad = Cache.verifyStoredFile( path, window );
+   if ( bad != null )
+   {
+      Cache.discardUnreadable( path, key, bad );
+      return null;
+   }
+
    try
    {
       var f = new File;
