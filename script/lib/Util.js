@@ -16,17 +16,8 @@ var Util = {};
  *
  * Bumped to the NEXT version as soon as one is tagged, so the tip is
  * never mistaken for the release behind it. A build from here reports
- * 0.1.1 while v0.1.0 is the last thing published, which is the honest
- * answer: it is not 0.1.0, it is whatever is on the way to 0.1.1.
- *
- * Releasing is: set this to the version being released, commit, tag
- * `v<version>`, push the tag -- CI builds and publishes it -- then bump
- * to the next patch.
- *
- * Bumped to the NEXT version as soon as one is tagged, so the tip is
- * never mistaken for the release behind it. A build from here reports
- * 0.1.1 while v0.1.0 is the last thing published, which is the honest
- * answer: this is not 0.1.0, it is whatever is on the way to 0.1.1.
+ * the version on the way, not the one behind it, which is the honest
+ * answer for a tree that is neither.
  *
  * Releasing is: set this to the version being released, commit, tag
  * `v<version>` and push the tag. CI builds the archive and publishes it
@@ -59,7 +50,7 @@ Util.BANNER = [
    "/_____/\\____/\\____/_/ /_/ /_/ "
 ];
 
-Util.LOOM_VERSION = "0.1.1";
+Util.LOOM_VERSION = "0.1.3";
 
 /* ------------------------------------------------------------------ */
 /* The oldest PixInsight core Loom will run on                         */
