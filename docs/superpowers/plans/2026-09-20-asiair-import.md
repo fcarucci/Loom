@@ -1118,12 +1118,25 @@ Three things the walk owes its caller beyond the frames: it pumps events so the 
        * A card pulled out mid-walk must read as REMOVED, not as a short
        * but successful scan. Silently returning half a night is how a
        * missing frame gets blamed on the review.
+       *
+       * Removal is simulated by deleting the Plan/Light directory from
+       * inside the progress callback -- looksLikeCard then fails on the
+       * next re-check, which is exactly what an unplugged card does.
+       * Asserting `removed != null` would have proved nothing: the field
+       * is always set.
        */
-      check( "removal mid-walk is noticed",
-             Asiair.scanCard( root, function() {
-                File.remove( root + "/.probe" );   // see implementation
-                return true;
-             } ).removed != null, true );
+      var pull = "/tmp/agent-scratch/asiair-card-pull";
+      File.createDirectory( pull + "/Plan/Light/M42", true );
+      for ( var n = 1; n <= 3; ++n )
+         File.writeTextFile( pull + "/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_" +
+                             "2024032" + n + "-203324_-10.0C_000" + n + ".fit", "x" );
+
+      var yanked = Asiair.scanCard( pull, function() {
+         File.removeDirectory( pull + "/Plan/Light/M42" );
+         File.removeDirectory( pull + "/Plan/Light" );
+      } );
+      check( "a card pulled mid-walk reads as removed", yanked.removed, true );
+      check( "and the walk stops rather than finishing", yanked.lights.length < 3, true );
    } )();
 ```
 
