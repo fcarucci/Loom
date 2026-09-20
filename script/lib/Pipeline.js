@@ -1100,6 +1100,1307 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
    }
 };
 
+      /*
+       * Narrowband palette. A second, independent composite built from the
+       * narrowband channels -- it does not replace the RGB one, and either
+       * can be produced without the other.
+       *
+       * Deliberately NOT flux- or colour-calibrated: a palette is an
+       * aesthetic mapping of emission lines onto RGB, not a photometric
+       * rendition, so SPFC/SPCC would be meaningless here.
+       */
+Pipeline.buildPalette = function( pal, chans, config, reg, common )
+{
+   var have = [];
+   for ( var pn = 0; pn < Util.NARROWBAND.length; ++pn )
+      if ( chans[Util.NARROWBAND[pn]] )
+         have.push( Util.NARROWBAND[pn] );
+
+   var missing = Util.paletteMissing( pal, have );
+   if ( missing == null )
+      throw new Error( "Unknown palette: " + pal );
+   if ( missing.length > 0 )
+      throw new Error( "The " + pal + " palette needs " +
+                       missing.join( " and " ) + ", which " +
+                       ( missing.length == 1 ? "was" : "were" ) + " not supplied." );
+
+   var map = Util.PALETTES[pal];
+   var pId = Util.freeWindowId( pal );
+   Util.log( "palette", pal + ": R=" + map[0] + " G=" + map[1] + " B=" + map[2] );
+
+   /*
+    * The palette is a cached chain, exactly like the RGB composite.
+    *
+    * It used to be built from scratch on every run -- combine, solve,
+    * SPCC, normalise, star reduction, noise reduction -- while the
+    * channels feeding it came straight out of cache. On a repeat run
+    * with a SyQon star reduction that is minutes of guaranteed rework
+    * for a byte-identical result.
+    *
+    * The source key names the three contributing channels by their
+    * post-registration keys plus the crop and halo state: that, and
+    * nothing else, determines the palette's pixels. The palette NAME
+    * is in the key too, so SHO and HOO built from the same three
+    * channels cannot collide.
+    */
+   var palSource = Cache.hash( "palette|" + pal + "|" +
+                               chans[map[0]].currentKey + "|" +
+                               chans[map[1]].currentKey + "|" +
+                               chans[map[2]].currentKey +
+                               "|crop:" + common.x0 + "," + common.y0 + "," +
+                               common.x1 + "," + common.y1 +
+                               "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
+
+   var palParams = {
+      paletteCombine: {},
+      // bandwidth drives the emission-line calibration directly
+      paletteSpcc: { palette: pal, bandwidth: config.narrowbandBandwidth }
+   };
+   /*
+    * Omitted entirely when off, rather than carried with an enabled
+    * flag: a stage that is present but does nothing still hashes and
+    * still stores a full-size copy of its own input, which is a
+    * gigabyte of cache per palette for a no-op. The following stage
+    * then chains from paletteSpcc instead, which is exactly right --
+    * its input really is different pixels.
+    */
+   if ( config.narrowbandNormalize )
+      palParams.paletteNorm = { palette: pal };
+   if ( Pipeline.compositeSharpenParams( config ) != null )
+      palParams.paletteSharpen = Pipeline.compositeSharpenParams( config );
+   if ( Pipeline.starExtractionParams( config ) != null )
+      palParams.paletteExtract = Pipeline.starExtractionParams( config );
+   // Linear, starless, before the stretch -- see the RGB side.
+   if ( Pipeline.linearDenoiseParams( config ) != null )
+      palParams.paletteDenoiseLinear = Pipeline.linearDenoiseParams( config );
+   if ( Pipeline.stretchParams( config, true ) != null )
+      palParams.paletteStretch = Pipeline.stretchParams( config, true );
+   if ( Pipeline.stretchedDenoiseParams( config ) != null )
+      palParams.paletteDenoise = Pipeline.stretchedDenoiseParams( config );
+
+   var palChain = Pipeline.buildStageKeys( palSource, palParams );
+   var palHolder = { key: pal, window: null, view: null };
+   var palRunners = {
+      paletteCombine: function( h )
+      {
+         Pipeline.checkAbort( "building " + pal );
+         h.window = Steps.combineRGB( chans[map[0]].view, chans[map[1]].view,
+                                      chans[map[2]].view, pId );
+         h.view = h.window.mainView;
+         reg.add( h.window );
+      },
+      /*
+       * Calibrate the palette photometrically. SPCC needs an
+       * astrometric solution; ChannelCombination inherits one from the
+       * channels, but solve if it did not come across. A calibration
+       * failure must not cost the composite -- the uncalibrated
+       * palette is still useful, so it is kept and simply not cached.
+       */
+      paletteSpcc: function( h )
+      {
+         try
+         {
+            if ( !h.window.hasAstrometricSolution )
+            {
+               Util.log( "solve", pal + ": no inherited solution, solving" );
+               Steps.solve( h.view );
+            }
+            Steps.spccNarrowband( h.view, pal, config.narrowbandBandwidth );
+         }
+         catch ( e )
+         {
+            Util.warn( "spcc", pal + " could not be calibrated (" + e +
+                               "); the palette is kept uncalibrated" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      /*
+       * Neutral normalisation, after calibration and before any
+       * sharpening: it is a colour operation and belongs with the
+       * colour work, while sharpening and noise reduction act on the
+       * final rendition.
+       */
+      paletteNorm: function( h )
+      {
+         try { Steps.narrowbandNormalize( h.view, pal, pal ); }
+         catch ( e )
+         {
+            Util.warn( "nbnorm", pal + " could not be normalised (" + e +
+                                 "); the palette is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      paletteSharpen: function( h )
+      {
+         Pipeline.checkAbort( "sharpening " + pal );
+         try
+         {
+            Steps.correctComposite( h.view, config.sharpenTool,
+                                    config.starReduction, config.detailLevel, pal );
+         }
+         catch ( e )
+         {
+            Util.warn( "sharpen", pal + " could not be corrected (" + e +
+                                  "); the palette is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      paletteExtract: function( h )
+      {
+         Pipeline.checkAbort( "extracting stars from " + pal );
+         var split = Steps.extractStars( h.window, config.starTool, pal,
+                                         !!config.stretch );
+         if ( split == null )
+            return Pipeline.SKIP_CACHE;
+         reg.add( split.stars );
+         h.stars = split.stars;
+      },
+      paletteStretch: function( h )
+      {
+         Pipeline.checkAbort( "stretching " + pal );
+         /*
+          * The stretch overwrites the composite in place, so the linear
+          * version has to be taken now or not at all. It is stored as
+          * this stage's companion, which is what keeps it alive when the
+          * stage later comes back from cache.
+          */
+         if ( config.keepLinear )
+            try
+            {
+               h.linear = Steps.syqonCloneWindowForProcessing(
+                             h.window, Util.freeWindowId( pal + "_linear" ) );
+               try
+               {
+                  if ( h.window.hasAstrometricSolution )
+                     h.linear.copyAstrometricSolution( h.window );
+               }
+               catch ( eS ) {}
+               reg.add( h.linear );
+            }
+            catch ( eL )
+            {
+               Util.warn( "stretch", "could not keep the linear copy (" +
+                                     eL + "); the stretch proceeds" );
+            }
+         try { Steps.stretchBy( config.stretchMethod, h.view, true, pal + " starless" ); }
+         catch ( e )
+         {
+            Util.warn( "stretch", pal + " could not be stretched (" + e +
+                                  "); the palette is kept linear" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      paletteDenoiseLinear: function( h )
+      {
+         Pipeline.checkAbort( "denoising " + pal );
+         // `false`: linear by construction at this point in the chain.
+         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+                              pal + " linear", false ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", pal + " could not be denoised (" + e +
+                                  "); the palette is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      paletteDenoise: function( h )
+      {
+         Pipeline.checkAbort( "denoising " + pal );
+         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, pal,
+                               !!config.stretch ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", pal + " could not be denoised (" + e +
+                                  "); the palette is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      }
+   };
+
+   Pipeline.processChain( palHolder, palChain, config, reg, palRunners );
+   var pw = palHolder.window;
+
+   return { name: pal, window: pw,
+            stars: palHolder.stars || null,
+            linear: palHolder.linear || null };
+};
+
+/*
+ * The RGB composite: combine the three broadband channels, then solve and
+ * calibrate the result. Returns null for a narrowband-only run, where
+ * there is no RGB group to combine.
+ */
+Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFactors )
+{
+   if ( !( chans.R && chans.G && chans.B ) )
+   {
+      Util.log( "combine", "skipped: no RGB group supplied" );
+      return null;
+   }
+
+   var rgbId = Util.freeWindowId( "RGB" );
+
+   /*
+    * The composite's chain starts from the three contributing
+    * channels' keys plus the crop rectangle -- that is exactly what
+    * determines its pixels. Its stages (combine, solve, SPFC, SPCC)
+    * then chain from there, so re-running with identical inputs
+    * skips ~46s of catalog work rather than repeating it.
+    */
+   /*
+    * `halos` MUST be part of this key. PSF matching runs in memory
+    * after the register stage -- it is not a cached stage of its own,
+    * so without it here the composite chain hashes identically whether
+    * matching ran or not, and enabling "Reduce halos" would serve the
+    * unmatched composite straight from cache and look like a no-op.
+    */
+   var rgbSource = Cache.hash( "rgb|" + chans.R.currentKey + "|" +
+                               chans.G.currentKey + "|" + chans.B.currentKey +
+                               "|crop:" + common.x0 + "," + common.y0 + "," +
+                               common.x1 + "," + common.y1 +
+                               "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
+
+   var rgbParams = {
+      combine:  {},
+      solveRGB: {},
+      // the filters and QE curve drive both calibrations, exactly as
+      // for the per-channel SPFC
+      spfcRGB:  { filters: config.filters || {}, instrume: lumInstrume },
+      // The white balance source is part of the key: factors measured
+      // on uncorrected channels give different pixels from SPCC run
+      // directly on the corrected composite.
+      spccRGB:  { filters: config.filters || {}, instrume: lumInstrume,
+                  whiteBalance: cleanFactors ? cleanFactors : "direct" }
+   };
+   /*
+    * Only added when they will actually do something. A stage present
+    * in the chain hashes even when its runner no-ops, so including
+    * "sharpen with no tool" would change every downstream key for a
+    * step that does nothing.
+    */
+   if ( Pipeline.compositeSharpenParams( config ) != null )
+      rgbParams.sharpenRGB = Pipeline.compositeSharpenParams( config );
+   /*
+    * Extraction sits between sharpening and noise reduction: star
+    * reduction still acts on a frame that has stars in it, while the
+    * stars frame is spared the denoiser entirely and noise reduction
+    * works only on the starless.
+    */
+   if ( Pipeline.starExtractionParams( config ) != null )
+      rgbParams.extractRGB = Pipeline.starExtractionParams( config );
+   /*
+    * Linear noise reduction, between extraction and the stretch: the
+    * plate here is colour-calibrated, deconvolved, starless and
+    * still linear, which is exactly what NXT and MLDenoise ask for.
+    */
+   if ( Pipeline.linearDenoiseParams( config ) != null )
+      rgbParams.denoiseLinearRGB = Pipeline.linearDenoiseParams( config );
+   /*
+    * The stretch acts on the STARLESS plate, after extraction. The
+    * stars plate was already stretched inside the extraction stage,
+    * from its own clone -- see Steps.extractStars.
+    */
+   if ( Pipeline.stretchParams( config, true ) != null )
+      rgbParams.stretchRGB = Pipeline.stretchParams( config, true );
+   if ( Pipeline.stretchedDenoiseParams( config ) != null )
+      rgbParams.denoiseRGB = Pipeline.stretchedDenoiseParams( config );
+   var rgbChain = Pipeline.buildStageKeys( rgbSource, rgbParams );
+
+   var rgbHolder = { key: "RGB", window: null, view: null };
+   var rgbRunners = {
+      combine: function( h )
+      {
+         h.window = Steps.combineRGB( chans.R.view, chans.G.view,
+                                      chans.B.view, rgbId );
+         h.view = h.window.mainView;
+         reg.add( h.window );
+      },
+      solveRGB: function( h ) { Steps.solve( h.view ); },
+      spfcRGB:  function( h )
+      {
+         Steps.spfc( h.view, null, "RGB", lumInstrume, config.filters || {} );
+      },
+      spccRGB:  function( h )
+      {
+         if ( cleanFactors != null )
+            Steps.applyWhiteBalance( h.view, cleanFactors );
+         else
+            Steps.spccRGB( h.view, lumInstrume, config.filters || {} );
+      },
+      sharpenRGB: function( h )
+      {
+         Pipeline.checkAbort( "sharpening RGB" );
+         try
+         {
+            Steps.correctComposite( h.view, config.sharpenTool,
+                                    config.starReduction, config.detailLevel, "RGB" );
+         }
+         catch ( e )
+         {
+            Util.warn( "sharpen", "RGB could not be corrected (" + e +
+                                  "); the composite is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      extractRGB: function( h )
+      {
+         Pipeline.checkAbort( "extracting stars from RGB" );
+         var split = Steps.extractStars( h.window, config.starTool, "RGB",
+                                         !!config.stretch );
+         if ( split == null )
+            return Pipeline.SKIP_CACHE;
+         reg.add( split.stars );
+         h.stars = split.stars;
+      },
+      stretchRGB: function( h )
+      {
+         Pipeline.checkAbort( "stretching RGB" );
+         /*
+          * The stretch overwrites the composite in place, so the linear
+          * version has to be taken now or not at all. It is stored as
+          * this stage's companion, which is what keeps it alive when the
+          * stage later comes back from cache.
+          */
+         if ( config.keepLinear )
+            try
+            {
+               h.linear = Steps.syqonCloneWindowForProcessing(
+                             h.window, Util.freeWindowId( "RGB" + "_linear" ) );
+               try
+               {
+                  if ( h.window.hasAstrometricSolution )
+                     h.linear.copyAstrometricSolution( h.window );
+               }
+               catch ( eS ) {}
+               reg.add( h.linear );
+            }
+            catch ( eL )
+            {
+               Util.warn( "stretch", "could not keep the linear copy (" +
+                                     eL + "); the stretch proceeds" );
+            }
+         try { Steps.stretchBy( config.stretchMethod, h.view, true, "RGB starless" ); }
+         catch ( e )
+         {
+            Util.warn( "stretch", "RGB could not be stretched (" + e +
+                                  "); the composite is kept linear" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      denoiseLinearRGB: function( h )
+      {
+         Pipeline.checkAbort( "denoising RGB" );
+         // `false`: linear by construction here, whatever the run's
+         // stretch setting says about what happens later.
+         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+                              "RGB linear", false ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", "RGB could not be denoised (" + e +
+                                  "); the composite is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      denoiseRGB: function( h )
+      {
+         Pipeline.checkAbort( "denoising RGB" );
+         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, "RGB",
+                               !!config.stretch ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", "RGB could not be denoised (" + e +
+                                  "); the composite is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      }
+   };
+
+   Pipeline.checkAbort( "combining and calibrating RGB" );
+   Pipeline.processChain( rgbHolder, rgbChain, config, reg, rgbRunners );
+
+   return { window: rgbHolder.window,
+            stars: rgbHolder.stars || null,
+            linear: rgbHolder.linear || null };
+};
+
+/*
+ * Resolve every configured channel slot to a working window.
+ *
+ * A slot may name an open view or a file on disk. A view always wins over
+ * a file path for the same channel; the user's own view is never modified
+ * in place, only a duplicate is worked on.
+ */
+Pipeline.loadChannels = function( config, reg )
+{
+   var chans = {};
+   for ( var i = 0; i < Util.CHANNELS.length; ++i )
+   {
+      var key = Util.CHANNELS[i];
+      var w, sourceKey;
+      if ( config.views && config.views[key] )
+      {
+         var srcWin = ImageWindow.windowById( config.views[key] );
+         if ( srcWin == null || srcWin.isNull )
+            throw new Error( "View no longer open for " + key + ": " + config.views[key] );
+         sourceKey = Cache.fingerprintView( srcWin.mainView );
+         w = new ImageWindow( srcWin.mainView.image.width,
+                              srcWin.mainView.image.height,
+                              srcWin.mainView.image.numberOfChannels,
+                              srcWin.mainView.image.bitsPerSample,
+                              srcWin.mainView.image.isReal,
+                              srcWin.mainView.image.isColor,
+                              Util.freeWindowId( key + "_work" ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         w.mainView.image.assign( srcWin.mainView.image );
+         w.mainView.endProcess();
+         w.keywords = srcWin.keywords;
+
+         // The astrometric solution lives in XISF properties, not FITS
+         // keywords, so assigning pixels and keywords does NOT carry it
+         // over. Without this the duplicate looks unsolved and the
+         // pipeline re-solves an already-solved master.
+         try
+         {
+            if ( srcWin.hasAstrometricSolution )
+            {
+               w.copyAstrometricSolution( srcWin );
+               Util.log( "load", key + " - astrometric solution copied" );
+            }
+         }
+         catch ( e )
+         {
+            Util.warn( "load", key + " - could not copy astrometric solution: " + e );
+         }
+         Util.log( "load", key + " <- view " + config.views[key] + " (duplicated)" );
+      }
+      else if ( config.paths[key] )
+      {
+         /*
+          * NOT opened here. The key chain needs a stat and two header
+          * keywords, and nothing downstream needs the pixels unless a
+          * stage actually runs -- see Pipeline.ensureLoaded. Opening
+          * every master up front read ~8 GB on a seven-channel set
+          * before the first cache lookup.
+          */
+         var path = config.paths[key];
+         sourceKey = Cache.fingerprintFile( path );
+         if ( sourceKey == null )
+            throw new Error( "Could not read " + key + ": " + path );
+         var info = Pipeline.readImageInfo( path );
+         chans[key] = { key: key, path: path, window: null, view: null,
+                        filter: Util.keywordValue( info.keywords, "FILTER" ),
+                        instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
+                        sourceKey: sourceKey, currentKey: sourceKey,
+                        load: function()
+                        {
+                           if ( this.window != null )
+                              return this.window;
+                           var ws = ImageWindow.open( this.path );
+                           if ( ws.length == 0 )
+                              throw new Error( "Could not open " + this.key +
+                                               ": " + this.path );
+                           var win = ws[0];
+                           win.mainView.id = Util.freeWindowId( this.key + "_work" );
+                           // registered the moment it exists: an unregistered
+                           // window is one reg.closeAll() cannot clean up, and
+                           // this file has produced that bug twice
+                           reg.add( win );
+                           this.window = win;
+                           this.view = win.mainView;
+                           Util.log( "load", this.key + " <- " + this.path );
+                           return win;
+                        } };
+         continue;
+      }
+      else
+         continue;
+      reg.add( w );
+      chans[key] = { key: key, window: w, view: w.mainView,
+                     filter: Util.keywordValue( w.keywords, "FILTER" ),
+                     instrume: Util.keywordValue( w.keywords, "INSTRUME" ),
+                     // sourceKey identifies the untouched input; currentKey
+                     // is the running cache key, advanced as stages run.
+                     // Narrowband channels never run solve/spfc/mgc/graxpert,
+                     // so their currentKey stays the source fingerprint until
+                     // register chains from it directly.
+                     sourceKey: sourceKey, currentKey: sourceKey };
+   }
+
+   return chans;
+};
+
+      /*
+       * One session, one camera. WBPP's autocrop drops INSTRUME from the
+       * headers it rewrites, and a channel without a camera silently gets
+       * the ideal QE curve instead of the real device response -- so it
+       * would be calibrated against a different curve from its siblings
+       * while the run looks clean. Borrowing the camera the other masters
+       * name is the physically correct answer; Util.commonInstrument
+       * refuses to answer at all if they disagree.
+       */
+Pipeline.inheritInstrument = function( chans )
+{
+   var ckeys = Object.keys( chans ), known = [];
+   for ( var ci = 0; ci < ckeys.length; ++ci )
+      known.push( chans[ckeys[ci]].instrume );
+   var common = Util.commonInstrument( known );
+   if ( common != null )
+      for ( var ci2 = 0; ci2 < ckeys.length; ++ci2 )
+      {
+         var cc = chans[ckeys[ci2]];
+         if ( cc.instrume == null || cc.instrume === "" )
+         {
+            cc.instrume = common;
+            cc.instrumeInherited = true;
+            Util.log( "load", cc.key + " has no INSTRUME; taking '" + common +
+                              "' from the other masters of this session" );
+         }
+      }
+};
+
+/*
+ * Solve (skipped if already solved) + correct, broadband only, on native
+ * uninterpolated pixels. Absent channels are skipped; a narrowband-only
+ * run corrects L alone.
+ */
+Pipeline.correctBroadband = function( chans, config, reg )
+{
+   for ( var b = 0; b < Util.BROADBAND.length; ++b )
+   {
+      var bk = Util.BROADBAND[b];
+      if ( !chans[bk] ) continue;
+      var bc = chans[bk];
+
+      var chosenFilter = config.filters ? config.filters[bk] : null;
+      var qe = Steps.deviceCurveForImage( bc.instrume );
+      var mgcCfg = Steps.configuredMGC( config.marsPath );
+      var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
+                      mgcCfg.marsDatabaseFiles.slice().sort() : [];
+
+      var bStages = {
+         solve: {},
+         // channel key + chosen filter + resolved QE curve name: anything
+         // that changes what SPFC actually calibrates against.
+         spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
+         // the MARS database file list, not just "MGC ran" -- a different
+         // database gives a different correction from the same input.
+         mgc: { marsFiles: marsFiles },
+         // enabled flag AND smoothing: toggling GraXpert off must not
+         // silently reuse a result computed with it on, and vice versa.
+         graxpert: { enabled: !!config.useGraXpert, smoothing: config.smoothing },
+         // Sharpening runs per channel on native, uninterpolated pixels
+         // -- before registration deliberately, since resampling spreads
+         // whatever aberration is already there. The tool is part of the
+         // key: the same level means different pixels under BXT vs SyQon.
+         /*
+          * Aberration correction STAYS per channel, before registration:
+          * it fixes star shape on native, uninterpolated pixels, and
+          * registration's resampling would otherwise spread whatever
+          * aberration is present.
+          *
+          * Star reduction and detail sharpening have MOVED to the
+          * finished, calibrated composite, where a linked stretch keeps
+          * the colour correction intact -- see Steps.correctComposite.
+          */
+         aberration:    { tool: config.sharpenTool || "none",
+                          photometry: "linearfit-v1" }
+      };
+      var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
+      bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;
+
+      // The last stage before any correction -- where the clean reference
+      // branch starts from. Captured here because the chain is the only
+      // place these keys exist.
+      for ( var gk = 0; gk < bChain.length; ++gk )
+         if ( bChain[gk].stage == "graxpert" )
+            bc.cleanKey = bChain[gk].key;
+
+      ( function( channel )
+      {
+         var runners = {
+            solve: function( c ) { Steps.solve( c.view ); },
+            spfc: function( c )
+            {
+               Steps.spfc( c.view, c.filter, channel, c.instrume,
+                           config.filters ? config.filters[channel] : null );
+            },
+            mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
+            graxpert: function( c )
+            {
+               if ( config.useGraXpert )
+                  Steps.graxpert( c.view, config.smoothing );
+            },
+            aberration: function( c )
+            {
+               // Always runs when a tool is chosen -- the safe operation,
+               // and the one that actually fixes star shape. Per channel,
+               // unlinked, on native pixels.
+               if ( config.sharpenTool && config.sharpenTool != "none" )
+                  Steps.aberration( c.view, config.sharpenTool, false, channel );
+            }
+         };
+         Pipeline.processChain( chans[channel], bChain, config, reg, runners );
+      } )( bk );
+
+      Pipeline.checkAbort( "corrected " + bk );
+   }
+};
+
+/*
+ * Register every channel onto L. L is the reference and is never
+ * resampled. Returns the reference view and the cache key identifying
+ * it, both of which later stages key their own work against.
+ */
+Pipeline.registerToReference = function( chans, config, reg )
+{
+   var refView = chans.L.view;
+   /*
+    * The reference is identified by L's own CACHE KEY, not by
+    * fingerprinting its window.
+    *
+    * Cache.fingerprintView hashes view.id, and L's working copy is
+    * named differently on every run (L_work, L_graxpert_1, ...), so a
+    * fingerprint never matched across runs and register missed every
+    * time even when the pixels were identical.
+    *
+    * L's chained key already identifies exactly which data, corrected
+    * exactly how, is being registered against -- and it is stable
+    * across runs by construction. Registering to a different L, or to
+    * the same L corrected differently, changes that key and correctly
+    * invalidates every dependent register entry.
+    */
+   var refFingerprint = chans.L.currentKey;
+   for ( var c = 0; c < Util.CHANNELS.length; ++c )
+   {
+      var ck = Util.CHANNELS[c];
+      if ( ck == "L" || !chans[ck] ) continue;
+      /*
+       * Swap the channel over to its registered window; the original
+       * working copy is finished with. Without this the pipeline would
+       * keep combining unaligned channels.
+       */
+      var rChain = Pipeline.buildStageKeys( chans[ck].currentKey,
+                                            { register: { ref: refFingerprint } } );
+      ( function( channel )
+      {
+         var runners = {
+            register: function( cc )
+            {
+               var registered = Steps.register( cc.view, refView );
+               reg.add( registered );
+               var oldWin = cc.window;
+               cc.window = registered;
+               cc.view = registered.mainView;
+               reg.forget( oldWin );
+               try { oldWin.forceClose(); }
+               catch ( e ) { Util.warn( "register", "could not close " + channel +
+                                       " working copy: " + e ); }
+            }
+         };
+         Pipeline.processChain( chans[channel], rChain, config, reg, runners );
+      } )( ck );
+      /*
+       * Advance the channel's running key past registration.
+       *
+       * Without this, currentKey still named the channel as it was
+       * BEFORE being registered, and everything built from it -- the RGB
+       * composite, and now the palettes -- keyed on pre-registration
+       * pixels. Registration depends on the reference (L), so a changed
+       * L re-registered R/G/B while leaving the composite's key
+       * identical: a stale composite served for a different reference.
+       * Wrong pixels, silently, which is the one thing a cache must
+       * never do.
+       */
+      chans[ck].currentKey = rChain.length ? rChain[rChain.length-1].key
+                                           : chans[ck].currentKey;
+      Pipeline.checkAbort( "registered " + ck );
+   }
+
+   return { refView: refView, refFingerprint: refFingerprint };
+};
+
+Pipeline.cropToCommonArea = function( chans )
+{
+   /*
+    * Crop every channel to the area all of them actually cover.
+    * Registration leaves black fill where a channel has no data; without
+    * this the outputs have dead edges and, worse, differ in size.
+    */
+   var rects = [], rectKeys = [];
+   for ( var vr = 0; vr < Util.CHANNELS.length; ++vr )
+   {
+      var vk = Util.CHANNELS[vr];
+      if ( !chans[vk] ) continue;
+      rects.push( Steps.validRect( chans[vk].view, 4 ) );
+      rectKeys.push( vk );
+   }
+   var common = Util.intersectRects( rects );
+   if ( common == null )
+      throw new Error( "The channels have no overlapping imaged area; " +
+                       "they cannot be combined." );
+   /*
+    * Guard against a detection failure silently destroying the frame.
+    * Registration overlap between channels of the same target is
+    * normally >90%; anything under half the reference area means the
+    * edge scan misread something, not that the data is that small.
+    */
+   var refImg = chans.L.view.image;
+   var refArea = refImg.width * refImg.height;
+   var cropArea = ( common.x1 - common.x0 ) * ( common.y1 - common.y0 );
+   var pct = 100 * cropArea / refArea;
+   Util.log( "crop", "common area " + (common.x1-common.x0) + " x " +
+                     (common.y1-common.y0) + " at (" + common.x0 + "," + common.y0 +
+                     ") - " + pct.toFixed( 1 ) + "% of the reference frame" );
+   if ( pct < 50 )
+      throw new Error( "The common imaged area is only " + pct.toFixed( 1 ) +
+                       "% of the reference frame. That is almost certainly a " +
+                       "misdetected edge rather than real data; refusing to " +
+                       "crop away most of the image." );
+   for ( var cr = 0; cr < rectKeys.length; ++cr )
+      Steps.cropTo( chans[rectKeys[cr]].view, common );
+   Pipeline.checkAbort();
+
+   return common;
+};
+
+      /*
+       * Halo reduction: match every channel's PSF to the widest.
+       *
+       * Runs after registration and cropping, where all channels sit on
+       * L's grid and their sigmas are directly comparable in pixels.
+       * Destructive by nature -- the sharpest channel is blurred down --
+       * which is acceptable in LRGB because L carries the detail.
+       */
+Pipeline.matchHalos = function( chans, config )
+{
+   if ( !config.reduceHalos )
+      return;
+
+   /*
+    * L is measured but NEVER convolved. Matching is destructive: it
+    * blurs the sharper channels down to the widest one. That cost is
+    * only acceptable because L carries the detail and the colour
+    * channels only carry colour -- blurring L would throw away the
+    * very thing the trade was made to protect. On this data L is
+    * 3.18" against G's 4.72", so an unguarded loop degrades it badly.
+    */
+   var measured = [], widest = 0;
+   for ( var hi = 0; hi < Util.CHANNELS.length; ++hi )
+   {
+      var hk = Util.CHANNELS[hi];
+      if ( !chans[hk] || hk == "L" ) continue;
+      var psf = Steps.measurePSF( chans[hk].view );
+      if ( psf == null )
+      {
+         Util.warn( "halos", hk + ": no PSF fit, leaving it untouched" );
+         continue;
+      }
+      measured.push( { key: hk, sigma: psf.sigma, n: psf.n } );
+      if ( psf.sigma > widest ) widest = psf.sigma;
+      Util.log( "halos", hk + " sigma=" + psf.sigma.toFixed( 3 ) +
+                         " (FWHM " + Util.sigmaToFWHM( psf.sigma ).toFixed( 2 ) +
+                         " px, " + psf.n + " stars)" );
+   }
+
+   if ( measured.length < 2 )
+      Util.log( "halos", "skipped: fewer than two channels could be measured" );
+   else
+   {
+      Util.log( "halos", "matching to the widest, sigma=" + widest.toFixed( 3 ) );
+      for ( var hj = 0; hj < measured.length; ++hj )
+      {
+         var m = measured[hj];
+         var add = Util.sigmaToReach( widest, m.sigma );
+         if ( add <= 0 )
+         {
+            Util.log( "halos", m.key + ": already the widest, unchanged" );
+            continue;
+         }
+         Util.log( "halos", m.key + ": convolving by sigma=" + add.toFixed( 3 ) );
+         Steps.convolveBy( chans[m.key].view, add );
+      }
+   }
+   Pipeline.checkAbort();
+};
+
+/*
+ * Linear fit the narrowband set to its lowest-median member.
+ */
+Pipeline.balanceNarrowband = function( chans, config )
+{
+   var medians = {};
+   var nb = [ "H", "S", "O" ];
+   for ( var n = 0; n < nb.length; ++n )
+      if ( chans[nb[n]] )
+         medians[nb[n]] = Steps.medianOfCentre( chans[nb[n]].view, 0.6 );
+
+   var refKey = Util.minMedianKey( medians );
+   var wantPalettes = ( config.palettes || [] ).length > 0;
+   if ( refKey !== null && Object.keys( medians ).length > 1 )
+   {
+      if ( wantPalettes )
+      {
+         /*
+          * Offset only. LinearFit assumes two images are the same signal
+          * at different scales -- true across frames of one filter, false
+          * across Ha, SII and OIII, which are different lines with
+          * different morphology. Measured on real data it scaled H down
+          * ~8x (H max 0.105 against S's 0.800), leaving Ha with about 23
+          * levels of 16-bit range across the nebula. That is what
+          * posterised NarrowbandNormalization and turned the palette
+          * green. SPCC in narrowband mode does the calibration properly,
+          * on the composite, further down.
+          */
+         var views = [];
+         for ( var mo = 0; mo < nb.length; ++mo )
+            if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
+         Util.log( "background", "narrowband sky floors matched to " + refKey +
+                                 " by offset; line ratios preserved for SPCC" );
+         Steps.matchBackgroundOffset( views, chans[refKey].view );
+      }
+      else
+      {
+         Util.log( "linearfit", "reference is " + refKey );
+         for ( var m = 0; m < nb.length; ++m )
+            if ( chans[nb[m]] && nb[m] != refKey )
+               Steps.linearFit( chans[nb[m]].view, chans[refKey].view );
+      }
+   }
+   else
+      Util.log( "linearfit", "skipped: fewer than two narrowband channels" );
+};
+
+      /*
+       * A trustworthy white balance has to come from channels the aberration
+       * correction has not touched -- see Steps.applyWhiteBalance. Only
+       * needed when a correction actually ran.
+       */
+      /*
+       * Still required: aberration correction runs per channel, before the
+       * combine, so SPCC would otherwise measure corrected stellar
+       * photometry and return a wrong white balance (measured: red halved).
+       * Star reduction and detail moved to the composite, but aberration
+       * did not, so this stays.
+       */
+Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
+                                       lumInstrume, refView, refFingerprint )
+{
+   var cleanFactors = null;
+   if ( chans.R && chans.G && chans.B &&
+        Steps.aberrationWillRun( config.sharpenTool ) )
+   {
+      try
+      {
+         cleanFactors = Pipeline.measureCleanWhiteBalance(
+            chans, config, reg, common, lumInstrume, refView, refFingerprint );
+      }
+      catch ( e )
+      {
+         Util.warn( "whitebalance",
+            "could not build the uncorrected reference (" + e + "). " +
+            "Falling back to SPCC on the corrected composite, which is " +
+            "known to produce a colour cast on aberration-corrected data." );
+         cleanFactors = null;
+      }
+   }
+
+   return cleanFactors;
+};
+
+      /*
+       * L is split LAST, after every consumer of it is finished.
+       *
+       * It cannot be split in the per-channel chain with the other
+       * broadband work, which is where this started: L is the registration
+       * reference, and handing StarAlignment a starless reference makes it
+       * report "0 stars found" and fail every channel. L is also the
+       * reference the clean white balance is measured against. So the split
+       * waits until the composites and palettes are built and nothing will
+       * look at L again.
+       *
+       * Its key chains from L's own post-correction key plus the crop --
+       * the crop is what the earlier stages' keys do not cover, and it
+       * changes L's pixels.
+       */
+Pipeline.splitLuminance = function( chans, config, reg, common )
+{
+   if ( !( chans.L && Pipeline.starExtractionParams( config ) != null ) )
+      return;
+
+   var lSource = Cache.hash( "lstars|" + chans.L.currentKey +
+                             "|crop:" + common.x0 + "," + common.y0 + "," +
+                             common.x1 + "," + common.y1 +
+                             "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
+   var lStages = { extractL: Pipeline.starExtractionParams( config ) };
+   /*
+    * L is denoised on the same rule as the composites: NXT and
+    * MLDenoise linear, after extraction and before the stretch;
+    * Prism after the stretch. Only one of the two slots is ever in
+    * the chain, because only one tool is chosen.
+    *
+    * L was left out until now, and it is the plate that needs it
+    * most: a single channel, usually the shortest integration of the
+    * set, carrying the detail everything else is blended against.
+    */
+   if ( Pipeline.linearDenoiseParams( config, "L" ) != null )
+      lStages.denoiseLinearL = Pipeline.linearDenoiseParams( config, "L" );
+   if ( Pipeline.stretchParams( config, false ) != null )
+      lStages.stretchL = Pipeline.stretchParams( config, false );
+   if ( Pipeline.stretchedDenoiseParams( config, "L" ) != null )
+      lStages.denoiseL = Pipeline.stretchedDenoiseParams( config, "L" );
+   var lChain = Pipeline.buildStageKeys( lSource, lStages );
+   var lRunners = {
+      extractL: function( c )
+      {
+         Pipeline.checkAbort( "extracting stars from L" );
+         var split = Steps.extractStars( c.window, config.starTool, "L",
+                                         !!config.stretch );
+         if ( split == null )
+            return Pipeline.SKIP_CACHE;
+         reg.add( split.stars );
+         c.stars = split.stars;
+      },
+      denoiseLinearL: function( c )
+      {
+         Pipeline.checkAbort( "denoising L" );
+         // `false`: linear by construction here, whatever the run's
+         // stretch setting says about what happens later.
+         try { Steps.denoise( c.view, config.noiseTool,
+                              Pipeline.denoiseLevelFor( config, "L" ),
+                              "L linear", false ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", "L could not be denoised (" + e +
+                                  "); it is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      denoiseL: function( c )
+      {
+         Pipeline.checkAbort( "denoising L" );
+         try { Steps.denoise( c.view, config.noiseTool,
+                              Pipeline.denoiseLevelFor( config, "L" ),
+                              "L", !!config.stretch ); }
+         catch ( e )
+         {
+            Util.warn( "denoise", "L could not be denoised (" + e +
+                                  "); it is kept as it is" );
+            return Pipeline.SKIP_CACHE;
+         }
+      },
+      stretchL: function( c )
+      {
+         Pipeline.checkAbort( "stretching L" );
+         try { Steps.stretchBy( config.stretchMethod, c.view, false, "L starless" ); }
+         catch ( e )
+         {
+            Util.warn( "stretch", "L could not be stretched (" + e +
+                                  "); it is kept linear" );
+            return Pipeline.SKIP_CACHE;
+         }
+      }
+   };
+   Pipeline.processChain( chans.L, lChain, config, reg, lRunners );
+};
+
+/*
+ * Gather the deliverables into `results`.
+ */
+Pipeline.collectResults = function( results, chans, rgb )
+{
+   var rgbWin = rgb ? rgb.window : null;
+
+   // Results stay as open windows in the current project; Loom never
+   // writes them to disk. Saving is the user's decision, made with
+   // PixInsight's own Save As once they have looked at the result.
+   for ( var s = 0; s < Util.CHANNELS.length; ++s )
+   {
+      var sk = Util.CHANNELS[s];
+      if ( !chans[sk] ) continue;
+      results[sk] = chans[sk].window;
+   }
+   if ( rgbWin !== null )
+      results.RGB = rgbWin;
+};
+
+   // hand the keepers to the user, close the rest: L, H, S, O, and RGB
+   // (when produced) survive; every other window (working copies of
+   // R/G/B once combined, etc.) is closed via the Registry.
+   // Only the deliberate results survive: L and any narrowband, plus
+   // the RGB composite. R/G/B are intermediates consumed by the
+   // combination -- keeping them (which an empty output folder used to
+   // do) just litters the workspace with *_work_registered windows.
+   /*
+    * When a palette was built, the narrowband channels were the
+    * ingredients for it and are swept with the other intermediates.
+    * Without a palette they are results in their own right and survive.
+    * L and RGB are unaffected either way.
+    */
+Pipeline.chooseKeepers = function( chans, paletteWins )
+{
+   var keep = ( paletteWins.length > 0 ) ? [ "L" ] : [ "L", "H", "S", "O" ];
+   if ( paletteWins.length > 0 )
+   {
+      var dropped = [];
+      for ( var nb2 = 0; nb2 < Util.NARROWBAND.length; ++nb2 )
+         if ( chans[Util.NARROWBAND[nb2]] )
+            dropped.push( Util.NARROWBAND[nb2] );
+      if ( dropped.length )
+         Util.log( "cleanup", "narrowband consumed by the palette, not kept: " +
+                              dropped.join( ", " ) );
+   }
+
+   return keep;
+};
+
+/*
+ * Release the keepers from the Registry, then close everything else
+ * this run created.
+ */
+Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
+{
+   var rgbWin = rgb ? rgb.window : null;
+   var rgbStars = rgb ? rgb.stars : null;
+   var rgbLinear = rgb ? rgb.linear : null;
+
+   for ( var k = 0; k < keep.length; ++k )
+      if ( chans[keep[k]] )
+         reg.forget( chans[keep[k]].window );
+
+   // Swept channels must not be reported as results: their windows are
+   // about to be closed, so the entry would point at nothing.
+   if ( paletteWins.length > 0 )
+      for ( var dr = 0; dr < Util.NARROWBAND.length; ++dr )
+         delete results[ Util.NARROWBAND[dr] ];
+   if ( rgbWin !== null )
+      reg.forget( rgbWin );
+   /*
+    * Palettes are results too, and they are registered like everything
+    * else -- so without this they are closed by closeAll() moments before
+    * the code below tries to name them. That is why every palette run
+    * ended with "its window is gone before it could be named": the
+    * registry did exactly what it was told.
+    */
+   for ( var pf = 0; pf < paletteWins.length; ++pf )
+      reg.forget( paletteWins[pf].window );
+   /*
+    * The stars frames are results as well, and they are registered like
+    * everything else -- exactly the trap the comment above describes.
+    * Missing them produced a run with every starless plate present and
+    * no stars plate at all: closeAll() closed them, and the naming pass
+    * below then found nothing to name.
+    */
+   if ( chans.L && chans.L.stars )
+      reg.forget( chans.L.stars );
+   if ( rgbStars != null )
+      reg.forget( rgbStars );
+   if ( rgbLinear != null )
+      reg.forget( rgbLinear );
+   for ( var ps = 0; ps < paletteWins.length; ++ps )
+   {
+      if ( paletteWins[ps].stars )
+         reg.forget( paletteWins[ps].stars );
+      if ( paletteWins[ps].linear )
+         reg.forget( paletteWins[ps].linear );
+   }
+   reg.closeAll();
+};
+
+/*
+ * Collect the deliverables, then hand the keepers back to the user and
+ * close the rest. Returns the channel keys that survive.
+ */
+Pipeline.retainResults = function( results, chans, rgb, paletteWins, reg )
+{
+   Pipeline.collectResults( results, chans, rgb );
+   var keep = Pipeline.chooseKeepers( chans, paletteWins );
+   Pipeline.forgetKeepers( results, chans, rgb, paletteWins, keep, reg );
+
+   return keep;
+};
+
+/*
+ * Name and keep the surviving channel plates. A split channel is
+ * published as two frames and the unsplit one is not kept.
+ */
+Pipeline.publishChannels = function( results, chans, keep, keepIds, reg )
+{
+   for ( var kk = 0; kk < keep.length; ++kk )
+   {
+      var kkey = keep[kk];
+      if ( !chans[kkey] ) continue;
+      var kw = chans[kkey].window;
+      /*
+       * A split channel is published as two frames and the unsplit one
+       * is not kept: starless and stars screen back together into it
+       * exactly, so holding a third copy of the same data buys nothing.
+       */
+      var kSplit = ( chans[kkey].stars != null );
+      var kid = kSplit ? ( kkey + "_starless" ) : kkey;
+      // AFTER the detach: the earlier assignment points at a window
+      // that detach has since replaced and closed.
+      kw = Pipeline.publish( kw, kid, reg, keepIds, results,
+                             kSplit ? ( kkey + "_starless" ) : kkey );
+      if ( kw == null ) continue;
+      chans[kkey].window = kw;
+      chans[kkey].view = kw.mainView;
+      if ( kSplit )
+      {
+         delete results[kkey];
+         Pipeline.publish( chans[kkey].stars, kkey + "_stars", reg, keepIds,
+                           results, kkey + "_stars" );
+      }
+   }
+};
+
+/*
+ * Name and keep the RGB composite, its stars and its linear copy.
+ * Returns whether a broadband stars plate was kept -- the narrowband
+ * side needs to know, since it only keeps its own stars when there are
+ * no broadband ones to recombine against.
+ */
+Pipeline.publishRGB = function( results, rgb, keepIds, reg )
+{
+   if ( rgb == null || rgb.window == null )
+      return false;
+
+   var rgbWin = rgb.window;
+   var rgbStars = rgb.stars;
+   var rgbLinear = rgb.linear;
+   var rgbStarsKept = false;
+
+var rgbSplit = ( rgbStars != null );
+if ( rgbSplit )
+   delete results.RGB;
+rgbWin = Pipeline.publish( rgbWin, rgbSplit ? "RGB_starless" : "RGB",
+                           reg, keepIds, results,
+                           rgbSplit ? "RGB_starless" : "RGB" );
+if ( rgbSplit )
+{
+   // Broadband stars are always kept: they are the stars everything
+   // else is recombined against.
+   Pipeline.publish( rgbStars, "RGB_stars", reg, keepIds,
+                     results, "RGB_stars" );
+   rgbStarsKept = true;
+}
+if ( rgbLinear != null )
+{
+   // the composite as it was before the stretch, for reference
+   Pipeline.publish( rgbLinear, "RGB_linear", reg, keepIds,
+                     results, "RGB_linear" );
+}
+
+   return rgbStarsKept;
+};
+
+/*
+ * Name and keep each palette, its stars and its linear copy.
+ */
+Pipeline.publishPalettes = function( results, paletteWins, rgbStarsKept,
+                                     keepIds, reg )
+{
+   for ( var pw2 = 0; pw2 < paletteWins.length; ++pw2 )
+   {
+      var entry = paletteWins[pw2];
+
+      /*
+       * Naming a result must never destroy a run that has already done
+       * all of its work. A palette whose window has gone is a real fault
+       * worth reporting loudly, but every other output is finished and
+       * correct by this point, and throwing here would discard them all
+       * through the catch below.
+       */
+      if ( !Pipeline.windowIsUsable( entry.window ) )
+      {
+         Util.error( "output", entry.name + ": its window is gone before it " +
+                               "could be named; this palette is lost, the rest " +
+                               "of the run is unaffected" );
+         continue;
+      }
+
+      var eSplit = ( entry.stars != null );
+      entry.window = Pipeline.publish( entry.window,
+                        eSplit ? ( entry.name + "_starless" ) : entry.name,
+                        reg, keepIds, results,
+                        eSplit ? ( entry.name + "_starless" ) : entry.name );
+      if ( eSplit )
+      {
+         /*
+          * Narrowband stars are kept only when there are no broadband
+          * stars to recombine against. With an RGB composite in the run
+          * its stars are the ones that get used, and a second, dimmer
+          * set from the narrowband palette is just another window to
+          * close by hand.
+          */
+         if ( rgbStarsKept )
+         {
+            Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
+                                "already covers the broadband stars" );
+            try { entry.stars.forceClose(); } catch ( e ) {}
+         }
+         else
+            Pipeline.publish( entry.stars, entry.name + "_stars", reg,
+                              keepIds, results, entry.name + "_stars" );
+      }
+      if ( entry.linear != null )
+         Pipeline.publish( entry.linear, entry.name + "_linear", reg,
+                           keepIds, results, entry.name + "_linear" );
+   }
+};
+
+   /*
+    * Frequency separation of the L stars plate, before the export so the
+    * two layers are written like any other result.
+    *
+    * Only L_stars, and only on request: it is a retouching aid for the
+    * one plate whose halos get worked on by hand, not a processing step.
+    * A failure costs the two layers and nothing else -- the plate itself
+    * is already published.
+    */
+Pipeline.separateLStars = function( results, config, keepIds, reg )
+{
+   if ( !( config.separateLStars && results.L_stars != null &&
+           Pipeline.windowIsUsable( results.L_stars ) ) )
+      return;
+
+try
+{
+   var fs = Steps.frequencySeparate( results.L_stars, "L_stars" );
+   reg.add( fs.low );
+   reg.add( fs.high );
+   Pipeline.publish( fs.low, "L_stars_low", reg, keepIds, results, "L_stars_low" );
+   Pipeline.publish( fs.high, "L_stars_high", reg, keepIds, results, "L_stars_high" );
+}
+catch ( e )
+{
+   Util.warn( "freqsep", "L_stars was not separated (" + e +
+                         "); the plate itself is unaffected" );
+}
+};
+
+      /*
+       * Give the survivors their plain channel names -- L, H, S, O, RGB --
+       * falling back to L_1, RGB_1 and so on when the id is taken (the
+       * user's own project routinely has views called L and RGB).
+       * They arrive here called L_work / L_graxpert_1 / R_graxpert_registered
+       * depending on which stages ran or came from cache, which reads as
+       * debris rather than results.
+       *
+       * The LOOMOUT keyword, not the name, is what lets the next run
+       * recognise and close these -- so plain names are safe.
+       */
+Pipeline.publishOutputs = function( results, chans, rgb, paletteWins,
+                                    keep, config, reg )
+{
+   var keepIds = [];
+   Pipeline.publishChannels( results, chans, keep, keepIds, reg );
+   var rgbStarsKept = Pipeline.publishRGB( results, rgb, keepIds, reg );
+   Pipeline.publishPalettes( results, paletteWins, rgbStarsKept, keepIds, reg );
+   Pipeline.separateLStars( results, config, keepIds, reg );
+
+   return keepIds;
+};
+
 Pipeline.run = function( config )
 {
    /*
@@ -1138,1176 +2439,38 @@ Pipeline.run = function( config )
 
    try
    {
-      // load -- a slot may name an open view or a file on disk. A view
-      // always wins over a file path for the same channel; the user's own
-      // view is never modified in place, only a duplicate is worked on.
-      var chans = {};
-      for ( var i = 0; i < Util.CHANNELS.length; ++i )
-      {
-         var key = Util.CHANNELS[i];
-         var w, sourceKey;
-         if ( config.views && config.views[key] )
-         {
-            var srcWin = ImageWindow.windowById( config.views[key] );
-            if ( srcWin == null || srcWin.isNull )
-               throw new Error( "View no longer open for " + key + ": " + config.views[key] );
-            sourceKey = Cache.fingerprintView( srcWin.mainView );
-            w = new ImageWindow( srcWin.mainView.image.width,
-                                 srcWin.mainView.image.height,
-                                 srcWin.mainView.image.numberOfChannels,
-                                 srcWin.mainView.image.bitsPerSample,
-                                 srcWin.mainView.image.isReal,
-                                 srcWin.mainView.image.isColor,
-                                 Util.freeWindowId( key + "_work" ) );
-            w.mainView.beginProcess( UndoFlag_NoSwapFile );
-            w.mainView.image.assign( srcWin.mainView.image );
-            w.mainView.endProcess();
-            w.keywords = srcWin.keywords;
+      var chans = Pipeline.loadChannels( config, reg );
+      Pipeline.inheritInstrument( chans );
+      Pipeline.correctBroadband( chans, config, reg );
 
-            // The astrometric solution lives in XISF properties, not FITS
-            // keywords, so assigning pixels and keywords does NOT carry it
-            // over. Without this the duplicate looks unsolved and the
-            // pipeline re-solves an already-solved master.
-            try
-            {
-               if ( srcWin.hasAstrometricSolution )
-               {
-                  w.copyAstrometricSolution( srcWin );
-                  Util.log( "load", key + " - astrometric solution copied" );
-               }
-            }
-            catch ( e )
-            {
-               Util.warn( "load", key + " - could not copy astrometric solution: " + e );
-            }
-            Util.log( "load", key + " <- view " + config.views[key] + " (duplicated)" );
-         }
-         else if ( config.paths[key] )
-         {
-            /*
-             * NOT opened here. The key chain needs a stat and two header
-             * keywords, and nothing downstream needs the pixels unless a
-             * stage actually runs -- see Pipeline.ensureLoaded. Opening
-             * every master up front read ~8 GB on a seven-channel set
-             * before the first cache lookup.
-             */
-            var path = config.paths[key];
-            sourceKey = Cache.fingerprintFile( path );
-            if ( sourceKey == null )
-               throw new Error( "Could not read " + key + ": " + path );
-            var info = Pipeline.readImageInfo( path );
-            chans[key] = { key: key, path: path, window: null, view: null,
-                           filter: Util.keywordValue( info.keywords, "FILTER" ),
-                           instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
-                           sourceKey: sourceKey, currentKey: sourceKey,
-                           load: function()
-                           {
-                              if ( this.window != null )
-                                 return this.window;
-                              var ws = ImageWindow.open( this.path );
-                              if ( ws.length == 0 )
-                                 throw new Error( "Could not open " + this.key +
-                                                  ": " + this.path );
-                              var win = ws[0];
-                              win.mainView.id = Util.freeWindowId( this.key + "_work" );
-                              // registered the moment it exists: an unregistered
-                              // window is one reg.closeAll() cannot clean up, and
-                              // this file has produced that bug twice
-                              reg.add( win );
-                              this.window = win;
-                              this.view = win.mainView;
-                              Util.log( "load", this.key + " <- " + this.path );
-                              return win;
-                           } };
-            continue;
-         }
-         else
-            continue;
-         reg.add( w );
-         chans[key] = { key: key, window: w, view: w.mainView,
-                        filter: Util.keywordValue( w.keywords, "FILTER" ),
-                        instrume: Util.keywordValue( w.keywords, "INSTRUME" ),
-                        // sourceKey identifies the untouched input; currentKey
-                        // is the running cache key, advanced as stages run.
-                        // Narrowband channels never run solve/spfc/mgc/graxpert,
-                        // so their currentKey stays the source fingerprint until
-                        // register chains from it directly.
-                        sourceKey: sourceKey, currentKey: sourceKey };
-      }
-
-      /*
-       * One session, one camera. WBPP's autocrop drops INSTRUME from the
-       * headers it rewrites, and a channel without a camera silently gets
-       * the ideal QE curve instead of the real device response -- so it
-       * would be calibrated against a different curve from its siblings
-       * while the run looks clean. Borrowing the camera the other masters
-       * name is the physically correct answer; Util.commonInstrument
-       * refuses to answer at all if they disagree.
-       */
-      var ckeys = Object.keys( chans ), known = [];
-      for ( var ci = 0; ci < ckeys.length; ++ci )
-         known.push( chans[ckeys[ci]].instrume );
-      var common = Util.commonInstrument( known );
-      if ( common != null )
-         for ( var ci2 = 0; ci2 < ckeys.length; ++ci2 )
-         {
-            var cc = chans[ckeys[ci2]];
-            if ( cc.instrume == null || cc.instrume === "" )
-            {
-               cc.instrume = common;
-               cc.instrumeInherited = true;
-               Util.log( "load", cc.key + " has no INSTRUME; taking '" + common +
-                                 "' from the other masters of this session" );
-            }
-         }
-
-      // solve (skipped if already solved) + correct, broadband only, on
-      // native uninterpolated pixels. Absent channels are skipped; a
-      // narrowband-only run corrects L alone.
-      for ( var b = 0; b < Util.BROADBAND.length; ++b )
-      {
-         var bk = Util.BROADBAND[b];
-         if ( !chans[bk] ) continue;
-         var bc = chans[bk];
-
-         var chosenFilter = config.filters ? config.filters[bk] : null;
-         var qe = Steps.deviceCurveForImage( bc.instrume );
-         var mgcCfg = Steps.configuredMGC( config.marsPath );
-         var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
-                         mgcCfg.marsDatabaseFiles.slice().sort() : [];
-
-         var bStages = {
-            solve: {},
-            // channel key + chosen filter + resolved QE curve name: anything
-            // that changes what SPFC actually calibrates against.
-            spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
-            // the MARS database file list, not just "MGC ran" -- a different
-            // database gives a different correction from the same input.
-            mgc: { marsFiles: marsFiles },
-            // enabled flag AND smoothing: toggling GraXpert off must not
-            // silently reuse a result computed with it on, and vice versa.
-            graxpert: { enabled: !!config.useGraXpert, smoothing: config.smoothing },
-            // Sharpening runs per channel on native, uninterpolated pixels
-            // -- before registration deliberately, since resampling spreads
-            // whatever aberration is already there. The tool is part of the
-            // key: the same level means different pixels under BXT vs SyQon.
-            /*
-             * Aberration correction STAYS per channel, before registration:
-             * it fixes star shape on native, uninterpolated pixels, and
-             * registration's resampling would otherwise spread whatever
-             * aberration is present.
-             *
-             * Star reduction and detail sharpening have MOVED to the
-             * finished, calibrated composite, where a linked stretch keeps
-             * the colour correction intact -- see Steps.correctComposite.
-             */
-            aberration:    { tool: config.sharpenTool || "none",
-                             photometry: "linearfit-v1" }
-         };
-         var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
-         bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;
-
-         // The last stage before any correction -- where the clean reference
-         // branch starts from. Captured here because the chain is the only
-         // place these keys exist.
-         for ( var gk = 0; gk < bChain.length; ++gk )
-            if ( bChain[gk].stage == "graxpert" )
-               bc.cleanKey = bChain[gk].key;
-
-         ( function( channel )
-         {
-            var runners = {
-               solve: function( c ) { Steps.solve( c.view ); },
-               spfc: function( c )
-               {
-                  Steps.spfc( c.view, c.filter, channel, c.instrume,
-                              config.filters ? config.filters[channel] : null );
-               },
-               mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
-               graxpert: function( c )
-               {
-                  if ( config.useGraXpert )
-                     Steps.graxpert( c.view, config.smoothing );
-               },
-               aberration: function( c )
-               {
-                  // Always runs when a tool is chosen -- the safe operation,
-                  // and the one that actually fixes star shape. Per channel,
-                  // unlinked, on native pixels.
-                  if ( config.sharpenTool && config.sharpenTool != "none" )
-                     Steps.aberration( c.view, config.sharpenTool, false, channel );
-               }
-            };
-            Pipeline.processChain( chans[channel], bChain, config, reg, runners );
-         } )( bk );
-
-         Pipeline.checkAbort( "corrected " + bk );
-      }
-
-      // register everything to L; L is the reference and is never resampled
-      var refView = chans.L.view;
-      /*
-       * The reference is identified by L's own CACHE KEY, not by
-       * fingerprinting its window.
-       *
-       * Cache.fingerprintView hashes view.id, and L's working copy is
-       * named differently on every run (L_work, L_graxpert_1, ...), so a
-       * fingerprint never matched across runs and register missed every
-       * time even when the pixels were identical.
-       *
-       * L's chained key already identifies exactly which data, corrected
-       * exactly how, is being registered against -- and it is stable
-       * across runs by construction. Registering to a different L, or to
-       * the same L corrected differently, changes that key and correctly
-       * invalidates every dependent register entry.
-       */
-      var refFingerprint = chans.L.currentKey;
-      for ( var c = 0; c < Util.CHANNELS.length; ++c )
-      {
-         var ck = Util.CHANNELS[c];
-         if ( ck == "L" || !chans[ck] ) continue;
-         /*
-          * Swap the channel over to its registered window; the original
-          * working copy is finished with. Without this the pipeline would
-          * keep combining unaligned channels.
-          */
-         var rChain = Pipeline.buildStageKeys( chans[ck].currentKey,
-                                               { register: { ref: refFingerprint } } );
-         ( function( channel )
-         {
-            var runners = {
-               register: function( cc )
-               {
-                  var registered = Steps.register( cc.view, refView );
-                  reg.add( registered );
-                  var oldWin = cc.window;
-                  cc.window = registered;
-                  cc.view = registered.mainView;
-                  reg.forget( oldWin );
-                  try { oldWin.forceClose(); }
-                  catch ( e ) { Util.warn( "register", "could not close " + channel +
-                                          " working copy: " + e ); }
-               }
-            };
-            Pipeline.processChain( chans[channel], rChain, config, reg, runners );
-         } )( ck );
-         /*
-          * Advance the channel's running key past registration.
-          *
-          * Without this, currentKey still named the channel as it was
-          * BEFORE being registered, and everything built from it -- the RGB
-          * composite, and now the palettes -- keyed on pre-registration
-          * pixels. Registration depends on the reference (L), so a changed
-          * L re-registered R/G/B while leaving the composite's key
-          * identical: a stale composite served for a different reference.
-          * Wrong pixels, silently, which is the one thing a cache must
-          * never do.
-          */
-         chans[ck].currentKey = rChain.length ? rChain[rChain.length-1].key
-                                              : chans[ck].currentKey;
-         Pipeline.checkAbort( "registered " + ck );
-      }
-
-      /*
-       * Crop every channel to the area all of them actually cover.
-       * Registration leaves black fill where a channel has no data; without
-       * this the outputs have dead edges and, worse, differ in size.
-       */
-      var rects = [], rectKeys = [];
-      for ( var vr = 0; vr < Util.CHANNELS.length; ++vr )
-      {
-         var vk = Util.CHANNELS[vr];
-         if ( !chans[vk] ) continue;
-         rects.push( Steps.validRect( chans[vk].view, 4 ) );
-         rectKeys.push( vk );
-      }
-      var common = Util.intersectRects( rects );
-      if ( common == null )
-         throw new Error( "The channels have no overlapping imaged area; " +
-                          "they cannot be combined." );
-      /*
-       * Guard against a detection failure silently destroying the frame.
-       * Registration overlap between channels of the same target is
-       * normally >90%; anything under half the reference area means the
-       * edge scan misread something, not that the data is that small.
-       */
-      var refImg = chans.L.view.image;
-      var refArea = refImg.width * refImg.height;
-      var cropArea = ( common.x1 - common.x0 ) * ( common.y1 - common.y0 );
-      var pct = 100 * cropArea / refArea;
-      Util.log( "crop", "common area " + (common.x1-common.x0) + " x " +
-                        (common.y1-common.y0) + " at (" + common.x0 + "," + common.y0 +
-                        ") - " + pct.toFixed( 1 ) + "% of the reference frame" );
-      if ( pct < 50 )
-         throw new Error( "The common imaged area is only " + pct.toFixed( 1 ) +
-                          "% of the reference frame. That is almost certainly a " +
-                          "misdetected edge rather than real data; refusing to " +
-                          "crop away most of the image." );
-      for ( var cr = 0; cr < rectKeys.length; ++cr )
-         Steps.cropTo( chans[rectKeys[cr]].view, common );
-      Pipeline.checkAbort();
-
-      /*
-       * Halo reduction: match every channel's PSF to the widest.
-       *
-       * Runs after registration and cropping, where all channels sit on
-       * L's grid and their sigmas are directly comparable in pixels.
-       * Destructive by nature -- the sharpest channel is blurred down --
-       * which is acceptable in LRGB because L carries the detail.
-       */
-      if ( config.reduceHalos )
-      {
-         /*
-          * L is measured but NEVER convolved. Matching is destructive: it
-          * blurs the sharper channels down to the widest one. That cost is
-          * only acceptable because L carries the detail and the colour
-          * channels only carry colour -- blurring L would throw away the
-          * very thing the trade was made to protect. On this data L is
-          * 3.18" against G's 4.72", so an unguarded loop degrades it badly.
-          */
-         var measured = [], widest = 0;
-         for ( var hi = 0; hi < Util.CHANNELS.length; ++hi )
-         {
-            var hk = Util.CHANNELS[hi];
-            if ( !chans[hk] || hk == "L" ) continue;
-            var psf = Steps.measurePSF( chans[hk].view );
-            if ( psf == null )
-            {
-               Util.warn( "halos", hk + ": no PSF fit, leaving it untouched" );
-               continue;
-            }
-            measured.push( { key: hk, sigma: psf.sigma, n: psf.n } );
-            if ( psf.sigma > widest ) widest = psf.sigma;
-            Util.log( "halos", hk + " sigma=" + psf.sigma.toFixed( 3 ) +
-                               " (FWHM " + Util.sigmaToFWHM( psf.sigma ).toFixed( 2 ) +
-                               " px, " + psf.n + " stars)" );
-         }
-
-         if ( measured.length < 2 )
-            Util.log( "halos", "skipped: fewer than two channels could be measured" );
-         else
-         {
-            Util.log( "halos", "matching to the widest, sigma=" + widest.toFixed( 3 ) );
-            for ( var hj = 0; hj < measured.length; ++hj )
-            {
-               var m = measured[hj];
-               var add = Util.sigmaToReach( widest, m.sigma );
-               if ( add <= 0 )
-               {
-                  Util.log( "halos", m.key + ": already the widest, unchanged" );
-                  continue;
-               }
-               Util.log( "halos", m.key + ": convolving by sigma=" + add.toFixed( 3 ) );
-               Steps.convolveBy( chans[m.key].view, add );
-            }
-         }
-         Pipeline.checkAbort();
-      }
-
-      // linear fit the narrowband set to its lowest-median member
-      var medians = {};
-      var nb = [ "H", "S", "O" ];
-      for ( var n = 0; n < nb.length; ++n )
-         if ( chans[nb[n]] )
-            medians[nb[n]] = Steps.medianOfCentre( chans[nb[n]].view, 0.6 );
-
-      var refKey = Util.minMedianKey( medians );
-      var wantPalettes = ( config.palettes || [] ).length > 0;
-      if ( refKey !== null && Object.keys( medians ).length > 1 )
-      {
-         if ( wantPalettes )
-         {
-            /*
-             * Offset only. LinearFit assumes two images are the same signal
-             * at different scales -- true across frames of one filter, false
-             * across Ha, SII and OIII, which are different lines with
-             * different morphology. Measured on real data it scaled H down
-             * ~8x (H max 0.105 against S's 0.800), leaving Ha with about 23
-             * levels of 16-bit range across the nebula. That is what
-             * posterised NarrowbandNormalization and turned the palette
-             * green. SPCC in narrowband mode does the calibration properly,
-             * on the composite, further down.
-             */
-            var views = [];
-            for ( var mo = 0; mo < nb.length; ++mo )
-               if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
-            Util.log( "background", "narrowband sky floors matched to " + refKey +
-                                    " by offset; line ratios preserved for SPCC" );
-            Steps.matchBackgroundOffset( views, chans[refKey].view );
-         }
-         else
-         {
-            Util.log( "linearfit", "reference is " + refKey );
-            for ( var m = 0; m < nb.length; ++m )
-               if ( chans[nb[m]] && nb[m] != refKey )
-                  Steps.linearFit( chans[nb[m]].view, chans[refKey].view );
-         }
-      }
-      else
-         Util.log( "linearfit", "skipped: fewer than two narrowband channels" );
+      var ref = Pipeline.registerToReference( chans, config, reg );
+      var refView = ref.refView, refFingerprint = ref.refFingerprint;
+      var common = Pipeline.cropToCommonArea( chans );
+      Pipeline.matchHalos( chans, config );
+      Pipeline.balanceNarrowband( chans, config );
 
       // The composite has no camera of its own, so its QE curve follows L.
       var lumInstrume = chans.L ? chans.L.instrume : null;
 
-      // combine, then solve and calibrate the combined image.
-      // Skipped entirely when the RGB group is absent (narrowband-only run) --
-      // a narrowband-only selection produces no RGB.
-      /*
-       * A trustworthy white balance has to come from channels the aberration
-       * correction has not touched -- see Steps.applyWhiteBalance. Only
-       * needed when a correction actually ran.
-       */
-      /*
-       * Still required: aberration correction runs per channel, before the
-       * combine, so SPCC would otherwise measure corrected stellar
-       * photometry and return a wrong white balance (measured: red halved).
-       * Star reduction and detail moved to the composite, but aberration
-       * did not, so this stays.
-       */
-      var cleanFactors = null;
-      if ( chans.R && chans.G && chans.B &&
-           Steps.aberrationWillRun( config.sharpenTool ) )
-      {
-         try
-         {
-            cleanFactors = Pipeline.measureCleanWhiteBalance(
-               chans, config, reg, common, lumInstrume, refView, refFingerprint );
-         }
-         catch ( e )
-         {
-            Util.warn( "whitebalance",
-               "could not build the uncorrected reference (" + e + "). " +
-               "Falling back to SPCC on the corrected composite, which is " +
-               "known to produce a colour cast on aberration-corrected data." );
-            cleanFactors = null;
-         }
-      }
+      var cleanFactors = Pipeline.cleanWhiteBalance( chans, config, reg, common,
+                                                     lumInstrume, refView, refFingerprint );
 
-      var rgbWin = null, rgbId = null, rgbStars = null, rgbLinear = null;
-      if ( chans.R && chans.G && chans.B )
-      {
-         rgbId = Util.freeWindowId( "RGB" );
+      var rgb = Pipeline.buildRGB( chans, config, reg, common,
+                                   lumInstrume, cleanFactors );
 
-         /*
-          * The composite's chain starts from the three contributing
-          * channels' keys plus the crop rectangle -- that is exactly what
-          * determines its pixels. Its stages (combine, solve, SPFC, SPCC)
-          * then chain from there, so re-running with identical inputs
-          * skips ~46s of catalog work rather than repeating it.
-          */
-         /*
-          * `halos` MUST be part of this key. PSF matching runs in memory
-          * after the register stage -- it is not a cached stage of its own,
-          * so without it here the composite chain hashes identically whether
-          * matching ran or not, and enabling "Reduce halos" would serve the
-          * unmatched composite straight from cache and look like a no-op.
-          */
-         var rgbSource = Cache.hash( "rgb|" + chans.R.currentKey + "|" +
-                                     chans.G.currentKey + "|" + chans.B.currentKey +
-                                     "|crop:" + common.x0 + "," + common.y0 + "," +
-                                     common.x1 + "," + common.y1 +
-                                     "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
-
-         var rgbParams = {
-            combine:  {},
-            solveRGB: {},
-            // the filters and QE curve drive both calibrations, exactly as
-            // for the per-channel SPFC
-            spfcRGB:  { filters: config.filters || {}, instrume: lumInstrume },
-            // The white balance source is part of the key: factors measured
-            // on uncorrected channels give different pixels from SPCC run
-            // directly on the corrected composite.
-            spccRGB:  { filters: config.filters || {}, instrume: lumInstrume,
-                        whiteBalance: cleanFactors ? cleanFactors : "direct" }
-         };
-         /*
-          * Only added when they will actually do something. A stage present
-          * in the chain hashes even when its runner no-ops, so including
-          * "sharpen with no tool" would change every downstream key for a
-          * step that does nothing.
-          */
-         if ( Pipeline.compositeSharpenParams( config ) != null )
-            rgbParams.sharpenRGB = Pipeline.compositeSharpenParams( config );
-         /*
-          * Extraction sits between sharpening and noise reduction: star
-          * reduction still acts on a frame that has stars in it, while the
-          * stars frame is spared the denoiser entirely and noise reduction
-          * works only on the starless.
-          */
-         if ( Pipeline.starExtractionParams( config ) != null )
-            rgbParams.extractRGB = Pipeline.starExtractionParams( config );
-         /*
-          * Linear noise reduction, between extraction and the stretch: the
-          * plate here is colour-calibrated, deconvolved, starless and
-          * still linear, which is exactly what NXT and MLDenoise ask for.
-          */
-         if ( Pipeline.linearDenoiseParams( config ) != null )
-            rgbParams.denoiseLinearRGB = Pipeline.linearDenoiseParams( config );
-         /*
-          * The stretch acts on the STARLESS plate, after extraction. The
-          * stars plate was already stretched inside the extraction stage,
-          * from its own clone -- see Steps.extractStars.
-          */
-         if ( Pipeline.stretchParams( config, true ) != null )
-            rgbParams.stretchRGB = Pipeline.stretchParams( config, true );
-         if ( Pipeline.stretchedDenoiseParams( config ) != null )
-            rgbParams.denoiseRGB = Pipeline.stretchedDenoiseParams( config );
-         var rgbChain = Pipeline.buildStageKeys( rgbSource, rgbParams );
-
-         var rgbHolder = { key: "RGB", window: null, view: null };
-         var rgbRunners = {
-            combine: function( h )
-            {
-               h.window = Steps.combineRGB( chans.R.view, chans.G.view,
-                                            chans.B.view, rgbId );
-               h.view = h.window.mainView;
-               reg.add( h.window );
-            },
-            solveRGB: function( h ) { Steps.solve( h.view ); },
-            spfcRGB:  function( h )
-            {
-               Steps.spfc( h.view, null, "RGB", lumInstrume, config.filters || {} );
-            },
-            spccRGB:  function( h )
-            {
-               if ( cleanFactors != null )
-                  Steps.applyWhiteBalance( h.view, cleanFactors );
-               else
-                  Steps.spccRGB( h.view, lumInstrume, config.filters || {} );
-            },
-            sharpenRGB: function( h )
-            {
-               Pipeline.checkAbort( "sharpening RGB" );
-               try
-               {
-                  Steps.correctComposite( h.view, config.sharpenTool,
-                                          config.starReduction, config.detailLevel, "RGB" );
-               }
-               catch ( e )
-               {
-                  Util.warn( "sharpen", "RGB could not be corrected (" + e +
-                                        "); the composite is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            extractRGB: function( h )
-            {
-               Pipeline.checkAbort( "extracting stars from RGB" );
-               var split = Steps.extractStars( h.window, config.starTool, "RGB",
-                                               !!config.stretch );
-               if ( split == null )
-                  return Pipeline.SKIP_CACHE;
-               reg.add( split.stars );
-               h.stars = split.stars;
-            },
-            stretchRGB: function( h )
-            {
-               Pipeline.checkAbort( "stretching RGB" );
-               /*
-                * The stretch overwrites the composite in place, so the linear
-                * version has to be taken now or not at all. It is stored as
-                * this stage's companion, which is what keeps it alive when the
-                * stage later comes back from cache.
-                */
-               if ( config.keepLinear )
-                  try
-                  {
-                     h.linear = Steps.syqonCloneWindowForProcessing(
-                                   h.window, Util.freeWindowId( "RGB" + "_linear" ) );
-                     try
-                     {
-                        if ( h.window.hasAstrometricSolution )
-                           h.linear.copyAstrometricSolution( h.window );
-                     }
-                     catch ( eS ) {}
-                     reg.add( h.linear );
-                  }
-                  catch ( eL )
-                  {
-                     Util.warn( "stretch", "could not keep the linear copy (" +
-                                           eL + "); the stretch proceeds" );
-                  }
-               try { Steps.stretchBy( config.stretchMethod, h.view, true, "RGB starless" ); }
-               catch ( e )
-               {
-                  Util.warn( "stretch", "RGB could not be stretched (" + e +
-                                        "); the composite is kept linear" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            denoiseLinearRGB: function( h )
-            {
-               Pipeline.checkAbort( "denoising RGB" );
-               // `false`: linear by construction here, whatever the run's
-               // stretch setting says about what happens later.
-               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
-                                    "RGB linear", false ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", "RGB could not be denoised (" + e +
-                                        "); the composite is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            denoiseRGB: function( h )
-            {
-               Pipeline.checkAbort( "denoising RGB" );
-               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, "RGB",
-                                     !!config.stretch ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", "RGB could not be denoised (" + e +
-                                        "); the composite is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            }
-         };
-
-         Pipeline.checkAbort( "combining and calibrating RGB" );
-         Pipeline.processChain( rgbHolder, rgbChain, config, reg, rgbRunners );
-         rgbWin = rgbHolder.window;
-         rgbStars = rgbHolder.stars || null;
-         rgbLinear = rgbHolder.linear || null;
-
-      }
-      else
-         Util.log( "combine", "skipped: no RGB group supplied" );
-
-      /*
-       * Narrowband palette. A second, independent composite built from the
-       * narrowband channels -- it does not replace the RGB one, and either
-       * can be produced without the other.
-       *
-       * Deliberately NOT flux- or colour-calibrated: a palette is an
-       * aesthetic mapping of emission lines onto RGB, not a photometric
-       * rendition, so SPFC/SPCC would be meaningless here.
-       */
       var paletteWins = [];
       var wanted = config.palettes || [];
       for ( var wi = 0; wi < wanted.length; ++wi )
-      {
-         var pal = wanted[wi];
-         var have = [];
-         for ( var pn = 0; pn < Util.NARROWBAND.length; ++pn )
-            if ( chans[Util.NARROWBAND[pn]] )
-               have.push( Util.NARROWBAND[pn] );
+         paletteWins.push( Pipeline.buildPalette( wanted[wi], chans, config,
+                                                  reg, common ) );
 
-         var missing = Util.paletteMissing( pal, have );
-         if ( missing == null )
-            throw new Error( "Unknown palette: " + pal );
-         if ( missing.length > 0 )
-            throw new Error( "The " + pal + " palette needs " +
-                             missing.join( " and " ) + ", which " +
-                             ( missing.length == 1 ? "was" : "were" ) + " not supplied." );
+      Pipeline.splitLuminance( chans, config, reg, common );
 
-         var map = Util.PALETTES[pal];
-         var pId = Util.freeWindowId( pal );
-         Util.log( "palette", pal + ": R=" + map[0] + " G=" + map[1] + " B=" + map[2] );
-
-         /*
-          * The palette is a cached chain, exactly like the RGB composite.
-          *
-          * It used to be built from scratch on every run -- combine, solve,
-          * SPCC, normalise, star reduction, noise reduction -- while the
-          * channels feeding it came straight out of cache. On a repeat run
-          * with a SyQon star reduction that is minutes of guaranteed rework
-          * for a byte-identical result.
-          *
-          * The source key names the three contributing channels by their
-          * post-registration keys plus the crop and halo state: that, and
-          * nothing else, determines the palette's pixels. The palette NAME
-          * is in the key too, so SHO and HOO built from the same three
-          * channels cannot collide.
-          */
-         var palSource = Cache.hash( "palette|" + pal + "|" +
-                                     chans[map[0]].currentKey + "|" +
-                                     chans[map[1]].currentKey + "|" +
-                                     chans[map[2]].currentKey +
-                                     "|crop:" + common.x0 + "," + common.y0 + "," +
-                                     common.x1 + "," + common.y1 +
-                                     "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
-
-         var palParams = {
-            paletteCombine: {},
-            // bandwidth drives the emission-line calibration directly
-            paletteSpcc: { palette: pal, bandwidth: config.narrowbandBandwidth }
-         };
-         /*
-          * Omitted entirely when off, rather than carried with an enabled
-          * flag: a stage that is present but does nothing still hashes and
-          * still stores a full-size copy of its own input, which is a
-          * gigabyte of cache per palette for a no-op. The following stage
-          * then chains from paletteSpcc instead, which is exactly right --
-          * its input really is different pixels.
-          */
-         if ( config.narrowbandNormalize )
-            palParams.paletteNorm = { palette: pal };
-         if ( Pipeline.compositeSharpenParams( config ) != null )
-            palParams.paletteSharpen = Pipeline.compositeSharpenParams( config );
-         if ( Pipeline.starExtractionParams( config ) != null )
-            palParams.paletteExtract = Pipeline.starExtractionParams( config );
-         // Linear, starless, before the stretch -- see the RGB side.
-         if ( Pipeline.linearDenoiseParams( config ) != null )
-            palParams.paletteDenoiseLinear = Pipeline.linearDenoiseParams( config );
-         if ( Pipeline.stretchParams( config, true ) != null )
-            palParams.paletteStretch = Pipeline.stretchParams( config, true );
-         if ( Pipeline.stretchedDenoiseParams( config ) != null )
-            palParams.paletteDenoise = Pipeline.stretchedDenoiseParams( config );
-
-         var palChain = Pipeline.buildStageKeys( palSource, palParams );
-         var palHolder = { key: pal, window: null, view: null };
-         var palRunners = {
-            paletteCombine: function( h )
-            {
-               Pipeline.checkAbort( "building " + pal );
-               h.window = Steps.combineRGB( chans[map[0]].view, chans[map[1]].view,
-                                            chans[map[2]].view, pId );
-               h.view = h.window.mainView;
-               reg.add( h.window );
-            },
-            /*
-             * Calibrate the palette photometrically. SPCC needs an
-             * astrometric solution; ChannelCombination inherits one from the
-             * channels, but solve if it did not come across. A calibration
-             * failure must not cost the composite -- the uncalibrated
-             * palette is still useful, so it is kept and simply not cached.
-             */
-            paletteSpcc: function( h )
-            {
-               try
-               {
-                  if ( !h.window.hasAstrometricSolution )
-                  {
-                     Util.log( "solve", pal + ": no inherited solution, solving" );
-                     Steps.solve( h.view );
-                  }
-                  Steps.spccNarrowband( h.view, pal, config.narrowbandBandwidth );
-               }
-               catch ( e )
-               {
-                  Util.warn( "spcc", pal + " could not be calibrated (" + e +
-                                     "); the palette is kept uncalibrated" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            /*
-             * Neutral normalisation, after calibration and before any
-             * sharpening: it is a colour operation and belongs with the
-             * colour work, while sharpening and noise reduction act on the
-             * final rendition.
-             */
-            paletteNorm: function( h )
-            {
-               try { Steps.narrowbandNormalize( h.view, pal, pal ); }
-               catch ( e )
-               {
-                  Util.warn( "nbnorm", pal + " could not be normalised (" + e +
-                                       "); the palette is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            paletteSharpen: function( h )
-            {
-               Pipeline.checkAbort( "sharpening " + pal );
-               try
-               {
-                  Steps.correctComposite( h.view, config.sharpenTool,
-                                          config.starReduction, config.detailLevel, pal );
-               }
-               catch ( e )
-               {
-                  Util.warn( "sharpen", pal + " could not be corrected (" + e +
-                                        "); the palette is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            paletteExtract: function( h )
-            {
-               Pipeline.checkAbort( "extracting stars from " + pal );
-               var split = Steps.extractStars( h.window, config.starTool, pal,
-                                               !!config.stretch );
-               if ( split == null )
-                  return Pipeline.SKIP_CACHE;
-               reg.add( split.stars );
-               h.stars = split.stars;
-            },
-            paletteStretch: function( h )
-            {
-               Pipeline.checkAbort( "stretching " + pal );
-               /*
-                * The stretch overwrites the composite in place, so the linear
-                * version has to be taken now or not at all. It is stored as
-                * this stage's companion, which is what keeps it alive when the
-                * stage later comes back from cache.
-                */
-               if ( config.keepLinear )
-                  try
-                  {
-                     h.linear = Steps.syqonCloneWindowForProcessing(
-                                   h.window, Util.freeWindowId( pal + "_linear" ) );
-                     try
-                     {
-                        if ( h.window.hasAstrometricSolution )
-                           h.linear.copyAstrometricSolution( h.window );
-                     }
-                     catch ( eS ) {}
-                     reg.add( h.linear );
-                  }
-                  catch ( eL )
-                  {
-                     Util.warn( "stretch", "could not keep the linear copy (" +
-                                           eL + "); the stretch proceeds" );
-                  }
-               try { Steps.stretchBy( config.stretchMethod, h.view, true, pal + " starless" ); }
-               catch ( e )
-               {
-                  Util.warn( "stretch", pal + " could not be stretched (" + e +
-                                        "); the palette is kept linear" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            paletteDenoiseLinear: function( h )
-            {
-               Pipeline.checkAbort( "denoising " + pal );
-               // `false`: linear by construction at this point in the chain.
-               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
-                                    pal + " linear", false ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", pal + " could not be denoised (" + e +
-                                        "); the palette is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            paletteDenoise: function( h )
-            {
-               Pipeline.checkAbort( "denoising " + pal );
-               try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, pal,
-                                     !!config.stretch ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", pal + " could not be denoised (" + e +
-                                        "); the palette is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            }
-         };
-
-         Pipeline.processChain( palHolder, palChain, config, reg, palRunners );
-         var pw = palHolder.window;
-
-         paletteWins.push( { name: pal, window: pw,
-                             stars: palHolder.stars || null,
-                             linear: palHolder.linear || null } );
-      }
-
-      /*
-       * L is split LAST, after every consumer of it is finished.
-       *
-       * It cannot be split in the per-channel chain with the other
-       * broadband work, which is where this started: L is the registration
-       * reference, and handing StarAlignment a starless reference makes it
-       * report "0 stars found" and fail every channel. L is also the
-       * reference the clean white balance is measured against. So the split
-       * waits until the composites and palettes are built and nothing will
-       * look at L again.
-       *
-       * Its key chains from L's own post-correction key plus the crop --
-       * the crop is what the earlier stages' keys do not cover, and it
-       * changes L's pixels.
-       */
-      if ( chans.L && Pipeline.starExtractionParams( config ) != null )
-      {
-         var lSource = Cache.hash( "lstars|" + chans.L.currentKey +
-                                   "|crop:" + common.x0 + "," + common.y0 + "," +
-                                   common.x1 + "," + common.y1 +
-                                   "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
-         var lStages = { extractL: Pipeline.starExtractionParams( config ) };
-         /*
-          * L is denoised on the same rule as the composites: NXT and
-          * MLDenoise linear, after extraction and before the stretch;
-          * Prism after the stretch. Only one of the two slots is ever in
-          * the chain, because only one tool is chosen.
-          *
-          * L was left out until now, and it is the plate that needs it
-          * most: a single channel, usually the shortest integration of the
-          * set, carrying the detail everything else is blended against.
-          */
-         if ( Pipeline.linearDenoiseParams( config, "L" ) != null )
-            lStages.denoiseLinearL = Pipeline.linearDenoiseParams( config, "L" );
-         if ( Pipeline.stretchParams( config, false ) != null )
-            lStages.stretchL = Pipeline.stretchParams( config, false );
-         if ( Pipeline.stretchedDenoiseParams( config, "L" ) != null )
-            lStages.denoiseL = Pipeline.stretchedDenoiseParams( config, "L" );
-         var lChain = Pipeline.buildStageKeys( lSource, lStages );
-         var lRunners = {
-            extractL: function( c )
-            {
-               Pipeline.checkAbort( "extracting stars from L" );
-               var split = Steps.extractStars( c.window, config.starTool, "L",
-                                               !!config.stretch );
-               if ( split == null )
-                  return Pipeline.SKIP_CACHE;
-               reg.add( split.stars );
-               c.stars = split.stars;
-            },
-            denoiseLinearL: function( c )
-            {
-               Pipeline.checkAbort( "denoising L" );
-               // `false`: linear by construction here, whatever the run's
-               // stretch setting says about what happens later.
-               try { Steps.denoise( c.view, config.noiseTool,
-                                    Pipeline.denoiseLevelFor( config, "L" ),
-                                    "L linear", false ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", "L could not be denoised (" + e +
-                                        "); it is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            denoiseL: function( c )
-            {
-               Pipeline.checkAbort( "denoising L" );
-               try { Steps.denoise( c.view, config.noiseTool,
-                                    Pipeline.denoiseLevelFor( config, "L" ),
-                                    "L", !!config.stretch ); }
-               catch ( e )
-               {
-                  Util.warn( "denoise", "L could not be denoised (" + e +
-                                        "); it is kept as it is" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            },
-            stretchL: function( c )
-            {
-               Pipeline.checkAbort( "stretching L" );
-               try { Steps.stretchBy( config.stretchMethod, c.view, false, "L starless" ); }
-               catch ( e )
-               {
-                  Util.warn( "stretch", "L could not be stretched (" + e +
-                                        "); it is kept linear" );
-                  return Pipeline.SKIP_CACHE;
-               }
-            }
-         };
-         Pipeline.processChain( chans.L, lChain, config, reg, lRunners );
-      }
-
-      // Results stay as open windows in the current project; Loom never
-      // writes them to disk. Saving is the user's decision, made with
-      // PixInsight's own Save As once they have looked at the result.
-      for ( var s = 0; s < Util.CHANNELS.length; ++s )
-      {
-         var sk = Util.CHANNELS[s];
-         if ( !chans[sk] ) continue;
-         results[sk] = chans[sk].window;
-      }
-      if ( rgbWin !== null )
-         results.RGB = rgbWin;
-
-      // hand the keepers to the user, close the rest: L, H, S, O, and RGB
-      // (when produced) survive; every other window (working copies of
-      // R/G/B once combined, etc.) is closed via the Registry.
-      // Only the deliberate results survive: L and any narrowband, plus
-      // the RGB composite. R/G/B are intermediates consumed by the
-      // combination -- keeping them (which an empty output folder used to
-      // do) just litters the workspace with *_work_registered windows.
-      /*
-       * When a palette was built, the narrowband channels were the
-       * ingredients for it and are swept with the other intermediates.
-       * Without a palette they are results in their own right and survive.
-       * L and RGB are unaffected either way.
-       */
-      var keep = ( paletteWins.length > 0 ) ? [ "L" ] : [ "L", "H", "S", "O" ];
-      if ( paletteWins.length > 0 )
-      {
-         var dropped = [];
-         for ( var nb2 = 0; nb2 < Util.NARROWBAND.length; ++nb2 )
-            if ( chans[Util.NARROWBAND[nb2]] )
-               dropped.push( Util.NARROWBAND[nb2] );
-         if ( dropped.length )
-            Util.log( "cleanup", "narrowband consumed by the palette, not kept: " +
-                                 dropped.join( ", " ) );
-      }
-      for ( var k = 0; k < keep.length; ++k )
-         if ( chans[keep[k]] )
-            reg.forget( chans[keep[k]].window );
-
-      // Swept channels must not be reported as results: their windows are
-      // about to be closed, so the entry would point at nothing.
-      if ( paletteWins.length > 0 )
-         for ( var dr = 0; dr < Util.NARROWBAND.length; ++dr )
-            delete results[ Util.NARROWBAND[dr] ];
-      if ( rgbWin !== null )
-         reg.forget( rgbWin );
-      /*
-       * Palettes are results too, and they are registered like everything
-       * else -- so without this they are closed by closeAll() moments before
-       * the code below tries to name them. That is why every palette run
-       * ended with "its window is gone before it could be named": the
-       * registry did exactly what it was told.
-       */
-      for ( var pf = 0; pf < paletteWins.length; ++pf )
-         reg.forget( paletteWins[pf].window );
-      /*
-       * The stars frames are results as well, and they are registered like
-       * everything else -- exactly the trap the comment above describes.
-       * Missing them produced a run with every starless plate present and
-       * no stars plate at all: closeAll() closed them, and the naming pass
-       * below then found nothing to name.
-       */
-      if ( chans.L && chans.L.stars )
-         reg.forget( chans.L.stars );
-      if ( rgbStars != null )
-         reg.forget( rgbStars );
-      if ( rgbLinear != null )
-         reg.forget( rgbLinear );
-      for ( var ps = 0; ps < paletteWins.length; ++ps )
-      {
-         if ( paletteWins[ps].stars )
-            reg.forget( paletteWins[ps].stars );
-         if ( paletteWins[ps].linear )
-            reg.forget( paletteWins[ps].linear );
-      }
-      reg.closeAll();
+      var keep = Pipeline.retainResults( results, chans, rgb, paletteWins, reg );
 
       // Anything a process created and nobody claimed goes now.
-      /*
-       * Give the survivors their plain channel names -- L, H, S, O, RGB --
-       * falling back to L_1, RGB_1 and so on when the id is taken (the
-       * user's own project routinely has views called L and RGB).
-       * They arrive here called L_work / L_graxpert_1 / R_graxpert_registered
-       * depending on which stages ran or came from cache, which reads as
-       * debris rather than results.
-       *
-       * The LOOMOUT keyword, not the name, is what lets the next run
-       * recognise and close these -- so plain names are safe.
-       */
-      var keepIds = [];
-      for ( var kk = 0; kk < keep.length; ++kk )
-      {
-         var kkey = keep[kk];
-         if ( !chans[kkey] ) continue;
-         var kw = chans[kkey].window;
-         /*
-          * A split channel is published as two frames and the unsplit one
-          * is not kept: starless and stars screen back together into it
-          * exactly, so holding a third copy of the same data buys nothing.
-          */
-         var kSplit = ( chans[kkey].stars != null );
-         var kid = kSplit ? ( kkey + "_starless" ) : kkey;
-         // AFTER the detach: the earlier assignment points at a window
-         // that detach has since replaced and closed.
-         kw = Pipeline.publish( kw, kid, reg, keepIds, results,
-                                kSplit ? ( kkey + "_starless" ) : kkey );
-         if ( kw == null ) continue;
-         chans[kkey].window = kw;
-         chans[kkey].view = kw.mainView;
-         if ( kSplit )
-         {
-            delete results[kkey];
-            Pipeline.publish( chans[kkey].stars, kkey + "_stars", reg, keepIds,
-                              results, kkey + "_stars" );
-         }
-      }
-      var rgbStarsKept = false;
-      if ( rgbWin !== null )
-      {
-         var rgbSplit = ( rgbStars != null );
-         if ( rgbSplit )
-            delete results.RGB;
-         rgbWin = Pipeline.publish( rgbWin, rgbSplit ? "RGB_starless" : "RGB",
-                                    reg, keepIds, results,
-                                    rgbSplit ? "RGB_starless" : "RGB" );
-         if ( rgbSplit )
-         {
-            // Broadband stars are always kept: they are the stars everything
-            // else is recombined against.
-            Pipeline.publish( rgbStars, "RGB_stars", reg, keepIds,
-                              results, "RGB_stars" );
-            rgbStarsKept = true;
-         }
-         if ( rgbLinear != null )
-         {
-            // the composite as it was before the stretch, for reference
-            Pipeline.publish( rgbLinear, "RGB_linear", reg, keepIds,
-                              results, "RGB_linear" );
-         }
-      }
-      for ( var pw2 = 0; pw2 < paletteWins.length; ++pw2 )
-      {
-         var entry = paletteWins[pw2];
-
-         /*
-          * Naming a result must never destroy a run that has already done
-          * all of its work. A palette whose window has gone is a real fault
-          * worth reporting loudly, but every other output is finished and
-          * correct by this point, and throwing here would discard them all
-          * through the catch below.
-          */
-         if ( !Pipeline.windowIsUsable( entry.window ) )
-         {
-            Util.error( "output", entry.name + ": its window is gone before it " +
-                                  "could be named; this palette is lost, the rest " +
-                                  "of the run is unaffected" );
-            continue;
-         }
-
-         var eSplit = ( entry.stars != null );
-         entry.window = Pipeline.publish( entry.window,
-                           eSplit ? ( entry.name + "_starless" ) : entry.name,
-                           reg, keepIds, results,
-                           eSplit ? ( entry.name + "_starless" ) : entry.name );
-         if ( eSplit )
-         {
-            /*
-             * Narrowband stars are kept only when there are no broadband
-             * stars to recombine against. With an RGB composite in the run
-             * its stars are the ones that get used, and a second, dimmer
-             * set from the narrowband palette is just another window to
-             * close by hand.
-             */
-            if ( rgbStarsKept )
-            {
-               Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
-                                   "already covers the broadband stars" );
-               try { entry.stars.forceClose(); } catch ( e ) {}
-            }
-            else
-               Pipeline.publish( entry.stars, entry.name + "_stars", reg,
-                                 keepIds, results, entry.name + "_stars" );
-         }
-         if ( entry.linear != null )
-            Pipeline.publish( entry.linear, entry.name + "_linear", reg,
-                              keepIds, results, entry.name + "_linear" );
-      }
-      /*
-       * Frequency separation of the L stars plate, before the export so the
-       * two layers are written like any other result.
-       *
-       * Only L_stars, and only on request: it is a retouching aid for the
-       * one plate whose halos get worked on by hand, not a processing step.
-       * A failure costs the two layers and nothing else -- the plate itself
-       * is already published.
-       */
-      if ( config.separateLStars && results.L_stars != null &&
-           Pipeline.windowIsUsable( results.L_stars ) )
-      {
-         try
-         {
-            var fs = Steps.frequencySeparate( results.L_stars, "L_stars" );
-            reg.add( fs.low );
-            reg.add( fs.high );
-            Pipeline.publish( fs.low, "L_stars_low", reg, keepIds, results, "L_stars_low" );
-            Pipeline.publish( fs.high, "L_stars_high", reg, keepIds, results, "L_stars_high" );
-         }
-         catch ( e )
-         {
-            Util.warn( "freqsep", "L_stars was not separated (" + e +
-                                  "); the plate itself is unaffected" );
-         }
-      }
+      var keepIds = Pipeline.publishOutputs( results, chans, rgb, paletteWins,
+                                             keep, config, reg );
 
       /*
        * Tag every result before anything is written.
