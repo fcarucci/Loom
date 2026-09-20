@@ -324,7 +324,8 @@ Pipeline.STAGE_ORDER = [ "solve", "spfc", "mgc", "graxpert",
                          "paletteSharpen", "paletteExtract",
                          "paletteDenoiseLinear", "paletteStretch",
                          "paletteDenoise",
-                         "extractL", "stretchL" ];
+                         "extractL", "denoiseLinearL", "stretchL",
+                         "denoiseL" ];
 
 /*
  * Star reduction, detail sharpening and noise reduction USED to be excluded
@@ -449,12 +450,30 @@ Pipeline.stretchParams = function( config, linked )
             keepLinear: !!config.keepLinear };
 };
 
-Pipeline.compositeDenoiseParams = function( config )
+/*
+ * L and the colour composites are denoised at SEPARATE strengths.
+ *
+ * L is one channel and usually the shortest integration of the set, so it
+ * is noisier than a three-channel composite of the same target and wants a
+ * heavier hand -- while the colour plates want a lighter one, because
+ * denoising colour costs saturation.
+ *
+ * config.noiseLevelL falls back to the colour level, so a configuration
+ * saved before this existed behaves exactly as it did.
+ */
+Pipeline.denoiseLevelFor = function( config, which )
+{
+   if ( which == "L" && config.noiseLevelL && config.noiseLevelL != "none" )
+      return config.noiseLevelL;
+   return config.noiseLevel;
+};
+
+Pipeline.compositeDenoiseParams = function( config, which )
 {
    var tool = config.noiseTool;
    if ( !tool || tool == "none" )
       return null;
-   var level = config.noiseLevel;
+   var level = Pipeline.denoiseLevelFor( config, which );
    if ( !level || level == "none" )
       return null;
    /*
@@ -479,15 +498,15 @@ Pipeline.compositeDenoiseParams = function( config )
  *
  * Prism runs after the stretch, which is the data it is built for.
  */
-Pipeline.linearDenoiseParams = function( config )
+Pipeline.linearDenoiseParams = function( config, which )
 {
-   var p = Pipeline.compositeDenoiseParams( config );
+   var p = Pipeline.compositeDenoiseParams( config, which );
    return ( p != null && Steps.denoiseIsLinear( p.tool ) ) ? p : null;
 };
 
-Pipeline.stretchedDenoiseParams = function( config )
+Pipeline.stretchedDenoiseParams = function( config, which )
 {
-   var p = Pipeline.compositeDenoiseParams( config );
+   var p = Pipeline.compositeDenoiseParams( config, which );
    return ( p != null && !Steps.denoiseIsLinear( p.tool ) ) ? p : null;
 };
 
@@ -2004,8 +2023,22 @@ Pipeline.run = function( config )
                                    common.x1 + "," + common.y1 +
                                    "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
          var lStages = { extractL: Pipeline.starExtractionParams( config ) };
+         /*
+          * L is denoised on the same rule as the composites: NXT and
+          * MLDenoise linear, after extraction and before the stretch;
+          * Prism after the stretch. Only one of the two slots is ever in
+          * the chain, because only one tool is chosen.
+          *
+          * L was left out until now, and it is the plate that needs it
+          * most: a single channel, usually the shortest integration of the
+          * set, carrying the detail everything else is blended against.
+          */
+         if ( Pipeline.linearDenoiseParams( config, "L" ) != null )
+            lStages.denoiseLinearL = Pipeline.linearDenoiseParams( config, "L" );
          if ( Pipeline.stretchParams( config, false ) != null )
             lStages.stretchL = Pipeline.stretchParams( config, false );
+         if ( Pipeline.stretchedDenoiseParams( config, "L" ) != null )
+            lStages.denoiseL = Pipeline.stretchedDenoiseParams( config, "L" );
          var lChain = Pipeline.buildStageKeys( lSource, lStages );
          var lRunners = {
             extractL: function( c )
@@ -2017,6 +2050,34 @@ Pipeline.run = function( config )
                   return Pipeline.SKIP_CACHE;
                reg.add( split.stars );
                c.stars = split.stars;
+            },
+            denoiseLinearL: function( c )
+            {
+               Pipeline.checkAbort( "denoising L" );
+               // `false`: linear by construction here, whatever the run's
+               // stretch setting says about what happens later.
+               try { Steps.denoise( c.view, config.noiseTool,
+                                    Pipeline.denoiseLevelFor( config, "L" ),
+                                    "L linear", false ); }
+               catch ( e )
+               {
+                  Util.warn( "denoise", "L could not be denoised (" + e +
+                                        "); it is kept as it is" );
+                  return Pipeline.SKIP_CACHE;
+               }
+            },
+            denoiseL: function( c )
+            {
+               Pipeline.checkAbort( "denoising L" );
+               try { Steps.denoise( c.view, config.noiseTool,
+                                    Pipeline.denoiseLevelFor( config, "L" ),
+                                    "L", !!config.stretch ); }
+               catch ( e )
+               {
+                  Util.warn( "denoise", "L could not be denoised (" + e +
+                                        "); it is kept as it is" );
+                  return Pipeline.SKIP_CACHE;
+               }
             },
             stretchL: function( c )
             {
@@ -2400,19 +2461,18 @@ Pipeline.centreWindow = function( w, index, count )
  * open are not Loom's to rearrange.
  */
 /*
- * Tidy the finished plates away.
+ * Leave the finished plates open, cascaded.
  *
- * PJSR CANNOT POSITION AN ICON. ImageWindow offers iconize, deiconize and
- * iconic -- nothing else -- so where the icons land is the core's own
- * business and no script can lay them out in a grid. An earlier version
- * of this believed otherwise and wrote grid coordinates into
- * window.position, which is the RESTORE position: the icons went wherever
- * the core put them regardless, and restoring a plate opened it at
- * (2244,-1227), off the workspace.
+ * They were minimised for a while, which kept the workspace tidy and made
+ * every result invisible: the point of a run is to look at what came out.
+ * So each one is fitted to its window and offset a title bar from the last,
+ * with the cascade centred as a block, in OUTPUT_ORDER -- so a given plate
+ * is always at the same depth in the pile and the palette ends on top.
  *
- * So what is worth setting is the restore position, and it is set to the
- * centre -- a plate reopened from its icon appears in the middle of the
- * workspace, sized to fit, rather than wherever it was last parked.
+ * PJSR CANNOT POSITION AN ICON, which is why minimising was the wrong
+ * answer anyway: ImageWindow offers iconize, deiconize and iconic and
+ * nothing else, so where an icon lands is the core's business. Positioning
+ * only works on open windows, which these now are.
  */
 Pipeline.arrangeOutputs = function( results )
 {
@@ -2432,23 +2492,34 @@ Pipeline.arrangeOutputs = function( results )
          try
          {
             /*
+             * Restore before anything else: a plate left iconic from an
+             * earlier arrangement cannot be fitted or positioned.
+             */
+            if ( w.iconic )
+               w.deiconize();
+            w.show();
+            /*
              * Fit the image to the window first. A plate is tens of
              * megapixels and opens at 1:1 otherwise, showing one corner.
-             * Then centre, then iconize -- in that order, because
-             * centring depends on the size the zoom settled on.
+             * Position second, because where it goes depends on the size
+             * the zoom settled on.
              */
             w.zoomToOptimalFit();
             Pipeline.centreWindow( w, i, keys.length );
-            if ( !w.iconic )
-               w.iconize();
+            /*
+             * Raised in OUTPUT_ORDER, so the pile reads in that order and
+             * the palette -- the last thing anyone wants to see -- is on
+             * top rather than buried under the luminance plates.
+             */
+            w.bringToFront();
          }
          catch ( e )
          {
-            Util.warn( "output", "could not tidy " + keys[i] + ": " + e );
+            Util.warn( "output", "could not arrange " + keys[i] + ": " + e );
          }
       }
-      Util.log( "output", "minimised " + keys.length +
-                          " plate(s); they reopen staggered around the middle" );
+      Util.log( "output", "left " + keys.length +
+                          " plate(s) open, cascaded around the middle" );
    }
    catch ( e )
    {
