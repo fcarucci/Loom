@@ -200,11 +200,24 @@ So the filename filter is NEVER used to select or reject a flat, not even
 to narrow the candidate list -- narrowing by a value the header may
 contradict would drop flats that actually match, and no later header check
 could get them back. The candidate set for a night is every flat in the
-batches assigned to its session, with no filename filtering at all. Their
-headers are then read -- a few dozen files, not a card -- and filter, bin,
-camera and rotation are matched on header values. Filenames contribute
-only the timestamp used for batching, which no header disagreement can
-make wrong.
+batches assigned to its session, with no filename filtering at all.
+
+Their headers are then read -- a few dozen files, not a card -- and each
+field is taken from the best source available, which is not the same
+source for all four:
+
+| Field    | Source | Why |
+|----------|--------|-----|
+| filter   | header `FILTER` | Authoritative, and what WBPP will read |
+| binning  | header `XBINNING` | Same |
+| camera   | header `INSTRUME`, falling back to the filename token | `Util.keywordValue` already reads it elsewhere in Loom |
+| rotation | filename ONLY | There is no standard FITS keyword for a rotator angle, and it has not been verified that the ASIAIR writes one |
+
+Claiming headers are authoritative for all four would be a claim about
+rotation that nothing supports. Rotation is compared from filenames, which
+is sound here precisely because both sides come off the same card with the
+same naming -- it is a comparison between two ASIAIR names, not between a
+name and a header.
 
 ## Writing
 
@@ -220,8 +233,13 @@ is chosen. There is no same-folder case.
   resolved path of the detected card root. String comparison of the two
   chosen directories is not enough: `/Volumes/ASIAIR/export` and a symlink
   pointing into the card both pass a naive test.
-- Output paths are resolved before writing, so a pre-existing `Light` or
-  `Flat` symlink in the destination cannot redirect a write onto the card.
+- EVERY output path is resolved and containment-checked immediately before
+  it is written -- not just the chosen destination. Checking only the
+  destination is not enough: `<dest>` can pass while `<dest>/Light` is a
+  symlink into `Plan/Light/M42` on the card, and the write lands there.
+- Containment is compared on path COMPONENTS, not on characters, so
+  `/Volumes/ASIAIR-backup` is not mistaken for a child of
+  `/Volumes/ASIAIR`.
 
 Layout:
 
@@ -253,9 +271,11 @@ expected-output mapping. Those two must agree or the accounting of what
 was written is wrong.
 
 Both are converted to XISF. Flats do NOT go through
-`FrameSelector.runOutputRoutine`: that runs SubframeSelector routine 1
-first ("measuring first is not optional"), which means star detection, and
-a flat has no stars. Flats convert by open-and-save, with no measurement.
+`FrameSelector.runOutputRoutine`: that runs the MEASURE routine first --
+`FrameSelector.MEASURE_ROUTINE` is 0, and routines 1 and 2, preview and
+output, refuse with "No measurements have been made" until it has run.
+Measuring means star detection, and a flat has no stars. Flats convert by
+open-and-save, with no measurement.
 
 ### Verification
 
