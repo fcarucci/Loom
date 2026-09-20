@@ -2181,7 +2181,7 @@ function runTests()
             "paletteSharpen", "paletteExtract",
             "paletteDenoiseLinear", "paletteStretch",
             "paletteDenoise",
-            "extractL", "stretchL" ] );
+            "extractL", "denoiseLinearL", "stretchL", "denoiseL" ] );
 
    /*
     * The stretch acts on the STARLESS plate, after extraction: the stars were

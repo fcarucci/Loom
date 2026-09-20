@@ -62,6 +62,9 @@ function defaultConfig()
       starTool: "none",
       noiseTool: "none",
       noiseLevel: "medium",
+      // Empty means "follow the colour level", so a configuration saved
+      // before L had its own strength behaves exactly as it did.
+      noiseLevelL: "",
       starReduction: "none",
       detailLevel: "none",
       // Keep the installed copy current. See lib/Update.js: the update is
@@ -275,6 +278,7 @@ function saveConfig( config )
    Settings.write( SETTINGS_KEY + "starTool", DataType_String, config.starTool || "none" );
    Settings.write( SETTINGS_KEY + "noiseTool", DataType_String, config.noiseTool || "none" );
    Settings.write( SETTINGS_KEY + "noiseLevel", DataType_String, config.noiseLevel || "medium" );
+   Settings.write( SETTINGS_KEY + "noiseLevelL", DataType_String, config.noiseLevelL || "" );
    Settings.write( SETTINGS_KEY + "sharpenTool", DataType_String, config.sharpenTool || "none" );
    Settings.write( SETTINGS_KEY + "starReduction", DataType_String, config.starReduction || "none" );
    Settings.write( SETTINGS_KEY + "detailLevel", DataType_String, config.detailLevel || "none" );

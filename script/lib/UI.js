@@ -706,7 +706,7 @@ UI.SelectDialog = class extends Dialog
    };
 
    this.noiseLevelLabel = new Label( this.noiseGroup );
-   this.noiseLevelLabel.text = "Strength:";
+   this.noiseLevelLabel.text = "Colour:";
    this.noiseLevelLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
 
    this.noiseLevelCombo = new ComboBox( this.noiseGroup );
@@ -716,6 +716,32 @@ UI.SelectDialog = class extends Dialog
                                     nlevels[nl2].slice( 1 ) );
    this.noiseLevelCombo.currentItem = Math.max( 0, nlevels.indexOf( config.noiseLevel || "medium" ) );
    this.noiseLevelCombo.onItemSelected = function( i ) { self.config.noiseLevel = nlevels[i]; };
+   this.noiseLevelCombo.toolTip =
+      "<p>Strength for the RGB and narrowband composites.</p>" +
+      "<p>Lighter than L is usually right: denoising colour costs " +
+      "saturation, and a three-channel composite is already less noisy " +
+      "than any one channel of it.</p>";
+
+   /*
+    * L gets its own strength. It is one channel, usually the shortest
+    * integration of the set, and it carries the detail everything else is
+    * blended against -- so it is both the noisiest plate and the one that
+    * can take the most denoising without costing colour.
+    */
+   this.noiseLevelLLabel = new Label( this.noiseGroup );
+   this.noiseLevelLLabel.text = "L:";
+   this.noiseLevelLLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+
+   this.noiseLevelLCombo = new ComboBox( this.noiseGroup );
+   for ( var nl3 = 0; nl3 < nlevels.length; ++nl3 )
+      this.noiseLevelLCombo.addItem( nlevels[nl3].charAt( 0 ).toUpperCase() +
+                                     nlevels[nl3].slice( 1 ) );
+   this.noiseLevelLCombo.currentItem =
+      Math.max( 0, nlevels.indexOf( config.noiseLevelL || config.noiseLevel || "medium" ) );
+   this.noiseLevelLCombo.onItemSelected = function( i ) { self.config.noiseLevelL = nlevels[i]; };
+   this.noiseLevelLCombo.toolTip =
+      "<p>Strength for the luminance plate, set separately from the " +
+      "colour composites.</p>";
 
    var noiseRow = new HorizontalSizer;
    noiseRow.spacing = 6;
@@ -724,6 +750,9 @@ UI.SelectDialog = class extends Dialog
    noiseRow.addSpacing( 12 );
    noiseRow.add( this.noiseLevelLabel );
    noiseRow.add( this.noiseLevelCombo );
+   noiseRow.addSpacing( 8 );
+   noiseRow.add( this.noiseLevelLLabel );
+   noiseRow.add( this.noiseLevelLCombo );
    noiseRow.addStretch();
    this.noiseGroup.sizer = noiseRow;
    this.noiseGroup.visible = ( noiseTools.length > 0 );
@@ -1739,6 +1768,8 @@ UI.SelectDialog = class extends Dialog
       var on = !!( this.config.noiseTool && this.config.noiseTool != "none" );
       this.noiseLevelCombo.enabled = on;
       this.noiseLevelLabel.enabled = on;
+      this.noiseLevelLCombo.enabled = on;
+      this.noiseLevelLLabel.enabled = on;
    }
 
    /* The level combos mean nothing without a tool selected. */
