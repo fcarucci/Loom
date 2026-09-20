@@ -667,7 +667,24 @@ FrameSelector.PreviewControl = class extends ScrollBox
        */
       this.onHorizontalScrollPosUpdated = function() { self.viewport.update(); };
       this.onVerticalScrollPosUpdated = function() { self.viewport.update(); };
-      this.onViewportScrolled = function() { self.viewport.update(); };
+
+      /*
+       * onViewportScrolled is NOT assigned here, and must not be.
+       *
+       * Assigning it terminates PixInsight when the control is destroyed:
+       * ~QWidget -> deleteChildren -> std::terminate, from a deferred
+       * delete processed after the script's JS context has gone. It is
+       * that property specifically -- the two scroll-position handlers
+       * above are safe, a handler on the viewport is safe, onShow on a
+       * ScrollBox is safe, and a plain Control with a handler is safe.
+       * Each of those was built alone in a dispatched script and each
+       * survived; this one killed the application every time.
+       *
+       * Nothing is lost by its absence. Panning moves the scroll
+       * positions, which fires the two handlers above, so the repaint
+       * still happens. This was the long-standing crash that took
+       * PixInsight down whenever the self-test ran.
+       */
 
       // Established once at construction, as MaskMerge's does.
       this.layOutScroll();
