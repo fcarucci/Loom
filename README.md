@@ -364,6 +364,88 @@ clickable. Where the icons themselves land is the core's business: PJSR exposes
 `iconize`, `deiconize` and `iconic` and nothing that positions an icon, so no
 script can lay them out.
 
+## Frame Selector
+
+A second script in this repository — **Batch Processing > Loom Frame
+Selector** — and not part of a Loom run. It measures every subframe in a
+folder, groups them by filter, works out where the line falls for that
+channel on that night, and removes the frames below it.
+
+It exists because of a concrete failure: a re-stacked G master came back 8%
+softer, 31% more elongated, 18% noisier and with 31% fewer stars than the one
+it replaced, and nothing in the pipeline objected. Bad subs are cheaper to
+catch before they are integrated than after.
+
+**It does not measure anything itself.** SubframeSelector does, because those
+are the numbers you already see in WBPP. A frame selector whose FWHM disagrees
+with the subframe table is one nobody can act on.
+
+Grouping is by the raw `FILTER` keyword. A channel whose frames differ in
+exposure, binning, geometry or calibration state is reported as not comparable
+and Apply is blocked for it until you accept it explicitly — a shorter exposure
+legitimately loses on SNR, and clipping it against the rest is meaningless.
+Frames with no readable filter are shown but never auto-rejected.
+
+### The presets
+
+Three, because `k` — the width of the robust gate, in normalised MADs — is the
+one number that decides how much is dropped.
+
+| preset | `k` | asymptotic | at 20 frames | at 10 frames |
+|---|---|---|---|---|
+| Lenient | 3.0 | ~0.5% | ~2.8% | ~6% |
+| Balanced | 2.5 | ~2.5% | ~6.1% | ~10% |
+| Strict | 2.0 | ~9% | ~13.1% | ~17% |
+
+Those are expectations, not promised yields: the median and MAD are estimated
+from the same small sample being clipped. The dialog shows the actual count,
+which is the only number that is true.
+
+Below **10 valid measurements** in a channel the robust clip does not run at
+all. A median exists at three frames; a dispersion worth deleting files over
+does not.
+
+### Relative, absolute, or both
+
+A clip on a channel's own median and MAD is scale-invariant, so **Relative**
+drops roughly the same *fraction* however good the night was. That is right for
+"drop this night's worst" and wrong for "drop frames that are bad in absolute
+terms", and no extra criterion reconciles them — a frame the robust gate
+rejects cannot be rescued by also passing a ceiling.
+
+So **Absolute** turns the robust gate off and rejects only on the hard limits
+you set. **It is the only mode that can keep an entire good night.** Absolute
+with no limits configured is a valid "keep everything" setting, not an error.
+**Both** rejects on either condition.
+
+### Deleting
+
+The default action deletes in place, and that is the only irreversible thing
+the tool does.
+
+Nothing is deleted until the table has been shown, a confirmation names the
+exact count and the per-channel breakdown, and the manifest has been written to
+a durable log under `~/PixInsight/Loom-frame-selector/` — **before** any file is
+removed, with each outcome appended as it happens. If the log cannot be
+written, nothing is deleted.
+
+Identity is a digest of the whole file, taken when the frame was measured and
+rechecked immediately before the unlink. Path, size and modification time are
+not identity; a replacement preserves all three. A frame that changed, vanished
+or became unreadable is skipped and reported rather than deleted.
+
+Writing the approved frames **to another folder** is available instead, and a
+mistake there costs disk space rather than data. Deleting the originals after
+an export is deliberately *not* offered: making that safe needs per-file proof
+that this run wrote that output, which is a separate feature with its own
+design. Until then, export, look at the results, and delete the source folder
+yourself.
+
+A verdict can be overridden by hand — space on the row, or the button under the
+preview. An override wins over the formula, survives a change of `k`, is counted
+separately so a summary never hides it, and is recorded in the deletion log.
+Overrides last for the session only.
+
 ## Requirements
 
 **PixInsight 1.9.5 or later**, checked at startup: Loom refuses to run on an

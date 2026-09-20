@@ -1013,3 +1013,34 @@ that dialog is invisible to whoever dispatched it, the script blocks on
 it, and every later dispatch queues behind a running script — which
 presents exactly as "PixInsight accepts dispatches and runs none". Set
 `C.noGUIMessages = true`.
+
+## SubframeSelector measurement columns (1.9.5 build 1702)
+
+`routine = 0` measures; 1 and 2 are the preview and output routines and refuse
+with "No measurements have been made". The `subframes` table takes four values
+per row: enabled, path, local normalization data, drizzle data.
+
+| index | figure |
+|---|---|
+| 3 | file path |
+| 5 | FWHM |
+| 6 | eccentricity |
+| 7 | PSF signal weight |
+| 9 | SNR estimate |
+| 12 | noise |
+| 14 | stars |
+| 28 | PSF SNR |
+
+Source: WBPP's `BPP-SubframeAnalyzer.js:481`, which carries the comment "fixed
+indexes that need to be aligned with the process implementation", cross-checked
+against a live measurement. **PSF SNR is 28, not 8** — column 8 reads 0 on every
+frame measured here, so reading it as PSF SNR produces a constant with no
+symptom.
+
+Pinning those constants does not detect a reordering, so `Frames.PLAUSIBLE`
+carries a disjoint range per metric and the value is checked against the range
+for its slot. The ranges are anchored on one live measurement — eccentricity
+0.395, FWHM 6.82 px, 10029 stars, PSF SNR 25502 — and each must both contain
+its own value and exclude its neighbours'. Stars and PSF SNR are only 2.5x
+apart on this rig, so the boundary between them is necessarily narrow; that is
+deliberate, because those two are the pair a swap most needs to be caught on.

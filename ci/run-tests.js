@@ -131,6 +131,7 @@ function load( file )
 }
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+               "lib/Frames.js",
                "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
 
 let loaded = 0;

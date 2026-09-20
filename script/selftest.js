@@ -13,6 +13,7 @@
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
+#include "lib/Frames.js"
 #include "lib/Pipeline.js"
 #include "lib/Update.js"
 /*
@@ -26,6 +27,21 @@
  * testing could see.
  */
 #include "lib/UI.js"
+
+/*
+ * FrameSelector.js is the entry point for the second script, so it ends by
+ * calling main(). Two defines keep including it here from doing anything
+ * except defining functions: one suppresses that call, the other tells it
+ * the libraries above are already loaded, since the preprocessor does not
+ * dedupe an #include and re-running them would reset every namespace.
+ *
+ * It is included for the same reason UI.js is -- the assertions below call
+ * into it, and a suite that cannot construct the thing it tests reports
+ * hundreds of passes while the script will not load at all.
+ */
+#define LOOM_LIBS_INCLUDED 1
+#define LOOM_FRAME_SELECTOR_UNDER_TEST 1
+#include "FrameSelector.js"
 
 #define RESULT_FILE "/tmp/agent-scratch/lhso-selftest.txt"
 
@@ -1772,6 +1788,559 @@ function runTests()
              Pipeline.mayCloseWindow( null, pre, keep ), false );
    } )();
 
+   /*
+    * Frame Selector. The decision logic is pure so that what chooses which
+    * files to delete can be tested without a workspace.
+    */
+   check( "Frames loads", typeof Frames, "object" );   // var Frames = {}
+   check( "and declares the version its numbers came from",
+          Frames.MEASURE_VERSION, "v1" );
+
+   /*
+    * The measurement row is positional. An earlier draft of the spec had PSF
+    * SNR on column 8, which reads 0 on every frame -- the dominant term of
+    * the score would have been a constant zero and nothing would have looked
+    * wrong. WBPP's own analyzer names these indices and carries the comment
+    * that they must track the process implementation
+    * (BPP-SubframeAnalyzer.js:481).
+    */
+   check( "PSF SNR is column 28, not 8", Frames.COL.psfSNR, 28 );
+   check( "FWHM is column 5", Frames.COL.fwhm, 5 );
+   check( "eccentricity is column 6", Frames.COL.eccentricity, 6 );
+   check( "noise is column 12", Frames.COL.noise, 12 );
+   check( "stars is column 14", Frames.COL.stars, 14 );
+   check( "the path is column 3", Frames.COL.path, 3 );
+
+   ( function()
+   {
+      var row = [];
+      for ( var i = 0; i < 31; ++i ) row.push( 0 );
+      row[3] = "/m/sub.xisf"; row[5] = 6.82; row[6] = 0.395;
+      row[12] = 9.6e-6; row[14] = 10029; row[28] = 25502;
+      var m = Frames.metricsFromRow( row );
+      check( "a row becomes named metrics", m.fwhm, 6.82 );
+      check( "including the path it belongs to", m.path, "/m/sub.xisf" );
+      check( "and PSF SNR from 28", m.psfSNR, 25502 );
+   } )();
+
+   /*
+    * Pinning the constants does not detect a reorder -- the assertions above
+    * pass unchanged after the process shuffles its table.
+    *
+    * The spec's answer was four disjoint ranges. Measured on 1.9.5 build
+    * 1702 that is unachievable: a single sub reads PSF SNR 8.8 against 7507
+    * stars, a drizzled master reads 35527 against 40551, and no pair of
+    * ranges separates those while containing both. The values below are the
+    * measurements, and they are asserted so the claim is checkable rather
+    * than a comment.
+    */
+   ( function()
+   {
+      var sub    = { path: "/m/s.xisf", eccentricity: 0.5472782731795826,
+                     fwhm: 3.5177160432121677, psfSNR: 8.815031176766649,
+                     stars: 7507 };
+      var master = { path: "/m/m.xisf", eccentricity: 0.5108710707667952,
+                     fwhm: 6.563287389889611, psfSNR: 35526.66266439094,
+                     stars: 40551 };
+
+      check( "on a single sub PSF SNR is far BELOW the star count, not above",
+             sub.psfSNR < sub.stars, true );
+      check( "so no range separates psfSNR from stars across both frames",
+             ( master.psfSNR > sub.stars ), true );
+
+      /*
+       * What does discriminate: a star count is a whole number and a PSF SNR
+       * is not. That is exactly the pair the spec most needs a swap caught
+       * on, and it holds on both frames.
+       */
+      check( "a real sub passes the meaning check",
+             Frames.meaningProblems( sub ).length, 0 );
+      check( "and so does a master", Frames.meaningProblems( master ).length, 0 );
+
+      var swapped = { path: "/m/s.xisf", eccentricity: sub.eccentricity,
+                      fwhm: sub.fwhm, psfSNR: sub.stars, stars: sub.psfSNR };
+      check( "swapping stars and PSF SNR is caught",
+             Frames.meaningProblems( swapped ).length > 0, true );
+
+      var eccSwap = { path: "/m/s.xisf", eccentricity: sub.fwhm,
+                      fwhm: sub.eccentricity, psfSNR: sub.psfSNR,
+                      stars: sub.stars };
+      check( "and so is swapping eccentricity with FWHM",
+             Frames.meaningProblems( eccSwap ).length > 0, true );
+
+      check( "a numeric path is caught too",
+             Frames.meaningProblems( { path: 5, eccentricity: 0.5, fwhm: 4,
+                                       psfSNR: 8.8, stars: 100 } ).length > 0, true );
+
+      var bad = [];
+      for ( var i = 0; i < Frames.METRIC_RANGE_ORDER.length; ++i )
+      {
+         var n = Frames.METRIC_RANGE_ORDER[i];
+         if ( !Frames.metricInRange( n, sub[n] ) || !Frames.metricInRange( n, master[n] ) )
+            bad.push( n );
+      }
+      check( "every range contains both real measurements", bad.join( "," ), "" );
+   } )();
+
+   /*
+    * NaN escapes every comparison, so an invalid measurement would pass every
+    * rejection gate and be silently kept. It becomes its own state instead.
+    */
+   check( "a finite positive number is valid", Frames.metricValid( 6.8 ), true );
+   check( "zero is not -- it divides", Frames.metricValid( 0 ), false );
+   check( "nor is a negative", Frames.metricValid( -1 ), false );
+   check( "nor NaN", Frames.metricValid( NaN ), false );
+   check( "nor infinity", Frames.metricValid( Infinity ), false );
+   check( "nor a missing value", Frames.metricValid( undefined ), false );
+
+   ( function()
+   {
+      var good = { psfSNR: 25502, fwhm: 6.82, eccentricity: 0.395, stars: 10029 };
+      check( "a frame with four valid metrics is measurable",
+             Frames.frameValid( good ), true );
+      var zeroEcc = { psfSNR: 25502, fwhm: 6.82, eccentricity: 0, stars: 10029 };
+      check( "an eccentricity of zero makes it unmeasurable",
+             Frames.frameValid( zeroEcc ), false );
+      var noStars = { psfSNR: 25502, fwhm: 6.82, eccentricity: 0.4, stars: 0 };
+      check( "so does a star count of zero",
+             Frames.frameValid( noStars ), false );
+   } )();
+
+   check( "the four metrics are named once, in scoring order",
+          Frames.METRICS.join( "," ), "psfSNR,fwhm,eccentricity,stars" );
+
+   check( "the median of an odd count is the middle value",
+          Frames.median( [ 3, 1, 2 ] ), 2 );
+   check( "and of an even count, the mean of the middle two",
+          Frames.median( [ 1, 2, 3, 4 ] ), 2.5 );
+   /*
+    * Normalised: sigma = 1.4826 * MAD, which is what makes k a number of
+    * standard deviations rather than an arbitrary width.
+    */
+   check( "sigma is the NORMALISED MAD",
+          Math.round( Frames.sigma( [ 1, 2, 3, 4, 5 ] )*10000 ), 14826 );
+
+   ( function()
+   {
+      var fwhm = [ 4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.3, 10 ];
+      var g = Frames.gate( fwhm, "fwhm", 2.5 );
+      check( "a gate on a spread sample is active", g.active, true );
+      check( "and rejects above the limit for a higher-is-worse metric",
+             g.limit > 4.7 && g.limit < 10, true );
+   } )();
+
+   /*
+    * With no spread the MAD is zero and every preset rejects the one frame
+    * that differs in the sixth decimal. The gate switches off instead.
+    */
+   ( function()
+   {
+      var g = Frames.gate( [ 4, 4, 4, 4, 4.000001 ], "fwhm", 2.5 );
+      check( "a gate with no usable spread is disabled", g.active, false );
+      check( "and says why", g.reason.indexOf( "spread" ) >= 0, true );
+   } )();
+
+   /*
+    * A lower bound at or below zero cannot reject anything, so it is
+    * reported inactive rather than silently passing everything.
+    */
+   ( function()
+   {
+      var g = Frames.gate( [ 10, 1000, 2000, 3000 ], "psfSNR", 3.0 );
+      check( "a non-positive lower bound is inactive", g.active, false );
+   } )();
+
+   check( "ten valid frames is the minimum for a relative clip",
+          Frames.MIN_FRAMES, 10 );
+   check( "below it there are no gates at all",
+          Object.keys( Frames.relativeGates(
+             [ { psfSNR: 1, fwhm: 1, eccentricity: 0.5, stars: 200 } ], 2.5 ) ).length, 0 );
+
+   ( function()
+   {
+      var meds = { psfSNR: 1000, fwhm: 5, eccentricity: 0.4, stars: 10000 };
+      var typical = { psfSNR: 1000, fwhm: 5, eccentricity: 0.4, stars: 10000 };
+      check( "a frame at the median scores 1",
+             Math.round( Frames.score( typical, meds,
+                         Frames.DEFAULT_WEIGHTS )*1000 )/1000, 1 );
+
+      var sharper = { psfSNR: 1000, fwhm: 2.5, eccentricity: 0.4, stars: 10000 };
+      check( "a sharper frame scores higher",
+             Frames.score( sharper, meds, Frames.DEFAULT_WEIGHTS ) > 1, true );
+
+      /*
+       * Dividing by the median aligns typical levels but not dispersion: a
+       * near-zero eccentricity would contribute a term of 40 and swamp a
+       * nominal weight of 0.1. Terms are clamped.
+       */
+      var silly = { psfSNR: 1000, fwhm: 5, eccentricity: 0.001, stars: 10000 };
+      check( "a near-zero eccentricity cannot dominate",
+             Frames.score( silly, meds, Frames.DEFAULT_WEIGHTS ) <
+             Frames.score( typical, meds, Frames.DEFAULT_WEIGHTS ) + 0.4, true );
+
+      var broken = { psfSNR: 1000, fwhm: 5, eccentricity: 0, stars: 10000 };
+      check( "an unmeasurable frame has no score, not a NaN",
+             Frames.score( broken, meds, Frames.DEFAULT_WEIGHTS ), null );
+   } )();
+
+   check( "the weights favour SNR", Frames.DEFAULT_WEIGHTS.psfSNR, 0.5 );
+   check( "and sum to one",
+          Frames.DEFAULT_WEIGHTS.psfSNR + Frames.DEFAULT_WEIGHTS.fwhm +
+          Frames.DEFAULT_WEIGHTS.eccentricity + Frames.DEFAULT_WEIGHTS.stars, 1 );
+
+   check( "the opening preset is Balanced", Frames.DEFAULT_PRESET, "balanced" );
+   check( "Lenient is the widest gate", Frames.PRESETS.lenient, 3.0 );
+   check( "Strict the narrowest", Frames.PRESETS.strict, 2.0 );
+
+   /*
+    * A preset sets k for every channel whose k has not been edited by hand.
+    * An edited value stands, and editing a WEIGHT does not pin k.
+    */
+   ( function()
+   {
+      var s = Frames.defaultSettings();
+      s.k = 2.7; s.kEdited = true;
+      check( "an edited k survives a preset change",
+             Frames.applyPreset( s, "strict" ).k, 2.7 );
+
+      var w = Frames.defaultSettings();
+      w.weights.fwhm = 0.5;
+      check( "but an edited weight does not pin k",
+             Frames.applyPreset( w, "strict" ).k, 2.0 );
+
+      /*
+       * A preset returns a SETTINGS OBJECT, and the caller replaces the
+       * channel's settings with it. A shallow copy leaves weights and limits
+       * shared with the object it came from, so editing a weight afterwards
+       * reaches back into whatever else still holds the original -- the
+       * quiet kind of wrongness that changes a score with nothing in the
+       * dialog to show for it.
+       */
+      var original = Frames.defaultSettings();
+      original.limits.fwhm = { hi: 6 };
+      var preset = Frames.applyPreset( original, "strict" );
+      preset.weights.fwhm = 0.9;
+      preset.limits.fwhm.hi = 99;
+      check( "a preset does not share its weights with the settings it copied",
+             original.weights.fwhm, Frames.DEFAULT_WEIGHTS.fwhm );
+      check( "nor its limits", original.limits.fwhm.hi, 6 );
+   } )();
+
+   ( function()
+   {
+      var gates = Frames.relativeGates( [
+         { psfSNR: 1000, fwhm: 5.0, eccentricity: 0.40, stars: 10000 },
+         { psfSNR: 1010, fwhm: 5.1, eccentricity: 0.41, stars: 10100 },
+         { psfSNR: 1020, fwhm: 5.2, eccentricity: 0.42, stars: 10200 },
+         { psfSNR: 1030, fwhm: 5.3, eccentricity: 0.40, stars: 10300 },
+         { psfSNR: 1040, fwhm: 5.4, eccentricity: 0.41, stars: 10400 },
+         { psfSNR: 1050, fwhm: 5.5, eccentricity: 0.42, stars: 10500 },
+         { psfSNR: 1060, fwhm: 5.6, eccentricity: 0.40, stars: 10600 },
+         { psfSNR: 1070, fwhm: 5.7, eccentricity: 0.41, stars: 10700 },
+         { psfSNR: 1080, fwhm: 5.8, eccentricity: 0.42, stars: 10800 },
+         { psfSNR: 1090, fwhm: 5.9, eccentricity: 0.40, stars: 10900 } ], 2.5 );
+
+      var soft = { psfSNR: 1000, fwhm: 20, eccentricity: 0.4, stars: 10000 };
+      var fine = { psfSNR: 1050, fwhm: 5.5, eccentricity: 0.41, stars: 10500 };
+
+      var rel = Frames.defaultSettings();
+      check( "Relative rejects a frame outside the gate",
+             Frames.verdict( soft, gates, rel ).state, Frames.STATE.REJECTED );
+      check( "and names the metric that failed",
+             Frames.verdict( soft, gates, rel ).reasons[0].indexOf( "FWHM" ) >= 0, true );
+      check( "a typical frame is approved",
+             Frames.verdict( fine, gates, rel ).state, Frames.STATE.APPROVED );
+
+      /*
+       * Hard limits cannot rescue a frame the relative gate rejects, so
+       * Absolute switches the relative gate OFF. It is the only mode that
+       * can keep an entire good night.
+       */
+      var abs = Frames.defaultSettings();
+      abs.mode = Frames.MODE.ABSOLUTE;
+      abs.limits.fwhm = { hi: 25 };
+      check( "Absolute ignores the relative gate",
+             Frames.verdict( soft, gates, abs ).state, Frames.STATE.APPROVED );
+      check( "and rejects on its own ceiling",
+             Frames.verdict( { psfSNR: 1000, fwhm: 30, eccentricity: 0.4, stars: 10000 },
+                              gates, abs ).state, Frames.STATE.REJECTED );
+      check( "Absolute with no limits keeps everything",
+             Frames.verdict( soft, gates,
+                ( function(){ var a = Frames.defaultSettings();
+                              a.mode = Frames.MODE.ABSOLUTE; return a; } )()
+             ).state, Frames.STATE.APPROVED );
+
+      var both = Frames.defaultSettings();
+      both.mode = Frames.MODE.BOTH;
+      both.limits.fwhm = { hi: 25 };
+      check( "Both rejects on either condition",
+             Frames.verdict( soft, gates, both ).state, Frames.STATE.REJECTED );
+
+      /*
+       * The minimum-count rule disables RELATIVE gates only. In Relative mode
+       * a thin channel therefore rejects nothing; it does not fall through to
+       * limits that mode ignores by definition.
+       */
+      var thin = Frames.relativeGates( [ { psfSNR: 1, fwhm: 1, eccentricity: 0.5, stars: 200 } ], 2.5 );
+      var relThin = Frames.defaultSettings();
+      relThin.limits.fwhm = { hi: 2 };
+      check( "a thin channel in Relative rejects nothing",
+             Frames.verdict( { psfSNR: 1000, fwhm: 30, eccentricity: 0.4, stars: 10000 },
+                              thin, relThin ).state, Frames.STATE.APPROVED );
+
+      check( "an unmeasurable frame is neither approved nor rejected",
+             Frames.verdict( { psfSNR: 1000, fwhm: 5, eccentricity: 0, stars: 10000 },
+                              gates, rel ).state, Frames.STATE.UNMEASURABLE );
+   } )();
+
+   ( function()
+   {
+      var e = [
+         { path: "/m/h1.xisf", filter: "H", exposure: 180, binning: 1,
+           width: 6248, height: 4176, calibrated: true },
+         { path: "/m/h2.xisf", filter: "H", exposure: 180, binning: 1,
+           width: 6248, height: 4176, calibrated: true },
+         { path: "/m/o1.xisf", filter: "O", exposure: 180, binning: 1,
+           width: 6248, height: 4176, calibrated: true },
+         { path: "/m/x1.xisf", filter: "", exposure: 60, binning: 1,
+           width: 6248, height: 4176, calibrated: true } ];
+      var g = Frames.groupByFilter( e );
+      check( "frames group by their filter", g.H.length, 2 );
+      check( "each filter is its own group", g.O.length, 1 );
+      /*
+       * The RAW filter string, not Util.channelFromFilter, which maps to
+       * Loom's seven canonical channels and returns null for anything else --
+       * it would merge distinct filters and drop unfamiliar ones.
+       */
+      check( "an unreadable filter forms its own group",
+             g[Frames.NO_FILTER].length, 1 );
+      /*
+       * And that group is never clipped. Without a filter there is no
+       * evidence the frames belong together, so "this night's worst" is
+       * meaningless over them -- they may be condemned by hand, never
+       * automatically.
+       */
+      check( "a group with no filter is never auto-rejected",
+             Frames.autoRejectAllowed( Frames.NO_FILTER ), false );
+      check( "a real filter is", Frames.autoRejectAllowed( "H" ), true );
+
+      check( "a uniform group is comparable",
+             Frames.comparability( g.H ).uniform, true );
+
+      var mixed = g.H.concat( [ { path: "/m/h3.xisf", filter: "H", exposure: 60,
+                                  binning: 1, width: 6248, height: 4176,
+                                  calibrated: true } ] );
+      check( "mixed exposures are not", Frames.comparability( mixed ).uniform, false );
+      check( "and the problem is named",
+             Frames.comparability( mixed ).problems[0].indexOf( "exposure" ) >= 0, true );
+
+      /*
+       * Raw and calibrated frames of one filter can agree on exposure,
+       * binning and geometry, so calibration state is part of the check.
+       */
+      var mixedCal = g.H.concat( [ { path: "/m/h4.xisf", filter: "H", exposure: 180,
+                                     binning: 1, width: 6248, height: 4176,
+                                     calibrated: false } ] );
+      check( "mixed calibration state is not comparable either",
+             Frames.comparability( mixedCal ).uniform, false );
+
+      /*
+       * Asymmetric binning: 1x1 against 1x2 agrees on XBINNING and differs
+       * only vertically. Pixel FWHM is not comparable across it, and the
+       * guard used to read a field nothing ever set, so it always passed.
+       */
+      var mixedBin = g.H.concat( [ { path: "/m/h5.xisf", filter: "H", exposure: 180,
+                                     binning: 1, binningY: 2, width: 6248,
+                                     height: 4176, calibrated: true } ] );
+      check( "asymmetric binning is not comparable",
+             Frames.comparability( mixedBin ).uniform, false );
+      check( "and the problem names binning",
+             Frames.comparability( mixedBin ).problems.join( " " )
+                   .indexOf( "binning" ) >= 0, true );
+
+      /*
+       * A filter named like an Object.prototype member. Absurd as a filter,
+       * fatal as a bare-object map key: out["constructor"] is inherited and
+       * not null, so the group array was never created and push() was called
+       * on a function.
+       */
+      var proto = Frames.groupByFilter( [
+         { path: "/m/p1.xisf", filter: "constructor", exposure: 180, binning: 1,
+           width: 6248, height: 4176, calibrated: true },
+         { path: "/m/p2.xisf", filter: "toString", exposure: 180, binning: 1,
+           width: 6248, height: 4176, calibrated: true } ] );
+      check( "a filter named after a prototype member still groups",
+             proto["constructor"].length, 1 );
+      check( "and so does another", proto["toString"].length, 1 );
+
+      /*
+       * The same trap inside comparability's own distinct() counter: an
+       * inherited key reads as already-seen, so the value is never counted
+       * and a genuine mixture reports as uniform.
+       */
+      var protoType = [
+         { path: "/m/t1.xisf", filter: "H", exposure: 180, binning: 1,
+           imageType: "toString", width: 6248, height: 4176, calibrated: true },
+         { path: "/m/t2.xisf", filter: "H", exposure: 180, binning: 1,
+           imageType: "LIGHT", width: 6248, height: 4176, calibrated: true } ];
+      check( "a prototype-named image type is still counted",
+             Frames.comparability( protoType ).uniform, false );
+   } )();
+
+   /*
+    * An override is explicit and outranks the formula: somebody looked at the
+    * frame at 1:1 and the formula did not.
+    */
+   check( "a rescued frame is kept even though the formula rejected it",
+          Frames.finalState( Frames.STATE.REJECTED, Frames.OVERRIDE.RESCUED ),
+          Frames.STATE.APPROVED );
+   check( "a condemned frame is dropped even though the formula kept it",
+          Frames.finalState( Frames.STATE.APPROVED, Frames.OVERRIDE.CONDEMNED ),
+          Frames.STATE.REJECTED );
+   check( "no override leaves the verdict alone",
+          Frames.finalState( Frames.STATE.REJECTED, null ),
+          Frames.STATE.REJECTED );
+   /*
+    * An unmeasurable frame can be condemned by hand but cannot be "approved":
+    * there is no measurement to approve.
+    */
+   check( "an unmeasurable frame can be condemned",
+          Frames.finalState( Frames.STATE.UNMEASURABLE, Frames.OVERRIDE.CONDEMNED ),
+          Frames.STATE.REJECTED );
+   check( "but rescuing one leaves it unmeasurable",
+          Frames.finalState( Frames.STATE.UNMEASURABLE, Frames.OVERRIDE.RESCUED ),
+          Frames.STATE.UNMEASURABLE );
+
+   ( function()
+   {
+      var rows = [
+         { state: Frames.STATE.APPROVED,     override: null },
+         { state: Frames.STATE.APPROVED,     override: null },
+         { state: Frames.STATE.REJECTED,     override: Frames.OVERRIDE.RESCUED },
+         { state: Frames.STATE.REJECTED,     override: null },
+         { state: Frames.STATE.APPROVED,     override: Frames.OVERRIDE.CONDEMNED },
+         { state: Frames.STATE.UNMEASURABLE, override: null } ];
+      var c = Frames.counts( rows );
+      check( "kept counts the rescued frame", c.kept, 3 );
+      check( "rejected counts the condemned one", c.rejected, 2 );
+      check( "the unmeasurable frame is neither", c.unmeasurable, 1 );
+      /*
+       * Hand edits are counted separately so a summary never hides one.
+       */
+      check( "rescues are reported", c.rescued, 1 );
+      check( "and condemnations", c.condemned, 1 );
+      check( "the summary names both",
+             Frames.summaryLine( "H", c ),
+             "H: 3 kept of 6 (+1 rescued, -1 condemned, 1 unmeasurable)" );
+   } )();
+
+   ( function()
+   {
+      var rows = [
+         { path: "/m/a.xisf", state: Frames.STATE.REJECTED, reasons: [ "FWHM" ],
+           digest: "aaa", size: 100, mtime: 5 },
+         { path: "/m/b.xisf", state: Frames.STATE.APPROVED, reasons: [],
+           digest: "bbb", size: 100, mtime: 5 },
+         { path: "/m/c.xisf", state: Frames.STATE.UNMEASURABLE, reasons: [],
+           digest: "ccc", size: 100, mtime: 5 } ];
+      var man = Frames.buildManifest( rows );
+      /*
+       * Only rejected frames are actionable. An unmeasurable frame is never
+       * deleted automatically -- there is no measurement behind the verdict.
+       */
+      check( "only rejected frames enter the manifest", man.entries.length, 1 );
+      check( "and it is the rejected one", man.entries[0].path, "/m/a.xisf" );
+      check( "carrying the digest taken at measurement",
+             man.entries[0].digest, "aaa" );
+
+      /*
+       * The lifecycle, as a state machine rather than a paragraph. The review
+       * is editable only in REVIEW: otherwise a knob change could alter the
+       * decisions of a manifest that is already deleting files.
+       */
+      check( "the review starts editable", Frames.canEdit( Frames.PHASE.REVIEW ), true );
+      check( "and is locked while executing",
+             Frames.canEdit( Frames.PHASE.EXECUTING ), false );
+      check( "a stopped run is still locked",
+             Frames.canEdit( Frames.PHASE.STOPPED ), false );
+      check( "committing enters execution",
+             Frames.nextPhase( Frames.PHASE.REVIEW, "commit" ), Frames.PHASE.EXECUTING );
+      check( "a stopped run may be resumed",
+             Frames.nextPhase( Frames.PHASE.STOPPED, "resume" ), Frames.PHASE.EXECUTING );
+      check( "or abandoned, which is the only way back to editing",
+             Frames.nextPhase( Frames.PHASE.STOPPED, "abandon" ), Frames.PHASE.REVIEW );
+      /*
+       * There is no edit transition out of EXECUTING, and no second commit:
+       * pressing Apply twice must not run two manifests over one cohort.
+       */
+      check( "a second commit while executing is refused",
+             Frames.nextPhase( Frames.PHASE.EXECUTING, "commit" ), null );
+
+      check( "everything is pending before execution",
+             Frames.manifestPending( man ).length, 1 );
+      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
+      check( "a recorded outcome is no longer pending",
+             Frames.manifestPending( man ).length, 0 );
+      /*
+       * Resuming skips what is done. Recomputing instead would be iterative
+       * clipping: remove the worst frame and the survivors' MAD tightens, so
+       * the next pass takes the next-worst -- a frame nobody condemned.
+       */
+      Frames.recordOutcome( man, "/m/a.xisf", "deleted", "" );
+      check( "recording twice does not duplicate the entry", man.entries.length, 1 );
+   } )();
+
+   ( function()
+   {
+      var e = { path: "/m/a.xisf", digest: "aaa", size: 100, mtime: 5 };
+      check( "identity matches when the digest does",
+             Frames.identityMatches( e, { digest: "aaa", size: 100, mtime: 5 } ), true );
+      /*
+       * Path, size and mtime are all preservable by a replacement. The
+       * digest is what authorises a deletion.
+       */
+      check( "and fails when only the digest changed",
+             Frames.identityMatches( e, { digest: "zzz", size: 100, mtime: 5 } ), false );
+      check( "a missing current file never matches",
+             Frames.identityMatches( e, null ), false );
+   } )();
+
+   ( function()
+   {
+      var m = Frames.outputName( "/src/Light_0001_c.xisf" );
+      check( "an output keeps its name", m, "Light_0001_c.xisf" );
+
+      /*
+       * Two sources that would produce one output name must abort the
+       * channel. Writing both would leave one output and, if originals were
+       * ever deleted, would destroy the frame that lost the race.
+       */
+      var r = Frames.outputMapping(
+         [ "/a/Light_0001_c.xisf", "/b/Light_0001_c.xisf" ], "/dest", ".xisf" );
+      check( "a name collision is detected", r.collisions.length, 1 );
+
+      var ok = Frames.outputMapping(
+         [ "/a/one.xisf", "/a/two.xisf" ], "/dest", ".xisf" );
+      check( "distinct names map cleanly", ok.collisions.length, 0 );
+      check( "and land in the destination",
+             ok.mapping["/a/one.xisf"], "/dest/one.xisf" );
+
+      /*
+       * Writing into the source directory is refused: it makes "the output"
+       * and "the original" the same file.
+       */
+      check( "the destination may not be the source",
+             Frames.outputMapping( [ "/a/one.xisf" ], "/a", ".xisf" ).aliased, true );
+      /*
+       * The output EXTENSION is part of the mapping, because converting on
+       * output creates collisions the source names do not show: a.fit and
+       * a.xisf both become a.xisf.
+       */
+      check( "a conversion collision is detected",
+             Frames.outputMapping( [ "/a/one.fit", "/a/one.xisf" ],
+                                   "/dest", ".xisf" ).collisions.length, 1 );
+   } )();
+
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",
@@ -3052,6 +3621,311 @@ function runTests()
                 after > before*2, true );
       }
       finally { try { w.forceClose(); } catch ( e ) {} }
+   } )();
+
+   /* ---- the Frame Selector measures, and the columns still mean --------- */
+
+   /*
+    * Measure a real frame and check each column still MEANS what it is read
+    * as. Pinning the constants cannot do this -- Frames.COL.psfSNR === 28
+    * passes unchanged after the process reorders its table -- and neither
+    * can disjoint ranges, which real data rules out (see Frames.PLAUSIBLE).
+    * The shape checks in Frames.meaningProblems are what carry it.
+    *
+    * A missing fixture must FAIL, not skip. An assertion that silently
+    * disappears when a path is absent is how column-meaning coverage
+    * evaporates on another machine. The list is tried in order because WBPP
+    * renumbers its masters between runs: the plan's (1) became (2).
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var base = "/Volumes/A008/Elephant Trunk/master/" +
+                 "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-R_mono_drizzle_2x";
+      var fixture = Steps.firstExistingPath( [
+         base + "_(1)_autocrop.xisf",
+         base + "_(2)_autocrop.xisf",
+         base + "_(3)_autocrop.xisf" ] );
+      check( "the measurement fixture is present", fixture != null, true );
+      if ( fixture == null )
+         return;
+
+      var measured = FrameSelector.measure( [ fixture ] );
+      check( "the channel was not abandoned", measured != null, true );
+      if ( measured == null )
+         return;
+      var m = measured[fixture];
+      check( "a frame measures", m != null, true );
+      if ( m == null )
+         return;
+
+      /*
+       * Matched back by PATH, never by position: the returned key is the
+       * path that was asked for.
+       */
+      check( "the result is keyed by the path asked for", m.path, fixture );
+
+      check( "every column still means what it is read as",
+             Frames.meaningProblems( m ).join( "; " ), "" );
+      check( "FWHM is in a plausible range for an FWHM",
+             Frames.metricInRange( "fwhm", m.fwhm ), true );
+      check( "eccentricity is a fraction",
+             Frames.metricInRange( "eccentricity", m.eccentricity ), true );
+      /*
+       * Column 8 reads 0 on every frame measured here, which is why PSF SNR
+       * is read from 28. If 28 ever went to zero the score's dominant term
+       * would be a constant with no symptom, so it is asserted directly.
+       */
+      check( "PSF SNR is not the zero that column 8 returns",
+             m.psfSNR > 0, true );
+      check( "and the star count is a positive whole number",
+             m.stars > 0 && Math.floor( m.stars ) === m.stars, true );
+
+      /*
+       * And prove the check can fail: put the star count where PSF SNR is
+       * read from and the meaning check must reject it. Without this the
+       * assertions above could pass on tests too loose to discriminate.
+       */
+      var swapped = { path: m.path, fwhm: m.fwhm, eccentricity: m.eccentricity,
+                      psfSNR: m.stars, stars: m.psfSNR };
+      check( "a star count in the PSF SNR slot is rejected",
+             Frames.meaningProblems( swapped ).length > 0, true );
+   } )();
+
+   /* ---- digests, which are what authorise a deletion -------------------- */
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var tmp = "/tmp/agent-scratch/digest-test.txt";
+      File.writeTextFile( tmp, "one" );
+      var a = FrameSelector.digest( tmp );
+      check( "a digest is produced", typeof a, "string" );
+      check( "the same bytes give the same digest",
+             FrameSelector.digest( tmp ), a );
+      File.writeTextFile( tmp, "two" );
+      /*
+       * Same path, same length. Only the CONTENT changed -- which is
+       * exactly the replacement a path/size/mtime check cannot see.
+       */
+      check( "different bytes of the same length give a different digest",
+             FrameSelector.digest( tmp ) != a, true );
+      File.remove( tmp );
+      check( "a missing file has no digest",
+             FrameSelector.digest( "/tmp/agent-scratch/not-there.xisf" ), null );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = "/tmp/agent-scratch/fs-scan-test";
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+      var p = dir + "/unstable.txt";
+      File.writeTextFile( p, "first" );
+      var before = FrameSelector.fileIdentity( p );
+      File.writeTextFile( p, "secnd" );        // same length, new content
+      var after = FrameSelector.fileIdentity( p );
+      /*
+       * The identity check the scan relies on must notice a replacement
+       * that preserves the length -- which is the only kind that matters,
+       * because a size change would be caught anyway.
+       */
+      check( "a same-length replacement changes identity",
+             before.digest != after.digest, true );
+      check( "and the size it preserved is still reported as equal",
+             before.size, after.size );
+      File.remove( p );
+
+      /*
+       * The scan must produce a cohort from a real folder. An empty one is
+       * not an error: it has no channels and nothing unstable.
+       */
+      var empty = FrameSelector.scan( dir );
+      check( "an empty folder scans to no channels",
+             Object.keys( empty.channels ).length, 0 );
+      check( "and nothing unstable", empty.unstable.length, 0 );
+   } )();
+
+   /*
+    * The delete path, against COPIES in scratch and never against real
+    * subframes. This is the only irreversible operation in the tool.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = "/tmp/agent-scratch/fs-delete-test";
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+      var keep = dir + "/keep.txt", drop = dir + "/drop.txt",
+          swapped = dir + "/swapped.txt";
+      File.writeTextFile( keep, "keep" );
+      File.writeTextFile( drop, "drop" );
+      File.writeTextFile( swapped, "before" );
+
+      var man = Frames.buildManifest( [
+         { path: drop, state: Frames.STATE.REJECTED, reasons: [ "test" ],
+           digest: FrameSelector.digest( drop ),
+           size: ( new FileInfo( drop ) ).size, mtime: 0 },
+         { path: swapped, state: Frames.STATE.REJECTED, reasons: [ "test" ],
+           digest: FrameSelector.digest( swapped ),
+           size: ( new FileInfo( swapped ) ).size, mtime: 0 } ] );
+
+      /*
+       * Replace one file after the manifest was built, with content of the
+       * same length. Path, size and mtime all still match; only the digest
+       * does not. It must survive.
+       */
+      File.writeTextFile( swapped, "after!" );
+
+      var result = FrameSelector.execute( man );
+      check( "the condemned file is gone", File.exists( drop ), false );
+      check( "the replaced file is NOT deleted", File.exists( swapped ), true );
+      check( "and is reported as skipped", result.skipped, 1 );
+      check( "the untouched file is untouched", File.exists( keep ), true );
+      check( "the run was not stopped by the journal", result.stopped, false );
+
+      /*
+       * The record must exist, and must have been written before the unlink
+       * rather than after it.
+       */
+      check( "an audit log was written", result.logPath != null, true );
+      if ( result.logPath != null )
+      {
+         check( "and it is on disk", File.exists( result.logPath ), true );
+         var text = File.readTextFile( result.logPath );
+         check( "naming the deleted frame", text.indexOf( drop ) >= 0, true );
+         check( "and recording the skip", text.indexOf( "skipped" ) >= 0, true );
+      }
+
+      /*
+       * Resuming must not act twice, and must not recompute anything.
+       */
+      var again = FrameSelector.execute( man );
+      check( "a second execute does nothing new", again.deleted, 0 );
+      check( "and the replaced file still survives it",
+             File.exists( swapped ), true );
+
+      File.remove( keep ); File.remove( swapped );
+   } )();
+
+   /*
+    * The preview control, built against the real widget classes. The
+    * prototype in Task 1 measured 341 ms from open to a drawn bitmap on a
+    * 26 MP sub, well inside the 1.5 s gate, so the dialog is built around
+    * a full-frame render rather than a downsampled one.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ok = true, err = "";
+      try
+      {
+         var dlg = new Dialog;
+         var pv = new FrameSelector.PreviewControl( dlg );
+         /*
+          * Arrow keys must not reach the frame table underneath, so the
+          * control takes focus on click and consumes the keys it handles.
+          */
+         ok = ok && ( pv.focusStyle == FocusStyle.Click );
+         ok = ok && ( typeof pv.load == "function" );
+         ok = ok && ( typeof pv.dispose == "function" );
+         /* Panning with nothing loaded must not throw. */
+         pv.pan( 100, 100 );
+         pv.dispose();
+      }
+      catch ( e ) { ok = false; err = String( e ); }
+      check( "the preview control builds and pans" + ( err ? ": " + err : "" ),
+             ok, true );
+
+      /*
+       * "1:1" means one image pixel per PHYSICAL display pixel. The
+       * prototype measured physicalPixelRatio as 1 on this display, not the
+       * 2 the plan assumed, so the control must read the ratio rather than
+       * divide by a constant.
+       */
+      check( "a bitmap reports a physical pixel ratio",
+             ( new Bitmap( 4, 4 ) ).physicalPixelRatio > 0, true );
+   } )();
+
+   /*
+    * The review dialog, built against the real widget classes. Two dialog
+    * breakages reached the user as constructor errors that no pure-function
+    * test could see, which is why this is here rather than assumed.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      /*
+       * Space toggles an override, so the constant has to exist. Probed
+       * rather than assumed: this engine has undefined constants where the
+       * documentation implies otherwise.
+       */
+      check( "KeyCode.Space is defined", typeof KeyCode.Space, "number" );
+
+      var ok = true, err = "";
+      try
+      {
+         var state = { folder: "/tmp/agent-scratch", channels: {}, order: [],
+                       preset: Frames.DEFAULT_PRESET, locked: false };
+         var dlg = new FrameSelector.Dialog( state );
+         /*
+          * The review is editable until an execution is committed, and
+          * locked while one is running -- otherwise editing a knob mid-run
+          * would alter a manifest that is already deleting files.
+          */
+         ok = ok && ( typeof dlg.refresh == "function" );
+         ok = ok && ( typeof dlg.commit == "function" );
+         dlg.cancel();
+      }
+      catch ( e ) { ok = false; err = String( e ); }
+      check( "the frame selector dialog builds" + ( err ? ": " + err : "" ),
+             ok, true );
+
+      /*
+       * A dialog with real channels is the case that actually exercises the
+       * tree population and the verdict recompute; an empty one builds even
+       * when every one of those paths is broken.
+       */
+      var ok2 = true, err2 = "";
+      try
+      {
+         var st = FrameSelector.emptyState( "/tmp/agent-scratch" );
+         st.channels.H = FrameSelector.newChannel( "H",
+            [ { path: "/m/h1.xisf", filter: "H", exposure: 180, binning: 1,
+                width: 10, height: 10, calibrated: "yes",
+                identity: { digest: "d1", size: 1, mtime: 0 } },
+              { path: "/m/h2.xisf", filter: "H", exposure: 180, binning: 1,
+                width: 10, height: 10, calibrated: "yes",
+                identity: { digest: "d2", size: 1, mtime: 0 } } ],
+            { "/m/h1.xisf": { psfSNR: 1000, fwhm: 5, eccentricity: 0.4, stars: 10000 },
+              "/m/h2.xisf": { psfSNR: 1010, fwhm: 5.1, eccentricity: 0.41, stars: 10100 } },
+            [] );
+         st.order = [ "H" ];
+         var d2 = new FrameSelector.Dialog( st );
+         d2.refresh();
+         check( "a channel below the minimum rejects nothing",
+                Frames.counts( st.channels.H.rows ).rejected, 0 );
+         /*
+          * An override outranks the formula even here, where the formula
+          * rejected nothing at all.
+          */
+         st.channels.H.rows[0].override = Frames.OVERRIDE.CONDEMNED;
+         check( "a condemned frame counts as rejected",
+                Frames.counts( st.channels.H.rows ).rejected, 1 );
+         check( "and the manifest carries exactly it",
+                Frames.buildManifest( st.channels.H.rows ).entries.length, 1 );
+         /*
+          * What Apply would act on, asked for without putting the modal
+          * confirmation on screen. "Act on this channel" is only meaningful
+          * if unchecking it removes the channel's rows from the set that
+          * reaches buildManifest at all, so that is what is asserted.
+          */
+         check( "the committable set is the enabled channel's rows",
+                d2.committableRows().rows.length, 2 );
+         st.channels.H.settings.enabled = false;
+         check( "and a disabled channel contributes nothing",
+                d2.committableRows().rows.length, 0 );
+         st.channels.H.settings.enabled = true;
+         d2.cancel();
+      }
+      catch ( e ) { ok2 = false; err2 = String( e ); }
+      check( "a populated dialog builds and refreshes" + ( err2 ? ": " + err2 : "" ),
+             ok2, true );
    } )();
 
    /* ---- the dialogs must actually construct ---------------------------- */
