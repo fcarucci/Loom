@@ -91,6 +91,35 @@ jobs:
       # place a release is ever built: tagging is the whole procedure, so
       # a maintenance release cannot accidentally ship a zip someone made
       # by hand from a tree that was not the tagged one.
+      - name: Build the update repository
+        run: ci/repository.sh "${{ steps.version.outputs.version }}"
+
+      # The repository package deploys into the PixInsight INSTALLATION
+      # directory, so its top level is src/scripts/Loom -- not Loom, which
+      # is what the hand-installed zip carries. Getting this wrong scatters
+      # the script across the install tree, and the updater would do it on
+      # every subscriber's machine at once.
+      - name: Check the repository layout
+        run: |
+          zip="$( ls dist/repo/*.zip )"
+          unzip -q "$zip" -d /tmp/xri
+          test -f /tmp/xri/src/scripts/Loom/Loom.js \
+            || { echo "missing src/scripts/Loom/Loom.js"; exit 1; }
+          test -f /tmp/xri/src/scripts/Loom/lib/Util.js \
+            || { echo "missing src/scripts/Loom/lib/Util.js"; exit 1; }
+          test ! -e /tmp/xri/src/scripts/Loom/selftest.js \
+            || { echo "selftest.js must not ship: it adds LoomSelfTest to the Script menu"; exit 1; }
+          if [ "$( ls /tmp/xri )" != "src" ]; then
+            echo "the archive must contain exactly one top-level folder, src:"; ls /tmp/xri; exit 1
+          fi
+          # The manifest's checksum must be the one the core will compute,
+          # or every download fails verification on the user's machine.
+          want="$( sed -n 's/.*sha1="\([0-9a-f]*\)".*/\1/p' dist/repo/updates.xri )"
+          got="$( sha1sum "$zip" | cut -d' ' -f1 )"
+          test "$want" = "$got" \
+            || { echo "sha1 mismatch: manifest $want, archive $got"; exit 1; }
+          echo "repository layout OK"
+
       - name: Publish the release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
@@ -104,3 +133,67 @@ jobs:
 
             The archive carries a `RELEASE` marker, which is what lets Loom
             recognise the install as its own and update it in place.
+
+  # The update repository, served over HTTPS so PixInsight can subscribe to
+  # it: https://fcarucci.github.io/Loom/updates.xri
+  #
+  # Only on a TAG. Publishing on every push to main would advertise an
+  # unreleased build to everyone subscribed, and the updater would install
+  # it on their next restart.
+  pages:
+    needs: package
+    name: Publish the update repository
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the repository
+        run: ci/repository.sh "${GITHUB_REF_NAME#v}"
+
+      # An index so the URL is not a bare 404 to anyone who opens it in a
+      # browser looking for what to subscribe to.
+      - name: Write the landing page
+        run: |
+          cat > dist/repo/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>Loom — PixInsight update repository</title>
+            <style>
+              body { font-family: -apple-system, system-ui, sans-serif;
+                     max-width: 40em; margin: 4em auto; padding: 0 1em;
+                     line-height: 1.5; }
+              code { background: #f4f4f4; padding: .15em .35em; border-radius: 3px; }
+            </style>
+          </head>
+          <body>
+            <h1>Loom</h1>
+            <p>A PixInsight update repository. In PixInsight, open
+               <b>Resources &rarr; Updates &rarr; Manage Repositories</b>,
+               add this URL, then
+               <b>Resources &rarr; Updates &rarr; Check for Updates</b>:</p>
+            <p><code>https://fcarucci.github.io/Loom/</code></p>
+            <p>The repository is not signed, so PixInsight will ask you to
+               confirm it once.</p>
+            <p><a href="https://github.com/fcarucci/Loom">Source and releases</a></p>
+          </body>
+          </html>
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/repo
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
