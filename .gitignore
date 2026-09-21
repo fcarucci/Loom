@@ -3,3 +3,8 @@
 # Agent worktrees, created by Claude Code. Never part of the project.
 # Built release archives.
 dist/
+
+# Private signing keys. A .xssk is the private half of your PixInsight
+# developer identity: committing one would hand your signing ability to
+# anyone who can read the repository.
+*.xssk
