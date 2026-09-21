@@ -355,41 +355,62 @@ Steps.configuredSPFC = function()
  */
 Steps.CORE_SETTINGS_DIR = CoreApplication.configDirPath;
 
+/* Every core settings file PixInsight writes, newest naming included. */
+Steps.coreSettingsFiles = function()
+{
+   var files = [];
+   var ff = new FileFind;
+   if ( !ff.begin( Steps.CORE_SETTINGS_DIR + "/core-*-pxi.settings" ) )
+      return files;
+   do
+   {
+      if ( !ff.isDirectory && ff.name != "." && ff.name != ".." )
+         files.push( Steps.CORE_SETTINGS_DIR + "/" + ff.name );
+   }
+   while ( ff.next() );
+   return files;
+};
+
+/*
+ * The MARS database paths named in one settings file, that actually
+ * exist. A listed path that is gone is reported rather than returned: MGC
+ * would fail later with a message that does not name the file.
+ */
+Steps.marsPathsIn = function( file )
+{
+   var text = "";
+   try { text = File.readTextFile( file ); } catch ( e ) { return []; }
+
+   var out = [];
+   var re = /<v\s+k="MARSDatabaseFilePath\d+"[^>]*>([^<]+)<\/v>/g, m;
+   while ( ( m = re.exec( text ) ) != null )
+   {
+      var p = m[1].trim();
+      if ( p.length == 0 )
+         continue;
+      if ( !File.exists( p ) )
+      {
+         Util.warn( "mgc", "MARS database listed in PixInsight settings " +
+                           "does not exist: " + p );
+         continue;
+      }
+      out.push( p );
+   }
+   return out;
+};
+
 Steps.marsDatabasesFromCoreSettings = function()
 {
    var paths = [];
    try
    {
-      var ff = new FileFind;
-      if ( !ff.begin( Steps.CORE_SETTINGS_DIR + "/core-*-pxi.settings" ) )
-         return paths;
-      var files = [];
-      do
-      {
-         if ( !ff.isDirectory && ff.name != "." && ff.name != ".." )
-            files.push( Steps.CORE_SETTINGS_DIR + "/" + ff.name );
-      }
-      while ( ff.next() );
-
+      var files = Steps.coreSettingsFiles();
       for ( var i = 0; i < files.length; ++i )
       {
-         var text = "";
-         try { text = File.readTextFile( files[i] ); } catch ( e ) { continue; }
-         var re = /<v\s+k="MARSDatabaseFilePath\d+"[^>]*>([^<]+)<\/v>/g, m;
-         while ( ( m = re.exec( text ) ) != null )
-         {
-            var p = m[1].trim();
-            if ( p.length == 0 )
-               continue;
-            if ( !File.exists( p ) )
-            {
-               Util.warn( "mgc", "MARS database listed in PixInsight settings " +
-                                 "does not exist: " + p );
-               continue;
-            }
-            if ( paths.indexOf( p ) < 0 )
-               paths.push( p );
-         }
+         var found = Steps.marsPathsIn( files[i] );
+         for ( var j = 0; j < found.length; ++j )
+            if ( paths.indexOf( found[j] ) < 0 )
+               paths.push( found[j] );
       }
    }
    catch ( e )
@@ -1568,31 +1589,31 @@ Steps.NOISE_LEVELS = {
    mldenoise: { low: 0.60, medium: 0.90, high: 1.00 }  // 0.90 = MLDenoise default
 };
 
-Steps.denoise = function( view, tool, level, label, alreadyStretched )
+/* The level tables refuse an unknown name rather than guessing a default. */
+Steps.noiseLevelFor = function( table, level )
 {
-   if ( !tool || tool == "none" || !level || level == "none" )
-      return;
+   var v = table[level];
+   if ( v == null )
+      throw new Error( "Unknown noise reduction level: " + level );
+   return v;
+};
 
-   Util.operation( "noise reduction", tool, level, label || view.id );
+Steps.denoiseWithNXT = function( view, level )
+{
+   var lv = Steps.noiseLevelFor( Steps.NOISE_LEVELS.nxt, level );
+   Util.log( "denoise", view.id + ": NoiseXTerminator " + level +
+                        " (denoise " + lv.denoise + ", detail " + lv.detail + ")" );
 
-   if ( tool == Steps.NR_TOOL_NXT )
-   {
-      var lv = Steps.NOISE_LEVELS.nxt[level];
-      if ( lv == null )
-         throw new Error( "Unknown noise reduction level: " + level );
-      Util.log( "denoise", view.id + ": NoiseXTerminator " + level +
-                           " (denoise " + lv.denoise + ", detail " + lv.detail + ")" );
-      var P = new NoiseXTerminator;
-      P.denoise = lv.denoise;
-      P.denoise_color = lv.denoise;
-      P.detail = lv.detail;
-      if ( !P.executeOn( view ) )
-         throw new Error( "NoiseXTerminator failed on " + view.id );
-      return;
-   }
+   var P = new NoiseXTerminator;
+   P.denoise = lv.denoise;
+   P.denoise_color = lv.denoise;
+   P.detail = lv.detail;
+   if ( !P.executeOn( view ) )
+      throw new Error( "NoiseXTerminator failed on " + view.id );
+};
 
-   if ( tool == Steps.NR_TOOL_MLDENOISE )
-   {
+Steps.denoiseWithML = function( view, level )
+{
       var amount = Steps.NOISE_LEVELS.mldenoise[level];
       if ( amount == null )
          throw new Error( "Unknown noise reduction level: " + level );
@@ -1614,17 +1635,32 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched )
        */
       if ( !M.executeOn( view ) )
          throw new Error( "MLDenoise failed on " + view.id );
-      return;
-   }
+   };
 
-   if ( tool == Steps.NR_TOOL_PRISM )
-   {
-      var strength = Steps.NOISE_LEVELS.prism[level];
-      if ( strength == null )
-         throw new Error( "Unknown noise reduction level: " + level );
-      Steps.prismExecuteStage( view, strength, alreadyStretched );
+Steps.denoiseWithPrism = function( view, level, alreadyStretched )
+{
+   Steps.prismExecuteStage( view,
+      Steps.noiseLevelFor( Steps.NOISE_LEVELS.prism, level ),
+      alreadyStretched );
+};
+
+/*
+ * One line per tool. An unknown tool still throws: silently doing
+ * nothing would read as "denoising ran".
+ */
+Steps.denoise = function( view, tool, level, label, alreadyStretched )
+{
+   if ( !tool || tool == "none" || !level || level == "none" )
       return;
-   }
+
+   Util.operation( "noise reduction", tool, level, label || view.id );
+
+   if ( tool == Steps.NR_TOOL_NXT )
+      return Steps.denoiseWithNXT( view, level );
+   if ( tool == Steps.NR_TOOL_MLDENOISE )
+      return Steps.denoiseWithML( view, level );
+   if ( tool == Steps.NR_TOOL_PRISM )
+      return Steps.denoiseWithPrism( view, level, alreadyStretched );
 
    throw new Error( "Unknown noise reduction tool: " + tool );
 };
@@ -1710,28 +1746,14 @@ Steps.prismStretchStats = function( px, x0, target )
    return { mean: mean, std: Math.sqrt( Math.max( 0, sum2/px.length - mean*mean ) ) };
 };
 
-Steps.prismMtfTarget = function( window, stride )
+/*
+ * A normalised sample grid, plus the 99.9th percentile brightness.
+ *
+ * Taken once and reused for every candidate target: re-sampling the image
+ * per candidate is what made this slow, and the samples do not change.
+ */
+Steps.prismSamples = function( img, nch, allMin, step )
 {
-   var img = window.mainView.image;
-   var nch = ( img.numberOfChannels >= 3 ) ? 3 : 1;
-   var step = stride || 29;
-   var rect = new Rect( 0, 0, img.width, img.height );
-
-   var allMin = img.minimum( rect, 0, 0 );
-   for ( var c = 1; c < nch; ++c )
-      allMin = Math.min( allMin, img.minimum( rect, c, c ) );
-
-   var x0 = 0;
-   for ( var c2 = 0; c2 < nch; ++c2 )
-      x0 += ( img.median( rect, c2, c2 ) - allMin ) / ( 1 - allMin );
-   x0 /= nch;
-   if ( !( x0 > 0 && x0 < 1 ) )
-   {
-      Util.warn( "prism", "could not characterise the image; using the default" );
-      return Steps.PRISM_DEFAULT_TARGET;
-   }
-
-   // one normalised sample set, reused for every candidate
    var px = [], bright = [];
    for ( var y = 0; y < img.height; y += step )
       for ( var x = 0; x < img.width; x += step )
@@ -1745,51 +1767,90 @@ Steps.prismMtfTarget = function( window, stride )
          px.push( v );
          bright.push( Math.max( v[0], Math.max( v[1], v[2] ) ) );
       }
+
    bright.sort( function( a, b ) { return a - b; } );
-   var p999 = bright[ Math.min( bright.length-1, Math.floor( 0.999*bright.length ) ) ];
+   return { px: px,
+            p999: bright[ Math.min( bright.length-1,
+                                    Math.floor( 0.999*bright.length ) ) ] };
+};
 
-   var atDefault = Steps.prismStretchStats( px, x0, Steps.PRISM_DEFAULT_TARGET );
-   if ( atDefault.std >= Steps.PRISM_CORPUS_STD_MIN &&
-        atDefault.std <= Steps.PRISM_CORPUS_STD_MAX )
-   {
-      Util.log( "prism", "target " + Steps.PRISM_DEFAULT_TARGET.toFixed( 2 ) +
-                         " (std " + atDefault.std.toFixed( 4 ) +
-                         ", inside Prism's training range " +
-                         Steps.PRISM_CORPUS_STD_MIN + "-" + Steps.PRISM_CORPUS_STD_MAX + ")" );
-      return Steps.PRISM_DEFAULT_TARGET;
-   }
-
-   /*
-    * Out of domain at the default. Raise the target towards the corpus
-    * median, stopping at the highlight cap. For an image too flat to ever
-    * reach the range this lands on the contrast peak, which is the closest
-    * it can get.
-    */
+/*
+ * The best target above the default, searched upwards.
+ *
+ * Raises towards the corpus median and stops at the highlight cap. For an
+ * image too flat ever to reach the range this lands on the contrast peak,
+ * which is as close as it can get.
+ */
+Steps.prismSearchTarget = function( px, x0, p999, atDefault )
+{
    var best = { target: Steps.PRISM_DEFAULT_TARGET, std: atDefault.std, hi: 0 };
    var bestDist = Math.abs( atDefault.std - Steps.PRISM_CORPUS_STD_MIN );
-   for ( var T = Steps.PRISM_DEFAULT_TARGET; T <= Steps.PRISM_TARGET_MAX + 1e-9; T += 0.05 )
+
+   for ( var T = Steps.PRISM_DEFAULT_TARGET;
+         T <= Steps.PRISM_TARGET_MAX + 1e-9; T += 0.05 )
    {
-      var m = Steps.mtfMidtoneFor( x0, T );
-      var hi = Steps.mtfApply( m, p999 );
+      var hi = Steps.mtfApply( Steps.mtfMidtoneFor( x0, T ), p999 );
       if ( hi > Steps.PRISM_HIGHLIGHT_CAP )
          break;
+
       var st = Steps.prismStretchStats( px, x0, T );
       // aim at the middle of the corpus range, clamped to what is reachable
-      var dist = Math.abs( st.std - Steps.PRISM_CORPUS_STD_MIN );
-      if ( st.std > Steps.PRISM_CORPUS_STD_MIN )
-         dist = 0;
+      var dist = ( st.std > Steps.PRISM_CORPUS_STD_MIN )
+               ? 0 : Math.abs( st.std - Steps.PRISM_CORPUS_STD_MIN );
+
       if ( dist < bestDist || ( dist == 0 && st.std < best.std ) )
       {
          bestDist = dist;
          best = { target: T, std: st.std, hi: hi };
       }
    }
+   return best;
+};
+
+Steps.prismMtfTarget = function( window, stride )
+{
+   var img = window.mainView.image;
+   var nch = ( img.numberOfChannels >= 3 ) ? 3 : 1;
+   var rect = new Rect( 0, 0, img.width, img.height );
+
+   var allMin = img.minimum( rect, 0, 0 );
+   for ( var c = 1; c < nch; ++c )
+      allMin = Math.min( allMin, img.minimum( rect, c, c ) );
+
+   var x0 = 0;
+   for ( var c2 = 0; c2 < nch; ++c2 )
+      x0 += ( img.median( rect, c2, c2 ) - allMin ) / ( 1 - allMin );
+   x0 /= nch;
+
+   if ( !( x0 > 0 && x0 < 1 ) )
+   {
+      Util.warn( "prism", "could not characterise the image; using the default" );
+      return Steps.PRISM_DEFAULT_TARGET;
+   }
+
+   var sampled = Steps.prismSamples( img, nch, allMin, stride || 29 );
+   var atDefault = Steps.prismStretchStats( sampled.px, x0,
+                                            Steps.PRISM_DEFAULT_TARGET );
+
+   if ( atDefault.std >= Steps.PRISM_CORPUS_STD_MIN &&
+        atDefault.std <= Steps.PRISM_CORPUS_STD_MAX )
+   {
+      Util.log( "prism", "target " + Steps.PRISM_DEFAULT_TARGET.toFixed( 2 ) +
+                         " (std " + atDefault.std.toFixed( 4 ) +
+                         ", inside Prism's training range " +
+                         Steps.PRISM_CORPUS_STD_MIN + "-" +
+                         Steps.PRISM_CORPUS_STD_MAX + ")" );
+      return Steps.PRISM_DEFAULT_TARGET;
+   }
+
+   var best = Steps.prismSearchTarget( sampled.px, x0, sampled.p999, atDefault );
 
    Util.log( "prism", "target " + best.target.toFixed( 2 ) +
                       " (std " + best.std.toFixed( 4 ) +
                       ", highlights " + best.hi.toFixed( 3 ) +
                       "); raised from " + Steps.PRISM_DEFAULT_TARGET +
                       " where std was " + atDefault.std.toFixed( 4 ) );
+
    if ( best.std < Steps.PRISM_CORPUS_STD_MIN )
       Util.warn( "prism", "this image is flatter than anything in Prism's training " +
                           "corpus (std " + best.std.toFixed( 4 ) + " < " +
@@ -1930,56 +1991,68 @@ Steps.narrowbandNormalize = function( view, palette, label )
    return true;
 };
 
+/* The ids of every image window that exists right now. */
+Steps.windowIdSet = function()
+{
+   var set = {};
+   var all = ImageWindow.windows;
+   for ( var i = 0; i < all.length; ++i )
+      set[ all[i].mainView.id ] = true;
+   return set;
+};
+
+/* The windows that have appeared since that set was taken. */
+Steps.windowsSince = function( before )
+{
+   var fresh = [];
+   var all = ImageWindow.windows;
+   for ( var i = 0; i < all.length; ++i )
+      if ( !before[ all[i].mainView.id ] )
+         fresh.push( all[i] );
+   return fresh;
+};
+
+/*
+ * The one three-channel window among them.
+ *
+ * ChannelCombination reports nothing about what it made, so the result is
+ * found by difference. More than one colour window appearing means
+ * something else created one at the same moment; the first is used and
+ * the collision is reported rather than passed on silently.
+ */
+Steps.soleColourWindow = function( fresh, id )
+{
+   var found = null;
+   for ( var i = 0; i < fresh.length; ++i )
+   {
+      var img = null;
+      try { img = fresh[i].mainView.image; } catch ( e ) { img = null; }
+      if ( img == null || img.numberOfChannels != 3 )
+         continue;
+      if ( found != null )
+         Util.warn( "combine", "more than one new colour window appeared while " +
+                               "building " + id + "; using " + found.mainView.id );
+      else
+         found = fresh[i];
+   }
+   return found;
+};
+
 Steps.combineRGB = function( rView, gView, bView, id )
 {
    Util.reportStage( "channel combination \u2192 " + id );
    Util.log( "combine", "-> " + id );
 
-   var before = {};
-   var allBefore = ImageWindow.windows;
-   for ( var i = 0; i < allBefore.length; ++i )
-      before[ allBefore[i].mainView.id ] = true;
+   var before = Steps.windowIdSet();
 
    var P = new ChannelCombination;
    P.colorSpace = ChannelCombination.RGB;
-   P.channels = [ [ true, rView.id ],
-                  [ true, gView.id ],
-                  [ true, bView.id ] ];
+   P.channels = [ [ true, rView.id ], [ true, gView.id ], [ true, bView.id ] ];
    P.inheritAstrometricSolution = true;
    P.executeGlobal();
 
-   /*
-    * Identify the window ChannelCombination created by diffing the open set.
-    *
-    * Taking the FIRST new window is not safe: any other window that appears
-    * during the call -- a transient, a model, anything -- would be picked
-    * instead, and the real composite would be left unowned while a window
-    * that something else later closes is returned. That produces a null
-    * mainView much later, at rename time, long after the cause.
-    *
-    * So: collect EVERY new window, and require a three-channel colour image,
-    * which is the only thing ChannelCombination produces here.
-    */
-   var allAfter = ImageWindow.windows;
-   var fresh = [];
-   for ( var j = 0; j < allAfter.length; ++j )
-      if ( !before[ allAfter[j].mainView.id ] )
-         fresh.push( allAfter[j] );
-
-   var w = null;
-   for ( var k = 0; k < fresh.length; ++k )
-   {
-      var img = null;
-      try { img = fresh[k].mainView.image; } catch ( e ) { img = null; }
-      if ( img != null && img.numberOfChannels == 3 )
-      {
-         if ( w != null )
-            Util.warn( "combine", "more than one new colour window appeared while " +
-                                  "building " + id + "; using " + w.mainView.id );
-         else
-            w = fresh[k];
-      }
-   }
+   var fresh = Steps.windowsSince( before );
+   var w = Steps.soleColourWindow( fresh, id );
 
    if ( w == null )
    {
@@ -3445,34 +3518,16 @@ Steps.syqonCloneWindowForProcessing = function( sourceWindow, newId )
  * blackpoint-normalize step never clips, matching stretch_color_image's
  * no_black_clip semantics that the reference script's comment calls out.
  */
-Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, linked )
+/* Mono: one blackpoint, one midtone. */
+Steps.syqonStretchMono = function( tempWindow, stretchInfo, targetMedian, sourceId )
 {
-   var tempId = Steps.syqonSanitizeFileName( sourceWindow.mainView.id ) +
-                "_ParallaxTemp_" + String( (new Date()).getTime() );
-   var tempWindow = Steps.syqonCloneWindowForProcessing( sourceWindow, tempId );
-   var img = tempWindow.mainView.image;
-
-   var stretchInfo = {
-      used: true,
-      targetMedian: targetMedian,
-      wasColor: img.isColor,
-      originalMin: [],
-      originalMedian: []
-   };
-
-   var nChannels = img.isColor ? 3 : 1;
-   for ( var c = 0; c < nChannels; ++c )
-      stretchInfo.originalMin.push( img.minimum( new Rect( 0, 0, img.width, img.height ), c, c ) );
-
-   if ( !img.isColor )
-   {
       var mn = format( "%.16f", stretchInfo.originalMin[0] );
       Steps.syqonApplyPixelMath( tempWindow.mainView, "($T-" + mn + ")/(1-" + mn + ")" );
 
       var om = tempWindow.mainView.image.median();
       if ( !isFinite( om ) || om <= 0 || om >= 1 )
          throw new Error( "SyQon Parallax: invalid normalized median " + om +
-                          " for " + sourceWindow.mainView.id );
+                          " for " + sourceId );
       stretchInfo.originalMedian.push( om );
 
       var omStr = format( "%.16f", om );
@@ -3480,9 +3535,17 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
       Steps.syqonApplyPixelMath( tempWindow.mainView,
          "((" + omStr + "-1)*" + tmStr + "*$T)/(" +
          omStr + "*(" + tmStr + "+$T-1)-" + tmStr + "*$T)" );
-   }
-   else if ( linked )
-   {
+};
+
+/*
+ * Colour LINKED: one blackpoint and one midtone for ALL THREE channels,
+ * so the transform cannot move colour. This is what makes it safe to
+ * sharpen or denoise a CALIBRATED composite -- an unlinked stretch
+ * applies a different curve per channel and undoes the white balance
+ * SPCC just established.
+ */
+Steps.syqonStretchLinked = function( tempWindow, stretchInfo, targetMedian, sourceId )
+{
       /*
        * Colour LINKED: one blackpoint and one midtone for all three
        * channels, so the transform cannot move colour. This is what makes
@@ -3509,7 +3572,7 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
                   nImg.median( nRect, 2, 2 ) ) / 3.0;
       if ( !isFinite( omL ) || omL <= 0 || omL >= 1 )
          throw new Error( "SyQon: invalid linked normalized median " + omL +
-                          " for " + sourceWindow.mainView.id );
+                          " for " + sourceId );
 
       for ( var li = 0; li < 3; ++li )
       {
@@ -3522,9 +3585,14 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
       Steps.syqonApplyPixelMath( tempWindow.mainView,
          "((" + omLS + "-1)*" + tmLS + "*$T)/(" +
          omLS + "*(" + tmLS + "+$T-1)-" + tmLS + "*$T)" );
-   }
-   else
-   {
+};
+
+/*
+ * Per-channel UNLINKED -- the reference's own default
+ * (linkedStretch = false), for anything not yet colour-calibrated.
+ */
+Steps.syqonStretchUnlinked = function( tempWindow, stretchInfo, targetMedian, sourceId )
+{
       // Per-channel unlinked path -- matches the reference's own default
       // (linkedStretch = false), used for mono channels and anything
       // not yet colour-calibrated.
@@ -3543,7 +3611,7 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
          var omc = normImg.median( new Rect( 0, 0, normImg.width, normImg.height ), c2, c2 );
          if ( !isFinite( omc ) || omc <= 0 || omc >= 1 )
             throw new Error( "SyQon Parallax: invalid normalized median " + omc +
-                             " for channel " + c2 + " of " + sourceWindow.mainView.id );
+                             " for channel " + c2 + " of " + sourceId );
          stretchInfo.originalMedian.push( omc );
       }
 
@@ -3556,7 +3624,37 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
          "((" + om0 + "-1)*" + tm + "*$T)/(" + om0 + "*(" + tm + "+$T-1)-" + tm + "*$T)",
          "((" + om1 + "-1)*" + tm + "*$T)/(" + om1 + "*(" + tm + "+$T-1)-" + tm + "*$T)",
          "((" + om2 + "-1)*" + tm + "*$T)/(" + om2 + "*(" + tm + "+$T-1)-" + tm + "*$T)" );
-   }
+};
+
+
+Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, linked )
+{
+   var tempId = Steps.syqonSanitizeFileName( sourceWindow.mainView.id ) +
+                "_ParallaxTemp_" + String( (new Date()).getTime() );
+   var tempWindow = Steps.syqonCloneWindowForProcessing( sourceWindow, tempId );
+   var img = tempWindow.mainView.image;
+
+   var stretchInfo = {
+      used: true,
+      targetMedian: targetMedian,
+      wasColor: img.isColor,
+      originalMin: [],
+      originalMedian: []
+   };
+
+   var nChannels = img.isColor ? 3 : 1;
+   for ( var c = 0; c < nChannels; ++c )
+      stretchInfo.originalMin.push( img.minimum( new Rect( 0, 0, img.width, img.height ), c, c ) );
+
+   if ( !img.isColor )
+      Steps.syqonStretchMono( tempWindow, stretchInfo, targetMedian,
+                              sourceWindow.mainView.id );
+   else if ( linked )
+      Steps.syqonStretchLinked( tempWindow, stretchInfo, targetMedian,
+                                sourceWindow.mainView.id );
+   else
+      Steps.syqonStretchUnlinked( tempWindow, stretchInfo, targetMedian,
+                                  sourceWindow.mainView.id );
 
    return { tempWindow: tempWindow, stretchInfo: stretchInfo };
 };
@@ -3835,6 +3933,54 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
  * of these three is ever non-zero/true per call; see Steps.aberration,
  * Steps.starReduction and Steps.sharpenDetail above.
  */
+/*
+ * Why the CLI produced no output, said as precisely as it can be.
+ *
+ * stderr if there is any, otherwise the error codes the process reported,
+ * otherwise nothing -- an empty failure is still better than inventing a
+ * cause.
+ */
+Steps.syqonNoOutputDetail = function( result )
+{
+   if ( result.stderr && result.stderr.length > 0 )
+      return " stderr: " + result.stderr.trim();
+   if ( result.sawError )
+      return " (process reported error code(s) " + result.errorCodes.join( "," ) + ")";
+   return "";
+};
+
+/*
+ * Import the CLI's output, retrying briefly.
+ *
+ * The process exiting does NOT guarantee the file is flushed to disk, so
+ * a first read can fail on a file that is about to be complete. Same
+ * tolerance the reference script's poll loop applies.
+ */
+Steps.syqonImportWithRetry = function( outputPath, targetWindow, stretchInfo,
+                                       opLabel, viewId )
+{
+   var maxRetries = 5, retryDelayMs = 1000, lastErr = null;
+   for ( var attempt = 0; attempt < maxRetries; ++attempt )
+   {
+      try
+      {
+         Steps.syqonProcessOutput( outputPath, targetWindow, stretchInfo );
+         return;
+      }
+      catch ( e )
+      {
+         lastErr = e;
+         Util.warn( "syqon", opLabel + " on " + viewId +
+                             ": output not ready yet (attempt " + ( attempt+1 ) +
+                             "/" + maxRetries + "): " + e );
+         try { System.msleep( retryDelayMs ); } catch ( e2 ) {}
+      }
+   }
+   throw new Error( "SyQon Parallax " + opLabel + " failed on " + viewId +
+                    " while importing output: " +
+                    ( lastErr ? lastErr.message : "unknown error" ) );
+};
+
 Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
 {
    var exePath = Steps.syqonExecutable();
@@ -3877,40 +4023,12 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
       var result = Steps.syqonRunProcessBlocking( exePath, args, Steps.SYQON_TIMEOUT_MS );
 
       if ( !File.exists( runPaths.outputFilePath ) )
-      {
-         var detail = ( result.stderr && result.stderr.length > 0 )
-                    ? ( " stderr: " + result.stderr.trim() )
-                    : ( result.sawError
-                        ? ( " (process reported error code(s) " + result.errorCodes.join( "," ) + ")" )
-                        : "" );
          throw new Error( "SyQon Parallax " + opLabel + " failed on " + view.id +
-                          ": no output file was produced." + detail );
-      }
+                          ": no output file was produced." +
+                          Steps.syqonNoOutputDetail( result ) );
 
-      // The CLI process exiting does not guarantee the output file is
-      // fully flushed to disk; retry the import briefly before giving up,
-      // same tolerance the reference script's poll loop applies.
-      var maxRetries = 5, retryDelayMs = 1000, lastErr = null, succeeded = false;
-      for ( var attempt = 0; attempt < maxRetries; ++attempt )
-      {
-         try
-         {
-            Steps.syqonProcessOutput( runPaths.outputFilePath, targetWindow, stretchInfo );
-            succeeded = true;
-            break;
-         }
-         catch ( e )
-         {
-            lastErr = e;
-            Util.warn( "syqon", opLabel + " on " + view.id + ": output not ready yet (attempt " +
-                               (attempt + 1) + "/" + maxRetries + "): " + e );
-            try { System.msleep( retryDelayMs ); } catch ( e2 ) {}
-         }
-      }
-
-      if ( !succeeded )
-         throw new Error( "SyQon Parallax " + opLabel + " failed on " + view.id +
-                          " while importing output: " + ( lastErr ? lastErr.message : "unknown error" ) );
+      Steps.syqonImportWithRetry( runPaths.outputFilePath, targetWindow,
+                                  stretchInfo, opLabel, view.id );
 
       Util.log( "syqon", opLabel + " " + view.id + " complete" );
    }
@@ -4450,6 +4568,46 @@ Steps.curveLayerName = function( label, channelIds )
  * Every plate that is missing is simply left out, so a run without a
  * palette or without star extraction still produces a sensible document.
  */
+/*
+ * The narrowband palette group, or null when no palette was produced.
+ *
+ * Each line gets a curves layer naming the channels it landed in, so the
+ * document can be adjusted per emission line rather than per RGB channel.
+ * 1 = red, 2 = green, 3 = blue.
+ */
+Steps.paletteGroup = function( results )
+{
+   function has( id ) { return results[id] != null; }
+
+   var palName = null;
+   for ( var pk in Util.PALETTES )
+      if ( has( pk + "_starless" ) || has( pk ) )
+      { palName = pk; break; }
+   if ( palName == null )
+      return null;
+
+   var starless = has( palName + "_starless" );
+   var plateName = starless ? ( palName + "_starless" ) : palName;
+   var layers = [ { name: plateName, window: results[plateName] } ];
+
+   var map = Util.PALETTES[palName] || [];
+   var lines = [ { key: "O", label: "OIII" },
+                 { key: "S", label: "SII" },
+                 { key: "H", label: "Ha" } ];
+   for ( var li = 0; li < lines.length; ++li )
+   {
+      var chans = [];
+      for ( var mi = 0; mi < map.length; ++mi )
+         if ( map[mi] == lines[li].key )
+            chans.push( mi + 1 );
+      if ( chans.length > 0 )
+         layers.push( { name: Steps.curveLayerName( lines[li].label, chans ),
+                        curves: chans } );
+   }
+
+   return { name: palName, group: layers };
+};
+
 Steps.buildPsbDocument = function( results )
 {
    function has( id ) { return results[id] != null; }
@@ -4466,39 +4624,9 @@ Steps.buildPsbDocument = function( results )
     *
     * Bottom to top: the plate, SII, OIII, Ha.
     */
-   var palName = null;
-   for ( var pk in Util.PALETTES )
-      if ( has( pk + "_starless" ) || has( pk ) )
-      { palName = pk; break; }
-
-   if ( palName != null )
-   {
-      var plate = has( palName + "_starless" ) ? results[palName + "_starless"]
-                                               : results[palName];
-      var plateName = has( palName + "_starless" ) ? ( palName + "_starless" )
-                                                   : palName;
-      var layers = [ { name: plateName, window: plate } ];
-      var map = Util.PALETTES[palName] || [];
-      /*
-       * BOTTOM to top, so the panel reads Ha, SII, OIII downwards -- the
-       * order of the palette's own name, which is how the lines are talked
-       * about. The array is reversed from what the panel shows.
-       */
-      var lines = [ { key: "O", label: "OIII" },
-                    { key: "S", label: "SII" },
-                    { key: "H", label: "Ha" } ];
-      for ( var li = 0; li < lines.length; ++li )
-      {
-         var chans = [];
-         for ( var mi = 0; mi < map.length; ++mi )
-            if ( map[mi] == lines[li].key )
-               chans.push( mi + 1 );      // 1 = red, 2 = green, 3 = blue
-         if ( chans.length > 0 )
-            layers.push( { name: Steps.curveLayerName( lines[li].label, chans ),
-                           curves: chans } );
-      }
-      doc.push( { name: palName, group: layers } );
-   }
+   var palette = Steps.paletteGroup( results );
+   if ( palette != null )
+      doc.push( palette );
 
    /*
     * Both the group and the layer are off: the palette carries the colour,

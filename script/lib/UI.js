@@ -1535,34 +1535,53 @@ UI.SelectDialog = class extends Dialog
     * Phase 1: rank every candidate from its filename alone. Returns null
     * when the folder holds nothing readable at all.
     */
+   /*
+    * One directory entry, or null if it is not a master to consider.
+    *
+    * masterFlat/Dark/Bias are SKIPPED rather than listed: they are
+    * calibration frames, not channels, and offering them would invite
+    * choosing one.
+    */
+   static masterCandidate( dir, find )
+   {
+      var name = find.name;
+      if ( find.isDirectory || name == "." || name == ".." )
+         return null;
+      if ( !/\.(xisf|fits?|fit)$/i.test( name ) )
+         return null;
+      if ( /^master(Flat|Dark|Bias)/i.test( name ) )
+         return { skip: true };
+
+      var mtime = 0;
+      try { mtime = find.lastModified.getTime(); } catch ( e ) { mtime = 0; }
+      var ctime = mtime;
+      try { ctime = find.created.getTime(); } catch ( e ) { ctime = mtime; }
+
+      return { path: dir + "/" + name, name: name, mtime: mtime, created: ctime };
+   }
+
    scanMasterFolder( dir )
    {
       var named = [], unnamed = [], total = 0, skipped = 0;
+
       var found = new FileFind;
       if ( !found.begin( dir + "/*" ) )
          return null;
+
       do
       {
-         var name = found.name;
-         if ( found.isDirectory || name == "." || name == ".." )
+         var rec = UI.SelectDialog.masterCandidate( dir, found );
+         if ( rec == null )
             continue;
-         if ( !/\.(xisf|fits?|fit)$/i.test( name ) )
-            continue;
+
          ++total;
-         if ( /^master(Flat|Dark|Bias)/i.test( name ) )
+         if ( rec.skip )
          {
             ++skipped;
             continue;
          }
 
-         var mtime = 0;
-         try { mtime = found.lastModified.getTime(); } catch ( e ) { mtime = 0; }
-         var ctime = 0;
-         try { ctime = found.created.getTime(); } catch ( e ) { ctime = mtime; }
-         var rec = { path: dir + "/" + name, name: name,
-                     mtime: mtime, created: ctime };
-
-         var parsed = Util.parseMasterName( name );
+         var parsed = Util.parseMasterName( rec.name );
          if ( parsed != null && parsed.channel != null )
          {
             rec.channel  = parsed.channel;
@@ -1748,6 +1767,35 @@ UI.SelectDialog = class extends Dialog
          : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail );
    }
 
+   /*
+    * One master described from its HEADER alone.
+    *
+    * A file that cannot be read still becomes an entry, with nulls: it
+    * belongs in the list so it can be seen and removed, rather than
+    * vanishing without explanation.
+    */
+   static describeMaster( path )
+   {
+      var info = null;
+      try { info = Pipeline.readImageInfo( path ); } catch ( e ) { info = null; }
+
+      var kws = info ? info.keywords : null;
+      var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
+
+      return {
+         source: "file",
+         ref: path,
+         label: File.extractName( path ) + File.extractExtension( path ),
+         filter: filter,
+         instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
+         channel: Util.channelFromFilter( filter ),
+         width: info ? info.width : 0,
+         height: info ? info.height : 0,
+         drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
+         created: Util.fileCreatedMs( path )
+      };
+   }
+
    addFiles( paths )
    {
       /*
@@ -1764,22 +1812,7 @@ UI.SelectDialog = class extends Dialog
                this.setBusy( Util.scanProgressMessage( "Reading masters",
                                 File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
                                 i+1, paths.length ) );
-            var info = null;
-            try { info = Pipeline.readImageInfo( paths[i] ); } catch ( e ) { info = null; }
-            var kws = info ? info.keywords : null;
-            var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
-            this.entries.push( {
-               source: "file",
-               ref: paths[i],
-               label: File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
-               filter: filter,
-               instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
-               channel: Util.channelFromFilter( filter ),
-               width: info ? info.width : 0,
-               height: info ? info.height : 0,
-               drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
-               created: Util.fileCreatedMs( paths[i] )
-            } );
+            this.entries.push( UI.SelectDialog.describeMaster( paths[i] ) );
          }
       }
       finally
@@ -1914,6 +1947,111 @@ UI.SelectDialog = class extends Dialog
    }
 
    /* Repaints the list and the status line. */
+   /*
+    * One cell of a measured column: the value, and the change since the
+    * previous run where there is one.
+    */
+   static measuredCell( value, delta, digits )
+   {
+      if ( value == null )
+         return "";
+      var d = Util.formatDelta( delta );
+      return value.toFixed( digits ) + ( d ? "  " + d : "" );
+   }
+
+   /* Noise reads in exponent form; everything else is fixed-point. */
+   static noiseCell( q, dq )
+   {
+      if ( q == null || q.noise == null )
+         return "";
+      var d = Util.formatDelta( dq && dq.noise );
+      return q.noise.toExponential( 2 ) + ( d ? "  " + d : "" );
+    }
+
+   /* The identifying columns: filter, geometry, drizzle, label, time. */
+   fillIdentity( node, e )
+   {
+      var filterText = e.unavailable ? "(not open)"
+                     : ( e.filter !== null ? e.filter : "(no FILTER)" );
+      if ( !e.unavailable && e.channel !== null && e.filter !== null &&
+           String( e.filter ).trim() != e.channel )
+         filterText += "  (" + e.channel + ")";
+
+      node.setText( 0, filterText );
+      node.setText( 1, ( e.width && e.height ) ? ( e.width + " x " + e.height ) : "" );
+      node.setText( 2, e.drizzle || "" );
+      node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
+      node.setText( 4, Util.formatFileTime( e.created ) );
+   }
+
+   /* The measured columns, and the warning colour when a stack got worse. */
+   fillQuality( node, e )
+   {
+      var q = e.quality, dq = e.delta;
+      node.setText( 5, q ? UI.SelectDialog.measuredCell( q.fwhm, dq && dq.fwhm, 2 ) : "" );
+      node.setText( 6, q ? UI.SelectDialog.measuredCell( q.eccentricity,
+                                                         dq && dq.eccentricity, 3 ) : "" );
+      node.setText( 7, UI.SelectDialog.noiseCell( q, dq ) );
+      node.setText( 8, q ? UI.SelectDialog.measuredCell( q.stars, dq && dq.stars, 0 ) : "" );
+
+      /*
+       * A worse stack is coloured, a better one is not: the point is to
+       * catch the case where the newest is a step backwards. Smaller is
+       * better for the first three, larger for stars.
+       */
+      if ( !e.delta )
+         return;
+      var worse = [ [ 5, e.delta.fwhm > 5 ], [ 6, e.delta.eccentricity > 5 ],
+                    [ 7, e.delta.noise > 5 ], [ 8, e.delta.stars < -5 ] ];
+      for ( var i = 0; i < worse.length; ++i )
+         if ( worse[i][1] )
+            node.setTextColor( worse[i][0], 0xffcc7722 );
+   }
+
+   /*
+    * Colour what is wrong with the row: unreadable, unrecognised filter,
+    * a duplicate channel, or a frame from another instrument. `counts` is
+    * carried across rows, which is how the second of a duplicated channel
+    * is the one that reddens.
+    */
+   markProblems( node, e, counts )
+   {
+      if ( e.unavailable )
+      {
+         node.setTextColor( 0, 0xff888888 );
+         node.setTextColor( 3, 0xff888888 );
+      }
+      else if ( e.channel === null )
+         node.setTextColor( 0, 0xffff5555 );
+      else
+      {
+         counts[e.channel] = ( counts[e.channel] || 0 ) + 1;
+         if ( counts[e.channel] > 1 )
+            node.setTextColor( 0, 0xffff5555 );
+      }
+
+      if ( e.instrume !== null && !UI.instrumentMatches( e.instrume ) )
+         node.setTextColor( 4, 0xffd4a017 );
+   }
+
+   /* The camera line above the list, and the QE curve it resolved to. */
+   describeCamera()
+   {
+      var known = [];
+      for ( var i = 0; i < this.entries.length; ++i )
+         known.push( this.entries[i].instrume );
+
+      var qe = null;
+      try
+      {
+         var cam = Util.commonInstrument( known );
+         qe = cam ? Steps.deviceCurveForImage( cam ) : null;
+      }
+      catch ( e ) { qe = null; }
+
+      return UI.cameraSummary( known, qe ? qe.name : null );
+   }
+
    rebuild()
    {
       // the derived project name follows the list, until it is typed in
@@ -1921,132 +2059,56 @@ UI.SelectDialog = class extends Dialog
       // every path that changes the list ends here, so this is the one
       // place Run's state has to be refreshed
       try { this.updateRunEnabled(); } catch ( e ) {}
-      this.tree.clear();
 
-      /*
-       * One session, one camera -- so a master whose header lost INSTRUME
-       * (WBPP's autocrop rewrites it away) is shown with the camera its
-       * siblings name, in parentheses to say it was inferred rather than
-       * read. Blank here used to be the only sign of a channel that would
-       * later be calibrated against the ideal QE curve instead of the real
-       * one.
-       */
-      var known = [];
-      for ( var ki = 0; ki < this.entries.length; ++ki )
-         known.push( this.entries[ki].instrume );
-      var qe = null;
-      try
-      {
-         var cam = Util.commonInstrument( known );
-         qe = cam ? Steps.deviceCurveForImage( cam ) : null;
-      }
-      catch ( eq ) { qe = null; }
-      this.camera.text = UI.cameraSummary( known, qe ? qe.name : null );
+      this.tree.clear();
+      this.camera.text = this.describeCamera();
 
       var counts = {};
       for ( var i = 0; i < this.entries.length; ++i )
       {
          var e = this.entries[i];
          var node = new TreeBoxNode( this.tree );
-         /*
-          * One Filter column. Where the filter name is not itself the
-          * channel letter -- "Baader R" mapping to R -- the channel is
-          * appended, so nothing is lost; for plain "R" it would just repeat
-          * itself and is omitted.
-          */
-         var filterText = e.unavailable ? "(not open)"
-                        : ( e.filter !== null ? e.filter : "(no FILTER)" );
-         if ( !e.unavailable && e.channel !== null && e.filter !== null &&
-              String( e.filter ).trim() != e.channel )
-            filterText += "  (" + e.channel + ")";
-         node.setText( 0, filterText );
-         node.setText( 1, ( e.width && e.height ) ? ( e.width + " x " + e.height ) : "" );
-         node.setText( 2, e.drizzle || "" );
-         node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
-         node.setText( 4, Util.formatFileTime( e.created ) );
-         /*
-          * The four SubframeSelector figures, each with its change
-          * against the previous integration of the same channel. Shown
-          * separately rather than combined because their senses differ:
-          * smaller FWHM, eccentricity and noise are better, more stars
-          * are better.
-          */
-         function cell( value, delta, digits )
-         {
-            if ( value == null )
-               return "";
-            var d = Util.formatDelta( delta );
-            return value.toFixed( digits ) + ( d ? "  " + d : "" );
-         }
-         var q = e.quality, dq = e.delta;
-         node.setText( 5, q ? cell( q.fwhm, dq && dq.fwhm, 2 ) : "" );
-         node.setText( 6, q ? cell( q.eccentricity, dq && dq.eccentricity, 3 ) : "" );
-         node.setText( 7, q ? ( q.noise != null
-            ? q.noise.toExponential( 2 ) +
-              ( Util.formatDelta( dq && dq.noise ) ? "  " + Util.formatDelta( dq.noise ) : "" )
-            : "" ) : "" );
-         node.setText( 8, q ? cell( q.stars, dq && dq.stars, 0 ) : "" );
-         /*
-          * A worse stack is coloured, a better one is not: the point is to
-          * catch the case where the newest is a step backwards. Softer
-          * (psf up) or noisier (snr down) both count.
-          */
-         if ( e.delta )
-         {
-            // Smaller is better for the first three, larger for stars.
-            if ( e.delta.fwhm > 5 )         node.setTextColor( 5, 0xffcc7722 );
-            if ( e.delta.eccentricity > 5 ) node.setTextColor( 6, 0xffcc7722 );
-            if ( e.delta.noise > 5 )        node.setTextColor( 7, 0xffcc7722 );
-            if ( e.delta.stars < -5 )       node.setTextColor( 8, 0xffcc7722 );
-         }
-
-
-         if ( e.unavailable )
-         {
-            node.setTextColor( 0, 0xff888888 );
-            node.setTextColor( 3, 0xff888888 );
-         }
-         else if ( e.channel === null )
-            node.setTextColor( 0, 0xffff5555 );
-         else
-         {
-            counts[e.channel] = ( counts[e.channel] || 0 ) + 1;
-            if ( counts[e.channel] > 1 )
-               node.setTextColor( 0, 0xffff5555 );
-         }
-         if ( e.instrume !== null && !UI.instrumentMatches( e.instrume ) )
-            node.setTextColor( 4, 0xffd4a017 );
+         this.fillIdentity( node, e );
+         this.fillQuality( node, e );
+         this.markProblems( node, e, counts );
       }
+
       this.updateStatus( counts );
       this.updatePaletteVisibility();
    }
 
-   updateStatus( counts )
+   /*
+    * The counts a status line is made of: which channels are present,
+    * which appear twice, and how many readable entries carry a FILTER
+    * nobody recognises.
+    */
+   statusCounts( counts )
    {
-      var have = [], dupes = [], unknown = 0;
+      var have = [], duplicated = [], unknown = 0;
+
       for ( var i = 0; i < this.entries.length; ++i )
          if ( !this.entries[i].unavailable && this.entries[i].channel === null )
-            unknown++;
+            ++unknown;
+
       for ( var k = 0; k < Util.CHANNELS.length; ++k )
       {
          var key = Util.CHANNELS[k];
          if ( counts[key] )
             have.push( key );
          if ( counts[key] > 1 )
-            dupes.push( key );
+            duplicated.push( key );
       }
-      /*
-       * The channel list is not restated here: the table above already shows
-       * one row per channel, so repeating it is noise. Only PROBLEMS are
-       * reported -- duplicates, unrecognised filters, entries that could not
-       * be restored -- plus whatever the last action wrote.
-       */
+      return { have: have, duplicated: duplicated, unknown: unknown };
+   }
+
+   /*
+    * What was left out and why, in grey. A remembered entry that is not
+    * listed is NOT lost -- the saved list still has it -- and saying so
+    * is the difference between a note and a scare.
+    */
+   omissionNote()
+   {
       var msg = "";
-      if ( dupes.length )
-         msg += "<span style='color:#ff5555'>duplicate: " + dupes.join( " " ) + "</span>  ";
-      if ( unknown )
-         msg += "<span style='color:#ff5555'>" + unknown +
-                " unrecognised FILTER</span>  ";
       if ( this.missing )
          msg += "  <span style='color:#888888'>(" + this.missing +
                 " remembered entr" + ( this.missing == 1 ? "y" : "ies" ) +
@@ -2055,8 +2117,24 @@ UI.SelectDialog = class extends Dialog
                 ( this.missing == 1 ? "it" : "them" ) + ")</span>";
       if ( this.skipped )
          msg += "  <span style='color:#888888'>(" + this.skipped +
-                " view" + ( this.skipped == 1 ? "" : "s" ) + " without FILTER hidden)</span>";
-      this.status.text = msg;
+                " view" + ( this.skipped == 1 ? "" : "s" ) +
+                " without FILTER hidden)</span>";
+      return msg;
+   }
+
+   updateStatus( counts )
+   {
+      var c = this.statusCounts( counts );
+      var msg = "";
+
+      if ( c.duplicated.length )
+         msg += "<span style='color:#ff5555'>duplicate: " +
+                c.duplicated.join( " " ) + "</span>  ";
+      if ( c.unknown )
+         msg += "<span style='color:#ff5555'>" + c.unknown +
+                " unrecognised FILTER</span>  ";
+
+      this.status.text = msg + this.omissionNote();
    }
 
    /*
@@ -2064,25 +2142,26 @@ UI.SelectDialog = class extends Dialog
     * duplicates or unrecognised filters rather than silently dropping an
     * image the user deliberately added.
     */
-   commit()
+   /*
+    * Sort the listed entries into paths and views, collecting what is
+    * wrong on the way.
+    *
+    * An entry that is remembered but not currently available is ignored
+    * rather than reported: the saved list still has it, and complaining
+    * about a file that will be back next session is noise.
+    */
+   sortEntries()
    {
-      /*
-       * Taken from the control, not from whatever onEditCompleted last
-       * stored: a field typed into and then committed with the Run button
-       * never fires that handler.
-       */
-      try { this.config.projectName = this.projectEdit.text.trim(); }
-      catch ( e ) {}
       var paths = {}, views = {}, seen = {}, problems = [];
       for ( var k = 0; k < Util.CHANNELS.length; ++k )
-      {
          paths[Util.CHANNELS[k]] = "";
-      }
+
       for ( var i = 0; i < this.entries.length; ++i )
       {
          var e = this.entries[i];
          if ( e.unavailable )
-            continue;   // remembered but not currently available; simply ignored
+            continue;
+
          if ( e.channel === null )
          {
             problems.push( "Unrecognised FILTER " +
@@ -2096,12 +2175,28 @@ UI.SelectDialog = class extends Dialog
                            seen[e.channel] + " and " + e.label );
             continue;
          }
+
          seen[e.channel] = e.label;
          if ( e.source == "view" )
             views[e.channel] = e.ref;
          else
             paths[e.channel] = e.ref;
       }
+
+      return { paths: paths, views: views, problems: problems };
+   }
+
+   commit()
+   {
+      /*
+       * Taken from the control, not from whatever onEditCompleted last
+       * stored: a field typed into and then committed with the Run button
+       * never fires that handler.
+       */
+      try { this.config.projectName = this.projectEdit.text.trim(); }
+      catch ( e ) {}
+      var sorted = this.sortEntries();
+      var paths = sorted.paths, views = sorted.views, problems = sorted.problems;
 
       if ( problems.length )
       {

@@ -25,6 +25,9 @@
 #include "lib/Psb.js"
 #include "lib/Steps.js"
 #include "lib/Pipeline.js"
+#include "lib/AsiairNames.js"
+#include "lib/Asiair.js"
+#include "lib/NightDialog.js"
 #include "lib/Frames.js"
 #endif
 
@@ -387,9 +390,21 @@ FrameSelector.measureGroup = function( group, before )
    return { metrics: metrics, unstable: unstable };
 };
 
-FrameSelector.scan = function( folder, progress )
+/*
+ * Scan an explicit list of frames.
+ *
+ * A night on an ASIAIR card is a FILTERED list of paths that may span
+ * Plan and Autorun, which a single folder cannot express. This is scan()'s
+ * body, with the enumeration lifted out; scan() now supplies the list.
+ *
+ * The whole contract is preserved: the `reading` and `measuring` progress
+ * callbacks, cancellation by a callback RETURNING FALSE, and the shape of
+ * a cancelled result. Ordinary folder scanning is this feature's
+ * most-used path and must not regress.
+ */
+FrameSelector.scanPaths = function( paths, progress )
 {
-   var cohort = FrameSelector.cohortFrom( FrameSelector.frameFilesIn( folder ),
+   var cohort = FrameSelector.cohortFrom( paths,
                                           progress ? progress.reading : null );
    if ( cohort.cancelled )
       return { channels: {}, unstable: [], cancelled: true };
@@ -416,6 +431,11 @@ FrameSelector.scan = function( folder, progress )
                             problems: Frames.comparability( group ).problems };
    }
    return { channels: channels, unstable: unstable, cancelled: false };
+};
+
+FrameSelector.scan = function( folder, progress )
+{
+   return FrameSelector.scanPaths( FrameSelector.frameFilesIn( folder ), progress );
 };
 
 /*
@@ -997,7 +1017,16 @@ FrameSelector.emptyState = function( folder )
             destination: folder,
             preset: Frames.DEFAULT_PRESET,
             phase: Frames.PHASE.REVIEW, locked: false,
-            manifest: null, unstable: [] };
+            manifest: null, unstable: [],
+            /*
+             * Import mode, set only when the frames came off an ASIAIR
+             * card. cardRoot being non-null is what makes the mode true,
+             * and every guard reads it from here -- the review dialog
+             * extends the native Dialog and does not inherit from
+             * FrameSelector.prototype, so a flag hung there would be
+             * permanently undefined and would guard nothing.
+             */
+            cardRoot: null, candidateFlats: [] };
 };
 
 /*
@@ -1032,6 +1061,34 @@ FrameSelector.newChannel = function( key, entries, metrics, problems )
  * Overrides are left standing: changing k or a weight must not discard the
  * one judgement in the dialog that was made by looking at the frame.
  */
+/*
+ * One row's verdict, score and reasons.
+ *
+ * `mayReject` false means the channel is not being acted on, so a
+ * rejection is SUPPRESSED: the state reads approved and the reasons and
+ * failing metrics are cleared with it, because there is nothing to mark.
+ */
+FrameSelector.judgeRow = function( row, gates, meds, settings, mayReject )
+{
+   row.score = ( row.metrics != null )
+             ? Frames.score( row.metrics, meds, settings.weights ) : null;
+
+   if ( row.metrics == null )
+   {
+      row.state = Frames.STATE.UNMEASURABLE;
+      row.reasons = [ "no measurement" ];
+      row.failing = [];
+      return;
+   }
+
+   var v = Frames.verdict( row.metrics, gates, settings );
+   var suppressed = !mayReject && v.state == Frames.STATE.REJECTED;
+
+   row.state   = suppressed ? Frames.STATE.APPROVED : v.state;
+   row.reasons = suppressed ? [] : v.reasons;
+   row.failing = suppressed ? [] : v.failing;
+};
+
 FrameSelector.recompute = function( ch )
 {
    var cohort = [];
@@ -1055,34 +1112,27 @@ FrameSelector.recompute = function( ch )
    var mayReject = ch.settings.enabled && Frames.autoRejectAllowed( ch.key );
 
    for ( var r = 0; r < ch.rows.length; ++r )
-   {
-      var row = ch.rows[r];
-      row.score = ( row.metrics != null )
-                  ? Frames.score( row.metrics, meds, ch.settings.weights ) : null;
-      if ( row.metrics == null )
-      {
-         row.state = Frames.STATE.UNMEASURABLE;
-         row.reasons = [ "no measurement" ];
-         row.failing = [];
-         continue;
-      }
-      var v = Frames.verdict( row.metrics, gates, ch.settings );
-      var suppressed = !mayReject && v.state == Frames.STATE.REJECTED;
-      row.state   = suppressed ? Frames.STATE.APPROVED : v.state;
-      row.reasons = suppressed ? [] : v.reasons;
-      /*
-       * Cleared with the reasons when a rejection is suppressed: the
-       * channel is not being acted on, so there is nothing to mark.
-       */
-      row.failing = suppressed ? [] : v.failing;
-   }
+      FrameSelector.judgeRow( ch.rows[r], gates, meds, ch.settings, mayReject );
+
    return ch;
 };
 
-FrameSelector.buildState = function( folder, progress )
+/*
+ * State from an explicit list of frames -- a night off an ASIAIR card.
+ *
+ * Shares everything below with buildState; only the source of the frames
+ * differs. `label` is what the review calls the folder it is showing,
+ * since a night has no single directory.
+ */
+FrameSelector.buildStateFrom = function( paths, label, progress )
 {
-   var state = FrameSelector.emptyState( folder );
-   var scan = FrameSelector.scan( folder, progress );
+   return FrameSelector.stateFromScan(
+      FrameSelector.emptyState( label ),
+      FrameSelector.scanPaths( paths, progress ) );
+};
+
+FrameSelector.stateFromScan = function( state, scan )
+{
    state.cancelled = !!scan.cancelled;
    state.unstable = scan.unstable;
    var keys = Object.keys( scan.channels );
@@ -1095,6 +1145,179 @@ FrameSelector.buildState = function( folder, progress )
       state.order.push( keys[i] );
    }
    return state;
+};
+
+FrameSelector.buildState = function( folder, progress )
+{
+   return FrameSelector.stateFromScan( FrameSelector.emptyState( folder ),
+                                       FrameSelector.scan( folder, progress ) );
+};
+
+/*
+ * Approved lights as { path, filter } -- what the manifest needs.
+ *
+ * approvedPaths returns bare strings and the review's rows carry the
+ * channel rather than a filter field, so the two cannot be handed to
+ * AsiairNames.manifest directly.
+ */
+FrameSelector.approvedLightRecords = function( state )
+{
+   var out = [];
+   for ( var i = 0; i < state.order.length; ++i )
+   {
+      var key = state.order[i];
+      var ch = state.channels[key];
+      if ( !ch.settings.enabled )
+         continue;
+      for ( var r = 0; r < ch.rows.length; ++r )
+         if ( Frames.finalState( ch.rows[r].state, ch.rows[r].override ) !=
+              Frames.STATE.REJECTED )
+            out.push( { path: ch.rows[r].path, filter: key } );
+   }
+   return out;
+};
+
+/*
+ * Convert one frame by opening and saving it.
+ *
+ * NOT runOutputRoutine: that runs FrameSelector.MEASURE_ROUTINE first --
+ * routines 1 and 2 refuse with "No measurements have been made" until it
+ * has -- and measuring means star detection. A flat has no stars.
+ */
+FrameSelector.convertOne = function( src, dst )
+{
+   if ( !File.exists( src ) )
+      return { ok: false, reason: "source is gone" };
+
+   var win = null;
+   try
+   {
+      var ws = ImageWindow.open( src );
+      if ( ws.length == 0 )
+         return { ok: false, reason: "could not open" };
+      win = ws[0];
+      if ( !win.saveAs( dst, false, false, false, false ) )
+         return { ok: false, reason: "could not write" };
+      return { ok: true, reason: "" };
+   }
+   catch ( e ) { return { ok: false, reason: String( e ) }; }
+   finally { try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {} }
+};
+
+/*
+ * Keywords an imported frame must still carry. Geometry alone proves
+ * nothing -- a wrong frame keeps the same dimensions.
+ */
+FrameSelector.REQUIRED_KEYWORDS = [ "FILTER", "EXPTIME", "DATE-OBS" ];
+
+/*
+ * Check what was written against what it came from.
+ *
+ * A file that fails is DELETED before the failure is reported: the export
+ * path refuses to write over an existing file unless overwrite is set, so
+ * leaving a bad one would block its own replacement forever.
+ *
+ * This cannot detect altered pixels. Converting to XISF re-encodes, so
+ * the copy cannot be hashed against the card; geometry plus keyword
+ * survival is the strongest check available under that choice.
+ */
+FrameSelector.verifyImported = function( src, dst )
+{
+   if ( !File.exists( dst ) )
+      return { ok: false, reason: "nothing was written" };
+
+   var problem = null;
+   try
+   {
+      var a = Pipeline.readImageInfo( src );
+      var b = Pipeline.readImageInfo( dst );
+      if ( a.width != b.width || a.height != b.height )
+         problem = "geometry changed";
+      else
+         for ( var i = 0; i < FrameSelector.REQUIRED_KEYWORDS.length; ++i )
+         {
+            var k = FrameSelector.REQUIRED_KEYWORDS[i];
+            if ( Util.keywordValue( a.keywords, k ) != null &&
+                 Util.keywordValue( b.keywords, k ) == null )
+            {
+               problem = k + " did not survive";
+               break;
+            }
+         }
+   }
+   catch ( e ) { problem = String( e ); }
+
+   if ( problem != null )
+   {
+      try { File.remove( dst ); } catch ( e2 ) {}
+      return { ok: false, reason: problem };
+   }
+   return { ok: true, reason: "" };
+};
+
+/*
+ * Write a whole manifest, verifying each file as it lands.
+ */
+FrameSelector.writeManifest = function( manifest, onProgress )
+{
+   var all = manifest.lights.concat( manifest.flats );
+   var written = 0, failed = [];
+   for ( var i = 0; i < all.length; ++i )
+   {
+      var dir = all[i].dst.substring( 0, all[i].dst.lastIndexOf( "/" ) );
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+
+      var made = FrameSelector.convertOne( all[i].src, all[i].dst );
+      var good = made.ok ? FrameSelector.verifyImported( all[i].src, all[i].dst ) : made;
+      if ( good.ok )
+         ++written;
+      else
+         failed.push( { src: all[i].src, reason: good.reason } );
+
+      if ( onProgress )
+         onProgress( i + 1, all.length );
+   }
+   return { written: written, failed: failed };
+};
+
+/*
+ * Is any output path on the card?
+ *
+ * A mandatory destination does not by itself protect it. Comparing the
+ * two chosen directories as strings passes /Volumes/ASIAIR/export, and
+ * passes a symlink pointing into the card -- so <dest>/Light and
+ * <dest>/Flat are checked too, not just <dest>, and each is RESOLVED
+ * first. Containment is compared on path components, so a sibling that
+ * merely shares a prefix is not mistaken for a child.
+ */
+FrameSelector.outputsAreSafe = function( destination, cardRoot )
+{
+   if ( destination == null || cardRoot == null )
+      return false;
+
+   var root = FrameSelector.resolved( cardRoot );
+   var out = [ destination, destination + "/Light", destination + "/Flat" ];
+   for ( var i = 0; i < out.length; ++i )
+      if ( AsiairNames.isInside( FrameSelector.resolved( out[i] ), root ) )
+         return false;
+   return true;
+};
+
+/*
+ * A path with symlinks followed, where it exists. A path that is not
+ * there yet resolves to itself -- the destination folders are created
+ * later, and a name that does not exist cannot be a link onto the card.
+ */
+FrameSelector.resolved = function( path )
+{
+   try
+   {
+      if ( File.exists( path ) || File.directoryExists( path ) )
+         return File.fullPath( path );
+   }
+   catch ( e ) {}
+   return path;
 };
 
 /* ------------------------------------------------------------------------
@@ -1510,7 +1733,26 @@ FrameSelector.Dialog = class extends Dialog
        * moves that sentence somewhere it is easy to miss.
        */
       this.applyButton.text = "Run";
-      this.applyButton.onClick = function() { self.commit(); };
+      this.applyButton.onClick = function()
+      {
+         /*
+          * WRAPPED. commit() resolves paths, builds a manifest, converts
+          * and verifies -- every one of those can throw, and an exception
+          * crossing back into Qt unwinds through a destructor into
+          * std::terminate and takes the application with it.
+          */
+         try { self.commit(); }
+         catch ( e )
+         {
+            try
+            {
+               ( new MessageBox( "The run failed:\n\n" + e,
+                                 "Loom Frame Selector", StdIcon_Error,
+                                 StdButton_Ok ) ).execute();
+            }
+            catch ( e2 ) {}
+         }
+      };
 
       this.closeButton = new PushButton( this );
       this.closeButton.text = "Close";
@@ -1603,75 +1845,74 @@ FrameSelector.Dialog = class extends Dialog
             }
    }
 
+   /* The measured columns and the score for one row. */
+   fillMetrics( node, row )
+   {
+      if ( row.metrics != null )
+         for ( var m = 0; m < Frames.METRICS.length; ++m )
+         {
+            var name = Frames.METRICS[m], value = row.metrics[name];
+            node.setText( Frames.metricColumn( name ),
+                          ( name == "stars" ) ? String( value ) : Frames.round( value ) );
+         }
+
+      node.setText( Frames.SCORE_COLUMN,
+                    ( row.score == null ) ? "-" : Frames.round( row.score ) );
+   }
+
+   /*
+    * The verdict: the cross beside a rejected name, the reasons in the
+    * tooltip, and the failing measurements reddened so the row says WHY
+    * rather than just that it lost.
+    */
+   markVerdict( node, row )
+   {
+      var final = Frames.finalState( row.state, row.override );
+      var mark = ( row.override == Frames.OVERRIDE.RESCUED ) ? " (rescued)"
+               : ( row.override == Frames.OVERRIDE.CONDEMNED ) ? " (condemned)" : "";
+
+      node.setToolTip( 0, row.path + "\n" + final + mark +
+                       ( row.reasons.length ? ": " + row.reasons.join( "; " ) : "" ) );
+
+      var rejected = ( final == Frames.STATE.REJECTED );
+      var ico = FrameSelector.markIcon( rejected );
+      if ( ico != null )
+         node.setIcon( 0, ico );
+      if ( !rejected )
+         return;
+
+      var failing = row.failing || [];
+      for ( var f = 0; f < failing.length; ++f )
+      {
+         var col = Frames.metricColumn( failing[f] );
+         if ( col != null )
+            node.setTextColor( col, FrameSelector.REJECT_COLOUR );
+      }
+   }
+
    fillFrames()
    {
-      var self = this;
-            self.frameTree.clear();
-            var ch = self.channel();
-            if ( ch == null )
-               return;
-            /*
-             * Names are shortened against the whole channel, not one at a
-             * time: what can be dropped is what every frame here shares.
-             */
-            var paths = [];
-            for ( var pn = 0; pn < ch.rows.length; ++pn )
-               paths.push( ch.rows[pn].path );
-            var shortNames = Frames.shortNames( paths );
+      this.frameTree.clear();
 
-            for ( var i = 0; i < ch.rows.length; ++i )
-            {
-               var row = ch.rows[i];
-               var node = new TreeBoxNode( self.frameTree );
-               node.rowRef = row;
-               node.rowIndex = i;      // which point on the plot this row is
-               node.setText( 0, shortNames[i] );
-               if ( row.metrics != null )
-               {
-                  for ( var mc = 0; mc < Frames.METRICS.length; ++mc )
-                  {
-                     var mn = Frames.METRICS[mc], mv = row.metrics[mn];
-                     node.setText( Frames.metricColumn( mn ),
-                        ( mn == "stars" ) ? String( mv ) : Frames.round( mv ) );
-                  }
-               }
-               node.setText( Frames.SCORE_COLUMN,
-                             ( row.score == null ) ? "-" : Frames.round( row.score ) );
-               var final = Frames.finalState( row.state, row.override );
-               var mark = ( row.override == Frames.OVERRIDE.RESCUED ) ? " (rescued)"
-                        : ( row.override == Frames.OVERRIDE.CONDEMNED ) ? " (condemned)" : "";
-               /*
-                * The verdict in words goes on the row rather than into a
-                * column of its own -- alongside the name, so hovering a
-                * frame answers both "which file" and "why".
-                */
-               node.setToolTip( 0, row.path + "\n" + final + mark +
-                                ( row.reasons.length ? ": " + row.reasons.join( "; " ) : "" ) );
+      var ch = this.channel();
+      if ( ch == null )
+         return;
 
-               /*
-                * A discarded frame is marked twice over: an X beside its
-                * name, so the rows to lose are findable at a glance, and
-                * the measurement that condemned it in red, so the reason
-                * is visible without reading the verdict column. A frame
-                * condemned by hand has no failing measurement, and
-                * correctly gets the mark with nothing coloured.
-                */
-               var rejected = ( final == Frames.STATE.REJECTED );
-               var ico = FrameSelector.markIcon( rejected );
-               if ( ico != null )
-                  node.setIcon( 0, ico );
+      var paths = [];
+      for ( var p = 0; p < ch.rows.length; ++p )
+         paths.push( ch.rows[p].path );
+      var shortNames = Frames.shortNames( paths );
 
-               if ( rejected )
-               {
-                  var failing = row.failing || [];
-                  for ( var f = 0; f < failing.length; ++f )
-                  {
-                     var col = Frames.metricColumn( failing[f] );
-                     if ( col != null )
-                        node.setTextColor( col, FrameSelector.REJECT_COLOUR );
-                  }
-               }
-            }
+      for ( var i = 0; i < ch.rows.length; ++i )
+      {
+         var row = ch.rows[i];
+         var node = new TreeBoxNode( this.frameTree );
+         node.rowRef = row;
+         node.rowIndex = i;            // which point on the plot this row is
+         node.setText( 0, shortNames[i] );
+         this.fillMetrics( node, row );
+         this.markVerdict( node, row );
+      }
    }
 
    syncKnobs()
@@ -1742,27 +1983,37 @@ FrameSelector.Dialog = class extends Dialog
 
 
    /* Recompute every verdict from the cohort and redraw. */
+   /*
+    * Re-derive every channel and count what it means.
+    *
+    * `mixed` names channels rejecting frames while ALSO flagged as not
+    * comparable -- reported rather than withheld, because a verdict from
+    * an incomparable set is exactly the one to look at.
+    */
+   recomputeAll()
+   {
+      var total = 0, condemned = 0, mixed = [];
+
+      for ( var i = 0; i < this.state.order.length; ++i )
+      {
+         var key = this.state.order[i], ch = this.state.channels[key];
+         FrameSelector.recompute( ch );
+
+         var c = Frames.counts( ch.rows );
+         total += c.total;
+         if ( ch.settings.enabled )
+            condemned += c.rejected;
+         if ( ch.settings.enabled && ch.problems.length && c.rejected )
+            mixed.push( key );
+      }
+      return { total: total, condemned: condemned, mixed: mixed };
+   }
+
    refresh()
    {
       var self = this;
-            var total = 0, condemned = 0, mixed = [];
-            for ( var i = 0; i < self.state.order.length; ++i )
-            {
-               var key = self.state.order[i], ch = self.state.channels[key];
-               FrameSelector.recompute( ch );
-               var c = Frames.counts( ch.rows );
-               total += c.total;
-               if ( ch.settings.enabled )
-                  condemned += c.rejected;
-               // Reported, not withheld.
-               if ( ch.settings.enabled && ch.problems.length && c.rejected )
-                  mixed.push( key );
-            }
-            /*
-             * fillFrames rebuilds every node, which drops the selection --
-             * so changing a knob used to blank the preview and the ring and
-             * leave the table looking at nothing.
-             */
+            var tally = self.recomputeAll();
+            var total = tally.total, condemned = tally.condemned, mixed = tally.mixed;
             var keep = self.selectedRowIndex();
             self.fillChannels();
             self.fillFrames();
@@ -1928,11 +2179,138 @@ FrameSelector.Dialog = class extends Dialog
       return result;
    }
 
+   /* The frames came off a card, so nothing may be written back to it. */
+   importing()
+   {
+      return this.state.cardRoot != null;
+   }
+
+   /*
+    * Import: write the approved lights and this night's flats into the
+    * chosen destination. Nothing on the card is touched, ever.
+    */
+   commitImport()
+   {
+      var self = this;
+      var dest = self.state.destination;
+
+      if ( dest == null || dest == self.state.folder )
+      {
+         ( new MessageBox( "Choose a destination folder first.\n\n" +
+                           "Frames are never written back to the card.",
+                           "Loom Frame Selector", StdIcon_Information,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+      if ( !FrameSelector.outputsAreSafe( dest, self.state.cardRoot ) )
+      {
+         ( new MessageBox( "That destination is on the card.\n\n" +
+                           dest + "\n\nPick somewhere else.",
+                           "Loom Frame Selector", StdIcon_Error,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var lights = FrameSelector.approvedLightRecords( self.state );
+      if ( lights.length == 0 )
+      {
+         ( new MessageBox( "Every frame is rejected; there is nothing to import.",
+                           "Loom Frame Selector", StdIcon_Information,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var matches = self.matchedFlats( lights );
+      var manifest = AsiairNames.manifest( lights, matches, dest );
+      if ( manifest.collisions.length > 0 )
+      {
+         ( new MessageBox(
+            "Two source frames would be written to one name, which would " +
+            "lose one of them:\n\n" + manifest.collisions[0].dst +
+            "\n\nNothing has been written.",
+            "Loom Frame Selector", StdIcon_Error, StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var summary = "Import " + manifest.lights.length + " light(s) and " +
+                    manifest.flats.length + " flat(s) into\n" + dest +
+                    "\n\nThe card is not modified.";
+      if ( ( new MessageBox( summary, "Loom Frame Selector", StdIcon_Question,
+                             StdButton_Yes, StdButton_No ) ).execute() != StdButton_Yes )
+         return null;
+
+      self.state.locked = true;
+      var result = null;
+      var progress = new FrameSelector.ScanWindow;
+      try
+      {
+         progress.show();
+         CoreApplication.processEvents();
+         result = FrameSelector.writeManifest( manifest, function( done, total ) {
+            try { progress.report( "Importing", done, total, "" ); } catch ( e ) {}
+         } );
+      }
+      finally
+      {
+         try { progress.hide(); } catch ( e ) {}
+         try { progress.release(); } catch ( e ) {}
+      }
+
+      ( new MessageBox(
+         result.failed.length == 0
+            ? "Imported " + result.written + " frame(s)."
+            : "Imported " + result.written + " frame(s); " +
+              result.failed.length + " failed:\n\n" +
+              result.failed[0].src + "\n" + result.failed[0].reason,
+         "Loom Frame Selector",
+         result.failed.length == 0 ? StdIcon_Information : StdIcon_Warning,
+         StdButton_Ok ) ).execute();
+
+      self.refresh();
+      return result;
+   }
+
+   /*
+    * Which candidate flats suit the surviving light filters.
+    *
+    * Headers are read here and not before: the filename filter is never
+    * used to select or reject a flat, because narrowing by a value the
+    * header can contradict drops flats that actually match and no later
+    * check gets them back.
+    */
+   matchedFlats( lights )
+   {
+      var wanted = [], seen = {};
+      for ( var i = 0; i < lights.length; ++i )
+         if ( !( lights[i].filter in seen ) )
+         {
+            seen[lights[i].filter] = true;
+            var e = FrameSelector.entryFor( lights[i].path );
+            wanted.push( { filter: e.filter, binning: e.binning,
+                           camera: null, rotation: null } );
+         }
+
+      var records = [];
+      var flats = this.state.candidateFlats || [];
+      for ( var f = 0; f < flats.length; ++f )
+         records.push( Asiair.describe( flats[f] ) );
+
+      return AsiairNames.matchFlats( wanted, records );
+   }
+
    commit()
    {
       var self = this;
             if ( !self.editable() )
                return null;
+            /*
+             * Import mode FIRST, and gated on the mode rather than on a
+             * path comparison: the delete-in-place path below must be
+             * unreachable when the source is a card, and a mode flag
+             * cannot be defeated by a symlink.
+             */
+            if ( self.importing() )
+               return self.commitImport();
             if ( self.copyingOut() )
                return self.commitCopy();
             var committable = self.committableRows();
@@ -2104,6 +2482,38 @@ FrameSelector.runOutputRoutine = function( sources, destination, overwrite, post
  * The original is deleted only once its replacement has been confirmed on
  * disk, so a failed write costs nothing.
  */
+/*
+ * Record what became of one original after its XISF was written.
+ *
+ * No output means the original is LEFT ALONE -- that is a failure to
+ * convert, not a reason to delete. A conversion that succeeded but whose
+ * original cannot be removed is also a failure, but a harmless one: the
+ * XISF is there and only the original is left behind.
+ */
+FrameSelector.retireOriginal = function( src, out, result )
+{
+   if ( !File.exists( out ) )
+   {
+      result.outcomes[src] = "not converted";
+      ++result.failed;
+      Util.warn( "frames", "not converted, left alone: " + src );
+      return;
+   }
+
+   try
+   {
+      File.remove( src );
+      result.outcomes[src] = "converted";
+      ++result.converted;
+   }
+   catch ( e )
+   {
+      result.outcomes[src] = "converted, original kept";
+      ++result.failed;
+      Util.warn( "frames", "converted but could not remove " + src + ": " + e );
+   }
+};
+
 FrameSelector.convertInPlace = function( paths )
 {
    var result = { converted: 0, failed: 0, alreadyXisf: 0,
@@ -2151,29 +2561,7 @@ FrameSelector.convertInPlace = function( paths )
       }
 
       for ( var i = 0; i < group.length; ++i )
-      {
-         var src = group[i], out = map.mapping[src];
-         if ( !File.exists( out ) )
-         {
-            result.outcomes[src] = "not converted";
-            ++result.failed;
-            Util.warn( "frames", "not converted, left alone: " + src );
-            continue;
-         }
-         try
-         {
-            File.remove( src );
-            result.outcomes[src] = "converted";
-            ++result.converted;
-         }
-         catch ( e2 )
-         {
-            // The XISF is there; only the original is left behind.
-            result.outcomes[src] = "converted, original kept";
-            ++result.failed;
-            Util.warn( "frames", "converted but could not remove " + src + ": " + e2 );
-         }
-      }
+         FrameSelector.retireOriginal( group[i], map.mapping[group[i]], result );
    }
    return result;
 };
@@ -2425,6 +2813,147 @@ FrameSelector.Plot = class extends Frame
       this.repaint();
    }
 
+   /*
+    * Where the plot lives inside the control, and how a value maps to it.
+    * Returned as functions so the drawing below reads as geometry rather
+    * than arithmetic.
+    */
+   frame( values )
+   {
+      var W = this.width, H = this.height;
+      var L = 52, R = 8, T = 10, B = 18;      // room for the value labels
+      var pw = Math.max( 1, W - L - R ), ph = Math.max( 1, H - T - B );
+
+      var bounds = Frames.plotBounds( values, this.band );
+      var span = ( bounds.hi - bounds.lo ) || 1;
+
+      return {
+         L: L, T: T, pw: pw, ph: ph, bounds: bounds,
+         yOf: function( v ) { return T + ph - ( ( v - bounds.lo ) / span ) * ph; },
+         xOf: function( i )
+         {
+            return ( values.length < 2 ) ? ( L + pw/2 )
+                                         : ( L + ( i / ( values.length - 1 ) ) * pw );
+         }
+      };
+   }
+
+   /*
+    * The accepted band and the axis box. An open end runs to the edge of
+    * the plot, which is what "no limit on this side" looks like.
+    */
+   paintBand( g, f )
+   {
+      var top = ( this.band.hi != null ) ? f.yOf( this.band.hi ) : f.T;
+      var bot = ( this.band.lo != null ) ? f.yOf( this.band.lo ) : f.T + f.ph;
+      if ( bot > top )
+         g.fillRect( f.L, Math.max( f.T, top ), f.L + f.pw, Math.min( f.T + f.ph, bot ),
+                     new Brush( FrameSelector.PLOT_COLOURS.BAND ) );
+
+      g.pen = new Pen( FrameSelector.PLOT_COLOURS.AXIS );
+      g.drawRect( f.L, f.T, f.L + f.pw, f.T + f.ph );
+   }
+
+   /*
+    * The band's edges and the axis extremes, labelled. A band with no
+    * number on it does not say what the threshold actually is; the edges
+    * go first so a threshold keeps its number when an axis extreme would
+    * land on top of it.
+    */
+   paintLabels( g, f )
+   {
+      var wanted = [];
+      var edges = [ this.band.lo, this.band.hi ];
+      for ( var e = 0; e < edges.length; ++e )
+      {
+         if ( edges[e] == null )
+            continue;
+         var ye = f.yOf( edges[e] );
+         if ( ye < f.T || ye > f.T + f.ph )
+            continue;
+         g.pen = new Pen( FrameSelector.PLOT_COLOURS.EDGE );
+         g.drawLine( f.L, ye, f.L + f.pw, ye );
+         wanted.push( { y: ye + 4, text: Frames.round( edges[e] ), edge: true } );
+      }
+      wanted.push( { y: f.T + 8,    text: Frames.round( f.bounds.hi ) } );
+      wanted.push( { y: f.T + f.ph, text: Frames.round( f.bounds.lo ) } );
+
+      var labels = Frames.spacedLabels( wanted, FrameSelector.LABEL_GAP );
+      for ( var i = 0; i < labels.length; ++i )
+      {
+         g.pen = new Pen( labels[i].edge ? FrameSelector.PLOT_COLOURS.EDGE
+                                         : FrameSelector.PLOT_COLOURS.INK );
+         g.drawText( 2, labels[i].y, labels[i].text );
+      }
+   }
+
+   /*
+    * The trend line. A gap in the data BREAKS it rather than being
+    * bridged: an unmeasurable frame has no value, and joining across it
+    * would draw a trend through a frame that was never measured.
+    */
+   paintLine( g, f, values )
+   {
+      g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE, 1 );
+      var px = null, py = null;
+      for ( var i = 0; i < values.length; ++i )
+      {
+         if ( values[i] == null || !isFinite( values[i] ) )
+         {
+            px = null;
+            continue;
+         }
+         var x = f.xOf( i ), y = f.yOf( values[i] );
+         if ( px != null )
+            g.drawLine( px, py, x, y );
+         px = x; py = y;
+      }
+   }
+
+   /* A square per frame, or the same cross the table uses for a reject. */
+   paintMarkers( g, f, values )
+   {
+      for ( var i = 0; i < values.length; ++i )
+      {
+         if ( values[i] == null || !isFinite( values[i] ) )
+            continue;
+         var x = f.xOf( i ), y = f.yOf( values[i] );
+         var row = this.rows[i];
+
+         if ( Frames.finalState( row.state, row.override ) == Frames.STATE.REJECTED )
+         {
+            // The same mark as the table's, for the same reason: the
+            // frames about to be deleted are the ones worth finding.
+            g.pen = new Pen( FrameSelector.PLOT_COLOURS.REJECT, 2 );
+            g.drawLine( x-4, y-4, x+4, y+4 );
+            g.drawLine( x+4, y-4, x-4, y+4 );
+         }
+         else
+         {
+            g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE );
+            g.brush = new Brush( FrameSelector.PLOT_COLOURS.LINE );
+            g.fillRect( x-2, y-2, x+2, y+2 );
+         }
+      }
+   }
+
+   /*
+    * The selection ring, drawn LAST so it is never under a marker or the
+    * line. An empty brush, or the circle would fill and hide the very
+    * point it is pointing at.
+    */
+   paintSelection( g, f, values )
+   {
+      var sel = this.selected;
+      if ( sel < 0 || sel >= values.length ||
+           values[sel] == null || !isFinite( values[sel] ) )
+         return;
+
+      g.pen = new Pen( FrameSelector.PLOT_COLOURS.PICKED, 2 );
+      g.brush = new Brush( FrameSelector.PLOT_COLOURS.PICKED, BrushStyle_Empty );
+      g.drawCircle( f.xOf( sel ), f.yOf( values[sel] ), FrameSelector.PICK_RADIUS );
+   }
+
    paint()
    {
       var g = null;
@@ -2432,133 +2961,21 @@ FrameSelector.Plot = class extends Frame
       {
          g = new Graphics( this );
          g.antialiasing = true;
-         var W = this.width, H = this.height;
-         g.fillRect( 0, 0, W, H, new Brush( FrameSelector.PLOT_COLOURS.PAPER ) );
-
-         var L = 52, R = 8, T = 10, B = 18;      // room for the value labels
-         var pw = Math.max( 1, W - L - R ), ph = Math.max( 1, H - T - B );
-         /*
-          * Kept for the hit test: a click has to map back through exactly
-          * the geometry the points were drawn with, not a second copy of
-          * the arithmetic that could drift from it.
-          */
-         this.geom = { left: L, width: pw };
+         g.fillRect( 0, 0, this.width, this.height,
+                     new Brush( FrameSelector.PLOT_COLOURS.PAPER ) );
 
          var values = [];
          for ( var i = 0; i < this.rows.length; ++i )
             values.push( this.rows[i].metrics ? this.rows[i].metrics[this.metric] : null );
-         var bounds = Frames.plotBounds( values, this.band );
-         var span = ( bounds.hi - bounds.lo ) || 1;
 
-         function yOf( v ) { return T + ph - ( ( v - bounds.lo ) / span ) * ph; }
-         function xOf( i )
-         {
-            return ( values.length < 2 ) ? ( L + pw/2 )
-                                         : ( L + ( i / ( values.length - 1 ) ) * pw );
-         }
+         var f = this.frame( values );
+         this.geom = { left: f.L, width: f.pw };
 
-         // The accepted band. An open end runs to the edge of the plot,
-         // which is what "no limit on this side" looks like.
-         var bTop = ( this.band.hi != null ) ? yOf( this.band.hi ) : T;
-         var bBot = ( this.band.lo != null ) ? yOf( this.band.lo ) : T + ph;
-         if ( bBot > bTop )
-            g.fillRect( L, Math.max( T, bTop ), L + pw, Math.min( T + ph, bBot ),
-                        new Brush( FrameSelector.PLOT_COLOURS.BAND ) );
-
-         g.pen = new Pen( FrameSelector.PLOT_COLOURS.AXIS );
-         g.drawRect( L, T, L + pw, T + ph );
-
-         // The band's edges, labelled -- a band with no number on it does
-         // not say what the threshold actually is.
-         var edges = [ this.band.lo, this.band.hi ];
-         var wanted = [];
-         for ( var e = 0; e < edges.length; ++e )
-            if ( edges[e] != null )
-            {
-               var ye = yOf( edges[e] );
-               if ( ye >= T && ye <= T + ph )
-               {
-                  g.pen = new Pen( FrameSelector.PLOT_COLOURS.EDGE );
-                  g.drawLine( L, ye, L + pw, ye );
-                  // First in the list, so a threshold keeps its number
-                  // when the axis extreme would land on top of it.
-                  wanted.push( { y: ye + 4, text: Frames.round( edges[e] ),
-                                 edge: true } );
-               }
-            }
-         wanted.push( { y: T + 8,  text: Frames.round( bounds.hi ) } );
-         wanted.push( { y: T + ph, text: Frames.round( bounds.lo ) } );
-
-         var labels = Frames.spacedLabels( wanted, FrameSelector.LABEL_GAP );
-         for ( var li = 0; li < labels.length; ++li )
-         {
-            g.pen = new Pen( labels[li].edge ? FrameSelector.PLOT_COLOURS.EDGE
-                                             : FrameSelector.PLOT_COLOURS.INK );
-            g.drawText( 2, labels[li].y, labels[li].text );
-         }
-
-         /*
-          * The line first, the markers over it.
-          *
-          * Drawn in one pass so a gap in the data breaks the line rather
-          * than being bridged: an unmeasurable frame has no value, and
-          * joining across it would draw a trend through a frame that was
-          * never measured.
-          */
-         g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE, 1 );
-         var prevX = null, prevY = null;
-         for ( var j = 0; j < values.length; ++j )
-         {
-            if ( values[j] == null || !isFinite( values[j] ) )
-            {
-               prevX = null;
-               continue;
-            }
-            var jx = xOf( j ), jy = yOf( values[j] );
-            if ( prevX != null )
-               g.drawLine( prevX, prevY, jx, jy );
-            prevX = jx; prevY = jy;
-         }
-
-         for ( var k = 0; k < values.length; ++k )
-         {
-            if ( values[k] == null || !isFinite( values[k] ) )
-               continue;
-            var x = xOf( k ), y = yOf( values[k] );
-            var row = this.rows[k];
-            var rejected = ( Frames.finalState( row.state, row.override ) ==
-                             Frames.STATE.REJECTED );
-            if ( rejected )
-            {
-               // The same mark as the table's, for the same reason: the
-               // frames about to be deleted are the ones worth finding.
-               g.pen = new Pen( FrameSelector.PLOT_COLOURS.REJECT, 2 );
-               g.drawLine( x-4, y-4, x+4, y+4 );
-               g.drawLine( x+4, y-4, x-4, y+4 );
-            }
-            else
-            {
-               g.pen = new Pen( FrameSelector.PLOT_COLOURS.LINE );
-               g.brush = new Brush( FrameSelector.PLOT_COLOURS.LINE );
-               g.fillRect( x-2, y-2, x+2, y+2 );
-            }
-         }
-
-         /*
-          * The selection last, so the ring is never drawn under a marker
-          * or the line. An empty brush, or the circle would fill and hide
-          * the very point it is pointing at.
-          */
-         var sel = this.selected;
-         if ( sel >= 0 && sel < values.length &&
-              values[sel] != null && isFinite( values[sel] ) )
-         {
-            g.pen = new Pen( FrameSelector.PLOT_COLOURS.PICKED, 2 );
-            g.brush = new Brush( FrameSelector.PLOT_COLOURS.PICKED,
-                                 BrushStyle_Empty );
-            g.drawCircle( xOf( sel ), yOf( values[sel] ),
-                          FrameSelector.PICK_RADIUS );
-         }
+         this.paintBand( g, f );
+         this.paintLabels( g, f );
+         this.paintLine( g, f, values );
+         this.paintMarkers( g, f, values );
+         this.paintSelection( g, f, values );
       }
       catch ( e )
       {
@@ -2714,8 +3131,111 @@ FrameSelector.ScanWindow = class extends Dialog
    }
 };
 
+/*
+ * Offer a card, if one is plugged in.
+ *
+ * Returns a state to review, or null to fall through to the ordinary
+ * folder chooser. Detection must never block startup: a card that is not
+ * there costs two directory tests per mounted volume and nothing else.
+ */
+FrameSelector.offerCard = function()
+{
+   var cards = [];
+   try { cards = Asiair.detect(); } catch ( e ) { cards = []; }
+   if ( cards.length == 0 )
+      return null;
+
+   var root = cards[0];
+   var answer = ( new MessageBox(
+      "An ASIAIR card is mounted at\n" + root + "\n\nImport a night from it?",
+      "Loom Frame Selector", StdIcon_Question,
+      StdButton_Yes, StdButton_No ) ).execute();
+   if ( answer != StdButton_Yes )
+      return null;
+
+   var scan = null;
+   var progress = new FrameSelector.ScanWindow;
+   try
+   {
+      progress.show();
+      CoreApplication.processEvents();
+      scan = Asiair.scanCard( root, function( n ) {
+         try { progress.report( "Reading card", n, 0, "" ); } catch ( e ) {}
+      } );
+   }
+   finally
+   {
+      try { progress.hide(); } catch ( e ) {}
+      try { progress.release(); } catch ( e ) {}
+   }
+
+   if ( scan == null || scan.removed )
+   {
+      ( new MessageBox( "The card went away while it was being read.",
+                        "Loom Frame Selector", StdIcon_Warning,
+                        StdButton_Ok ) ).execute();
+      return null;
+   }
+   if ( scan.lights.length == 0 )
+   {
+      ( new MessageBox( "No readable light frames on that card.",
+                        "Loom Frame Selector", StdIcon_Information,
+                        StdButton_Ok ) ).execute();
+      return null;
+   }
+
+   var survey = NightDialog.surveyOf( scan, AsiairNames.GAP_HOURS );
+   var picker = new NightDialog.Dialog( survey, root );
+   var chose = false;
+   try { chose = picker.execute(); }
+   finally { try { picker.release(); } catch ( e ) {} }
+   if ( !chose || picker.selectedNight == null )
+      return null;
+
+   var night = picker.selectedNight;
+   var paths = [];
+   for ( var i = 0; i < night.frames.length; ++i )
+      paths.push( night.frames[i].path );
+
+   var state = null;
+   var p2 = new FrameSelector.ScanWindow;
+   try
+   {
+      p2.show();
+      CoreApplication.processEvents();
+      state = FrameSelector.buildStateFrom(
+         paths, night.target + " " + night.date, p2.callbacks() );
+   }
+   finally
+   {
+      try { p2.hide(); } catch ( e ) {}
+      try { p2.release(); } catch ( e ) {}
+   }
+
+   if ( state == null || state.cancelled )
+      return null;
+
+   /*
+    * Import mode lives on the STATE, which the review dialog is handed.
+    * FrameSelector.Dialog extends the native Dialog and does NOT inherit
+    * from FrameSelector.prototype, so a flag put there would read as
+    * undefined and every guard depending on it would be no guard at all.
+    */
+   state.cardRoot = root;
+   state.candidateFlats = NightDialog.flatsForNight( survey, night );
+   return state;
+};
+
 FrameSelector.main = function()
 {
+   var fromCard = FrameSelector.offerCard();
+   if ( fromCard != null )
+   {
+      if ( fromCard.order.length > 0 )
+         ( new FrameSelector.Dialog( fromCard ) ).execute();
+      return;
+   }
+
    var gd = new GetDirectoryDialog;
    gd.caption = "Select a folder of subframes";
    if ( !gd.execute() )

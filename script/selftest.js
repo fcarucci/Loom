@@ -17,6 +17,19 @@
 #include "lib/Pipeline.js"
 #include "lib/Update.js"
 /*
+ * The ASIAIR libraries are included HERE, not left to FrameSelector.js.
+ *
+ * This file defines LOOM_LIBS_INCLUDED before including FrameSelector.js,
+ * which suppresses the include block inside it -- so a library registered
+ * only there is undefined for the whole of this suite under PixInsight,
+ * while node's own loader preloads it and every assertion passes. Exactly
+ * the CI-green-PixInsight-broken split this project has already paid for
+ * twice.
+ */
+#include "lib/AsiairNames.js"
+#include "lib/Asiair.js"
+#include "lib/NightDialog.js"
+/*
  * UI.js is included so the dialogs can actually be CONSTRUCTED below.
  *
  * It was absent for a long time, and that absence had a cost: the suite
@@ -89,6 +102,51 @@ function restoreLogging()
    Util.log = REAL_LOG;
    Util.warn = REAL_WARN;
    Util.operation = REAL_OPERATION;
+}
+
+/*
+ * PJSR's File.createDirectory THROWS when the directory already exists,
+ * unlike a recursive mkdir. Scratch survives between runs, so every
+ * fixture directory has to be created only when it is actually absent --
+ * and each level separately, since an existing parent would throw too.
+ */
+function ensureDir( path )
+{
+   var parts = String( path ).split( "/" );
+   var built = "";
+   for ( var i = 0; i < parts.length; ++i )
+   {
+      if ( parts[i] == "" ) { built = ""; continue; }
+      built += "/" + parts[i];
+      if ( !File.directoryExists( built ) )
+         File.createDirectory( built, false );
+   }
+}
+
+/*
+ * The dialogs the suite constructs.
+ *
+ * Kept so they can be released, but note what this does NOT do: it does
+ * not prevent the crash that used to take PixInsight down after every
+ * run. That was ScrollBox.onViewportScrolled in PreviewControl, and no
+ * amount of releasing, collecting or pumping from here touched it --
+ * three separate attempts from this file failed before the cause was
+ * found by building one control at a time in a dispatched script.
+ */
+var DIALOGS = [];
+
+function tracked( dialog )
+{
+   DIALOGS.push( dialog );
+   return dialog;
+}
+
+function releaseDialogs()
+{
+   for ( var i = DIALOGS.length; i-- > 0; )
+      try { if ( DIALOGS[i] && typeof DIALOGS[i].release == "function" ) DIALOGS[i].release(); }
+      catch ( e ) { /* releasing must never be the thing that fails */ }
+   DIALOGS = [];
 }
 
 function check( name, actual, expected )
@@ -4525,7 +4583,7 @@ function runTests()
       {
          var state = { folder: "/tmp/agent-scratch", channels: {}, order: [],
                        preset: Frames.DEFAULT_PRESET, locked: false };
-         var dlg = new FrameSelector.Dialog( state );
+         var dlg = tracked( new FrameSelector.Dialog( state ) );
          /*
           * The review is editable until an execution is committed, and
           * locked while one is running -- otherwise editing a knob mid-run
@@ -4604,7 +4662,7 @@ function runTests()
                                       [ "calibration state unknown for every frame" ] ) );
          pState.order.push( "H" );
 
-         var full = new FrameSelector.Dialog( pState );
+         var full = tracked( new FrameSelector.Dialog( pState ) );
          full.refresh();                       // the summary, the label, the plot
          ok = ok && ( full.frameTree.numberOfChildren == 6 );
          /*
@@ -4689,7 +4747,7 @@ function runTests()
               "/m/h2.xisf": { psfSNR: 1010, fwhm: 5.1, eccentricity: 0.41, stars: 10100 } },
             [] );
          st.order = [ "H" ];
-         var d2 = new FrameSelector.Dialog( st );
+         var d2 = tracked( new FrameSelector.Dialog( st ) );
          d2.refresh();
          check( "a channel below the minimum rejects nothing",
                 Frames.counts( st.channels.H.rows ).rejected, 0 );
@@ -4750,10 +4808,10 @@ function runTests()
       var offState = null, onState = null;
       try
       {
-         var a = new UI.SelectDialog( cfg() );
+         var a = tracked( new UI.SelectDialog( cfg() ) );
          offState = a.keepLinearCheck.enabled;
          var c2 = cfg(); c2.stretch = true;
-         var b = new UI.SelectDialog( c2 );
+         var b = tracked( new UI.SelectDialog( c2 ) );
          onState = b.keepLinearCheck.enabled;
       }
       catch ( e ) { built = false; err = String( e ); }
@@ -4777,7 +4835,7 @@ function runTests()
       var runDuring = null, runAfter = null, statusDuring = "";
       try
       {
-         var s = new UI.SelectDialog( cfg() );
+         var s = tracked( new UI.SelectDialog( cfg() ) );
          try
          {
             s.setBusy( Util.scanProgressMessage( "Measuring masters", "G", 1, 3 ) );
@@ -4818,7 +4876,7 @@ function runTests()
       var cwOK = true, cwErr = "";
       try
       {
-         var cw = new UI.CancelWindow;
+         var cw = tracked( new UI.CancelWindow );
          cw.setStage( "test" );
          cw.setProgress( 50, "test" );
          cwOK = ( cw.cancelled === false );
@@ -5327,6 +5385,942 @@ function runTests()
          missing.push( needed[ri] );
    check( "every parameter AstrometricResiduals requires is present", missing, [] );
 
+   /* ---- ASIAIR filename parsing ------------------------------------------ */
+
+   /*
+    * The grammar published on forums and in third-party parsers is wrong
+    * for real hardware. A frame off this rig carries a SPACE in the
+    * target, a camera token and a rotation token that none of them
+    * mention. Parsing left to right reads the camera as the filter on
+    * EVERY frame and nothing ever tells you -- so the parser anchors on
+    * the timestamp, the one token that cannot be confused, and works
+    * outward from it.
+    */
+   check( "parseName real rig frame",
+          AsiairNames.parseName(
+             "Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit" ),
+          { type: "Light", target: "IC 1396A", exposure: "180.0s", binToken: "Bin1",
+            camera: "2600MM", filter: "H", gain: "gain100",
+            stamp: "20260807-215716", rotation: "180deg", temp: "-7.0C",
+            sequence: "0001" } );
+
+   // The published grammar, with no camera and no rotation token
+   check( "parseName published grammar",
+          AsiairNames.parseName(
+             "Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit" ),
+          { type: "Light", target: "M42", exposure: "10.0s", binToken: "Bin1",
+            camera: null, filter: "S", gain: "gain360",
+            stamp: "20240320-203324", rotation: null, temp: "-10.0C",
+            sequence: "0001" } );
+
+   // A flat has no target at all
+   check( "parseName flat without target",
+          AsiairNames.parseName(
+             "Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" ).type,
+          "Flat" );
+   check( "parseName flat target empty",
+          AsiairNames.parseName(
+             "Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" ).target,
+          "" );
+
+   /*
+    * A target may itself contain an exposure-shaped fragment. Taking the
+    * LAST exposure token before the bin is what keeps "M42_30s" in the
+    * target instead of stealing "30s" as the exposure.
+    */
+   check( "parseName target containing an exposure-shaped token",
+          AsiairNames.parseName(
+             "Light_M42_30s_180.0s_Bin1_2600MM_H_gain100_20260920-220000_180deg_-7.0C_0001.fit" ).target,
+          "M42_30s" );
+   check( "and the exposure is the real one",
+          AsiairNames.parseName(
+             "Light_M42_30s_180.0s_Bin1_2600MM_H_gain100_20260920-220000_180deg_-7.0C_0001.fit" ).exposure,
+          "180.0s" );
+
+   // Extensions are matched case-insensitively
+   check( "parseName accepts .FIT",
+          AsiairNames.parseName(
+             "Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.FIT" ) != null,
+          true );
+   check( "parseName accepts .fits",
+          AsiairNames.parseName(
+             "Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fits" ) != null,
+          true );
+
+   // Not an ASIAIR frame: no timestamp
+   check( "parseName rejects a foreign name",
+          AsiairNames.parseName( "masterDark_BIN-1_6248x4176.xisf" ), null );
+
+   /*
+    * Two timestamps is ambiguous, and guessing which one is the capture
+    * time would put the frame in the wrong night. Rejected outright.
+    */
+   check( "parseName rejects two timestamps",
+          AsiairNames.parseName(
+             "Light_20240101-010101_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit" ),
+          null );
+
+   /* ---- ASIAIR timestamps ------------------------------------------------ */
+
+   /*
+    * The stamp is a wall-clock label in an unstated zone. It becomes a key
+    * through UTC arithmetic, NEVER by building a local Date: a local Date
+    * makes clustering depend on the importing computer's timezone, and
+    * across a DST boundary it mis-measures the gap. 00:30 to 05:00 on a US
+    * spring-forward date is 4.5 hours by the clock and 3.5 elapsed --
+    * enough to move a session boundary at a 4h threshold.
+    */
+   check( "stampKey difference is one hour",
+          AsiairNames.stampKey( "20260807-220000" ) -
+          AsiairNames.stampKey( "20260807-210000" ), 3600 );
+
+   check( "stampKey crosses midnight",
+          AsiairNames.stampKey( "20260808-003000" ) -
+          AsiairNames.stampKey( "20260807-233000" ), 3600 );
+
+   check( "stampKey ignores DST",
+          AsiairNames.stampKey( "20260308-050000" ) -
+          AsiairNames.stampKey( "20260308-003000" ), 16200 );
+
+   /*
+    * Seconds, not minutes. Flooring to minutes would make this pair four
+    * hours apart exactly, and "more than four hours splits" would then
+    * keep in one session two runs that demonstrably are not one.
+    */
+   check( "stampKey keeps seconds",
+          AsiairNames.stampKey( "20260921-000059" ) -
+          AsiairNames.stampKey( "20260920-200000" ), 4*3600 + 59 );
+
+   check( "stampKey rejects rubbish", AsiairNames.stampKey( "nonsense" ), null );
+   check( "stampKey rejects month 13", AsiairNames.stampKey( "20261301-000000" ), null );
+   check( "stampKey rejects day 32", AsiairNames.stampKey( "20260132-000000" ), null );
+   check( "stampKey rejects hour 25", AsiairNames.stampKey( "20260101-250000" ), null );
+   /*
+    * Date.UTC rolls 31 February into March. A rolled date is not the date
+    * that was printed, so it is not a date we accept -- otherwise a typo
+    * on the card becomes a frame filed under a day it was not shot.
+    */
+   check( "stampKey rejects a rolled date", AsiairNames.stampKey( "20260230-120000" ), null );
+
+   /* ---- ASIAIR sessions --------------------------------------------------- */
+
+   function asiairLight( stamp, target, filter )
+   {
+      return { key: AsiairNames.stampKey( stamp ), target: target || "A",
+               filter: filter || "H", type: "Light", stamp: stamp };
+   }
+
+   /*
+    * Sessions are clustered from LIGHTS ONLY. Letting flats take part is
+    * what would join two nights: a run of daytime flats at 10:00, 14:00
+    * and 18:00 bridges every gap between a night ending at 06:00 and the
+    * next starting at 20:00, and the two merge beyond telling apart.
+    * Flats are assigned afterwards, once the boundaries are fixed.
+    */
+   var asOne = AsiairNames.sessions( [
+      asiairLight( "20260920-200000" ), asiairLight( "20260920-230000" ),
+      asiairLight( "20260921-020000" ) ], 4 );
+   check( "one unbroken session", asOne.length, 1 );
+   check( "and it holds every frame", asOne[0].frames.length, 3 );
+
+   check( "a night's gap splits the session",
+          AsiairNames.sessions( [
+             asiairLight( "20260920-200000" ), asiairLight( "20260920-220000" ),
+             asiairLight( "20260921-200000" ), asiairLight( "20260921-220000" ) ], 4 ).length,
+          2 );
+
+   check( "four hours exactly does not split",
+          AsiairNames.sessions( [ asiairLight( "20260920-200000" ),
+                                  asiairLight( "20260921-000000" ) ], 4 ).length, 1 );
+   check( "four hours and a minute splits",
+          AsiairNames.sessions( [ asiairLight( "20260920-200000" ),
+                                  asiairLight( "20260921-000100" ) ], 4 ).length, 2 );
+   // and the seconds matter, which is why the key is not floored to minutes
+   check( "four hours and fifty-nine seconds splits",
+          AsiairNames.sessions( [ asiairLight( "20260920-200000" ),
+                                  asiairLight( "20260921-000059" ) ], 4 ).length, 2 );
+
+   /*
+    * Counting the sessions cannot see the sort: without it, a step
+    * BACKWARDS in time gives a negative difference, which never exceeds
+    * the gap, so the frames still collapse into one session. What the
+    * sort actually decides is the session's extent -- so that is what is
+    * asserted.
+    */
+   var asUnsorted = AsiairNames.sessions( [ asiairLight( "20260921-020000" ),
+                                            asiairLight( "20260920-200000" ),
+                                            asiairLight( "20260920-230000" ) ], 4 );
+   check( "unsorted input clusters the same", asUnsorted.length, 1 );
+   check( "and the session starts at the earliest frame",
+          asUnsorted[0].first, AsiairNames.stampKey( "20260920-200000" ) );
+   check( "and ends at the latest",
+          asUnsorted[0].last, AsiairNames.stampKey( "20260921-020000" ) );
+   check( "and its frames are in time order",
+          asUnsorted[0].frames.map( function( f ) { return f.stamp; } ),
+          [ "20260920-200000", "20260920-230000", "20260921-020000" ] );
+
+   check( "two targets share a session",
+          AsiairNames.sessions( [ asiairLight( "20260920-200000", "A" ),
+                                  asiairLight( "20260920-220000", "B" ) ], 4 ).length, 1 );
+
+   check( "unparseable frames are dropped",
+          AsiairNames.sessions( [ asiairLight( "20260920-200000" ),
+                                  { key: null, target: "A" } ], 4 )[0].frames.length, 1 );
+
+   check( "no frames, no sessions", AsiairNames.sessions( [], 4 ), [] );
+   check( "the default gap is four hours", AsiairNames.GAP_HOURS, 4 );
+
+   /* ---- ASIAIR nights ----------------------------------------------------- */
+
+   var asSess = AsiairNames.sessions( [
+      asiairLight( "20260920-200000", "IC 1396A", "H" ),
+      asiairLight( "20260920-210000", "IC 1396A", "O" ),
+      asiairLight( "20260920-220000", "M31",      "L" ),
+      asiairLight( "20260921-200000", "IC 1396A", "H" ) ], 4 );
+   var asNights = AsiairNames.nights( asSess );
+
+   check( "three nights across two sessions", asNights.length, 3 );
+   check( "a night names its target", asNights[0].target, "IC 1396A" );
+   check( "a night counts its frames", asNights[0].count, 2 );
+   check( "a night lists its filters, sorted and unique", asNights[0].filters, [ "H", "O" ] );
+   check( "a night carries its date", asNights[0].date, "2026-09-20" );
+   check( "a night knows its session", asNights[2].sessionIndex, 1 );
+
+   /*
+    * A night carries its own frames. A label alone cannot be handed to
+    * scanPaths, and making the caller re-filter the session by target is
+    * the same lookup written a second time, in a second place, to drift.
+    */
+   check( "a night carries its frames", asNights[0].frames.length, 2 );
+   check( "and only its own target's", asNights[0].frames[0].target, "IC 1396A" );
+
+   /*
+    * Two sessions on the SAME calendar date must stay two rows. This is
+    * the behaviour gap clustering was chosen for over a noon-to-noon
+    * observing date, which cannot express it at all.
+    */
+   check( "two sessions on one date stay separate",
+          AsiairNames.nights( AsiairNames.sessions( [
+             asiairLight( "20260920-010000", "M31", "L" ),
+             asiairLight( "20260920-220000", "M31", "L" ) ], 4 ) ).length, 2 );
+
+   check( "no sessions, no nights", AsiairNames.nights( [] ), [] );
+
+   /* ---- ASIAIR flat batches ----------------------------------------------- */
+
+   function asiairFlat( stamp, filter )
+   {
+      return { key: AsiairNames.stampKey( stamp ), filter: filter,
+               target: "", type: "Flat", stamp: stamp };
+   }
+
+   check( "flats cluster into batches",
+          AsiairNames.flatBatches( [
+             asiairFlat( "20260921-060000", "H" ), asiairFlat( "20260921-060200", "H" ),
+             asiairFlat( "20260922-060000", "H" ) ], 4 ).length, 2 );
+   check( "a batch keeps its frames",
+          AsiairNames.flatBatches( [
+             asiairFlat( "20260921-060000", "H" ),
+             asiairFlat( "20260921-060200", "H" ) ], 4 )[0].frames.length, 2 );
+
+   /*
+    * The session fixture needs frames no more than GAP_HOURS apart, or it
+    * is not one session at all. 20:00 -> 06:00 in four steps is; in one
+    * step it is four separate sessions, which is what a careless fixture
+    * produced once and what a length-only assertion failed to notice.
+    */
+   var asStrad = AsiairNames.sessions( [
+      asiairLight( "20260920-200000" ), asiairLight( "20260920-230000" ),
+      asiairLight( "20260921-020000" ), asiairLight( "20260921-060000" ),
+      asiairLight( "20260921-200000" ), asiairLight( "20260921-230000" ),
+      asiairLight( "20260922-020000" ) ], 4 );
+   check( "two sessions for the straddle case", asStrad.length, 2 );
+   check( "the first ends at dawn",
+          asStrad[0].last, AsiairNames.stampKey( "20260921-060000" ) );
+   check( "the second starts at dusk",
+          asStrad[1].first, AsiairNames.stampKey( "20260921-200000" ) );
+
+   /*
+    * Assignment is per BATCH, never per flat. The midpoint between 06:00
+    * and 20:00 is 13:00; a batch running 12:59 to 13:01 lies across it,
+    * and assigning each flat on its own distance would send one flat each
+    * way. Half a flat set calibrates nothing.
+    */
+   var asStraddleBatch = AsiairNames.flatBatches( [
+      asiairFlat( "20260921-125900", "H" ), asiairFlat( "20260921-130100", "H" ) ], 4 );
+   check( "the straddling flats are one batch", asStraddleBatch.length, 1 );
+   check( "and the batch keeps both flats", asStraddleBatch[0].frames.length, 2 );
+   check( "and goes whole to a single session",
+          AsiairNames.assignBatches( asStraddleBatch, asStrad ), [ 0 ] );
+
+   check( "dawn flats attach to the session just ended",
+          AsiairNames.assignBatches(
+             AsiairNames.flatBatches( [ asiairFlat( "20260921-063000", "H" ) ], 4 ),
+             asStrad )[0], 0 );
+
+   check( "dusk flats attach to the session about to begin",
+          AsiairNames.assignBatches(
+             AsiairNames.flatBatches( [ asiairFlat( "20260921-193000", "H" ) ], 4 ),
+             asStrad )[0], 1 );
+
+   check( "no sessions means no owner",
+          AsiairNames.assignBatches(
+             AsiairNames.flatBatches( [ asiairFlat( "20260921-063000", "H" ) ], 4 ), [] )[0],
+          -1 );
+
+   /* ---- ASIAIR flat matching ----------------------------------------------- */
+
+   /*
+    * The field is `binning`, NOT `bin`, because that is what
+    * FrameSelector.entryFor already calls it. Two names for one field is
+    * how `undefined == undefined` gets to report an exact match between
+    * frames that share nothing at all.
+    */
+   var asCand = [
+      { path: "/f/h1.fit", filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/h2.fit", filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/o1.fit", filter: "O", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { path: "/f/rot.fit", filter: "S", binning: "1", camera: "2600MM", rotation: "090deg" }
+   ];
+   var asWant = [
+      { filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "O", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "S", binning: "1", camera: "2600MM", rotation: "180deg" },
+      { filter: "L", binning: "1", camera: "2600MM", rotation: "180deg" }
+   ];
+   var asM = AsiairNames.matchFlats( asWant, asCand );
+
+   check( "one result per light filter", asM.length, 4 );
+   check( "H matches both H flats", asM[0].flats.length, 2 );
+   check( "H is an exact match", asM[0].strength, "exact" );
+
+   /*
+    * A rotation change between lights and flats invalidates the flat --
+    * the dust is somewhere else now. The real filenames carry the angle,
+    * so this is checkable rather than merely hoped for.
+    */
+   check( "a rotated flat does not match", asM[2].flats.length, 0 );
+   check( "and is reported missing", asM[2].strength, "missing" );
+
+   check( "a filter with no flats at all is missing", asM[3].strength, "missing" );
+   check( "and carries no flats", asM[3].flats.length, 0 );
+
+   /*
+    * A token absent from BOTH sides is not compared. Present on one side
+    * only is a weak match: shown and left for the observer to drop,
+    * rather than silently accepted or silently discarded.
+    */
+   var asWeak = AsiairNames.matchFlats(
+      [ { filter: "H", binning: "1", camera: "2600MM", rotation: "180deg" } ],
+      [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ] );
+   check( "a half-specified flat is a weak match", asWeak[0].strength, "weak" );
+   check( "but it is still offered", asWeak[0].flats.length, 1 );
+
+   check( "absent on both sides is not compared",
+          AsiairNames.matchFlats(
+             [ { filter: "H", binning: "1", camera: null, rotation: null } ],
+             [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ]
+          )[0].strength, "exact" );
+
+   check( "a mismatched binning never matches",
+          AsiairNames.matchFlats(
+             [ { filter: "H", binning: "2", camera: null, rotation: null } ],
+             [ { path: "/f/x.fit", filter: "H", binning: "1", camera: null, rotation: null } ]
+          )[0].strength, "missing" );
+
+   /*
+    * The undefined-equals-undefined trap, pinned. Records that never had
+    * a binning field at all must NOT read as a match just because both
+    * sides are missing it -- that is the shape entryFor's output has
+    * before the adapter fills it in.
+    */
+   check( "two records with no binning field do not match on it",
+          AsiairNames.matchFlats(
+             [ { filter: "H" } ], [ { path: "/f/x.fit", filter: "H" } ]
+          )[0].strength, "missing" );
+
+   /* ---- containment -------------------------------------------------------- */
+
+   /*
+    * Comparison is on path COMPONENTS, not characters. A prefix test calls
+    * /Volumes/ASIAIR-backup a child of /Volumes/ASIAIR, and refusing a
+    * perfectly good destination is as wrong as accepting a bad one.
+    */
+   check( "a folder inside the root is inside",
+          AsiairNames.isInside( "/Volumes/ASIAIR/export", "/Volumes/ASIAIR" ), true );
+   check( "the root is inside itself",
+          AsiairNames.isInside( "/Volumes/ASIAIR", "/Volumes/ASIAIR" ), true );
+   check( "a folder elsewhere is not",
+          AsiairNames.isInside( "/Volumes/A008/M42", "/Volumes/ASIAIR" ), false );
+   check( "a sibling sharing a prefix is not",
+          AsiairNames.isInside( "/Volumes/ASIAIR-backup", "/Volumes/ASIAIR" ), false );
+   check( "a trailing slash changes nothing",
+          AsiairNames.isInside( "/Volumes/ASIAIR/", "/Volumes/ASIAIR" ), true );
+
+   /* ---- the import manifest ------------------------------------------------ */
+
+   /*
+    * Flats follow the LIGHTS THAT SURVIVED. A filter whose lights were all
+    * rejected gets no flats: calibration frames for data that is not there
+    * are clutter in the destination and confusion in WBPP.
+    */
+   var asMan = AsiairNames.manifest(
+      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit",
+          filter: "S" } ],
+      [ { filter: "S", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" } ] },
+        { filter: "L", flats: [ { path: "/c/Autorun/Flat/Flat_1.0ms_Bin1_L_gain100_20240320-233500_-10.5C_0001.fit" } ] } ],
+      "/dest" );
+
+   check( "the approved light is written", asMan.lights.length, 1 );
+   check( "into a Light folder", asMan.lights[0].dst,
+          "/dest/Light/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.xisf" );
+   check( "its flats come along", asMan.flats.length, 1 );
+   check( "into a Flat folder", asMan.flats[0].dst,
+          "/dest/Flat/Flat_1.0ms_Bin1_S_gain100_20240320-233122_-10.5C_0001.xisf" );
+   check( "a filter with no surviving lights brings no flats",
+          asMan.flats[0].src.indexOf( "_L_" ) < 0, true );
+
+   /*
+    * Two sources landing on one output name cannot be resolved by
+    * overwriting: whichever is written second wins and a frame is lost
+    * without a word. Refused outright, whatever the overwrite setting.
+    */
+   var asClash = AsiairNames.manifest(
+      [ { path: "/c/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" },
+        { path: "/c/Autorun/Light/M42/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" } ],
+      [], "/dest" );
+   check( "a source collision is caught", asClash.collisions.length, 1 );
+   check( "and nothing at all is scheduled", asClash.lights.length, 0 );
+
+   check( "an empty import schedules nothing",
+          AsiairNames.manifest( [], [], "/dest" ).lights.length, 0 );
+
+   /* ---- ASIAIR detection ---------------------------------------------------- */
+
+   /*
+    * By SHAPE, never by volume name. The mounted volume is variously BOOT,
+    * "EMMC Images", "SD Images" or "USB Images" depending on model,
+    * firmware and which storage was recording. That list would rot; the
+    * Autorun/Plan layout will not.
+    */
+   ( function()
+   {
+      var base = "/tmp/agent-scratch/asiair";
+      ensureDir( base + "/detect-plan/Plan/Light" );
+      check( "a Plan/Light tree is a card",
+             Asiair.looksLikeCard( base + "/detect-plan" ), true );
+
+      ensureDir( base + "/detect-auto/Autorun/Light" );
+      check( "an Autorun/Light tree is a card",
+             Asiair.looksLikeCard( base + "/detect-auto" ), true );
+
+      ensureDir( base + "/detect-not/Pictures" );
+      check( "an ordinary folder is not",
+             Asiair.looksLikeCard( base + "/detect-not" ), false );
+      check( "and neither is one that is not there",
+             Asiair.looksLikeCard( base + "/no-such-thing" ), false );
+   } )();
+
+   /* ---- ASIAIR card scan ---------------------------------------------------- */
+
+   ( function()
+   {
+      /*
+       * Scratch survives between runs, so a fixture that only ever ADDS
+       * files accumulates: a frame written by an older version of this
+       * test is still there, and the counts below drift without anyone
+       * touching the code. Empty the directories first.
+       */
+      function emptyDir( d )
+      {
+         if ( !File.directoryExists( d ) )
+            return;
+         var f = new FileFind;
+         var doomed = [];
+         if ( f.begin( d + "/*" ) )
+            do
+            {
+               if ( !f.isDirectory && f.name != "." && f.name != ".." )
+                  doomed.push( d + "/" + f.name );
+            }
+            while ( f.next() );
+         for ( var i = 0; i < doomed.length; ++i )
+            File.remove( doomed[i] );
+      }
+
+      var root = "/tmp/agent-scratch/asiair/card";
+      ensureDir( root + "/Plan/Light/IC 1396A" );
+      ensureDir( root + "/Autorun/Flat" );
+      emptyDir( root + "/Plan/Light/IC 1396A" );
+      emptyDir( root + "/Autorun/Flat" );
+      /*
+       * The filename says WRONGNAME and the folder says IC 1396A. They
+       * must differ, or the assertion below cannot tell which one the
+       * walk used -- and the folder is the one that is right, because
+       * some firmware omits the target from the name entirely.
+       */
+      File.writeTextFile( root + "/Plan/Light/IC 1396A/" +
+         "Light_WRONGNAME_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit", "x" );
+      File.writeTextFile( root + "/Autorun/Flat/" +
+         "Flat_1.0ms_Bin1_2600MM_H_gain100_20260808-061500_180deg_-7.0C_0001.fit", "x" );
+      File.writeTextFile( root + "/Plan/Light/IC 1396A/notes.txt", "x" );
+
+      var r = Asiair.scanCard( root );
+      check( "the walk finds the light", r.lights.length, 1 );
+      check( "and the flat", r.flats.length, 1 );
+      check( "and records where the light came from", r.lights[0].source, "Plan" );
+      check( "and where the flat came from", r.flats[0].source, "Autorun" );
+      /*
+       * The TARGET comes from the directory name, never from the
+       * filename: some firmware omits it from the name entirely, and the
+       * folder is what the ASIAIR itself organises by.
+       */
+      check( "and the target from the folder, not the name",
+             r.lights[0].target, "IC 1396A" );
+      check( "and a sort key", r.lights[0].key != null, true );
+
+      /*
+       * A file that is not an ASIAIR frame is COUNTED, not silently
+       * dropped. A scan that quietly ignores things is how a missing
+       * night ends up blamed on the card.
+       */
+      check( "a foreign file is reported", r.unparseable.length, 1 );
+
+      /*
+       * A name that PARSES but carries an impossible date is worse than
+       * one that does not parse at all: it becomes a frame with a null
+       * key, and clustering drops null keys without a word. It is
+       * reported as unreadable, which is what it is.
+       */
+      var bad = "/tmp/agent-scratch/asiair/card-bad";
+      ensureDir( bad + "/Plan/Light/M42" );
+      emptyDir( bad + "/Plan/Light/M42" );
+      File.writeTextFile( bad + "/Plan/Light/M42/" +
+         "Light_M42_10.0s_Bin1_S_gain360_20260230-203324_-10.0C_0001.fit", "x" );
+      var rb = Asiair.scanCard( bad );
+      check( "an impossible date is reported", rb.unparseable.length, 1 );
+      check( "and is not passed on as a frame", rb.lights.length, 0 );
+
+      check( "a card that is not there reads as removed",
+             Asiair.scanCard( "/tmp/agent-scratch/asiair/no-card" ).removed, true );
+
+      /*
+       * A card pulled out MID-walk must read as removed, not as a short
+       * but successful scan: silently returning half a night is how a
+       * missing frame gets blamed on the review. Removal is simulated by
+       * deleting Plan/Light from inside the progress callback, so
+       * looksLikeCard fails on the next re-check -- exactly what an
+       * unplugged card does.
+       *
+       * Asserting `removed != null` would prove nothing; the field is
+       * always set.
+       */
+      var pull = "/tmp/agent-scratch/asiair/card-pull";
+      ensureDir( pull + "/Plan/Light/M42" );
+      emptyDir( pull + "/Plan/Light/M42" );
+      for ( var n = 1; n <= 3; ++n )
+         File.writeTextFile( pull + "/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_" +
+                             "2024032" + n + "-203324_-10.0C_000" + n + ".fit", "x" );
+
+      /*
+       * Idempotent on purpose. Without the guard in scanCard the callback
+       * fires again on the next frame, and a callback that blindly
+       * deleted would then throw -- making the test pass by CRASHING
+       * rather than by asserting, which is a test that will one day pass
+       * for some other reason entirely.
+       */
+      var yanked = Asiair.scanCard( pull, function() {
+         for ( var q = 1; q <= 3; ++q )
+         {
+            var one = pull + "/Plan/Light/M42/Light_M42_10.0s_Bin1_S_gain360_" +
+                      "2024032" + q + "-203324_-10.0C_000" + q + ".fit";
+            if ( File.exists( one ) )
+               File.remove( one );
+         }
+         if ( File.directoryExists( pull + "/Plan/Light/M42" ) )
+            File.removeDirectory( pull + "/Plan/Light/M42" );
+         if ( File.directoryExists( pull + "/Plan/Light" ) )
+            File.removeDirectory( pull + "/Plan/Light" );
+      } );
+      check( "a card pulled mid-walk reads as removed", yanked.removed, true );
+      check( "and the walk stops rather than finishing", yanked.lights.length < 3, true );
+
+      /*
+       * A card pulled between the opening probe and the enumeration
+       * leaves every FileFind.begin() returning false. Without a closing
+       * check the walk reports a clean scan that found nothing --
+       * indistinguishable from an empty card, and exactly how a night
+       * appears to have vanished.
+       */
+      var vanish = "/tmp/agent-scratch/asiair/card-vanish";
+      ensureDir( vanish + "/Plan/Light/M42" );
+      check( "an empty card still reads as present",
+             Asiair.scanCard( vanish, function() {} ).removed, false );
+
+      /*
+       * The card goes away AFTER the opening probe and before anything is
+       * enumerated. What catches it is the per-directory re-check inside
+       * take(), and that is what this asserts.
+       *
+       * The CLOSING check in scanCard is defence in depth and has NO
+       * isolating test: reaching it with a removed card requires take()
+       * never to have been entered, which means no target folders, which
+       * means no callback to pull the card from. Removing the closing
+       * check leaves this suite green. Said plainly here rather than
+       * dressed up as an assertion -- an earlier version of this test
+       * removed nothing at all between the probe and the enumeration and
+       * proved exactly nothing while looking like proof.
+       */
+      var pulled = false;
+      var raced = Asiair.scanCard( vanish, null, function() {
+         if ( !pulled )
+         {
+            pulled = true;
+            if ( File.directoryExists( vanish + "/Plan/Light/M42" ) )
+               File.removeDirectory( vanish + "/Plan/Light/M42" );
+            if ( File.directoryExists( vanish + "/Plan/Light" ) )
+               File.removeDirectory( vanish + "/Plan/Light" );
+         }
+         return false;
+      } );
+      check( "a card that vanished before enumeration reads as removed",
+             raced.removed, true );
+      check( "and not as cancelled", raced.cancelled, false );
+
+      check( "a card that was never there reads as removed",
+             Asiair.scanCard( vanish + "-never" ).removed, true );
+   } )();
+
+   /* ---- what the round-two review found ------------------------------------ */
+
+   /*
+    * The destination is usually APFS or HFS+, which fold case: a.xisf and
+    * A.xisf are ONE file there. Comparing exactly would let the second
+    * silently overwrite the first on the very filesystem this normally
+    * runs on.
+    */
+   check( "a case-only difference is still a collision",
+          AsiairNames.manifest(
+             [ { path: "/c/Plan/Light_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit", filter: "S" },
+               { path: "/c/Autorun/LIGHT_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.FIT", filter: "S" } ],
+             [], "/dest" ).collisions.length, 1 );
+
+   /*
+    * The SAME source scheduled twice is a duplicate, not a collision.
+    * Two filters can legitimately share one weakly-matched flat, and
+    * refusing that would empty the entire schedule over a file that would
+    * have been written to the name it was always going to.
+    */
+   var asDup = AsiairNames.manifest(
+      [ { path: "/c/L.fit", filter: "H" } ],
+      [ { filter: "H", flats: [ { path: "/f/w.fit" }, { path: "/f/w.fit" } ] } ],
+      "/dest" );
+   check( "the same flat twice is not a collision", asDup.collisions.length, 0 );
+   check( "and it is written once", asDup.flats.length, 1 );
+
+   /*
+    * Two rotation tokens is ambiguous. Silently keeping the first decides
+    * which angle the frame was shot at -- and rotation is precisely what
+    * decides whether a flat is valid for it.
+    */
+   check( "two rotation tokens is ambiguous",
+          AsiairNames.parseName(
+             "Light_M42_10s_Bin1_H_gain100_20260920-220000_180deg_90deg_-7C_0001.fit" ), null );
+
+   /*
+    * Every real ASIAIR name carries a temperature and a sequence number.
+    * A truncated name is reported by scanCard rather than dropped, so
+    * rejecting it here loses nothing and guesses nothing.
+    */
+   check( "a truncated name is rejected",
+          AsiairNames.parseName( "Light_M42_10s_Bin1_H_gain100_20260920-220000.fit" ), null );
+
+   /*
+    * Two temperatures is the same ambiguity as two rotations: silently
+    * keeping one decides which reading the frame carried. Guarding only
+    * rotation left this one open.
+    */
+   check( "two temperature tokens is ambiguous",
+          AsiairNames.parseName(
+             "Light_M42_10s_Bin1_H_gain100_20260920-220000_-7C_-8C_0001.fit" ), null );
+   check( "two sequence tokens is ambiguous",
+          AsiairNames.parseName(
+             "Light_M42_10s_Bin1_H_gain100_20260920-220000_-7C_0001_0002.fit" ), null );
+
+   /*
+    * macOS AppleDouble sidecars sit beside every file on a card copied
+    * through a Mac. "._Light_..." splits to a type of "." and a target of
+    * "Light_IC 1396A", so without a type check each sidecar became a
+    * frame filed under a phantom target -- a 34-frame folder enumerated
+    * as 68. Found by opening a real fixture directory, not by review.
+    */
+   /* ---- nothing is ever written back to the card -------------------------- */
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      /*
+       * A mandatory destination does not by itself protect the card.
+       * <dest> can pass while <dest>/Light is a symlink into the card, so
+       * every OUTPUT path is resolved and checked, not just the one the
+       * user picked.
+       */
+      var card = "/tmp/agent-scratch/asiair/guard-card";
+      ensureDir( card + "/Plan/Light/M42" );
+
+      check( "the card root is refused",
+             FrameSelector.outputsAreSafe( card, card ), false );
+      check( "a folder inside the card is refused",
+             FrameSelector.outputsAreSafe( card + "/export", card ), false );
+      check( "somewhere else is allowed",
+             FrameSelector.outputsAreSafe( "/tmp/agent-scratch/asiair/dest", card ), true );
+      /*
+       * A sibling that merely shares a prefix must NOT be mistaken for a
+       * child -- containment is on path components, not characters.
+       */
+      check( "a sibling sharing a prefix is allowed",
+             FrameSelector.outputsAreSafe( card + "-backup", card ), true );
+      check( "no destination is not safe",
+             FrameSelector.outputsAreSafe( null, card ), false );
+   } )();
+
+   /* ---- what an import would write ---------------------------------------- */
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      /*
+       * approvedPaths returns bare strings and rows carry the channel,
+       * so the manifest cannot be fed from them directly. This is the
+       * adapter, and a filter whose frames are all rejected must not
+       * appear at all -- its flats would be clutter.
+       */
+      var st = FrameSelector.emptyState( "/card" );
+      st.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H",
+         [ { path: "/c/h1.xisf", identity: { digest: "d1", size: 1, mtime: 0 } },
+           { path: "/c/h2.xisf", identity: { digest: "d2", size: 1, mtime: 0 } } ],
+         { "/c/h1.xisf": { psfSNR: 10, fwhm: 3.5, eccentricity: 0.5, stars: 9000 },
+           "/c/h2.xisf": { psfSNR: 10, fwhm: 3.5, eccentricity: 0.5, stars: 9000 } },
+         [] ) );
+      st.order.push( "H" );
+
+      var recs = FrameSelector.approvedLightRecords( st );
+      check( "approved lights carry a path and a filter",
+             recs.length > 0 && recs[0].filter == "H" && !!recs[0].path, true );
+
+      st.channels.H.settings.enabled = false;
+      check( "a disabled channel contributes nothing",
+             FrameSelector.approvedLightRecords( st ).length, 0 );
+   } )();
+
+   /* ---- arranging a card into targets and nights -------------------------- */
+
+   ( function()
+   {
+      function L( stamp, target, filter )
+      { return { key: AsiairNames.stampKey( stamp ), stamp: stamp,
+                 target: target, filter: filter, type: "Light" }; }
+      function F( stamp, filter )
+      { return { key: AsiairNames.stampKey( stamp ), stamp: stamp,
+                 target: "", filter: filter, type: "Flat" }; }
+
+      var scan = { lights: [ L( "20260920-200000", "IC 1396A", "H" ),
+                             L( "20260920-230000", "IC 1396A", "O" ),
+                             L( "20260921-020000", "M31",      "L" ),
+                             L( "20260922-200000", "IC 1396A", "H" ) ],
+                   flats:  [ F( "20260921-060000", "H" ),
+                             F( "20260921-060200", "O" ) ],
+                   unparseable: [ "/card/notes.txt" ] };
+
+      var survey = NightDialog.surveyOf( scan, 4 );
+      check( "two sessions on the card", survey.sessions.length, 2 );
+      check( "three nights", survey.nights.length, 3 );
+      check( "two targets, first seen first", survey.targets, [ "IC 1396A", "M31" ] );
+      check( "unreadable files are carried through", survey.unparseable.length, 1 );
+
+      /*
+       * The dawn flats belong to the session that just ended, and BOTH
+       * targets in it get them -- anchoring the window on one target's
+       * cluster is what used to make a multi-target night report its
+       * flats as missing.
+       */
+      var firstNight = survey.nights[0];
+      var second = survey.nights[1];
+      check( "the first night gets the dawn flats",
+             NightDialog.flatsForNight( survey, firstNight ).length, 2 );
+      check( "and so does the other target in that session",
+             NightDialog.flatsForNight( survey, second ).length, 2 );
+      check( "the later session has none",
+             NightDialog.flatsForNight( survey, survey.nights[2] ).length, 0 );
+
+      // how a night reads
+      var row = NightDialog.rowFor( firstNight );
+      check( "a night shows its date", row.date, "2026-09-20" );
+      check( "and its span in clock time", row.span, "20:00-23:00" );
+      check( "and its frame count", row.count, "2" );
+      check( "and its filters", row.filters, "H O" );
+
+      /*
+       * A filter with no flats stays VISIBLE and says so. Hiding it is
+       * how an import runs without the calibration it needed.
+       */
+      var summary = NightDialog.flatSummary( [
+         { filter: "H", flats: [ {}, {} ], strength: "exact" },
+         { filter: "O", flats: [ {} ],     strength: "weak" },
+         { filter: "S", flats: [],         strength: "missing" } ] );
+      check( "an exact match reads plainly", summary[0].text, "H: 2 flats" );
+      check( "a partial match says so", summary[1].text, "O: 1 flat (partial match)" );
+      check( "a missing one is not hidden", summary[2].text, "S: no flats" );
+      check( "and is flagged for the UI", summary[2].strength, "missing" );
+   } )();
+
+   /* ---- the night picker must actually construct -------------------------- */
+
+   /*
+    * PixInsight only, and deliberately: the value is that it is built
+    * against the REAL widget classes. Every dialog breakage that reached
+    * the user in this project was a constructor error no pure test could
+    * see. execute() is NOT called -- a modal dialog stops the suite dead.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ok = true, err = "";
+      try
+      {
+         function L( stamp, target, filter )
+         { return { key: AsiairNames.stampKey( stamp ), stamp: stamp,
+                    target: target, filter: filter, type: "Light" }; }
+         function F( stamp, filter )
+         { return { key: AsiairNames.stampKey( stamp ), stamp: stamp,
+                    target: "", filter: filter, type: "Flat" }; }
+
+         var survey = NightDialog.surveyOf( {
+            lights: [ L( "20260920-200000", "IC 1396A", "H" ),
+                      L( "20260920-230000", "IC 1396A", "O" ),
+                      L( "20260921-020000", "M31", "L" ) ],
+            flats: [ F( "20260921-060000", "H" ) ],
+            unparseable: [] }, 4 );
+
+         var d = tracked( new NightDialog.Dialog( survey, "/Volumes/ASIAIR" ) );
+         ok = ok && ( d.tree.numberOfChildren == 2 );            // two targets
+         /*
+          * ONE night under the first target: its two frames are three
+          * hours apart, so they are one session, and a night is one
+          * target within one session.
+          */
+         ok = ok && ( d.tree.child( 0 ).numberOfChildren == 1 );
+         ok = ok && ( d.selectedNight == null );
+         ok = ok && ( d.okButton.enabled === false );
+
+         // selecting a TARGET row selects no night; only a night can run
+         d.tree.currentNode = d.tree.child( 0 );
+         d.remember();
+         ok = ok && ( d.selectedNight == null && d.okButton.enabled === false );
+
+         d.tree.currentNode = d.tree.child( 0 ).child( 0 );
+         d.remember();
+         ok = ok && ( d.selectedNight != null );
+         ok = ok && ( d.okButton.enabled === true );
+         ok = ok && ( d.describe().indexOf( "IC 1396A" ) >= 0 );
+      }
+      catch ( e ) { ok = false; err = String( e ); }
+      check( "the night picker builds and selects" + ( err ? ": " + err : "" ), ok, true );
+   } )();
+
+   /* ---- scanPaths keeps the whole of scan's contract ---------------------- */
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      /*
+       * A night is a filtered list of paths spanning Plan and Autorun, so
+       * scan( folder ) cannot express it. The risk in extracting scanPaths
+       * is not the new path -- it is silently dropping progress or
+       * cancellation from the old one, which is the most-used path here.
+       */
+      check( "scanPaths exists", typeof FrameSelector.scanPaths, "function" );
+      check( "scan survives", typeof FrameSelector.scan, "function" );
+
+      var cancelled = FrameSelector.scanPaths(
+         [ "/nowhere/a.fit" ],
+         { reading: function() { return false; }, measuring: function() { return true; } } );
+      check( "a reading callback returning false cancels", cancelled.cancelled, true );
+      check( "and a cancelled scan yields no channels",
+             Object.keys( cancelled.channels ).length, 0 );
+
+      var empty = FrameSelector.scanPaths( [], null );
+      check( "an empty list is not a cancellation", empty.cancelled, false );
+   } )();
+
+   check( "an AppleDouble sidecar is not a frame",
+          AsiairNames.parseName(
+             "._Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit" ),
+          null );
+   check( "an unknown leading token is not a frame",
+          AsiairNames.parseName(
+             "Junk_M42_10.0s_Bin1_S_gain360_20240320-203324_-10.0C_0001.fit" ), null );
+   check( "Dark is a known type",
+          AsiairNames.parseName(
+             "Dark_300.0s_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" ).type, "Dark" );
+   check( "Bias is a known type",
+          AsiairNames.parseName(
+             "Bias_0.001s_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" ).type, "Bias" );
+
+
+   /* ---- the header adapter -------------------------------------------------- */
+
+   /*
+    * matchFlats compares FOUR fields, and they do not all come from the
+    * same place:
+    *
+    *   filter, binning  header. Authoritative, and what WBPP will read.
+    *   camera           header INSTRUME, falling back to the filename.
+    *   rotation         FILENAME ONLY -- there is no standard FITS keyword
+    *                    for a rotator angle, and it is not established
+    *                    that the ASIAIR writes one. Comparing filenames is
+    *                    sound here because both sides come off the same
+    *                    card with the same naming.
+    *
+    * Claiming the header is authoritative for all four would be a claim
+    * about rotation that nothing supports.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var fixture = "/Volumes/A008/frame-selector-test/" +
+         "Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001_a_c.xisf";
+      if ( !File.exists( fixture ) )
+      {
+         FAILURES.push( "ASIAIR adapter fixture missing: " + fixture );
+         TESTS_RUN++;
+         return;
+      }
+
+      /*
+       * The frame record carries what the FILENAME said; describe() must
+       * override filter and binning from the header and keep rotation
+       * from the name. Deliberately wrong values here, so a describe()
+       * that just echoed its input would be caught.
+       */
+      var d = Asiair.describe( { path: fixture, camera: "FROM-NAME",
+                                 rotation: "180deg", filter: "WRONG" } );
+
+      check( "describe takes the filter from the header", d.filter, "H" );
+      check( "describe takes binning from the header", d.binning != null, true );
+      check( "describe prefers INSTRUME for the camera",
+             d.camera != "FROM-NAME", true );
+      check( "describe keeps rotation from the filename", d.rotation, "180deg" );
+      check( "describe carries the path through", d.path, fixture );
+
+      /*
+       * The point of the adapter: without it, entryFor-shaped records
+       * reach matchFlats with no binning at all, two undefineds compare
+       * equal, and every mismatched flat reads as exact.
+       */
+      var lit = Asiair.describe( { path: fixture, camera: null,
+                                   rotation: "180deg", filter: null } );
+      var other = Asiair.describe( { path: fixture, camera: null,
+                                     rotation: "090deg", filter: null } );
+      check( "a rotation mismatch survives the adapter",
+             AsiairNames.matchFlats( [ lit ], [ other ] )[0].strength, "missing" );
+   } )();
+
 }
 
 function main()
@@ -5340,7 +6334,16 @@ function main()
       FAILURES.push( "EXCEPTION: " + e.toString() +
                      ( e.stack ? "\n" + e.stack.split( "\n" ).slice( 0, 4 ).join( "\n" ) : "" ) );
    }
-   finally { restoreLogging(); }
+   finally
+   {
+      /*
+       * Before the log is restored and before this function returns, so
+       * the widget trees are detached while the script context is still
+       * whole. Leaving it to teardown is what killed the application.
+       */
+      releaseDialogs();
+      restoreLogging();
+   }
 
    var status = ( FAILURES.length == 0 ? "PASS" : "FAIL" );
    if ( aborted )

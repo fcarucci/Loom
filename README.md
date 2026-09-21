@@ -517,6 +517,57 @@ preview. An override wins over the formula, survives a change of `k`, is counted
 separately so a summary never hides it, and is recorded in the deletion log.
 Overrides last for the session only.
 
+### Importing from an ASIAIR
+
+Plug the ASIAIR in over USB-C and open the Frame Selector. If a card is
+mounted, Loom offers it before showing the folder chooser; decline and nothing
+changes.
+
+The card is recognised by its **layout**, not by its volume name. Depending on
+model, firmware and which storage was recording, the same content mounts as
+`BOOT`, `EMMC Images`, `SD Images` or `USB Images`; what does not change is a
+`Plan/Light` or `Autorun/Light` directory. Both `Plan` and `Autorun` are read,
+so a night shot in either mode is visible.
+
+Frames are grouped into **nights**. A night is one target within one observing
+session, and a session is a run of light frames with no gap longer than four
+hours. Flats take no part in that clustering: a run of daytime flats would
+otherwise bridge the gap between two nights and merge them. Two sessions on the
+same calendar date stay two rows, which is the reason for clustering by gap
+rather than by an observing date.
+
+Flats are grouped into batches by the same rule, and a batch is assigned
+**whole** to the session nearest its midpoint, never flat by flat — half a flat
+set calibrates nothing. Within that session a flat suits a light filter when the
+filter and binning agree, both read from FITS headers, and when the camera and
+rotation agree wherever both sides state them. A rotation change puts the dust
+somewhere else, so it invalidates the flat. Gain is not compared: a flat is a
+ratio, and WBPP groups flats by gain itself. A filter with no flats is shown as
+missing rather than hidden.
+
+Reviewing works exactly as it does for a folder. When you Run:
+
+- A **destination is mandatory.** Nothing is ever written back to the card — not
+  the destination you pick, nor `Light` or `Flat` beneath it, each of which is
+  resolved and checked, so a symlink pointing at the card is refused.
+- Approved lights go to `<destination>/Light`, the night's matched flats to
+  `<destination>/Flat`, both converted to XISF.
+- Two source frames that would land on one name are refused outright rather than
+  overwritten, because overwriting silently loses one of them.
+- Each written file is reopened and checked: same geometry, and `FILTER`,
+  `EXPTIME` and `DATE-OBS` still present. A file that fails is deleted and
+  reported rather than left to block its own replacement.
+
+Three limits, stated rather than implied. Converting to XISF re-encodes, so the
+copy cannot be hashed against the card — geometry and keyword survival are the
+strongest check available under that choice. A stalled network mount can hold up
+detection for one directory test, which PJSR gives no way to interrupt.
+And filenames cannot establish calibration correctness beyond filter, binning,
+camera and rotation; the matched set is shown with its date so a wrong one is
+visible before you Run.
+
+Darks and bias frames are not imported.
+
 ## Requirements
 
 **PixInsight 1.9.5 or later**, checked at startup: Loom refuses to run on an

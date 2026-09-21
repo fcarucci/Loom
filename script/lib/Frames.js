@@ -480,35 +480,40 @@ Frames.FRAME_COLUMNS = [ "Frame" ]
  * unbounded: a relative gate only ever cuts from one side, because only
  * one direction of a metric is worse.
  */
+/* The band a relative gate allows, as { lo, hi } with nulls for open. */
+Frames.gateBand = function( metric, gates )
+{
+   var g = gates ? gates[metric] : null;
+   if ( g == null || !g.active )
+      return { lo: null, hi: null };
+   return ( Frames.WORSE_WHEN[metric] == "higher" )
+        ? { lo: null, hi: g.limit }
+        : { lo: g.limit, hi: null };
+};
+
+/* The tighter of two bands: a frame in BOTH mode must satisfy each. */
+Frames.tightest = function( a, b )
+{
+   return {
+      lo: ( a.lo == null ) ? b.lo : ( b.lo == null ? a.lo : Math.max( a.lo, b.lo ) ),
+      hi: ( a.hi == null ) ? b.hi : ( b.hi == null ? a.hi : Math.min( a.hi, b.hi ) )
+   };
+};
+
 Frames.acceptedBand = function( metric, gates, settings )
 {
-   var lo = null, hi = null;
+   var band = { lo: null, hi: null };
 
    if ( settings.mode != Frames.MODE.ABSOLUTE )
-   {
-      var g = gates ? gates[metric] : null;
-      if ( g != null && g.active )
-      {
-         if ( Frames.WORSE_WHEN[metric] == "higher" )
-            hi = g.limit;
-         else
-            lo = g.limit;
-      }
-   }
+      band = Frames.gateBand( metric, gates );
+
    if ( settings.mode != Frames.MODE.RELATIVE )
    {
       var lim = settings.limits ? settings.limits[metric] : null;
       if ( lim != null )
-      {
-         // The tighter of the two wins: in BOTH mode a frame has to pass
-         // the gate AND the limit, so the band is their intersection.
-         if ( lim.lo != null )
-            lo = ( lo == null ) ? lim.lo : Math.max( lo, lim.lo );
-         if ( lim.hi != null )
-            hi = ( hi == null ) ? lim.hi : Math.min( hi, lim.hi );
-      }
+         band = Frames.tightest( band, { lo: lim.lo, hi: lim.hi } );
    }
-   return { lo: lo, hi: hi };
+   return band;
 };
 
 /*

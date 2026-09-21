@@ -50,7 +50,7 @@ Util.BANNER = [
    "/_____/\\____/\\____/_/ /_/ /_/ "
 ];
 
-Util.LOOM_VERSION = "0.1.4";
+Util.LOOM_VERSION = "0.2.0";
 
 /* ------------------------------------------------------------------ */
 /* The oldest PixInsight core Loom will run on                         */
@@ -427,46 +427,48 @@ Util.error = function( stage, message )
  * Structural problems with a channel selection, independent of the
  * filesystem. Returns a list of human-readable problems; empty is valid.
  */
-Util.validateSelection = function( paths, views )
+/*
+ * A channel counts as supplied if it has EITHER a file path or an open
+ * view. Checking only paths silently ignores every view the user added.
+ */
+Util.channelSupplied = function( paths, views, k )
 {
-   var problems = [];
-   views = views || {};
+   return ( paths[k] != undefined && paths[k].length > 0 )
+       || ( views[k] != undefined && String( views[k] ).length > 0 );
+};
 
-   // A channel counts as supplied if it has EITHER a file path or an open
-   // view. Checking only paths silently ignores every view the user added.
-   function have( k )
-   {
-      return ( paths[k] != undefined && paths[k].length > 0 )
-          || ( views[k] != undefined && String( views[k] ).length > 0 );
-   }
-
-   for ( var i = 0; i < Util.REQUIRED.length; ++i )
-      if ( !have( Util.REQUIRED[i] ) )
-         problems.push( "Missing required channel: " + Util.REQUIRED[i] );
-
-   // The RGB group is all-or-nothing: ChannelCombination needs all three.
-   var rgbPresent = [], rgbMissing = [];
+/*
+ * The RGB group is all-or-nothing: ChannelCombination needs all three,
+ * and any subset of narrowband is fine, including a single channel.
+ */
+Util.groupProblems = function( paths, views )
+{
+   var present = [], missing = [];
    for ( var r = 0; r < Util.RGB_GROUP.length; ++r )
-      ( have( Util.RGB_GROUP[r] ) ? rgbPresent : rgbMissing ).push( Util.RGB_GROUP[r] );
+      ( Util.channelSupplied( paths, views, Util.RGB_GROUP[r] ) ? present : missing )
+         .push( Util.RGB_GROUP[r] );
 
-   if ( rgbPresent.length > 0 && rgbMissing.length > 0 )
-      problems.push( "Incomplete RGB set: missing " + rgbMissing.join( ", " ) +
-                     ". Supply all three or none." );
-
-   // Any subset of narrowband is fine, including a single channel.
-   var nbCount = 0;
+   var narrowband = 0;
    for ( var n = 0; n < Util.NARROWBAND.length; ++n )
-      if ( have( Util.NARROWBAND[n] ) )
-         nbCount++;
+      if ( Util.channelSupplied( paths, views, Util.NARROWBAND[n] ) )
+         ++narrowband;
 
-   if ( rgbPresent.length == 0 && nbCount == 0 )
+   var problems = [];
+   if ( present.length > 0 && missing.length > 0 )
+      problems.push( "Incomplete RGB set: missing " + missing.join( ", " ) +
+                     ". Supply all three or none." );
+   if ( present.length == 0 && narrowband == 0 )
       problems.push( "Nothing to do: supply R, G and B, or at least one of H, S, O" );
+   return problems;
+};
 
-   var seen = {};
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+/* The same file given to two channels is a mistake, not a shortcut. */
+Util.duplicateFileProblems = function( paths )
+{
+   var seen = {}, problems = [];
+   for ( var i = 0; i < Util.CHANNELS.length; ++i )
    {
-      var k = Util.CHANNELS[j];
-      var p = paths[k];
+      var k = Util.CHANNELS[i], p = paths[k];
       if ( !p || p.length == 0 )
          continue;
       if ( seen[p] !== undefined )
@@ -474,8 +476,20 @@ Util.validateSelection = function( paths, views )
       else
          seen[p] = k;
    }
-
    return problems;
+};
+
+Util.validateSelection = function( paths, views )
+{
+   views = views || {};
+   var problems = [];
+
+   for ( var i = 0; i < Util.REQUIRED.length; ++i )
+      if ( !Util.channelSupplied( paths, views, Util.REQUIRED[i] ) )
+         problems.push( "Missing required channel: " + Util.REQUIRED[i] );
+
+   return problems.concat( Util.groupProblems( paths, views ),
+                           Util.duplicateFileProblems( paths ) );
 };
 
 /*
@@ -485,6 +499,22 @@ Util.validateSelection = function( paths, views )
  * configured with longer names, so the usual spellings are accepted too.
  * Matching is case-insensitive and ignores punctuation and spacing.
  */
+/*
+ * Exact single-letter filter names -- what WBPP writes.
+ */
+Util.EXACT_FILTERS = { l: "L", r: "R", g: "G", b: "B",
+                       h: "H", s: "S", o: "O",
+                       ha: "H", s2: "S", o3: "O" };
+
+/*
+ * Long forms, IN ORDER, because order is the rule here: narrowband is
+ * tested before broadband. "halpha" contains no broadband token, but a
+ * naive substring test would let "sii" and "oiii" be mis-read.
+ */
+Util.FILTER_SUBSTRINGS = [ [ "halpha", "H" ], [ "sii", "S" ], [ "oiii", "O" ],
+                           [ "lum", "L" ], [ "red", "R" ],
+                           [ "green", "G" ], [ "blue", "B" ] ];
+
 Util.channelFromFilter = function( filterValue )
 {
    if ( filterValue == null )
@@ -494,26 +524,12 @@ Util.channelFromFilter = function( filterValue )
    if ( f.length == 0 )
       return null;
 
-   // Exact single-letter channel names first: this is what WBPP writes.
-   if ( f == "l" ) return "L";
-   if ( f == "r" ) return "R";
-   if ( f == "g" ) return "G";
-   if ( f == "b" ) return "B";
-   if ( f == "h" ) return "H";
-   if ( f == "s" ) return "S";
-   if ( f == "o" ) return "O";
+   if ( f in Util.EXACT_FILTERS )
+      return Util.EXACT_FILTERS[f];
 
-   // Common long forms. Narrowband is checked BEFORE broadband, because
-   // "halpha" contains no broadband token but "sii"/"oiii" would be
-   // mis-read by a naive substring test against "i".
-   if ( f.indexOf( "halpha" ) >= 0 || f == "ha" ) return "H";
-   if ( f.indexOf( "sii" ) >= 0 || f == "s2" ) return "S";
-   if ( f.indexOf( "oiii" ) >= 0 || f == "o3" ) return "O";
-
-   if ( f.indexOf( "lum" ) >= 0 ) return "L";
-   if ( f.indexOf( "red" ) >= 0 ) return "R";
-   if ( f.indexOf( "green" ) >= 0 ) return "G";
-   if ( f.indexOf( "blue" ) >= 0 ) return "B";
+   for ( var i = 0; i < Util.FILTER_SUBSTRINGS.length; ++i )
+      if ( f.indexOf( Util.FILTER_SUBSTRINGS[i][0] ) >= 0 )
+         return Util.FILTER_SUBSTRINGS[i][1];
 
    return null;
 };

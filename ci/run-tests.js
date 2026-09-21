@@ -53,71 +53,89 @@ function valueOf( token )
    return ( defines[t] !== undefined ) ? String( defines[t] ).replace( /^"|"$/g, "" ) : t;
 }
 
+/*
+ * What a directive does to the conditional stack.
+ *
+ * A table rather than a switch: each entry is one rule, and adding a
+ * directive is adding a line. An unknown directive falls through to the
+ * default, which must still BALANCE -- #ifoneof was absent from the first
+ * version of this stand-in, so its body ran unguarded and every #endif
+ * after it popped someone else's branch.
+ */
+const DIRECTIVES = {
+   ifdef:   ( rest, stack ) => stack.push( defines[rest.trim()] !== undefined ),
+   ifndef:  ( rest, stack ) => stack.push( defines[rest.trim()] === undefined ),
+   ifeq:    ( rest, stack ) => {
+      const parts = rest.trim().split( /\s+/ );
+      stack.push( valueOf( parts[0] ) === valueOf( parts[1] ) );
+   },
+   ifoneof: ( rest, stack ) => {
+      const parts = rest.trim().split( /\s+/ );
+      const subject = valueOf( parts[0] );
+      stack.push( parts.slice( 1 ).some( p => valueOf( p ) === subject ) );
+   },
+   else:    ( rest, stack ) => { stack[stack.length-1] = !stack[stack.length-1]; },
+   endif:   ( rest, stack ) => { stack.pop(); },
+   define:  ( rest, stack, isLive ) => {
+      if ( !isLive )
+         return;
+      const m = /^(\w+)\s*(.*)$/.exec( rest.trim() );
+      if ( m )
+         defines[m[1]] = m[2].trim();
+   }
+};
+
+/* Substitute every #define into one line of code. */
+function expand( line )
+{
+   let code = line;
+   for ( const name of Object.keys( defines ) )
+      if ( name !== "__PI_PLATFORM__" )
+         code = code.replace( new RegExp( "\\b" + name + "\\b", "g" ), defines[name] );
+   return code;
+}
+
 function preprocess( text )
 {
    const out = [];
    const stack = [];           // true while the enclosing branch is live
    const live = () => stack.every( Boolean );
 
+   /*
+    * A directive may be CONTINUED onto the next line with a trailing
+    * backslash -- #feature-info does exactly that at the top of
+    * FrameSelector.js. Commenting out only the first line leaves the
+    * continuation standing as bare JavaScript, which then fails to parse
+    * for a reason that has nothing to do with the code.
+    */
+   let continuing = false;
+   const continues = line => /\\\s*$/.test( line );
+
    for ( const line of text.split( "\n" ) )
    {
+      if ( continuing )
+      {
+         continuing = continues( line );
+         out.push( "//" + line );
+         continue;
+      }
+
       const d = /^\s*#\s*(\w+)\s*(.*)$/.exec( line );
       if ( d )
       {
-         const [ , directive, rest ] = d;
-         switch ( directive )
-         {
-         case "ifdef":  stack.push( defines[rest.trim()] !== undefined ); break;
-         case "ifndef": stack.push( defines[rest.trim()] === undefined ); break;
-         case "ifeq":
-         {
-            const parts = rest.trim().split( /\s+/ );
-            stack.push( valueOf( parts[0] ) === valueOf( parts[1] ) );
-            break;
-         }
-         case "ifoneof":
-         {
-            /*
-             * #ifoneof NAME A B ... -- absent from the first version of
-             * this stand-in, so its body ran unguarded and redefined the
-             * platform the #ifeq above had just settled. A directive that
-             * is not understood must still BALANCE, or every #endif after
-             * it pops someone else's branch.
-             */
-            const parts = rest.trim().split( /\s+/ );
-            const subject = valueOf( parts[0] );
-            stack.push( parts.slice( 1 ).some( p => valueOf( p ) === subject ) );
-            break;
-         }
-         case "else":   stack[stack.length - 1] = !stack[stack.length - 1]; break;
-         case "endif":  stack.pop(); break;
-         case "define":
-         {
-            if ( live() )
-            {
-               const m = /^(\w+)\s*(.*)$/.exec( rest.trim() );
-               if ( m )
-                  defines[m[1]] = m[2].trim();
-            }
-            break;
-         }
-         default: break;      // include, engine, feature-id, feature-info
-         }
+         continuing = continues( line );
+         const rule = DIRECTIVES[d[1]];
+         if ( rule )
+            rule( d[2], stack, live() );
          out.push( "//" + line );
          continue;
       }
-      // A line inside a dead branch must not run, but must still occupy
-      // its line number.
-      if ( !live() )
-      {
-         out.push( "//" + line );
-         continue;
-      }
-      let code = line;
-      for ( const name of Object.keys( defines ) )
-         if ( name !== "__PI_PLATFORM__" )
-            code = code.replace( new RegExp( "\\b" + name + "\\b", "g" ), defines[name] );
-      out.push( code );
+
+      /*
+       * A line inside a dead branch must not run, but must still occupy
+       * its line number.
+       */
+      out.push( live() ? expand( line ) : "//" + line );
    }
    return out.join( "\n" );
 }
@@ -131,8 +149,64 @@ function load( file )
 }
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+               "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",
                "lib/Frames.js",
                "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
+
+/*
+ * Files that are NOT loaded above, but must still PARSE.
+ *
+ * FrameSelector.js is the second entry point. It is deliberately not in
+ * LIBS -- it ends by calling main(), and the suite includes it itself --
+ * so nothing here ever parsed it. A structural edit once left it at 7.6
+ * MILLION lines, completely unloadable, and this suite reported "every
+ * runnable assertion passed" because the file it had broken was invisible
+ * to it. PixInsight then refused the script with no error anyone could
+ * see, which is a slow and confusing way to learn about a typo.
+ *
+ * Parsing is not running: these are compiled and thrown away. That is
+ * enough to catch the failure mode that actually happened.
+ */
+const PARSE_ONLY = [ "FrameSelector.js", "Loom.js", "selftest.js" ];
+
+for ( const file of PARSE_ONLY )
+{
+   let src;
+   try { ( { src } = load( file ) ); }
+   catch ( e )
+   {
+      console.error( "CANNOT READ " + file + ": " + e.message );
+      process.exit( 1 );
+   }
+   try { new Function( src ); }
+   catch ( e )
+   {
+      /*
+       * `new Function` reports the message but not the place. Narrowing by
+       * prefix finds the first line that will not parse, which is what
+       * anyone reading this actually needs.
+       */
+      const lines = src.split( "\n" );
+      let at = -1;
+      for ( let n = 1; n <= lines.length; ++n )
+      {
+         try { new Function( lines.slice( 0, n ).join( "\n" ) ); }
+         catch ( inner )
+         {
+            if ( inner.message === e.message ) { at = n; break; }
+         }
+      }
+      console.error( "SYNTAX ERROR in " + file + ": " + e.message );
+      console.error( "  " + lines.length + " lines after preprocessing" );
+      if ( at > 0 )
+      {
+         console.error( "  first unparseable at line " + at + ":" );
+         for ( let i = Math.max( 0, at-4 ); i < Math.min( lines.length, at+1 ); ++i )
+            console.error( "    " + String( i+1 ).padStart( 5 ) + "  " + lines[i] );
+      }
+      process.exit( 1 );
+   }
+}
 
 let loaded = 0;
 for ( const lib of LIBS )

@@ -38,74 +38,83 @@ Pipeline.REQUIRED_PROCESSES = [
  * missing FITS keyword or a missing MARS database costs a dialog box
  * rather than a half-finished run.
  */
-Pipeline.preflight = function( config )
+/* Processes that must be installed, and GraXpert only when it is on. */
+Pipeline.missingProcesses = function( config )
 {
-   var problems = Util.validateSelection( config.paths, config.views );
-
+   var problems = [];
    for ( var i = 0; i < Pipeline.REQUIRED_PROCESSES.length; ++i )
-   {
-      var p = Pipeline.REQUIRED_PROCESSES[i];
-      if ( !Steps.moduleAvailable( p ) )
-         problems.push( "Process not installed: " + p );
-   }
+      if ( !Steps.moduleAvailable( Pipeline.REQUIRED_PROCESSES[i] ) )
+         problems.push( "Process not installed: " + Pipeline.REQUIRED_PROCESSES[i] );
 
-   // GraXpert is only required when it is enabled.
    if ( config.useGraXpert && !Steps.moduleAvailable( "GraXpert" ) )
       problems.push( "Process not installed: GraXpert (disable it to proceed without)" );
 
-   // MGC always runs on the broadband channels present in this selection,
-   // so the MARS database is never optional. Fail loudly here rather than
-   // discovering the absence mid-run or silently correcting without it.
+   return problems;
+};
 
+/*
+ * What is wrong with one channel taken from an open VIEW.
+ *
+ * A broadband channel without FILTER is fatal rather than guessed at:
+ * SPFC cannot proceed without a transmission curve, and inventing one
+ * would colour the result on a filter nobody chose.
+ */
+Pipeline.viewProblems = function( key, id )
+{
+   var vw = ImageWindow.windowById( id );
+   if ( vw == null )
+      return [ "View no longer open for " + key + ": " + id ];
+   if ( vw.isNull )
+      return [ "Selected view no longer open for " + key + ": " + id ];
+
+   if ( Util.isBroadband( key ) && Util.keywordValue( vw.keywords, "FILTER" ) === null )
+      return [ "No FILTER keyword in " + key + " (view " + id + ")" +
+               " (SPFC cannot proceed; the script will not guess a filter)" ];
+   return [];
+};
+
+/* The same, for a channel taken from a FILE. */
+Pipeline.fileProblems = function( key, path )
+{
+   if ( !File.exists( path ) )
+      return [ "File not found for " + key + ": " + path ];
+   if ( !Util.isBroadband( key ) )
+      return [];
+
+   // header only: this used to be a full ImageWindow.open of every
+   // broadband master, on every run, to read one keyword
+   var kws = Pipeline.readImageInfo( path ).keywords;
+   if ( Util.keywordValue( kws, "FILTER" ) === null )
+      return [ "No FILTER keyword in " + key + ": " + path +
+               " (SPFC cannot proceed; the script will not guess a filter)" ];
+   return [];
+};
+
+Pipeline.preflight = function( config )
+{
+   var problems = Util.validateSelection( config.paths, config.views )
+                      .concat( Pipeline.missingProcesses( config ) );
+
+   /*
+    * MGC always runs on the broadband channels present in this selection,
+    * so the MARS database is never optional. Fail loudly here rather than
+    * discovering the absence mid-run, or silently correcting without it.
+    */
    for ( var j = 0; j < Util.CHANNELS.length; ++j )
    {
       var key = Util.CHANNELS[j];
-      var hasView = config.views && config.views[key];
-      var hasPath = config.paths[key];
-      if ( !hasView && !hasPath )
-         continue;
-
-      if ( hasView )
-      {
-         var vw = ImageWindow.windowById( config.views[key] );
-         if ( vw == null )
-         {
-            problems.push( "View no longer open for " + key + ": " + config.views[key] );
-            continue;
-         }
-         if ( vw.isNull )
-         {
-            problems.push( "Selected view no longer open for " + key + ": " + config.views[key] );
-            continue;
-         }
-         if ( Util.isBroadband( key ) && Util.keywordValue( vw.keywords, "FILTER" ) === null )
-            problems.push( "No FILTER keyword in " + key + " (view " + config.views[key] + ")" +
-                           " (SPFC cannot proceed; the script will not guess a filter)" );
-      }
-      else
-      {
-         var path = config.paths[key];
-         if ( !File.exists( path ) )
-         {
-            problems.push( "File not found for " + key + ": " + path );
-            continue;
-         }
-         if ( Util.isBroadband( key ) )
-         {
-            // header only: this used to be a full ImageWindow.open of every
-            // broadband master, on every run, to read one keyword
-            var kws = Pipeline.readImageInfo( path ).keywords;
-            if ( Util.keywordValue( kws, "FILTER" ) === null )
-               problems.push( "No FILTER keyword in " + key + ": " + path +
-                              " (SPFC cannot proceed; the script will not guess a filter)" );
-         }
-      }
+      var view = config.views && config.views[key];
+      if ( view )
+         problems = problems.concat( Pipeline.viewProblems( key, view ) );
+      else if ( config.paths[key] )
+         problems = problems.concat( Pipeline.fileProblems( key, config.paths[key] ) );
    }
 
-   // An empty output folder is valid and means "do not write anything":
-   // results are left as open windows in the current project. Only a
-   // folder that was actually specified has to exist.
-
+   /*
+    * An empty output folder is valid and means "do not write anything":
+    * results are left as open windows in the current project. Only a
+    * folder that was actually specified has to exist.
+    */
    return problems;
 };
 
@@ -906,6 +915,39 @@ Pipeline.runAndStoreStage = function( chan, entry, runners )
  * and after the hit (run and stored). A hit whose entry is unusable
  * joins the third kind.
  */
+/*
+ * One stage, given where the cache hit landed.
+ *
+ * Before the hit the stage is SUPERSEDED -- its result is already folded
+ * into the later one, so it is skipped rather than run. At the hit the
+ * cached window is reused. After it, the stage runs and is stored.
+ */
+Pipeline.advanceStage = function( chan, chain, i, hit, lookups, config, runners, reg )
+{
+   var entry = chain[i];
+   var label = chan.key + " " + entry.stage;
+
+   if ( i < hit.index )
+   {
+      Pipeline.skipSupersededStage( chan, entry, lookups[i],
+                                    chain[hit.index].stage, label, reg );
+      return;
+   }
+
+   if ( i == hit.index )
+   {
+      Pipeline.reuseCachedStage( chan, entry, hit.window, hit.stars, label, reg );
+      return;
+   }
+
+   var reason = config.ignoreCache ? "cache ignored for this run"
+              : ( lookups[i] ? "incomplete entry" : "no entry" );
+   Util.log( "cache", label + " MISS (" + reason + ")" );
+
+   if ( !Pipeline.runAndStoreStage( chan, entry, runners ) )
+      Util.log( "cache", label + " not cached (the step did not complete)" );
+};
+
 Pipeline.processChain = function( chan, chain, config, reg, runners )
 {
    if ( !config.useCache )
@@ -927,29 +969,7 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
    var hitIndex = hit.index;
 
    for ( var i = 0; i < chain.length; ++i )
-   {
-      var entry = chain[i];
-      var label = chan.key + " " + entry.stage;
-
-      if ( i < hitIndex )
-      {
-         Pipeline.skipSupersededStage( chan, entry, lookups[i],
-                                       chain[hitIndex].stage, label, reg );
-         continue;
-      }
-
-      var reason = config.ignoreCache ? "cache ignored for this run"
-                 : ( lookups[i] ? "incomplete entry" : "no entry" );
-      if ( i == hitIndex )
-      {
-         Pipeline.reuseCachedStage( chan, entry, hit.window, hit.stars, label, reg );
-         continue;
-      }
-
-      Util.log( "cache", label + " MISS (" + reason + ")" );
-      if ( !Pipeline.runAndStoreStage( chan, entry, runners ) )
-         Util.log( "cache", label + " not cached (the step did not complete)" );
-   }
+      Pipeline.advanceStage( chan, chain, i, hit, lookups, config, runners, reg );
 };
 
 
@@ -973,6 +993,110 @@ Pipeline.cleanWhiteBalanceCachePath = function( key )
    return Cache.dir() + "/" + key + ".wb.json";
 };
 
+/*
+ * A previously measured white balance, or null.
+ *
+ * Split out so the measurement below is not wrapped in cache handling: a
+ * corrupt entry is a warning and a re-measure, never a failure.
+ */
+Pipeline.cachedWhiteBalance = function( cachePath, cacheKey, config )
+{
+   if ( config.useCache && !config.ignoreCache && File.exists( cachePath ) )
+      try
+      {
+         var cached = JSON.parse( File.readTextFile( cachePath ) );
+         if ( cached && cached.length == 3 )
+         {
+            Util.log( "cache", "clean white balance HIT " +
+                               cacheKey.substring( 0, 12 ) + "..." );
+            return cached;
+         }
+      }
+      catch ( e ) { Util.warn( "cache", "unreadable clean white balance: " + e ); }
+
+   Util.log( "cache", "clean white balance MISS " + cacheKey.substring( 0, 12 ) + "..." );
+   return null;
+};
+
+/*
+ * One uncorrected channel, registered to the reference, from cache where
+ * possible. Windows it opens are pushed onto `temps` so the caller closes
+ * them however this ends.
+ *
+ * NOTE: refView is L, and L has ALREADY been cropped to the common area by
+ * the time this runs -- the crop is applied in place, so the same view
+ * object is now the cropped one. Registering against it therefore lands
+ * these channels directly in the cropped frame. Cropping again here would
+ * apply the crop twice, since those coordinates are relative to the
+ * UNcropped frame.
+ */
+Pipeline.registeredClean = function( k, cleanKey, config, refView, refFingerprint, temps )
+{
+   var regKey = Cache.chainKey( cleanKey, "cleanRegister", { ref: refFingerprint } );
+
+   if ( config.useCache && !config.ignoreCache )
+   {
+      var hit = Cache.load( regKey, Util.freeWindowId( k + "_cleanreg" ) );
+      if ( hit != null )
+      {
+         Util.log( "cache", k + " cleanRegister HIT " + regKey.substring( 0, 12 ) + "..." );
+         temps.push( hit );
+         return hit.mainView;
+      }
+   }
+   Util.log( "cache", k + " cleanRegister MISS" );
+
+   var w = Cache.load( cleanKey, Util.freeWindowId( k + "_cleanref" ) );
+   if ( w == null )
+      throw new Error( "the pre-correction result for " + k + " is not in the cache" );
+   temps.push( w );
+
+   var registered = Steps.register( w.mainView, refView );
+   temps.push( registered );
+   if ( config.useCache )
+      Cache.store( regKey, registered,
+                   { channel: k, stage: "cleanRegister",
+                     params: { ref: refFingerprint } } );
+   return registered.mainView;
+};
+
+/*
+ * Build the uncorrected composite, solve it, and read SPCC's gains.
+ *
+ * The whole composite is thrown away afterwards -- only the three gains
+ * survive, which is why they are cached as a few bytes of JSON rather
+ * than another gigabyte of pixels.
+ */
+Pipeline.spccOnCleanComposite = function( cleanViews, config, lumInstrume, temps )
+{
+   var refWin = Steps.combineRGB( cleanViews.R, cleanViews.G, cleanViews.B,
+                                  Util.freeWindowId( "RGB_cleanref" ) );
+   temps.push( refWin );
+
+   Steps.solve( refWin.mainView );
+   Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, config.filters || {} );
+   Steps.spccRGB( refWin.mainView, lumInstrume, config.filters || {} );
+
+   var factors = Steps.readWhiteBalanceFactors( refWin.mainView );
+   if ( factors == null )
+      throw new Error( "SPCC did not record white balance factors" );
+
+   Util.log( "whitebalance", "measured on uncorrected channels: " +
+                             factors[0].toFixed( 6 ) + " / " +
+                             factors[1].toFixed( 6 ) + " / " +
+                             factors[2].toFixed( 6 ) );
+   return factors;
+};
+
+/* Caching is best-effort: failing to write it must not fail the run. */
+Pipeline.cacheWhiteBalance = function( cachePath, factors, config )
+{
+   if ( !config.useCache )
+      return;
+   try { File.writeTextFile( cachePath, JSON.stringify( factors ) ); }
+   catch ( e ) { Util.warn( "cache", "could not cache white balance: " + e ); }
+};
+
 Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
                                               lumInstrume, refView, refFingerprint )
 {
@@ -990,21 +1114,9 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
                               "|" + String( lumInstrume ) );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
 
-   if ( config.useCache && !config.ignoreCache && File.exists( cachePath ) )
-   {
-      try
-      {
-         var cached = JSON.parse( File.readTextFile( cachePath ) );
-         if ( cached && cached.length == 3 )
-         {
-            Util.log( "cache", "clean white balance HIT " +
-                               cacheKey.substring( 0, 12 ) + "..." );
-            return cached;
-         }
-      }
-      catch ( e ) { Util.warn( "cache", "unreadable clean white balance: " + e ); }
-   }
-   Util.log( "cache", "clean white balance MISS " + cacheKey.substring( 0, 12 ) + "..." );
+   var cached = Pipeline.cachedWhiteBalance( cachePath, cacheKey, config );
+   if ( cached != null )
+      return cached;
 
    var temps = [], cleanViews = {};
    try
@@ -1012,81 +1124,13 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
       for ( var i = 0; i < trio.length; ++i )
       {
          var k = trio[i];
-         /*
-          * Cache the REGISTERED clean reference, not just the three numbers
-          * this branch ultimately produces.
-          *
-          * Without this, any change to the white-balance key -- a different
-          * filter choice, a new crop -- repeats three full registrations
-          * (~12s each) plus a combine, a plate solve, SPFC and SPCC, about
-          * two minutes, to rederive three numbers. The registrations depend
-          * only on the source channel and the reference, so they survive
-          * changes that invalidate the measurement itself.
-          */
-         var regKey = Cache.chainKey( chans[k].cleanKey, "cleanRegister",
-                                      { ref: refFingerprint } );
-         var registeredWin = null;
-         if ( config.useCache && !config.ignoreCache )
-         {
-            registeredWin = Cache.load( regKey, Util.freeWindowId( k + "_cleanreg" ) );
-            if ( registeredWin != null )
-               Util.log( "cache", k + " cleanRegister HIT " +
-                                  regKey.substring( 0, 12 ) + "..." );
-         }
-         if ( registeredWin != null )
-         {
-            temps.push( registeredWin );
-            cleanViews[k] = registeredWin.mainView;
-            continue;
-         }
-         Util.log( "cache", k + " cleanRegister MISS" );
-
-         var w = Cache.load( chans[k].cleanKey,
-                             Util.freeWindowId( k + "_cleanref" ) );
-         if ( w == null )
-            throw new Error( "the pre-correction result for " + k +
-                             " is not in the cache" );
-         temps.push( w );
-
-         /*
-          * NOTE: refView is L, and L has ALREADY been cropped to `common` by
-          * the time this runs -- the crop is applied in place, so the same
-          * view object is now the cropped one. Registering against it
-          * therefore lands these channels directly in the cropped frame, the
-          * same size as the corrected channels. Cropping again here would
-          * apply `common` twice, since those coordinates are relative to the
-          * UNcropped frame.
-          */
-         var registered = Steps.register( w.mainView, refView );
-         temps.push( registered );
-         if ( config.useCache )
-            Cache.store( regKey, registered,
-                         { channel: k, stage: "cleanRegister",
-                           params: { ref: refFingerprint } } );
-         cleanViews[k] = registered.mainView;
+         cleanViews[k] = Pipeline.registeredClean( k, chans[k].cleanKey, config,
+                                                   refView, refFingerprint, temps );
       }
 
-      var refId = Util.freeWindowId( "RGB_cleanref" );
-      var refWin = Steps.combineRGB( cleanViews.R, cleanViews.G,
-                                     cleanViews.B, refId );
-      temps.push( refWin );
-
-      Steps.solve( refWin.mainView );
-      Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, config.filters || {} );
-      Steps.spccRGB( refWin.mainView, lumInstrume, config.filters || {} );
-
-      var factors = Steps.readWhiteBalanceFactors( refWin.mainView );
-      if ( factors == null )
-         throw new Error( "SPCC did not record white balance factors" );
-
-      Util.log( "whitebalance", "measured on uncorrected channels: " +
-                                factors[0].toFixed( 6 ) + " / " +
-                                factors[1].toFixed( 6 ) + " / " +
-                                factors[2].toFixed( 6 ) );
-
-      if ( config.useCache )
-         try { File.writeTextFile( cachePath, JSON.stringify( factors ) ); }
-         catch ( e ) { Util.warn( "cache", "could not cache white balance: " + e ); }
+      var factors = Pipeline.spccOnCleanComposite( cleanViews, config,
+                                                   lumInstrume, temps );
+      Pipeline.cacheWhiteBalance( cachePath, factors, config );
 
       return factors;
    }
@@ -1530,6 +1574,46 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
  * a file path for the same channel; the user's own view is never modified
  * in place, only a duplicate is worked on.
  */
+/*
+ * A working duplicate of an open view.
+ *
+ * The astrometric solution lives in XISF PROPERTIES, not FITS keywords,
+ * so assigning pixels and keywords does not carry it over. Without the
+ * explicit copy the duplicate looks unsolved and the pipeline re-solves
+ * an already-solved master.
+ */
+Pipeline.duplicateView = function( key, id )
+{
+   var srcWin = ImageWindow.windowById( id );
+   if ( srcWin == null || srcWin.isNull )
+      throw new Error( "View no longer open for " + key + ": " + id );
+
+   var img = srcWin.mainView.image;
+   var w = new ImageWindow( img.width, img.height, img.numberOfChannels,
+                            img.bitsPerSample, img.isReal, img.isColor,
+                            Util.freeWindowId( key + "_work" ) );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   w.mainView.image.assign( img );
+   w.mainView.endProcess();
+   w.keywords = srcWin.keywords;
+
+   try
+   {
+      if ( srcWin.hasAstrometricSolution )
+      {
+         w.copyAstrometricSolution( srcWin );
+         Util.log( "load", key + " - astrometric solution copied" );
+      }
+   }
+   catch ( e )
+   {
+      Util.warn( "load", key + " - could not copy astrometric solution: " + e );
+   }
+
+   Util.log( "load", key + " <- view " + id + " (duplicated)" );
+   return { window: w, sourceKey: Cache.fingerprintView( srcWin.mainView ) };
+};
+
 Pipeline.loadChannels = function( config, reg )
 {
    var chans = {};
@@ -1539,39 +1623,9 @@ Pipeline.loadChannels = function( config, reg )
       var w, sourceKey;
       if ( config.views && config.views[key] )
       {
-         var srcWin = ImageWindow.windowById( config.views[key] );
-         if ( srcWin == null || srcWin.isNull )
-            throw new Error( "View no longer open for " + key + ": " + config.views[key] );
-         sourceKey = Cache.fingerprintView( srcWin.mainView );
-         w = new ImageWindow( srcWin.mainView.image.width,
-                              srcWin.mainView.image.height,
-                              srcWin.mainView.image.numberOfChannels,
-                              srcWin.mainView.image.bitsPerSample,
-                              srcWin.mainView.image.isReal,
-                              srcWin.mainView.image.isColor,
-                              Util.freeWindowId( key + "_work" ) );
-         w.mainView.beginProcess( UndoFlag_NoSwapFile );
-         w.mainView.image.assign( srcWin.mainView.image );
-         w.mainView.endProcess();
-         w.keywords = srcWin.keywords;
-
-         // The astrometric solution lives in XISF properties, not FITS
-         // keywords, so assigning pixels and keywords does NOT carry it
-         // over. Without this the duplicate looks unsolved and the
-         // pipeline re-solves an already-solved master.
-         try
-         {
-            if ( srcWin.hasAstrometricSolution )
-            {
-               w.copyAstrometricSolution( srcWin );
-               Util.log( "load", key + " - astrometric solution copied" );
-            }
-         }
-         catch ( e )
-         {
-            Util.warn( "load", key + " - could not copy astrometric solution: " + e );
-         }
-         Util.log( "load", key + " <- view " + config.views[key] + " (duplicated)" );
+         var dup = Pipeline.duplicateView( key, config.views[key] );
+         w = dup.window;
+         sourceKey = dup.sourceKey;
       }
       else if ( config.paths[key] )
       {
@@ -1663,6 +1717,45 @@ Pipeline.inheritInstrument = function( chans )
  * uninterpolated pixels. Absent channels are skipped; a narrowband-only
  * run corrects L alone.
  */
+/*
+ * The cache-key inputs for one broadband channel's correction chain.
+ *
+ * Every field is here because changing it changes the RESULT, not merely
+ * whether a stage ran: the chosen filter and resolved QE curve decide
+ * what SPFC calibrates against; the MARS file list decides the
+ * correction MGC computes; GraXpert's enabled flag AND smoothing are both
+ * needed, or toggling it off would silently reuse a result computed with
+ * it on.
+ */
+Pipeline.broadbandStages = function( channelKey, chan, config )
+{
+   var chosenFilter = config.filters ? config.filters[channelKey] : null;
+   var qe = Steps.deviceCurveForImage( chan.instrume );
+   var mgcCfg = Steps.configuredMGC( config.marsPath );
+   var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles )
+                 ? mgcCfg.marsDatabaseFiles.slice().sort() : [];
+
+   return {
+      solve: {},
+      spfc: { channel: channelKey, filter: chosenFilter,
+              qe: qe ? qe.name : null },
+      mgc: { marsFiles: marsFiles },
+      graxpert: { enabled: !!config.useGraXpert, smoothing: config.smoothing },
+      /*
+       * Sharpening runs per channel on native, uninterpolated pixels --
+       * before registration deliberately, since resampling spreads
+       * whatever aberration is already there. The TOOL is part of the
+       * key: the same level means different pixels under BXT vs SyQon.
+       *
+       * Star reduction and detail sharpening have MOVED to the finished,
+       * calibrated composite, where a linked stretch keeps the colour
+       * correction intact -- see Steps.correctComposite.
+       */
+      aberration: { tool: config.sharpenTool || "none",
+                    photometry: "linearfit-v1" }
+   };
+};
+
 Pipeline.correctBroadband = function( chans, config, reg )
 {
    for ( var b = 0; b < Util.BROADBAND.length; ++b )
@@ -1677,34 +1770,7 @@ Pipeline.correctBroadband = function( chans, config, reg )
       var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
                       mgcCfg.marsDatabaseFiles.slice().sort() : [];
 
-      var bStages = {
-         solve: {},
-         // channel key + chosen filter + resolved QE curve name: anything
-         // that changes what SPFC actually calibrates against.
-         spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
-         // the MARS database file list, not just "MGC ran" -- a different
-         // database gives a different correction from the same input.
-         mgc: { marsFiles: marsFiles },
-         // enabled flag AND smoothing: toggling GraXpert off must not
-         // silently reuse a result computed with it on, and vice versa.
-         graxpert: { enabled: !!config.useGraXpert, smoothing: config.smoothing },
-         // Sharpening runs per channel on native, uninterpolated pixels
-         // -- before registration deliberately, since resampling spreads
-         // whatever aberration is already there. The tool is part of the
-         // key: the same level means different pixels under BXT vs SyQon.
-         /*
-          * Aberration correction STAYS per channel, before registration:
-          * it fixes star shape on native, uninterpolated pixels, and
-          * registration's resampling would otherwise spread whatever
-          * aberration is present.
-          *
-          * Star reduction and detail sharpening have MOVED to the
-          * finished, calibrated composite, where a linked stretch keeps
-          * the colour correction intact -- see Steps.correctComposite.
-          */
-         aberration:    { tool: config.sharpenTool || "none",
-                          photometry: "linearfit-v1" }
-      };
+      var bStages = Pipeline.broadbandStages( bk, bc, config );
       var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
       bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;
 
@@ -1926,48 +1992,58 @@ Pipeline.matchHalos = function( chans, config )
 /*
  * Linear fit the narrowband set to its lowest-median member.
  */
+/* The narrowband channels present, as views. */
+Pipeline.narrowbandViews = function( chans )
+{
+   var views = [];
+   for ( var i = 0; i < Util.NARROWBAND.length; ++i )
+      if ( chans[Util.NARROWBAND[i]] )
+         views.push( chans[Util.NARROWBAND[i]].view );
+   return views;
+};
+
+/*
+ * Sky floors matched by OFFSET, which preserves the line ratios SPCC
+ * needs. Only when palettes are wanted; otherwise a linear fit is the
+ * right tool and is cheaper.
+ */
+Pipeline.matchNarrowbandFloors = function( chans, refKey )
+{
+   Util.log( "background", "narrowband sky floors matched to " + refKey +
+                           " by offset; line ratios preserved for SPCC" );
+   Steps.matchBackgroundOffset( Pipeline.narrowbandViews( chans ), chans[refKey].view );
+};
+
+Pipeline.linearFitNarrowband = function( chans, refKey )
+{
+   Util.log( "linearfit", "reference is " + refKey );
+   for ( var i = 0; i < Util.NARROWBAND.length; ++i )
+   {
+      var k = Util.NARROWBAND[i];
+      if ( chans[k] && k != refKey )
+         Steps.linearFit( chans[k].view, chans[refKey].view );
+   }
+};
+
 Pipeline.balanceNarrowband = function( chans, config )
 {
    var medians = {};
-   var nb = [ "H", "S", "O" ];
-   for ( var n = 0; n < nb.length; ++n )
-      if ( chans[nb[n]] )
-         medians[nb[n]] = Steps.medianOfCentre( chans[nb[n]].view, 0.6 );
+   for ( var n = 0; n < Util.NARROWBAND.length; ++n )
+      if ( chans[Util.NARROWBAND[n]] )
+         medians[Util.NARROWBAND[n]] =
+            Steps.medianOfCentre( chans[Util.NARROWBAND[n]].view, 0.6 );
 
    var refKey = Util.minMedianKey( medians );
-   var wantPalettes = ( config.palettes || [] ).length > 0;
-   if ( refKey !== null && Object.keys( medians ).length > 1 )
+   if ( refKey === null || Object.keys( medians ).length < 2 )
    {
-      if ( wantPalettes )
-      {
-         /*
-          * Offset only. LinearFit assumes two images are the same signal
-          * at different scales -- true across frames of one filter, false
-          * across Ha, SII and OIII, which are different lines with
-          * different morphology. Measured on real data it scaled H down
-          * ~8x (H max 0.105 against S's 0.800), leaving Ha with about 23
-          * levels of 16-bit range across the nebula. That is what
-          * posterised NarrowbandNormalization and turned the palette
-          * green. SPCC in narrowband mode does the calibration properly,
-          * on the composite, further down.
-          */
-         var views = [];
-         for ( var mo = 0; mo < nb.length; ++mo )
-            if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
-         Util.log( "background", "narrowband sky floors matched to " + refKey +
-                                 " by offset; line ratios preserved for SPCC" );
-         Steps.matchBackgroundOffset( views, chans[refKey].view );
-      }
-      else
-      {
-         Util.log( "linearfit", "reference is " + refKey );
-         for ( var m = 0; m < nb.length; ++m )
-            if ( chans[nb[m]] && nb[m] != refKey )
-               Steps.linearFit( chans[nb[m]].view, chans[refKey].view );
-      }
-   }
-   else
       Util.log( "linearfit", "skipped: fewer than two narrowband channels" );
+      return;
+   }
+
+   if ( ( config.palettes || [] ).length > 0 )
+      Pipeline.matchNarrowbandFloors( chans, refKey );
+   else
+      Pipeline.linearFitNarrowband( chans, refKey );
 };
 
       /*
@@ -2163,32 +2239,38 @@ Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
    var rgbStars = rgb ? rgb.stars : null;
    var rgbLinear = rgb ? rgb.linear : null;
 
+   var rgbWin = rgb ? rgb.window : null;
+   var rgbStars = rgb ? rgb.stars : null;
+   var rgbLinear = rgb ? rgb.linear : null;
+
    for ( var k = 0; k < keep.length; ++k )
       if ( chans[keep[k]] )
          reg.forget( chans[keep[k]].window );
 
-   // Swept channels must not be reported as results: their windows are
-   // about to be closed, so the entry would point at nothing.
+   /*
+    * Swept channels must not be reported as results: their windows are
+    * about to be closed, so the entry would point at nothing.
+    */
    if ( paletteWins.length > 0 )
       for ( var dr = 0; dr < Util.NARROWBAND.length; ++dr )
          delete results[ Util.NARROWBAND[dr] ];
+
    if ( rgbWin !== null )
       reg.forget( rgbWin );
-   /*
-    * Palettes are results too, and they are registered like everything
-    * else -- so without this they are closed by closeAll() moments before
-    * the code below tries to name them. That is why every palette run
-    * ended with "its window is gone before it could be named": the
-    * registry did exactly what it was told.
-    */
    for ( var pf = 0; pf < paletteWins.length; ++pf )
       reg.forget( paletteWins[pf].window );
+
    /*
-    * The stars frames are results as well, and they are registered like
-    * everything else -- exactly the trap the comment above describes.
-    * Missing them produced a run with every starless plate present and
-    * no stars plate at all: closeAll() closed them, and the naming pass
-    * below then found nothing to name.
+    * The stars frames, EACH NAMED LITERALLY.
+    *
+    * Not collected into a list and forgotten in a loop, however much
+    * tidier that would read: the guard in the suite is a source-level
+    * check for these exact calls appearing before closeAll(), because the
+    * Registry interaction needs a live run to exercise and cannot be
+    * asserted any other way. Missing them produced a run with every
+    * starless plate present and no stars plate at all -- closeAll() had
+    * closed them, and the naming pass then found nothing to name. That
+    * has happened twice. The repetition is the point.
     */
    if ( chans.L && chans.L.stars )
       reg.forget( chans.L.stars );
@@ -2203,6 +2285,7 @@ Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
       if ( paletteWins[ps].linear )
          reg.forget( paletteWins[ps].linear );
    }
+
    reg.closeAll();
 };
 
@@ -2296,19 +2379,50 @@ if ( rgbLinear != null )
 /*
  * Name and keep each palette, its stars and its linear copy.
  */
+/*
+ * One palette's plates: the image, its stars, its linear copy.
+ *
+ * Narrowband stars are kept ONLY when there are no broadband stars to
+ * recombine against. With an RGB composite in the run its stars are the
+ * ones that get used, and a second, dimmer set from the narrowband
+ * palette is just another window to close by hand.
+ */
+Pipeline.publishOnePalette = function( entry, rgbStarsKept, results, keepIds, reg )
+{
+   var split = ( entry.stars != null );
+   var plateName = split ? ( entry.name + "_starless" ) : entry.name;
+
+   entry.window = Pipeline.publish( entry.window, plateName, reg,
+                                    keepIds, results, plateName );
+
+   if ( split )
+   {
+      if ( rgbStarsKept )
+      {
+         Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
+                             "already covers the broadband stars" );
+         try { entry.stars.forceClose(); } catch ( e ) {}
+      }
+      else
+         Pipeline.publish( entry.stars, entry.name + "_stars", reg,
+                           keepIds, results, entry.name + "_stars" );
+   }
+
+   if ( entry.linear != null )
+      Pipeline.publish( entry.linear, entry.name + "_linear", reg,
+                        keepIds, results, entry.name + "_linear" );
+};
+
 Pipeline.publishPalettes = function( results, paletteWins, rgbStarsKept,
                                      keepIds, reg )
 {
-   for ( var pw2 = 0; pw2 < paletteWins.length; ++pw2 )
+   for ( var i = 0; i < paletteWins.length; ++i )
    {
-      var entry = paletteWins[pw2];
+      var entry = paletteWins[i];
 
       /*
-       * Naming a result must never destroy a run that has already done
-       * all of its work. A palette whose window has gone is a real fault
-       * worth reporting loudly, but every other output is finished and
-       * correct by this point, and throwing here would discard them all
-       * through the catch below.
+       * A palette whose window has gone is reported and skipped: losing
+       * one must not cost the rest of the run.
        */
       if ( !Pipeline.windowIsUsable( entry.window ) )
       {
@@ -2318,33 +2432,7 @@ Pipeline.publishPalettes = function( results, paletteWins, rgbStarsKept,
          continue;
       }
 
-      var eSplit = ( entry.stars != null );
-      entry.window = Pipeline.publish( entry.window,
-                        eSplit ? ( entry.name + "_starless" ) : entry.name,
-                        reg, keepIds, results,
-                        eSplit ? ( entry.name + "_starless" ) : entry.name );
-      if ( eSplit )
-      {
-         /*
-          * Narrowband stars are kept only when there are no broadband
-          * stars to recombine against. With an RGB composite in the run
-          * its stars are the ones that get used, and a second, dimmer
-          * set from the narrowband palette is just another window to
-          * close by hand.
-          */
-         if ( rgbStarsKept )
-         {
-            Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
-                                "already covers the broadband stars" );
-            try { entry.stars.forceClose(); } catch ( e ) {}
-         }
-         else
-            Pipeline.publish( entry.stars, entry.name + "_stars", reg,
-                              keepIds, results, entry.name + "_stars" );
-      }
-      if ( entry.linear != null )
-         Pipeline.publish( entry.linear, entry.name + "_linear", reg,
-                           keepIds, results, entry.name + "_linear" );
+      Pipeline.publishOnePalette( entry, rgbStarsKept, results, keepIds, reg );
    }
 };
 
