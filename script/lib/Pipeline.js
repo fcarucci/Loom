@@ -306,7 +306,8 @@ Pipeline.readImageInfo = function( path )
  *
  * Each broadband channel (L, R, G, B) runs solve -> spfc -> mgc ->
  * graxpert -> register, in that order; narrowband channels (H, S, O) skip
- * straight to register. Cache.chainKey threads a running key through
+ * straight to register, unless GraXpert is also enabled for them, in
+ * which case they run graxpert -> register (Pipeline.correctNarrowband). Cache.chainKey threads a running key through
  * whichever of these stages actually apply to a channel, so a change to
  * any stage's parameters invalidates that stage and everything after it,
  * with no separate dependency bookkeeping.
@@ -1751,6 +1752,57 @@ Pipeline.correctBroadband = function( chans, config, reg )
  * resampled. Returns the reference view and the cache key identifying
  * it, both of which later stages key their own work against.
  */
+/*
+ * The stages a narrowband channel runs before registration, or null.
+ *
+ * Null unless GraXpert is on AND it has been asked for on the narrowband
+ * channels too -- "also on H, S, O" extends the GraXpert option rather
+ * than standing alone.
+ *
+ * Null rather than an always-present stage that does nothing, and that
+ * is the point: a narrowband channel's cache key is its source
+ * fingerprint until registration, so returning a stage here even when
+ * disabled would re-key every cached H/S/O result for everyone, on the
+ * day this option shipped, for a feature they never switched on.
+ *
+ * GraXpert only. MGC cannot be offered here: it needs an astrometric
+ * solution and SPFC, and narrowband channels are never solved.
+ */
+Pipeline.narrowbandStages = function( config )
+{
+   if ( !config || !config.useGraXpert || !config.graxpertNarrowband )
+      return null;
+   return { graxpert: { enabled: true, smoothing: config.smoothing } };
+};
+
+/*
+ * GraXpert on H, S and O, before registration, on native pixels -- the
+ * same place in the chain it runs for the broadband channels, and cached
+ * the same way.
+ */
+Pipeline.correctNarrowband = function( chans, config, reg )
+{
+   var stages = Pipeline.narrowbandStages( config );
+   if ( stages == null )
+      return;
+
+   for ( var n = 0; n < Util.NARROWBAND.length; ++n )
+   {
+      var key = Util.NARROWBAND[n];
+      if ( !chans[key] )
+         continue;
+
+      var chain = Pipeline.buildStageKeys( chans[key].sourceKey, stages );
+      chans[key].currentKey = chain[chain.length-1].key;
+
+      Pipeline.processChain( chans[key], chain, config, reg, {
+         graxpert: function( c ) { Steps.graxpert( c.view, config.smoothing ); }
+      } );
+
+      Pipeline.checkAbort( "corrected " + key );
+   }
+};
+
 Pipeline.registerToReference = function( chans, config, reg )
 {
    var refView = chans.L.view;
@@ -2442,6 +2494,7 @@ Pipeline.run = function( config )
       var chans = Pipeline.loadChannels( config, reg );
       Pipeline.inheritInstrument( chans );
       Pipeline.correctBroadband( chans, config, reg );
+      Pipeline.correctNarrowband( chans, config, reg );
 
       var ref = Pipeline.registerToReference( chans, config, reg );
       var refView = ref.refView, refFingerprint = ref.refFingerprint;

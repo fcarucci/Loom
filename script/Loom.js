@@ -33,6 +33,10 @@ function defaultConfig()
       savedList: "",
       filters: {},
       useGraXpert: true,
+      // Default OFF: narrowband channels have never been through GraXpert,
+      // and an upgrade must not silently change what a repeat run
+      // produces -- nor re-key a cached H/S/O result nobody asked to redo.
+      graxpertNarrowband: false,
       smoothing: 0.5,
       validateOnly: false,
       keepWindowsOnError: false,
@@ -104,6 +108,8 @@ function loadConfig()
       config.smoothing = Parameters.getReal( "smoothing" );
    if ( Parameters.has( "useGraXpert" ) )
       config.useGraXpert = Parameters.getBoolean( "useGraXpert" );
+   if ( Parameters.has( "graxpertNarrowband" ) )
+      config.graxpertNarrowband = Parameters.getBoolean( "graxpertNarrowband" );
    if ( Parameters.has( "useCache" ) )
       config.useCache = Parameters.getBoolean( "useCache" );
    if ( Parameters.has( "autoUpdate" ) )
@@ -135,6 +141,9 @@ function loadConfig()
    var nbn = Settings.read( SETTINGS_KEY + "narrowbandNormalize", DataType_Boolean );
    if ( nbn != null )
       config.narrowbandNormalize = nbn;
+   var gnb = Settings.read( SETTINGS_KEY + "graxpertNarrowband", DataType_Boolean );
+   if ( gnb != null )
+      config.graxpertNarrowband = gnb;
 
    var nbw = Settings.read( SETTINGS_KEY + "narrowbandBandwidth", DataType_Double );
    if ( nbw != null && nbw > 0 )
@@ -253,10 +262,13 @@ function saveConfig( config )
    Parameters.set( "savedList", config.savedList || "" );
    Parameters.set( "smoothing", config.smoothing );
    Parameters.set( "useGraXpert", config.useGraXpert );
+   Parameters.set( "graxpertNarrowband", !!config.graxpertNarrowband );
    Parameters.set( "useCache", config.useCache );
    Parameters.set( "autoUpdate", config.autoUpdate );
 
    Settings.write( SETTINGS_KEY + "useGraXpert", DataType_Boolean, config.useGraXpert );
+   Settings.write( SETTINGS_KEY + "graxpertNarrowband", DataType_Boolean,
+                   !!config.graxpertNarrowband );
    Settings.write( SETTINGS_KEY + "narrowbandBandwidth", DataType_Double,
                    config.narrowbandBandwidth || 3.0 );
    Settings.write( SETTINGS_KEY + "narrowbandNormalize", DataType_Boolean,

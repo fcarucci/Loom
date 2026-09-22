@@ -1163,7 +1163,26 @@ UI.SelectDialog = class extends Dialog
    {
       self.config.useGraXpert = c;
       self.smoothing.enabled = c;
+      self.graxpertNarrowband.enabled = c;
    };
+
+   /*
+    * Nested under GraXpert, and only live while it is on: this extends
+    * that option to H, S and O rather than standing alone.
+    */
+   this.graxpertNarrowband = new CheckBox( this );
+   this.graxpertNarrowband.text = "Also run GraXpert on H, S and O";
+   this.graxpertNarrowband.checked = !!config.graxpertNarrowband;
+   this.graxpertNarrowband.enabled = !!config.useGraXpert;
+   this.graxpertNarrowband.toolTip =
+      "<p>Background extraction on the narrowband channels as well, before " +
+      "registration, with the same smoothing as the broadband channels.</p>" +
+      "<p>Off by default. Narrowband data usually has little gradient to " +
+      "remove, and on faint emission GraXpert can take nebulosity for " +
+      "background. Turn it on when H, S or O show a real gradient.</p>" +
+      "<p>MGC is not offered here: it needs an astrometric solution and " +
+      "SPFC, and narrowband channels are not solved.</p>";
+   this.graxpertNarrowband.onCheck = function( c ) { self.config.graxpertNarrowband = c; };
 
    this.smoothing = new NumericControl( this );
    this.smoothing.label.text = "GraXpert smoothing:";
@@ -1337,6 +1356,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.marsGroup );
    this.sizer.add( this.reduceHalos );
    this.sizer.add( this.useGraXpert );
+   this.sizer.add( this.graxpertNarrowband );
    this.sizer.add( this.smoothing );
    this.sizer.add( this.validateOnly );
    this.sizer.add( cacheRow );

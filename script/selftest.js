@@ -5304,6 +5304,62 @@ function runTests()
    check( "a recursive-spline solve of the same master is ok",
           Steps.residualVerdict( 0.0157 ), "ok" );
 
+   /* ---- GraXpert on the narrowband channels, opt-in ------------------------ */
+
+   /*
+    * Off by default, and OFF MUST CHANGE NOTHING: a narrowband channel's
+    * cache key is its source fingerprint until registration, and adding
+    * this option must not invalidate a single cached H/S/O result for
+    * anyone who never turns it on. That invariant is the real contract;
+    * the rest is plumbing.
+    */
+   ( function()
+   {
+      var src = "nb-source-fingerprint";
+      var refKey = "L-reference";
+
+      function registerKey( config )
+      {
+         var stages = Pipeline.narrowbandStages( config );
+         var start = src;
+         if ( stages != null )
+         {
+            var pre = Pipeline.buildStageKeys( src, stages );
+            start = pre[pre.length-1].key;
+         }
+         var reg = Pipeline.buildStageKeys( start, { register: { ref: refKey } } );
+         return reg[reg.length-1].key;
+      }
+
+      var today = Pipeline.buildStageKeys( src, { register: { ref: refKey } } );
+      var todayKey = today[today.length-1].key;
+
+      check( "narrowband GraXpert is off by default",
+             Pipeline.narrowbandStages( {} ), null );
+      check( "off leaves the narrowband register key exactly as it was",
+             registerKey( { useGraXpert: true, smoothing: 0.5 } ), todayKey );
+
+      /*
+       * Nested under GraXpert: "also on H, S, O" extends the GraXpert
+       * option rather than standing alone, so it does nothing while
+       * GraXpert itself is off.
+       */
+      check( "it does nothing while GraXpert itself is off",
+             Pipeline.narrowbandStages( { useGraXpert: false,
+                                          graxpertNarrowband: true,
+                                          smoothing: 0.5 } ), null );
+
+      var on = { useGraXpert: true, graxpertNarrowband: true, smoothing: 0.5 };
+      check( "on, it adds a graxpert stage",
+             Object.keys( Pipeline.narrowbandStages( on ) ), [ "graxpert" ] );
+      check( "and registration then chains from the corrected result",
+             registerKey( on ) != todayKey, true );
+      check( "and the smoothing is part of the key",
+             registerKey( on ) !=
+             registerKey( { useGraXpert: true, graxpertNarrowband: true,
+                            smoothing: 0.8 } ), true );
+   } )();
+
    /* ---- double click zooms to WHAT WAS CLICKED ---------------------------- */
 
    /*

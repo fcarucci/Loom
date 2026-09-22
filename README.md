@@ -219,7 +219,7 @@ previous session has no guaranteed meaning later.
 | **Solve** | plate solution, skipped if one is already present. Solved with **recursive surface splines** and **verified** against the catalogue | — |
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera read from `INSTRUME` |
 | **MGC** | MultiscaleGradientCorrection against the MARS reference. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
-| **GraXpert** | background extraction. Broadband only — never narrowband | on/off, smoothing |
+| **GraXpert** | background extraction. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | on/off, smoothing, also on H/S/O |
 | **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax |
 
 **Every solve is verified**, not just the first of a run: each channel is solved
