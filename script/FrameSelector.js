@@ -97,6 +97,39 @@ FrameSelector.measure = function( paths )
    for ( var r = 0; r < P.measurements.length; ++r )
    {
       var m = Frames.metricsFromRow( P.measurements[r] );
+
+      /*
+       * Does the row MEAN what it is being read as?
+       *
+       * Frames.COL is a set of fixed indices read off one core build. A
+       * different build returning a different table would not fail here
+       * -- it would hand back numbers from the wrong columns, and this
+       * tool deletes files on those numbers. meaningProblems answers the
+       * question the indices cannot: are these values shaped like the
+       * quantities they claim to be.
+       *
+       * Checked on the FIRST row only. The table's shape is a property of
+       * the process, not of the frame, so a second check costs time and
+       * proves nothing new -- and a single bad row is a bad frame, which
+       * the review is there to catch.
+       */
+      if ( r == 0 )
+      {
+         var wrong = Frames.meaningProblems( m );
+         if ( wrong.length > 0 )
+         {
+            Util.error( "frames",
+               "SubframeSelector's measurements are not shaped as expected on " +
+               "this PixInsight (" + Util.formatCoreVersion( {
+                  major: CoreApplication.versionMajor,
+                  minor: CoreApplication.versionMinor,
+                  release: CoreApplication.versionRelease } ) + "): " +
+               wrong.join( "; " ) + ". Abandoning this channel rather than " +
+               "deleting frames on numbers read from the wrong columns." );
+            return null;
+         }
+      }
+
       if ( m.path == null || m.path === "" || !asked[m.path] )
       {
          Util.error( "frames", "SubframeSelector returned an unexpected path (" +

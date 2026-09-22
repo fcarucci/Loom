@@ -39,7 +39,24 @@
  * its own #ifndef guard, and it depends only on AstrometricMetadata.js
  * and AstronomicalCatalogs.js, both already included immediately above.
  */
+/*
+ * AstrometricResiduals is NEW IN 1.9.5 and Loom now runs on 1.9.4.
+ *
+ * Included conditionally, because an unresolvable #include is not an
+ * error in PJSR: the core discards the WHOLE script, with no message, no
+ * console output and exit status 0. On 1.9.4 an unconditional include
+ * here would not degrade solve verification -- it would make Loom do
+ * nothing at all, undiagnosably.
+ *
+ * __PI_RELEASE__ is the preprocessor's own symbol, so the decision is
+ * taken before the file is parsed, which is the only point at which it
+ * CAN be taken. LOOM_HAVE_RESIDUALS then guards the one function that
+ * needs the class.
+ */
+#ifoneof __PI_RELEASE__ 5 6 7 8 9
+#define LOOM_HAVE_RESIDUALS 1
 #include <pjsr/astrometry/AstrometricResiduals.js>
+#endif
 #include <pjsr/astrometry/SearchCoordinatesDialog.js>
 #include <pjsr/astrometry/CatalogDownloaderDialog.js>
 #include <pjsr/astrometry/ProjectionConfigurationDialog.js>
@@ -758,6 +775,16 @@ Steps.residualVerdict = function( medianPx )
  */
 Steps.verifySolution = function( window )
 {
+#ifndef LOOM_HAVE_RESIDUALS
+   /*
+    * 1.9.4: the verifier does not exist. Reported once, as a fact rather
+    * than a failure -- the solve itself is unaffected, only the check on
+    * it, and a run must not stop because it cannot measure its own work.
+    */
+   Util.warn( "solve", "this PixInsight has no AstrometricResiduals " +
+                       "(new in 1.9.5), so the solution is not verified" );
+   return null;
+#endif
    var residuals = new AstrometricResiduals( Steps.RESIDUALS_CONFIG );
    var M = residuals.measure( window );   // throws when it cannot measure
 
@@ -812,6 +839,15 @@ Steps.verifyAndReport = function( window, label )
                            "unchanged and the run continues." );
       return null;
    }
+
+   /*
+    * Null means the core has no verifier -- 1.9.4, where
+    * AstrometricResiduals does not exist. Not a failure: the solve
+    * happened and is unchanged, only the check on it is unavailable, and
+    * verifySolution has already said so once.
+    */
+   if ( r == null )
+      return null;
 
    var summary = label + ": " + r.n + " stars, residual RMS " +
                  r.rmsArcsec.toFixed( 3 ) + "\" (" + r.rmsPx.toFixed( 3 ) +
@@ -897,6 +933,12 @@ Steps.solve = function( view )
     * never calls SaveSettings (verified: the string does not appear in
     * ImageSolverEngine.js), so the override lives and dies with this
     * ImageSolver instance and the user's saved configuration is untouched.
+    */
+   /*
+    * Silently inert before 1.9.5: assigning a property a process does not
+    * have is not an error in PJSR, so on 1.9.4 this line reads as "the
+    * setting had no effect" rather than announcing itself. The solve is
+    * less accurate there; nothing breaks.
     */
    engine.solverCfg.recursiveSplines = true;
 

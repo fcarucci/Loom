@@ -45,7 +45,21 @@ const scriptDir = path.join( root, "script" );
  * Directive lines are replaced with comments rather than removed, so
  * every line number matches the real file and a stack trace points at it.
  */
-const defines = { __PI_PLATFORM__: "MACOSX" };
+/*
+ * The preprocessor symbols a real core defines.
+ *
+ * __PI_RELEASE__ matters as much as the platform now that Loom compiles
+ * differently on 1.9.4 and 1.9.5: without it, every #ifoneof on the
+ * release takes the 1.9.4 branch under node while PixInsight takes the
+ * other one, and the suite would be testing a build nobody runs.
+ *
+ * Set to the version Loom is developed against. The 1.9.4 branch is
+ * exercised by LOOM_TEST_CORE below rather than by leaving this unset.
+ */
+const defines = { __PI_PLATFORM__: "MACOSX",
+                  __PI_MAJOR__: process.env.LOOM_TEST_CORE_MAJOR || "1",
+                  __PI_MINOR__: process.env.LOOM_TEST_CORE_MINOR || "9",
+                  __PI_RELEASE__: process.env.LOOM_TEST_CORE_RELEASE || "5" };
 
 function valueOf( token )
 {

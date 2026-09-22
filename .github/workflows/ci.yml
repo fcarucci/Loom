@@ -29,8 +29,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Run the suite under node
+      # BOTH builds, because Loom now compiles differently on 1.9.4 --
+      # AstrometricResiduals does not exist there, and an unresolvable
+      # #include makes PJSR discard the whole script silently. Running only
+      # the 1.9.5 build would let the 1.9.4 path rot unnoticed until
+      # somebody on 1.9.4 found Loom doing nothing at all.
+      - name: Run the suite as 1.9.5
         run: node ci/run-tests.js
+
+      - name: Run the suite as 1.9.4
+        run: LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js
 
   package:
     needs: test

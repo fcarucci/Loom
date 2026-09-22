@@ -50,31 +50,41 @@ Util.BANNER = [
    "/_____/\\____/\\____/_/ /_/ /_/ "
 ];
 
-Util.LOOM_VERSION = "0.1.6";
+Util.LOOM_VERSION = "0.1.7";
 
 /* ------------------------------------------------------------------ */
 /* The oldest PixInsight core Loom will run on                         */
 /* ------------------------------------------------------------------ */
 
 /*
- * PixInsight 1.9.5 "Lockhart", build 1702.
+ * PixInsight 1.9.4.
  *
- * Four separate things in Loom already require it, so running on an older
- * core does not degrade -- it breaks, and mostly in ways that do not name
- * themselves:
+ * Loom was written against 1.9.5 "Lockhart" build 1702 and still prefers
+ * it. What 1.9.4 costs, and why each is survivable:
  *
- *   - `#include <../src/scripts/ImageSolver/ImageSolverEngine.js>` in
- *     Steps.js. An unresolvable #include is not an error in PJSR: the core
- *     discards the whole script with no message, no console output and
- *     exit status 0. On a core where that form does not resolve, Loom
- *     simply does nothing at all.
- *   - `<pjsr/astrometry/AstrometricResiduals.js>`, which Steps.js uses to
- *     verify astrometric solutions, is new in 1.9.5.
- *   - `solverCfg.recursiveSplines` (ImageSolverEngine.js:129) is new in
- *     1.9.5; on an older engine the assignment is silently inert.
- *   - Astrometric solutions written by 1.9.5 are not compatible with
- *     previous versions (1.9.5 release notes), so a mixed setup produces
- *     solutions one half of the toolchain cannot read.
+ *   - <pjsr/astrometry/AstrometricResiduals.js> is new in 1.9.5, and an
+ *     unresolvable #include is not an error in PJSR: the core discards
+ *     the WHOLE script with no message and exit status 0, so the script
+ *     simply does nothing. It is therefore included conditionally, on
+ *     __PI_RELEASE__, and solve verification degrades to "not verified"
+ *     rather than the script vanishing.
+ *   - solverCfg.recursiveSplines (ImageSolverEngine.js:129) is new in
+ *     1.9.5 and silently inert on an older engine. The solve is less
+ *     accurate; nothing breaks.
+ *   - Astrometric solutions written by 1.9.5 are not readable by earlier
+ *     versions (1.9.5 release notes). That is a property of the DATA, not
+ *     of this script: masters solved under 1.9.5 and then processed under
+ *     1.9.4 are the mixed setup to avoid.
+ *
+ * And the one that governs everything else: SubframeSelector's
+ * measurement table is read BY POSITION (Frames.COL), off 1.9.5 build
+ * 1702. A core returning a different table would hand back numbers from
+ * the wrong columns, and the Frame Selector deletes files on those
+ * numbers. That is why FrameSelector.measure now runs
+ * Frames.meaningProblems on the first row of every measurement and
+ * abandons the channel if the values are not shaped like the quantities
+ * they claim to be -- on ANY core, including the one this was written on.
+ * The floor moved down; the guard is what makes that defensible.
  *
  * Deliberately NOT named Util.MIN_VERSION or anything containing the bare
  * token VERSION: Steps.js must `#define VERSION "6.4.2"` for the bundled
@@ -82,7 +92,7 @@ Util.LOOM_VERSION = "0.1.6";
  * unit, and every later occurrence of that token is substituted. See the
  * comment on Util.LOOM_VERSION above -- this cost hours once already.
  */
-Util.MIN_CORE = { major: 1, minor: 9, release: 5 };
+Util.MIN_CORE = { major: 1, minor: 9, release: 4 };
 
 /*
  * "1.9.5" from { major: 1, minor: 9, release: 5 }. Missing components read

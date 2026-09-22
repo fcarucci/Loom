@@ -5222,12 +5222,19 @@ function runTests()
 
    // The version Loom actually requires, spelled out so a careless edit of
    // Util.MIN_CORE has to be deliberate.
-   check( "required core is 1.9.5", Util.formatCoreVersion( MIN ), "1.9.5" );
+   check( "required core is 1.9.4", Util.formatCoreVersion( MIN ), "1.9.4" );
 
    check( "exact minimum passes",
-          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 5 }, MIN ), true );
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 4 }, MIN ), true );
    check( "one release older fails",
-          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 4 }, MIN ), false );
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 3 }, MIN ), false );
+   /*
+    * The core Loom was written against still passes, obviously -- but it
+    * is checked explicitly, because lowering the floor is the kind of
+    * change that can accidentally invert a comparison.
+    */
+   check( "the core it was written against still passes",
+          Util.coreVersionAtLeast( { major: 1, minor: 9, release: 5 }, MIN ), true );
    check( "one release newer passes",
           Util.coreVersionAtLeast( { major: 1, minor: 9, release: 6 }, MIN ), true );
    check( "older minor fails",
@@ -5296,6 +5303,53 @@ function runTests()
           Steps.residualVerdict( 0.0190 ), "ok" );
    check( "a recursive-spline solve of the same master is ok",
           Steps.residualVerdict( 0.0157 ), "ok" );
+
+   /* ---- the 1.9.4 build must actually differ ------------------------------ */
+
+   /*
+    * Loom compiles differently on 1.9.4, where AstrometricResiduals does
+    * not exist. Asserting that both builds merely "pass" proves nothing --
+    * a conditional that never fires passes too. This checks the BEHAVIOUR
+    * each build is supposed to have.
+    *
+    * Run the suite with LOOM_TEST_CORE_RELEASE=4 to exercise the other
+    * side; CI runs both.
+    */
+   ( function()
+   {
+      var haveVerifier = true;
+#ifndef LOOM_HAVE_RESIDUALS
+      haveVerifier = false;
+#endif
+      check( "the build knows whether it has a verifier",
+             typeof haveVerifier, "boolean" );
+
+      if ( haveVerifier )
+      {
+         /*
+          * 1.9.5+: the class must really be there -- but only PixInsight
+          * can answer that. The node harness strips <pjsr/...> includes,
+          * so under node it is absent whichever way the build compiled,
+          * and asserting it there would fail for a reason that has
+          * nothing to do with the conditional under test.
+          */
+         if ( IN_PIXINSIGHT )
+            check( "AstrometricResiduals is available to this build",
+                   typeof AstrometricResiduals != "undefined", true );
+      }
+      else
+      {
+         /*
+          * 1.9.4: verifySolution must REFUSE rather than reach for a class
+          * that does not exist. A window is never touched, so null is safe
+          * to ask for.
+          */
+         check( "without the verifier, verifySolution returns null",
+                Steps.verifySolution( null ), null );
+         check( "and verifyAndReport passes that through, not a crash",
+                Steps.verifyAndReport( null, "x" ), null );
+      }
+   } )();
 
    // ---- verification never costs the run ----------------------------------
 
