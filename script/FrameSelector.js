@@ -740,9 +740,24 @@ FrameSelector.PreviewControl = class extends ScrollBox
        * stars right -- and this switches between them without a button
        * taking up room beside the image.
        */
-      this.viewport.onMouseDoubleClick = function()
+      this.viewport.onMouseDoubleClick = function( x, y )
       {
+         /*
+          * Zooming IN goes to what was clicked.
+          *
+          * The target is computed BEFORE the toggle, while the view is
+          * still fitted -- that is the only moment the click can be
+          * mapped, because fittedPixelAt describes the fitted layout.
+          * Getting this backwards centres on wherever the scroll position
+          * happened to be left, which looks like the feature doing
+          * nothing.
+          */
+         var target = self.fit ? self.fittedPixelAt( x, y ) : null;
+
          self.setFit( !self.fit );
+         if ( !self.fit )
+            self.centreOn( target );
+
          self.dragging = false;     // the double click delivered a press first
          return true;
       };
@@ -768,6 +783,52 @@ FrameSelector.PreviewControl = class extends ScrollBox
    {
       this.fit = !!on;
       this.layOutScroll();
+   }
+
+   /*
+    * Put an image pixel under the middle of the viewport.
+    *
+    * Clamped to the scroll range rather than refused: a point near an edge
+    * cannot be centred, and showing it as close to the middle as the frame
+    * allows is what zooming to a corner should do.
+    */
+   centreOn( px )
+   {
+      if ( px == null || this.bmp == null || this.fit )
+         return;
+
+      var h = Math.round( px.x - this.viewport.width/2 );
+      var v = Math.round( px.y - this.viewport.height/2 );
+
+      this.horizontalScrollPosition =
+         Math.max( 0, Math.min( h, Math.max( 0, this.bmp.width  - this.viewport.width ) ) );
+      this.verticalScrollPosition =
+         Math.max( 0, Math.min( v, Math.max( 0, this.bmp.height - this.viewport.height ) ) );
+      this.viewport.update();
+   }
+
+   /*
+    * The image pixel under a point in the viewport, while FITTED.
+    *
+    * Must match how paintViewport actually draws the fitted frame:
+    * scaled by min(vw/w, vh/h) and CENTRED, which leaves a letterbox band.
+    * Ignoring those bands puts the zoom in the wrong place by half the
+    * band -- and the band is tall here, because a 3:2 frame in a nearly
+    * square pane leaves a lot of it.
+    */
+   fittedPixelAt( x, y )
+   {
+      if ( this.bmp == null )
+         return null;
+
+      var vw = this.viewport.width, vh = this.viewport.height;
+      var s = Math.min( vw/this.bmp.width, vh/this.bmp.height );
+      if ( !( s > 0 ) )
+         return null;
+
+      var fx = ( vw - this.bmp.width*s )/2;
+      var fy = ( vh - this.bmp.height*s )/2;
+      return { x: ( x - fx )/s, y: ( y - fy )/s };
    }
 
    /*

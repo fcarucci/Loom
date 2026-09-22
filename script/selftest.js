@@ -5304,6 +5304,63 @@ function runTests()
    check( "a recursive-spline solve of the same master is ok",
           Steps.residualVerdict( 0.0157 ), "ok" );
 
+   /* ---- double click zooms to WHAT WAS CLICKED ---------------------------- */
+
+   /*
+    * This was lost once, reverted along with an unrelated change, and the
+    * user had to report it. The geometry is the part worth pinning: the
+    * fitted frame is drawn scaled by min(vw/w, vh/h) and CENTRED, so it
+    * sits inside a letterbox band -- measured at 23 px on a 3:2 frame in
+    * this pane. Mapping a click without subtracting that band puts the
+    * zoom 23 px off, which looks like the feature half-working.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ok = true, err = "";
+      try
+      {
+         var p = new FrameSelector.PreviewControl( null );
+
+         // A bitmap of known size, so the arithmetic is checkable without
+         // depending on any particular frame being present.
+         p.bmp = new Bitmap( 6248, 4176 );
+         p.setFit( true );
+
+         var vw = p.viewport.width, vh = p.viewport.height;
+         var s = Math.min( vw/6248, vh/4176 );
+         var fx = ( vw - 6248*s )/2, fy = ( vh - 4176*s )/2;
+
+         // the middle of the DRAWN image is the middle of the bitmap
+         var mid = p.fittedPixelAt( fx + 6248*s/2, fy + 4176*s/2 );
+         ok = ok && ( Math.abs( mid.x - 3124 ) < 1 ) && ( Math.abs( mid.y - 2088 ) < 1 );
+
+         // its top-left corner is pixel 0,0 -- this is the one the
+         // letterbox band breaks if it is not subtracted
+         var tl = p.fittedPixelAt( fx, fy );
+         ok = ok && ( Math.abs( tl.x ) < 1 ) && ( Math.abs( tl.y ) < 1 );
+
+         // and the gesture itself: zoom in on a point, land on it
+         var want = p.fittedPixelAt( fx + 6248*s*0.25, fy + 4176*s*0.25 );
+         p.setFit( false );
+         p.centreOn( want );
+         var got = { x: p.horizontalScrollPosition + vw/2,
+                     y: p.verticalScrollPosition + vh/2 };
+         ok = ok && ( Math.abs( got.x - want.x ) <= 1 )
+                 && ( Math.abs( got.y - want.y ) <= 1 );
+
+         // centreOn must do NOTHING while fitted: there is nowhere to scroll
+         p.setFit( true );
+         p.horizontalScrollPosition = 0;
+         p.centreOn( { x: 5000, y: 3000 } );
+         ok = ok && ( p.horizontalScrollPosition == 0 );
+
+         try { p.release(); } catch ( e2 ) {}
+      }
+      catch ( e ) { ok = false; err = String( e ); }
+      check( "double click zooms to the clicked point" + ( err ? ": " + err : "" ),
+             ok, true );
+   } )();
+
    /* ---- the 1.9.4 build must actually differ ------------------------------ */
 
    /*
