@@ -83,18 +83,23 @@ rm -rf "$stage"
 # compares against.
 sha1="$( shasum -a 1 "$out/$archive" | cut -d' ' -f1 | tr 'A-F' 'a-f' )"
 
-# The namespace is NOT decoration. It is absent from the example in the
-# published reference and present in every .xri PixInsight itself writes,
-# including etc/update/installed.xri.
+# NO XML NAMESPACE, deliberately.
+#
+# PixInsight's own etc/update/installed.xri carries
+# xmlns="http://www.pixinsight.com/xri", and copying that here was a
+# mistake that cost a release: installed.xri is a file the application
+# WRITES, not one it reads from a repository. With the namespace present
+# the parser finds <description> but not <platform> or <package>, so the
+# repository loads, shows its description, and offers "Available packages:
+# 0". Every working third-party manifest in the wild -- cosmicphotons,
+# ideviceapps -- opens with a bare <xri version="1.0">.
 #
 # `remove` is not optional either: without it a library deleted in a later
 # version stays on disk, and since the scripts resolve #include relative to
 # themselves, the stale copy would still be found.
 cat > "$out/updates.xri" <<XRIEOF
 <?xml version="1.0" encoding="UTF-8"?>
-<xri version="1.0" xmlns="http://www.pixinsight.com/xri"
-     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-     xsi:schemaLocation="http://www.pixinsight.com/xri http://pixinsight.com/xri/xri-1.0.xsd">
+<xri version="1.0">
    <description>
       <p>
          Loom — the mechanical first steps, from integrated masters to
@@ -147,5 +152,10 @@ import sys, xml.dom.minidom
 xml.dom.minidom.parse( sys.argv[1] )
 CHECK
 
+# The licence, served at the repository URL as well as inside the package,
+# so it can be read before anything is installed.
+cp LICENSE "$out/LICENSE"
+
 echo "$out/updates.xri"
 echo "$out/$archive"
+echo "$out/LICENSE"

@@ -118,6 +118,16 @@ jobs:
           got="$( sha1sum "$zip" | cut -d' ' -f1 )"
           test "$want" = "$got" \
             || { echo "sha1 mismatch: manifest $want, archive $got"; exit 1; }
+          # A namespaced manifest parses, renders its description, and offers
+          # ZERO packages -- the failure mode that shipped in 0.1.5. Every
+          # working third-party manifest opens with a bare <xri version="1.0">.
+          if grep -q 'xmlns' dist/repo/updates.xri; then
+            echo "updates.xri must not declare an XML namespace:"
+            grep -n 'xmlns' dist/repo/updates.xri
+            exit 1
+          fi
+          grep -q '<platform ' dist/repo/updates.xri \
+            || { echo "no <platform> element in the manifest"; exit 1; }
           echo "repository layout OK"
 
       - name: Publish the release
@@ -186,7 +196,8 @@ jobs:
             <p><code>https://fcarucci.github.io/Loom/</code></p>
             <p>The repository is not signed, so PixInsight will ask you to
                confirm it once.</p>
-            <p><a href="https://github.com/fcarucci/Loom">Source and releases</a></p>
+            <p><a href="https://github.com/fcarucci/Loom">Source and releases</a>
+               &middot; <a href="LICENSE">Licence (MIT)</a></p>
           </body>
           </html>
           HTML
