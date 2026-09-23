@@ -18,7 +18,7 @@ var Frames = {};
  * from an older definition compared against a fresh one is exactly the
  * quiet wrongness this tool exists to report.
  */
-Frames.MEASURE_VERSION = "v1";
+Frames.MEASURE_VERSION = "v2";   // v2: adds background and SNR estimate
 
 /*
  * SubframeSelector's measurement row, by position.
@@ -31,9 +31,13 @@ Frames.MEASURE_VERSION = "v1";
  * PSF SNR is 28. An earlier draft said 8; column 8 reads 0 on every frame
  * measured here, so the score's dominant term would have been a constant
  * zero -- a failure with no symptom.
+ *
+ * 9 and 10 are WBPP's iSNREstimate and iMedian (BPP-SubframeAnalyzer.js
+ * 487-488), confirmed on a live light frame; see verified-parameters.md.
+ * Both are optional here: shown or advisory, never deciding a deletion.
  */
-Frames.COL = { path: 3, fwhm: 5, eccentricity: 6, noise: 12, stars: 14,
-               psfSNR: 28 };
+Frames.COL = { path: 3, fwhm: 5, eccentricity: 6, snr: 9, median: 10,
+               noise: 12, stars: 14, psfSNR: 28 };
 
 Frames.metricsFromRow = function( row )
 {
@@ -42,7 +46,79 @@ Frames.metricsFromRow = function( row )
             eccentricity: row[Frames.COL.eccentricity],
             noise:        row[Frames.COL.noise],
             stars:        row[Frames.COL.stars],
-            psfSNR:       row[Frames.COL.psfSNR] };
+            psfSNR:       row[Frames.COL.psfSNR],
+            background:   row[Frames.COL.median],
+            snrWeight:    row[Frames.COL.snr] };
+};
+
+/*
+ * Figures that are SHOWN (SNR) or feed an advisory flag (background) but
+ * decide nothing. A problem with one of them blanks that figure; it never
+ * abandons a channel the way meaningProblems does.
+ */
+Frames.OPTIONAL = [ "background", "snrWeight" ];
+
+Frames.optionalOk = function( v )
+{
+   return typeof v == "number" && isFinite( v ) && v >= 0;
+};
+
+/* Schema check, first row only: which optional columns are not usable. */
+Frames.optionalProblems = function( m )
+{
+   var bad = [];
+   for ( var i = 0; i < Frames.OPTIONAL.length; ++i )
+      if ( !Frames.optionalOk( m[Frames.OPTIONAL[i]] ) )
+         bad.push( Frames.OPTIONAL[i] );
+   return bad;
+};
+
+/*
+ * Two scopes. `disabled` names fields the schema check failed on: null for
+ * every row. Otherwise one bad reading is null for that row alone.
+ */
+Frames.sanitizeOptional = function( m, disabled )
+{
+   for ( var i = 0; i < Frames.OPTIONAL.length; ++i )
+   {
+      var f = Frames.OPTIONAL[i];
+      if ( ( disabled && disabled[f] ) || !Frames.optionalOk( m[f] ) )
+         m[f] = null;
+   }
+   return m;
+};
+
+/*
+ * Stored WITHOUT the path. The key is the digest, so identical bytes sitting
+ * somewhere else must not come back naming the first file.
+ */
+Frames.STORED_KEYS = [ "fwhm", "eccentricity", "noise", "stars", "psfSNR",
+                       "background", "snrWeight" ];
+
+Frames.storedMetrics = function( m )
+{
+   var out = {};
+   for ( var i = 0; i < Frames.STORED_KEYS.length; ++i )
+   {
+      var k = Frames.STORED_KEYS[i];
+      out[k] = ( m[k] === undefined ) ? null : m[k];
+   }
+   return out;
+};
+
+/*
+ * A cached entry is usable when it has every key. A null optional is a
+ * cached "unavailable", not a miss -- otherwise a frame whose background
+ * cannot be read would be re-measured on every scan, forever.
+ */
+Frames.cacheEntryUsable = function( e )
+{
+   if ( e == null || typeof e != "object" )
+      return false;
+   for ( var i = 0; i < Frames.STORED_KEYS.length; ++i )
+      if ( !Object.prototype.hasOwnProperty.call( e, Frames.STORED_KEYS[i] ) )
+         return false;
+   return true;
 };
 
 /*
@@ -374,18 +450,20 @@ Frames.PRESETS = { lenient: 3.0, balanced: 2.5, strict: 2.0 };
 Frames.DEFAULT_PRESET = "balanced";
 
 /*
- * A clip on median and MAD is scale-invariant, so Relative drops roughly the
- * same FRACTION however good the night was. That is right for "drop this
- * night's worst" and wrong for "drop frames that are bad in absolute terms",
- * and no amount of extra criteria reconciles them -- a frame the relative
- * gate rejects cannot be rescued by also passing a ceiling. Hence modes.
+ * A clip on median and MAD is scale-invariant, so it drops roughly the same
+ * FRACTION however good the night was. That is right for "drop this night's
+ * worst" and wrong for "drop frames that are bad in absolute terms", and the
+ * two cannot be combined on one metric -- a frame the relative gate rejects
+ * cannot be rescued by also passing a ceiling.
+ *
+ * So the choice is made PER METRIC: a limit typed for a metric replaces its
+ * relative gate, and a metric with no typed limit keeps it. Typing a limit
+ * on every metric is how an entire good night is kept.
  */
-Frames.MODE = { RELATIVE: "relative", ABSOLUTE: "absolute", BOTH: "both" };
 
 Frames.defaultSettings = function()
 {
-   return { mode: Frames.MODE.RELATIVE,
-            /*
+   return { /*
              * Per channel, not per folder. A night's L and its Ha are not
              * the same population -- one can be tight and the other ragged
              * -- and one preset over both either spares the bad channel or
@@ -450,11 +528,19 @@ Frames.applyPreset = function( settings, preset )
 };
 
 Frames.METRIC_LABEL = { psfSNR: "PSF SNR", fwhm: "FWHM",
-                        eccentricity: "eccentricity", stars: "stars" };
+                        eccentricity: "eccentricity", stars: "stars",
+                        snrWeight: "SNR estimate" };
 
 /* The same metrics as column headings, where width is scarce. */
 Frames.METRIC_HEADING = { psfSNR: "PSF SNR", fwhm: "FWHM",
-                          eccentricity: "ecc", stars: "stars" };
+                          eccentricity: "ecc", stars: "stars", snrWeight: "SNR" };
+
+/*
+ * What the table and the plot show, in column order. Wider than METRICS:
+ * SNR is shown and plotted but never gated, weighted or scored, so it must
+ * not be in the list that drives those.
+ */
+Frames.DISPLAY_METRICS = [ "psfSNR", "snrWeight", "fwhm", "eccentricity", "stars" ];
 
 /*
  * The review's columns, derived from METRICS rather than written out
@@ -469,7 +555,7 @@ Frames.METRIC_HEADING = { psfSNR: "PSF SNR", fwhm: "FWHM",
  * when a frame is borderline, is the row's tooltip instead.
  */
 Frames.FRAME_COLUMNS = [ "Frame" ]
-   .concat( Frames.METRICS.map( function( m ) { return Frames.METRIC_HEADING[m]; } ) )
+   .concat( Frames.DISPLAY_METRICS.map( function( m ) { return Frames.METRIC_HEADING[m]; } ) )
    .concat( [ "score" ] );
 
 /*
@@ -482,32 +568,35 @@ Frames.FRAME_COLUMNS = [ "Frame" ]
  */
 Frames.acceptedBand = function( metric, gates, settings )
 {
-   var lo = null, hi = null;
+   var open = { lo: null, hi: null };
+   if ( settings.gating != null && settings.gating[metric] === false )
+      return open;                         // unticked: nothing cuts
+   var lim = settings.limits ? settings.limits[metric] : null;
+   // A typed limit REPLACES the relative gate for its metric.
+   return ( lim != null ) ? Frames.narrowBand( open, lim )
+                          : Frames.relativeBand( metric, gates );
+};
 
-   if ( settings.mode != Frames.MODE.ABSOLUTE )
-   {
-      var g = gates ? gates[metric] : null;
-      if ( g != null && g.active )
-      {
-         if ( Frames.WORSE_WHEN[metric] == "higher" )
-            hi = g.limit;
-         else
-            lo = g.limit;
-      }
-   }
-   if ( settings.mode != Frames.MODE.RELATIVE )
-   {
-      var lim = settings.limits ? settings.limits[metric] : null;
-      if ( lim != null )
-      {
-         // The tighter of the two wins: in BOTH mode a frame has to pass
-         // the gate AND the limit, so the band is their intersection.
-         if ( lim.lo != null )
-            lo = ( lo == null ) ? lim.lo : Math.max( lo, lim.lo );
-         if ( lim.hi != null )
-            hi = ( hi == null ) ? lim.hi : Math.min( hi, lim.hi );
-      }
-   }
+/* The side an active relative gate cuts from; the other end is open. */
+Frames.relativeBand = function( metric, gates )
+{
+   var g = gates ? gates[metric] : null;
+   if ( g == null || !g.active )
+      return { lo: null, hi: null };
+   return ( Frames.WORSE_WHEN[metric] == "higher" ) ? { lo: null, hi: g.limit }
+                                                    : { lo: g.limit, hi: null };
+};
+
+/* A band narrowed by a limit's ends; the tighter end wins on each side. */
+Frames.narrowBand = function( band, lim )
+{
+   if ( lim == null )
+      return band;
+   var lo = band.lo, hi = band.hi;
+   if ( lim.lo != null )
+      lo = ( lo == null ) ? lim.lo : Math.max( lo, lim.lo );
+   if ( lim.hi != null )
+      hi = ( hi == null ) ? lim.hi : Math.min( hi, lim.hi );
    return { lo: lo, hi: hi };
 };
 
@@ -609,12 +698,20 @@ Frames.plotBounds = function( values, band )
 /* Column showing `metric`, or null when it has none. */
 Frames.metricColumn = function( metric )
 {
-   var i = Frames.METRICS.indexOf( metric );
+   var i = Frames.DISPLAY_METRICS.indexOf( metric );
    return ( i < 0 ) ? null : i + 1;
 };
 
 /* The trailing column, by the same rule. */
-Frames.SCORE_COLUMN = Frames.METRICS.length + 1;
+Frames.SCORE_COLUMN = Frames.DISPLAY_METRICS.length + 1;
+
+/* A measurement as the table shows it: "-" when there is none. */
+Frames.displayValue = function( metric, value )
+{
+   if ( value == null || !isFinite( value ) )
+      return "-";
+   return ( metric == "stars" ) ? String( Math.round( value ) ) : Frames.round( value );
+};
 
 /* Rejections from this channel's own spread: only an ACTIVE gate can reject. */
 /*
@@ -649,14 +746,18 @@ Frames.relativeReasons = function( metrics, gates )
       function( f ) { return f.text; } );
 };
 
-/* Rejections from a hard limit: only a CONFIGURED limit can reject. */
-Frames.absoluteFailures = function( metrics, limits )
+/*
+ * Rejections from a hard limit: only a CONFIGURED limit on a CHECKED
+ * criterion can reject. An omitted gating map means every criterion is on,
+ * which is what the metric-level tests assume.
+ */
+Frames.absoluteFailures = function( metrics, limits, gating )
 {
    var out = [];
    for ( var a = 0; a < Frames.METRICS.length; ++a )
    {
       var an = Frames.METRICS[a], lim = limits[an];
-      if ( lim == null )
+      if ( lim == null || ( gating != null && !gating[an] ) )
          continue;
       if ( lim.hi != null && metrics[an] > lim.hi )
          out.push( { metric: an,
@@ -670,20 +771,35 @@ Frames.absoluteFailures = function( metrics, limits )
    return out;
 };
 
-Frames.absoluteReasons = function( metrics, limits )
+Frames.absoluteReasons = function( metrics, limits, gating )
 {
-   return Frames.absoluteFailures( metrics, limits ).map(
+   return Frames.absoluteFailures( metrics, limits, gating ).map(
       function( f ) { return f.text; } );
 };
 
 /*
- * The verdict, with the rejection predicate stated per mode so nothing is
- * left to infer:
- *
- *   Relative  rejected iff an ACTIVE relative gate fails; hard limits are
- *             ignored entirely, even if values remain from another mode
- *   Absolute  rejected iff a CONFIGURED hard limit fails
- *   Both      rejected iff either fails
+ * The gates that still apply: a metric with a typed limit is judged on that
+ * limit alone, so its relative gate is set aside.
+ */
+Frames.autoGates = function( gates, limits )
+{
+   var out = {}, keys = Object.keys( gates || {} );
+   for ( var i = 0; i < keys.length; ++i )
+   {
+      var g = gates[keys[i]];
+      out[keys[i]] = ( limits && limits[keys[i]] != null )
+         ? { active: false, limit: null, median: g.median, sigma: g.sigma,
+             reason: "replaced by a typed limit" }
+         : g;
+   }
+   return out;
+};
+
+/*
+ * The verdict, per metric, so nothing is left to infer: a TICKED metric
+ * with a typed limit is rejected iff it fails that limit; a ticked metric
+ * without one is rejected iff its ACTIVE relative gate fails; an unticked
+ * metric rejects nothing (its gate is inactive, its limit skipped).
  */
 Frames.verdict = function( metrics, gates, settings )
 {
@@ -691,16 +807,12 @@ Frames.verdict = function( metrics, gates, settings )
       return { state: Frames.STATE.UNMEASURABLE,
                reasons: [ "a metric is missing or not positive" ] };
 
-   var failures = [];
-   if ( settings.mode != Frames.MODE.ABSOLUTE )
-      failures = failures.concat( Frames.relativeFailures( metrics, gates ) );
-   if ( settings.mode != Frames.MODE.RELATIVE )
-      failures = failures.concat( Frames.absoluteFailures( metrics, settings.limits ) );
+   var failures = Frames.relativeFailures( metrics, Frames.autoGates( gates, settings.limits ) )
+      .concat( Frames.absoluteFailures( metrics, settings.limits || {}, settings.gating ) );
 
    /*
-    * `failing` is deduplicated: a metric can fail the relative gate and the
-    * absolute limit at once in BOTH mode, and the review would otherwise be
-    * told to colour the same column twice.
+    * `failing` is deduplicated: a limit with both ends can fail on either,
+    * and the review would otherwise be told to colour one column twice.
     */
    var reasons = [], failing = [], seen = Object.create( null );
    for ( var i = 0; i < failures.length; ++i )
@@ -715,6 +827,79 @@ Frames.verdict = function( metrics, gates, settings )
 
    return { state: reasons.length ? Frames.STATE.REJECTED : Frames.STATE.APPROVED,
             reasons: reasons, failing: failing };
+};
+
+/* ---- the criteria panel's arithmetic -------------------------------- */
+
+Frames.OPERATOR = { fwhm: "<=", eccentricity: "<=", stars: ">=", psfSNR: ">=" };
+Frames.LIMIT_DECIMALS = { fwhm: 2, eccentricity: 3, stars: 0, psfSNR: 2 };
+/* Left to right in the panel, as SubframeStudio lays them out. */
+Frames.CRITERIA_ORDER = [ "fwhm", "eccentricity", "stars", "psfSNR" ];
+
+/*
+ * A typed threshold: a positive finite number, null for blank (no
+ * threshold), undefined for anything else -- which the dialog answers by
+ * putting the stored value back. A comma is not accepted as a decimal
+ * point: guessing wrong would move a limit by a factor of a thousand.
+ */
+Frames.parseLimit = function( text )
+{
+   var t = String( text == null ? "" : text ).trim();
+   if ( t === "" )
+      return null;
+   if ( !/^[0-9]*\.?[0-9]+(e[+-]?[0-9]+)?$/i.test( t ) )
+      return undefined;
+   var v = parseFloat( t );
+   return ( isFinite( v ) && v > 0 ) ? v : undefined;
+};
+
+Frames.formatLimit = function( metric, value )
+{
+   if ( value == null || !isFinite( value ) )
+      return "";
+   var d = Frames.LIMIT_DECIMALS[metric];
+   return value.toFixed( d == null ? 2 : d );
+};
+
+/* The stored worse-side bound, or null. */
+Frames.limitValue = function( settings, metric )
+{
+   var lim = settings.limits ? settings.limits[metric] : null;
+   if ( lim == null )
+      return null;
+   var v = ( Frames.WORSE_WHEN[metric] == "higher" ) ? lim.hi : lim.lo;
+   return ( v == null ) ? null : v;
+};
+
+/*
+ * Settings with one metric's limit typed, or cleared back to automatic
+ * with null. The whole entry is replaced, so no bound on the other side
+ * can survive. Returns a copy.
+ */
+Frames.withLimit = function( settings, metric, value )
+{
+   var out = Frames.copyOf( settings );
+   out.limits = Frames.copyOf( settings.limits );
+   if ( value == null )
+      delete out.limits[metric];
+   else
+      out.limits[metric] = ( Frames.WORSE_WHEN[metric] == "higher" ) ? { hi: value }
+                                                                    : { lo: value };
+   return out;
+};
+
+/*
+ * What a criterion's box shows: the typed limit, or -- automatic -- the
+ * limit k times the spread gives, which the box shows greyed. `value` is
+ * null when there is neither: no typed limit and no usable gate.
+ */
+Frames.displayLimit = function( metric, gates, settings )
+{
+   var typed = Frames.limitValue( settings, metric );
+   if ( typed != null )
+      return { value: typed, auto: false };
+   var g = gates ? gates[metric] : null;
+   return { value: ( g != null && g.active ) ? g.limit : null, auto: true };
 };
 
 /* Three significant figures, so a reason reads as a sentence. */
@@ -851,6 +1036,32 @@ Frames.finalState = function( verdictState, override )
    if ( override == Frames.OVERRIDE.CONDEMNED )
       return Frames.STATE.REJECTED;
    return verdictState;
+};
+
+/*
+ * Whether Run leaves this frame out of its result -- the one rule behind
+ * the filmstrip's cross, the preview's red tag and the keep counter.
+ *
+ * Mirrors the two things Run does. Culling in place deletes an enabled
+ * channel's rejected frames (committableRows + buildManifest). Copying out
+ * copies only an enabled channel's frames that are not rejected
+ * (approvedPaths + commitCopy), so a switched-off channel is left out
+ * entirely. finalState already applies overrides: a condemned frame is
+ * left out even when it could not be measured.
+ */
+Frames.leftOut = function( row, channelEnabled, copying )
+{
+   var rejected = Frames.finalState( row.state, row.override ) == Frames.STATE.REJECTED;
+   return copying ? ( !channelEnabled || rejected ) : ( channelEnabled && rejected );
+};
+
+Frames.keepCount = function( rows, channelEnabled, copying )
+{
+   var keep = 0;
+   for ( var i = 0; i < rows.length; ++i )
+      if ( !Frames.leftOut( rows[i], channelEnabled, copying ) )
+         ++keep;
+   return { keep: keep, total: rows.length };
 };
 
 Frames.counts = function( rows )
@@ -1007,12 +1218,25 @@ Frames.SEPARATORS = "_-.";
 
 Frames.shortNames = function( paths )
 {
-   var names = [];
-   for ( var i = 0; i < paths.length; ++i )
-      names.push( Frames.outputName( paths[i] ) );
+   var names = paths.map( function( p ) { return Frames.outputName( p ); } );
    if ( names.length < 2 )
       return names;
+   // Back up to a separator so the remainder starts at a whole token.
+   var cut = Frames.lastSeparatorIn( Frames.commonPrefix( names ) );
+   if ( cut < 0 )
+      return names;
+   return names.map( function( name )
+   {
+      // Never hand back nothing: a name identical to the prefix keeps its
+      // whole self rather than becoming an empty cell.
+      var short_ = name.substring( cut + 1 );
+      return short_.length ? short_ : name;
+   } );
+};
 
+/* The longest start every name shares. */
+Frames.commonPrefix = function( names )
+{
    var prefix = names[0];
    for ( var n = 1; n < names.length && prefix.length > 0; ++n )
    {
@@ -1021,23 +1245,17 @@ Frames.shortNames = function( paths )
          ++j;
       prefix = prefix.substring( 0, j );
    }
-   // Back up to a separator so the remainder starts at a whole token.
-   var cut = -1;
-   for ( var k = 0; k < prefix.length; ++k )
-      if ( Frames.SEPARATORS.indexOf( prefix.charAt( k ) ) >= 0 )
-         cut = k;
-   if ( cut < 0 )
-      return names;
+   return prefix;
+};
 
-   var out = [];
-   for ( var m = 0; m < names.length; ++m )
-   {
-      var short_ = names[m].substring( cut + 1 );
-      // Never hand back nothing: a name identical to the prefix keeps its
-      // whole self rather than becoming an empty cell.
-      out.push( short_.length ? short_ : names[m] );
-   }
-   return out;
+/* Index of the last name separator in a string, or -1. */
+Frames.lastSeparatorIn = function( text )
+{
+   var cut = -1;
+   for ( var k = 0; k < text.length; ++k )
+      if ( Frames.SEPARATORS.indexOf( text.charAt( k ) ) >= 0 )
+         cut = k;
+   return cut;
 };
 
 Frames.outputName = function( path )
@@ -1122,6 +1340,38 @@ Frames.destinationIsSource = function( paths, destination )
    return false;
 };
 
+/*
+ * Why the output folder must not be emptied, or null.
+ *
+ * Copying out empties the folder first -- recursively, without asking -- so
+ * a folder that IS, or CONTAINS, the folder of any frame being copied would
+ * take the originals with it. The filesystem root and the home folder are
+ * refused outright: a destination left pointing there is a mistake, never
+ * an output folder.
+ */
+Frames.emptyRefusal = function( sourcePaths, destination, home )
+{
+   if ( destination == null || String( destination ).trim() === "" )
+      return "no output folder chosen";
+   var dest = Frames.withoutTrailingSlash( destination );
+   if ( dest === "" )
+      return "refusing to empty the filesystem root";
+   if ( home != null && dest === Frames.withoutTrailingSlash( home ) )
+      return "refusing to empty the home folder";
+   for ( var i = 0; i < sourcePaths.length; ++i )
+   {
+      var dir = Frames.withoutTrailingSlash( File.extractDirectory( sourcePaths[i] ) );
+      if ( dir === dest || dir.indexOf( dest + "/" ) === 0 )
+         return "the output folder contains the frames being copied (" + dir + ")";
+   }
+   return null;
+};
+
+Frames.withoutTrailingSlash = function( path )
+{
+   return String( path ).replace( /\/+$/, "" );
+};
+
 Frames.outputMapping = function( approved, destination, extension )
 {
    var mapping = {}, taken = {}, collisions = [], aliased = false;
@@ -1138,4 +1388,293 @@ Frames.outputMapping = function( approved, destination, extension )
       mapping[src] = destination + "/" + name;
    }
    return { mapping: mapping, collisions: collisions, aliased: aliased };
+};
+
+/* ---- a channel: its cohort, its review, its verdicts ---------------- */
+
+/*
+ * A channel holds its COHORT -- the entries and the measurements taken at
+ * scan time -- separately from the rows, which are the review. Medians and
+ * MADs are computed from the cohort every time, never from whatever
+ * survived a partial run, because recomputing on survivors is iterative
+ * clipping.
+ */
+Frames.newChannel = function( key, entries, metrics, problems )
+{
+   var rows = [];
+   for ( var i = 0; i < entries.length; ++i )
+   {
+      var e = entries[i];
+      rows.push( { path: e.path, channel: key,
+                   metrics: metrics[e.path] || null,
+                   digest: e.identity ? e.identity.digest : null,
+                   size: e.identity ? e.identity.size : 0,
+                   mtime: e.identity ? e.identity.mtime : 0,
+                   state: Frames.STATE.UNMEASURABLE, reasons: [],
+                   override: null, score: null } );
+   }
+   var ch = { key: key, entries: entries, metrics: metrics,
+              problems: problems || [],
+              settings: Frames.defaultSettings(), rows: rows };
+   var list = [];
+   for ( var f = 0; f < rows.length; ++f )
+      list.push( rows[f].metrics );
+   /*
+    * Computed once, from the measurements: knobs do not move a flag.
+    * Frames that are not comparable are not flagged at all -- a raw
+    * background compared across unlike frames means nothing.
+    */
+   ch.flags = Frames.anomalyFlags( list, ch.problems.length == 0 &&
+                                         Frames.autoRejectAllowed( key ) );
+   return ch;
+};
+
+/*
+ * Recompute every verdict in a channel from its cohort.
+ *
+ * Overrides are left standing: changing k or a weight must not discard the
+ * one judgement in the dialog that was made by looking at the frame.
+ */
+Frames.recompute = function( ch )
+{
+   var cohort = [];
+   for ( var i = 0; i < ch.rows.length; ++i )
+      if ( ch.rows[i].metrics != null )
+         cohort.push( ch.rows[i].metrics );
+
+   var gates = Frames.relativeGates( cohort, ch.settings.k, ch.settings.gating );
+   /*
+    * Kept on the channel: the plot draws the band these define, and
+    * recomputing them there would be a second place for k to be read.
+    */
+   ch.gates = gates;
+   var meds = Frames.medians( cohort );
+   /*
+    * A disabled channel is untouched, and a group with no
+    * readable FILTER is never auto-rejected -- there is no evidence its
+    * frames belong together, so "this night's worst" means nothing over
+    * them. Both still get scores, so the table is readable.
+    */
+   var mayReject = ch.settings.enabled && Frames.autoRejectAllowed( ch.key );
+
+   for ( var r = 0; r < ch.rows.length; ++r )
+      Frames.judgeRow( ch.rows[r], gates, meds, ch.settings, mayReject );
+   return ch;
+};
+
+/* One row's score and verdict, against the channel's gates and settings. */
+Frames.judgeRow = function( row, gates, meds, settings, mayReject )
+{
+   if ( row.metrics == null )
+   {
+      row.score = null;
+      row.state = Frames.STATE.UNMEASURABLE;
+      row.reasons = [ "no measurement" ];
+      row.failing = [];
+      return;
+   }
+   row.score = Frames.score( row.metrics, meds, settings.weights );
+   var v = Frames.verdict( row.metrics, gates, settings );
+   var suppressed = !mayReject && v.state == Frames.STATE.REJECTED;
+   row.state   = suppressed ? Frames.STATE.APPROVED : v.state;
+   row.reasons = suppressed ? [] : v.reasons;
+   /*
+    * Cleared with the reasons when a rejection is suppressed: the channel
+    * is not being acted on, so there is nothing to mark.
+    */
+   row.failing = suppressed ? [] : v.failing;
+};
+
+/* ---- anomaly flags ----------------------------------------------------
+ *
+ * Advisory, always on, and never a verdict: a flag does not reject, does
+ * not change a state, does not reach the manifest. The tags name symptoms
+ * -- "looks like" -- not diagnoses, and they are relative to the channel,
+ * the way SubframeStudio's are.
+ */
+Frames.FLAG_K = 3;
+Frames.FLAG_MIN_FRAMES = 5;
+Frames.DROPPED_FRACTION = 0.1;
+/*
+ * CLOUD from background: this far above the channel's median, as a
+ * fraction. Relative, not sigma: SubframeSelector's median moves by about
+ * one 16-bit step between frames on a steady night (measured on four
+ * channels, 2026-09-23), far under any spread floor, so a sigma rule never
+ * ran -- and without the floor it would tag noise. A real cloud lifts the
+ * background by tens of percent.
+ */
+Frames.CLOUD_BACKGROUND_RISE = 0.05;
+Frames.FLAG_ORDER = [ "focus", "tracking", "cloud", "dropped" ];
+Frames.FLAG_TAG = { focus: "FOCUS", tracking: "TRACKING", cloud: "CLOUD", dropped: "DROPPED" };
+Frames.FLAG_BADGE = { focus: "F", tracking: "T", cloud: "C", dropped: "D" };
+/* Summary order, as SubframeStudio words it. */
+Frames.FLAG_SUMMARY_ORDER = [ "cloud", "focus", "tracking", "dropped" ];
+
+/*
+ * One metric's baseline over the channel: every row with a usable value --
+ * positive, or non-negative for a star COUNT, where 0 is a real reading.
+ * Null below FLAG_MIN_FRAMES values. `spread` says whether a sigma rule may
+ * use it, with the same 1% floor the rejection gates use.
+ */
+Frames.flagBaseline = function( list, metric, allowZero )
+{
+   var v = [];
+   for ( var i = 0; i < list.length; ++i )
+   {
+      var x = list[i] ? list[i][metric] : null;
+      if ( typeof x == "number" && isFinite( x ) && ( allowZero ? x >= 0 : x > 0 ) )
+         v.push( x );
+   }
+   if ( v.length < Frames.FLAG_MIN_FRAMES )
+      return null;
+   var med = Frames.median( v ), sd = Frames.sigma( v );
+   return { median: med, sigma: sd,
+            spread: sd > 0 && sd >= Frames.SIGMA_FLOOR_FRACTION*Math.abs( med ) };
+};
+
+Frames.isNumber = function( v ) { return typeof v == "number" && isFinite( v ); };
+
+/* Above the channel by more than FLAG_K sigma, on a baseline with spread. */
+Frames.flagHigh = function( base, v )
+{
+   return base != null && base.spread && Frames.isNumber( v ) &&
+          v > base.median + Frames.FLAG_K*base.sigma;
+};
+
+/* One frame's flags against the channel's baselines, in FLAG_ORDER. */
+Frames.frameFlags = function( m, b )
+{
+   var st = b.stars;
+   var dropped = st != null && Frames.isNumber( m.stars ) &&
+                 m.stars < Frames.DROPPED_FRACTION*st.median;
+   // A dropped frame is not ALSO cloud for the same low star count.
+   var fewStars = !dropped && st != null && st.spread && Frames.isNumber( m.stars ) &&
+                  m.stars < st.median - Frames.FLAG_K*st.sigma;
+   var bright = b.background != null && Frames.isNumber( m.background ) &&
+                m.background > b.background.median*( 1 + Frames.CLOUD_BACKGROUND_RISE );
+   var f = { focus: Frames.flagHigh( b.fwhm, m.fwhm ),
+             tracking: Frames.flagHigh( b.eccentricity, m.eccentricity ),
+             cloud: bright || fewStars,
+             dropped: dropped };
+   return Frames.FLAG_ORDER.filter( function( k ) { return f[k]; } );
+};
+
+Frames.anomalyFlags = function( list, comparable )
+{
+   var out = [];
+   for ( var n = 0; n < list.length; ++n )
+      out.push( [] );
+   if ( !comparable )
+      return out;
+   var b = { fwhm: Frames.flagBaseline( list, "fwhm", false ),
+             eccentricity: Frames.flagBaseline( list, "eccentricity", false ),
+             background: Frames.flagBaseline( list, "background", false ),
+             stars: Frames.flagBaseline( list, "stars", true ) };
+   for ( var i = 0; i < list.length; ++i )
+      if ( list[i] != null )
+         out[i] = Frames.frameFlags( list[i], b );
+   return out;
+};
+
+/* "N flagged: a cloud, b focus", N counting frames. "" when none. */
+Frames.flagSummary = function( flagsList )
+{
+   var frames = 0, per = {};
+   for ( var i = 0; i < flagsList.length; ++i )
+   {
+      if ( flagsList[i].length )
+         ++frames;
+      for ( var j = 0; j < flagsList[i].length; ++j )
+         per[flagsList[i][j]] = ( per[flagsList[i][j]] || 0 ) + 1;
+   }
+   if ( frames == 0 )
+      return "";
+   var parts = [];
+   for ( var k = 0; k < Frames.FLAG_SUMMARY_ORDER.length; ++k )
+   {
+      var key = Frames.FLAG_SUMMARY_ORDER[k];
+      if ( per[key] )
+         parts.push( per[key] + " " + key );
+   }
+   return frames + " flagged: " + parts.join( ", " );
+};
+
+/* A row's tooltip: the path, the verdict and why, then what it looks like. */
+Frames.rowTooltip = function( row, flags )
+{
+   var mark = ( row.override == Frames.OVERRIDE.RESCUED ) ? " (rescued)"
+            : ( row.override == Frames.OVERRIDE.CONDEMNED ) ? " (condemned)" : "";
+   var fl = flags || [];
+   return row.path + "\n" + Frames.finalState( row.state, row.override ) + mark +
+          ( row.reasons.length ? ": " + row.reasons.join( "; " ) : "" ) +
+          ( fl.length ? "\nlooks like: " + fl.map( function( f )
+               { return Frames.FLAG_TAG[f].toLowerCase(); } ).join( ", " ) : "" );
+};
+
+/* The preview's tags, top to bottom: the red one, then each flag alone. */
+Frames.frameTags = function( row, flags, channelEnabled, copying )
+{
+   var tags = [];
+   if ( Frames.leftOut( row, channelEnabled, copying ) )
+      tags.push( { text: ( Frames.finalState( row.state, row.override ) == Frames.STATE.REJECTED )
+                         ? "REJECTED" : "CHANNEL OFF", kind: "reject" } );
+   for ( var i = 0; i < ( flags || [] ).length; ++i )
+      tags.push( { text: Frames.FLAG_TAG[flags[i]], kind: "flag" } );
+   return tags;
+};
+
+/* ---- the filmstrip's arithmetic ------------------------------------- */
+
+/*
+ * The first tile the strip shows. When the selection is already on screen
+ * in the current view (`current`), the view does not move: clicking a tile
+ * must leave the clicked frame under the mouse, and re-centring on every
+ * click slid a different frame under it. Otherwise -- a selection made in
+ * the table or the plot, off screen -- it is centred, clamped to the ends.
+ */
+Frames.stripFirst = function( count, selected, visible, current )
+{
+   if ( count <= visible )
+      return 0;
+   var last = count - visible;
+   var s = ( selected < 0 ) ? 0 : selected;
+   if ( current != null && current >= 0 && current <= last &&
+        s >= current && s < current + visible )
+      return current;
+   return Math.max( 0, Math.min( s - Math.floor( visible/2 ), last ) );
+};
+
+/*
+ * The frame a click at x lands on, or -1. Only a drawn tile counts: the
+ * space after the last whole tile, and anything past the channel's end,
+ * picks nothing -- a click there used to select a frame nobody could see.
+ */
+Frames.tileAt = function( x, tileW, visible, first, count )
+{
+   if ( x < 0 )
+      return -1;
+   var slot = Math.floor( x/tileW );
+   if ( slot >= visible )
+      return -1;
+   var i = first + slot;
+   return ( i < count ) ? i : -1;
+};
+
+/*
+ * The order thumbnails are loaded in: the visible tiles first, nearest the
+ * selection first, then the rest of the channel outward from it. Ties go
+ * to the lower index. Every index appears exactly once.
+ */
+Frames.thumbnailOrder = function( count, selected, first, visible )
+{
+   var s = ( selected < 0 ) ? first : selected;
+   function byDistance( a, b )
+   {
+      var d = Math.abs( a - s ) - Math.abs( b - s );
+      return d != 0 ? d : a - b;
+   }
+   var inView = [], rest = [];
+   for ( var i = 0; i < count; ++i )
+      ( i >= first && i < first + visible ? inView : rest ).push( i );
+   return inView.sort( byDistance ).concat( rest.sort( byDistance ) );
 };

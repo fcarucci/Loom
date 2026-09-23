@@ -1016,8 +1016,16 @@ presents exactly as "PixInsight accepts dispatches and runs none". Set
 
 ## SubframeSelector measurement columns (1.9.5 build 1702)
 
-`routine = 0` measures; 1 and 2 are the preview and output routines and refuse
-with "No measurements have been made". The `subframes` table takes four values
+`routine = 0` (`SubframeSelector.MeasureSubframes`) measures and
+`routine = 1` (`SubframeSelector.OutputSubframes`) writes the measured
+subframes. Use the named constants, not numbers: Loom set `routine = 2`
+believing it to be output, and routine 2 returns true having written
+nothing -- so until 2026-09-23 the Frame Selector's convert-in-place and
+copy-out never produced a file (found by characterising convertInPlace on a
+real frame). The output routine's default `outputPostfix` is `_a`; Loom sets
+both prefix and postfix to "" so outputs keep their source names. Routines
+other than 0 refuse to run before a measurement with
+"No measurements have been made". The `subframes` table takes four values
 per row: enabled, path, local normalization data, drizzle data.
 
 | index | figure |
@@ -1026,10 +1034,19 @@ per row: enabled, path, local normalization data, drizzle data.
 | 5 | FWHM |
 | 6 | eccentricity |
 | 7 | PSF signal weight |
-| 9 | SNR estimate |
+| 9 | SNR estimate (Frame Selector: display only) |
+| 10 | median (Frame Selector: background, for the CLOUD flag) |
 | 12 | noise |
 | 14 | stars |
 | 28 | PSF SNR |
+
+Columns 9 and 10 were confirmed on 2026-09-22 on a single 2600MM O light
+frame (`~/Downloads/Light`, copied to scratch): column 10 matches the frame's
+own `Image.median()` within 2%, so it is in the same normalised 0..1 units,
+and column 12 (noise) does not. Column 9 has no independent PJSR figure; it is
+checked for shape and against PSF SNR and column 8's constant zero. Both are
+optional in the Frame Selector: a bad value blanks the figure, it never
+abandons a channel.
 
 Source: WBPP's `BPP-SubframeAnalyzer.js:481`, which carries the comment "fixed
 indexes that need to be aligned with the process implementation", cross-checked

@@ -67,71 +67,87 @@ function valueOf( token )
    return ( defines[t] !== undefined ) ? String( defines[t] ).replace( /^"|"$/g, "" ) : t;
 }
 
+/* One conditional-compilation stack, true while each enclosing branch is live. */
+function isLive( stack ) { return stack.every( Boolean ); }
+
+/*
+ * Apply one directive to the branch stack and the define table. Directives
+ * with no effect here -- include, engine, feature-id, feature-info -- fall
+ * through, but every one of them is still commented out by the caller.
+ */
+function applyDirective( stack, directive, rest )
+{
+   switch ( directive )
+   {
+   case "ifdef":  stack.push( defines[rest.trim()] !== undefined ); break;
+   case "ifndef": stack.push( defines[rest.trim()] === undefined ); break;
+   case "ifeq":
+   {
+      const parts = rest.trim().split( /\s+/ );
+      stack.push( valueOf( parts[0] ) === valueOf( parts[1] ) );
+      break;
+   }
+   case "ifoneof":
+   {
+      /*
+       * #ifoneof NAME A B ... -- absent from the first version of
+       * this stand-in, so its body ran unguarded and redefined the
+       * platform the #ifeq above had just settled. A directive that
+       * is not understood must still BALANCE, or every #endif after
+       * it pops someone else's branch.
+       */
+      const parts = rest.trim().split( /\s+/ );
+      const subject = valueOf( parts[0] );
+      stack.push( parts.slice( 1 ).some( p => valueOf( p ) === subject ) );
+      break;
+   }
+   case "else":   stack[stack.length - 1] = !stack[stack.length - 1]; break;
+   case "endif":  stack.pop(); break;
+   case "define":
+   {
+      const m = /^(\w+)\s*(.*)$/.exec( rest.trim() );
+      if ( isLive( stack ) && m )
+         defines[m[1]] = m[2].trim();
+      break;
+   }
+   default: break;
+   }
+}
+
+/* A code line with every defined token replaced, as the real core does. */
+function substituteDefines( line )
+{
+   let code = line;
+   for ( const name of Object.keys( defines ) )
+      if ( name !== "__PI_PLATFORM__" )
+         code = code.replace( new RegExp( "\\b" + name + "\\b", "g" ), defines[name] );
+   return code;
+}
+
 function preprocess( text )
 {
    const out = [];
-   const stack = [];           // true while the enclosing branch is live
-   const live = () => stack.every( Boolean );
-
+   const stack = [];
+   let continued = false;      // the previous directive ended in a backslash
    for ( const line of text.split( "\n" ) )
    {
-      const d = /^\s*#\s*(\w+)\s*(.*)$/.exec( line );
-      if ( d )
+      /*
+       * A directive continues onto the next line after a trailing
+       * backslash, as #feature-info does. The continuation is part of the
+       * directive, not code, and must be commented out with it.
+       */
+      const d = continued ? null : /^\s*#\s*(\w+)\s*(.*)$/.exec( line );
+      if ( continued || d )
       {
-         const [ , directive, rest ] = d;
-         switch ( directive )
-         {
-         case "ifdef":  stack.push( defines[rest.trim()] !== undefined ); break;
-         case "ifndef": stack.push( defines[rest.trim()] === undefined ); break;
-         case "ifeq":
-         {
-            const parts = rest.trim().split( /\s+/ );
-            stack.push( valueOf( parts[0] ) === valueOf( parts[1] ) );
-            break;
-         }
-         case "ifoneof":
-         {
-            /*
-             * #ifoneof NAME A B ... -- absent from the first version of
-             * this stand-in, so its body ran unguarded and redefined the
-             * platform the #ifeq above had just settled. A directive that
-             * is not understood must still BALANCE, or every #endif after
-             * it pops someone else's branch.
-             */
-            const parts = rest.trim().split( /\s+/ );
-            const subject = valueOf( parts[0] );
-            stack.push( parts.slice( 1 ).some( p => valueOf( p ) === subject ) );
-            break;
-         }
-         case "else":   stack[stack.length - 1] = !stack[stack.length - 1]; break;
-         case "endif":  stack.pop(); break;
-         case "define":
-         {
-            if ( live() )
-            {
-               const m = /^(\w+)\s*(.*)$/.exec( rest.trim() );
-               if ( m )
-                  defines[m[1]] = m[2].trim();
-            }
-            break;
-         }
-         default: break;      // include, engine, feature-id, feature-info
-         }
+         if ( d )
+            applyDirective( stack, d[1], d[2] );
+         continued = /\\\s*$/.test( line );
          out.push( "//" + line );
          continue;
       }
       // A line inside a dead branch must not run, but must still occupy
       // its line number.
-      if ( !live() )
-      {
-         out.push( "//" + line );
-         continue;
-      }
-      let code = line;
-      for ( const name of Object.keys( defines ) )
-         if ( name !== "__PI_PLATFORM__" )
-            code = code.replace( new RegExp( "\\b" + name + "\\b", "g" ), defines[name] );
-      out.push( code );
+      out.push( isLive( stack ) ? substituteDefines( line ) : "//" + line );
    }
    return out.join( "\n" );
 }
@@ -166,6 +182,24 @@ for ( const lib of LIBS )
  * something quiet, so a passing run is not buried in output.
  */
 global.console = Object.assign( Object.create( console ), global.console_pjsr );
+
+/*
+ * Every entry point must PARSE. PixInsight discards a script that does
+ * not, silently -- no dialog, no result file -- and the suite includes
+ * FrameSelector.js, so one stray brace there once stopped the whole
+ * self-test from starting while every node assertion still passed.
+ * Compiled with new Function, never run: FrameSelector.js and Loom.js end
+ * by opening their dialogs.
+ */
+for ( const entry of [ "FrameSelector.js", "Loom.js", "selftest.js" ] )
+{
+   try { new Function( load( entry ).src ); }
+   catch ( e )
+   {
+      console.error( entry + " does not parse: " + e.message );
+      process.exit( 1 );
+   }
+}
 
 const suite = load( "selftest.js" );
 

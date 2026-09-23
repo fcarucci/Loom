@@ -441,18 +441,36 @@ widening the ones left behind, and brings gradients that do not average away.
 PSF SNR remains available per channel, because a frame far below the rest
 usually means something went wrong rather than that the night was dim.
 
-### Relative, absolute, or both
+### Approval criteria
 
-A clip on a channel's own median and MAD is scale-invariant, so **Relative**
-drops roughly the same *fraction* however good the night was. That is right for
-"drop this night's worst" and wrong for "drop frames that are bad in absolute
-terms", and no extra criterion reconciles them — a frame the robust gate
-rejects cannot be rescued by also passing a ceiling.
+The criteria sit in one panel, laid out the way SubframeStudio does it: the
+preset, `k` and the channel switch on the first row, and one criterion per
+metric on the second — `FWHM <=`, `ecc <=`, `stars >=`, `PSF SNR >=` — each a
+checkbox and a box holding its limit. The right-hand end says how many of the
+channel's frames Run keeps.
 
-So **Absolute** turns the robust gate off and rejects only on the hard limits
-you set. **It is the only mode that can keep an entire good night.** Absolute
-with no limits configured is a valid "keep everything" setting, not an error.
-**Both** rejects on either condition.
+**Every box is editable, and each metric is decided on its own.** An untouched
+box is *automatic*: it shows, greyed and in italics, the limit `k` times this
+night's spread gives, and that relative cut is what applies. Type a number and
+it becomes that metric's limit instead — the relative cut is set aside for
+that metric only, and the others carry on automatically. Clear the box to go
+back to automatic. A typed limit stays put when the preset or `k` changes.
+
+The two cannot be combined on one metric, deliberately. A clip on a channel's
+own median and MAD drops roughly the same *fraction* however good the night
+was — right for "drop this night's worst", wrong for "drop frames that are bad
+in absolute terms" — and a frame the relative cut rejects cannot be rescued by
+also passing a ceiling. Typing a limit on every metric is how an entire good
+night is kept.
+
+Unticking a criterion switches it off entirely, typed limit or not. A typed
+limit applies only once confirmed (Return, or moving to another box); Run
+confirms a box still being typed in, and never turns a rounded display back
+into a stored number.
+
+The keep count means what Run does: when culling in place, the frames left
+where they are; when the output is another folder, the frames copied there —
+and a channel switched off is then not copied at all.
 
 ### Reading the review
 
@@ -476,6 +494,10 @@ chooses which measurement. A metric that is not gated has no band, because
 nothing it does can reject. The plot and the table are two views of one
 selection: the selected frame is ringed, and clicking a point selects its row.
 
+The table also shows SubframeSelector's **SNR** estimate, beside PSF SNR, and
+the plot can show it. It is for reading only: it is not a criterion, not in the
+score, and cannot reject anything.
+
 The preview is 1:1. **Double click** switches between the whole frame and 1:1;
 **drag** the image, use the **scroll bars**, or the arrow keys after clicking
 it — Shift for a page at a time.
@@ -488,6 +510,58 @@ and no touch, gesture or pan handler exists on any scriptable control, with
 for image windows and never reaches a script. Changing frame keeps the view where it was — the
 frames of a channel are registered to each other, so the same offset shows the
 same stars, which is the only way to compare them.
+
+### The filmstrip
+
+Under the plot, the channel's frames are laid out as thumbnails, the selected
+one outlined in yellow with its neighbours either side; the arrows page
+through. A **red cross** marks every frame Run leaves out — the same rule as
+the table's mark and the keep count. Clicking
+a thumbnail selects that frame everywhere. The number under each thumbnail is
+FWHM to begin with; the chooser at the left of the strip switches it to any
+other measurement, independently of the plot. Clicking a thumbnail that is on
+screen leaves the strip where it is; choosing a frame elsewhere — the table,
+the plot — brings it into view.
+
+Thumbnails are read one frame per step while you work, the ones on screen
+first. Each takes about a third of a second, and the dialog pauses for that
+long while it does; a grey tile is one not read yet, and `!` is one that
+could not be read. The crosses and letters are drawn straight away: a verdict
+never waits for a picture.
+
+### Anomaly tags
+
+Frames that look wrong compared with the rest of their channel are tagged, the
+way SubframeStudio tags them. The tags are **advisory and always on**: they
+never reject a frame, never change a verdict, and never reach the deletion
+log. They name symptoms, not causes.
+
+| tag | letter | fires when |
+|---|---|---|
+| FOCUS | F | FWHM more than 3σ above the channel's median |
+| TRACKING | T | eccentricity more than 3σ above the median |
+| CLOUD | C | background more than 5% above the channel's median, or stars more than 3σ below it |
+| DROPPED | D | fewer than 10% of the channel's median star count |
+
+σ is 1.4826 × MAD, as for the gates. A metric raises nothing with fewer than
+5 usable values in the channel, and the 3σ rules raise nothing when the spread
+is under 1% of the median — measurement noise, not a spread. Background is
+judged as a percentage instead: SubframeSelector's background moves by about
+one 16-bit step between frames on a steady night, far too little to have a
+spread, while a real cloud lifts it by tens of percent. A dropped frame
+is not also called cloud for the same missing stars. A channel whose frames are
+not comparable, or that has no readable filter, is not tagged at all: comparing
+the background of unlike frames means nothing.
+
+Background is SubframeSelector's median column, checked against PixInsight's
+own median of the frame. If it cannot be read, CLOUD falls back to the star
+count alone.
+
+Each tag is its own box, top right of the preview, under a red **REJECTED**
+when Run leaves the frame out (**CHANNEL OFF** when that is only because the
+channel is switched off while copying). On the filmstrip they are single
+letters along the top of the thumbnail. The summary line counts the tagged
+frames by kind.
 
 ### Deleting
 
@@ -505,12 +579,16 @@ rechecked immediately before the unlink. Path, size and modification time are
 not identity; a replacement preserves all three. A frame that changed, vanished
 or became unreadable is skipped and reported rather than deleted.
 
-Writing the approved frames **to another folder** is available instead, and a
-mistake there costs disk space rather than data. Deleting the originals after
-an export is deliberately *not* offered: making that safe needs per-file proof
-that this run wrote that output, which is a separate feature with its own
-design. Until then, export, look at the results, and delete the source folder
-yourself.
+Writing the approved frames **to another folder** is available instead: point
+the output at it and Run copies them there as XISF, leaving every original
+alone. **The output folder is emptied first** — everything in it, hidden files
+and subfolders included, without asking — so afterwards it holds exactly this
+run's frames. A symbolic link inside it is removed as a link; what it points at
+is never touched. If anything in the folder cannot be removed, nothing is
+copied. Run refuses outright to empty a folder that is, or contains, the folder
+of any frame being copied, and never empties the filesystem root or your home
+folder. Deleting the originals after a copy is deliberately *not* offered:
+check the results, then delete the source folder yourself.
 
 A verdict can be overridden by hand — space on the row, or the button under the
 preview. An override wins over the formula, survives a change of `k`, is counted

@@ -91,13 +91,43 @@ function restoreLogging()
    Util.operation = REAL_OPERATION;
 }
 
+/*
+ * Where the suite has got to, on disk, so a run that stops -- a modal box,
+ * a loop that never ends -- says which check it stopped after rather than
+ * leaving an idle PixInsight and no result.
+ */
+var PROGRESS_FILE = "/tmp/agent-scratch/lhso-selftest-progress.txt";
+
 function check( name, actual, expected )
 {
+   if ( IN_PIXINSIGHT )
+      try { File.writeTextFile( PROGRESS_FILE, TESTS_RUN + " " + name ); } catch ( e ) {}
    TESTS_RUN++;
    var a = JSON.stringify( actual );
    var e = JSON.stringify( expected );
    if ( a != e )
       FAILURES.push( name + ": expected " + e + ", got " + a );
+}
+
+/*
+ * A 20-frame channel with real spread: FWHM gates at about 5.8, so the two
+ * wide frames (6.5, 7.0) are rejected by the balanced preset, and nothing
+ * else is. Background and SNR ride along for the flag and column tests.
+ */
+function fsFixtureChannel()
+{
+   var fw = [ 3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9,
+              4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 6.5, 7.0 ];
+   var entries = [], metrics = {};
+   for ( var i = 0; i < fw.length; ++i )
+   {
+      var p = "/fx/f" + i + ".xisf";
+      entries.push( { path: p, identity: { digest: "d" + i, size: 1, mtime: 1 } } );
+      metrics[p] = { fwhm: fw[i], eccentricity: 0.40 + 0.01*( i % 10 ),
+                     psfSNR: 10 + 0.37*i, stars: 8000 + 37*i, noise: 0.001,
+                     background: 0.02 + 0.0005*( i % 7 ), snrWeight: 20 + i };
+   }
+   return Frames.newChannel( "O", entries, metrics, [] );
 }
 
 function runTests()
@@ -1794,7 +1824,7 @@ function runTests()
     */
    check( "Frames loads", typeof Frames, "object" );   // var Frames = {}
    check( "and declares the version its numbers came from",
-          Frames.MEASURE_VERSION, "v1" );
+          Frames.MEASURE_VERSION, "v2" );      // v2: background and SNR estimate
 
    /*
     * The measurement row is positional. An earlier draft of the spec had PSF
@@ -2052,41 +2082,35 @@ function runTests()
              Frames.verdict( fine, gates, rel ).state, Frames.STATE.APPROVED );
 
       /*
-       * Hard limits cannot rescue a frame the relative gate rejects, so
-       * Absolute switches the relative gate OFF. It is the only mode that
-       * can keep an entire good night.
+       * A limit typed for a metric REPLACES its relative gate: hard limits
+       * cannot rescue a frame the gate rejects, so the two are never
+       * combined on one metric. Typing a limit is how a good night is kept.
        */
-      var abs = Frames.defaultSettings();
-      abs.mode = Frames.MODE.ABSOLUTE;
-      abs.limits.fwhm = { hi: 25 };
-      check( "Absolute ignores the relative gate",
-             Frames.verdict( soft, gates, abs ).state, Frames.STATE.APPROVED );
+      var typed = Frames.defaultSettings();
+      typed.limits.fwhm = { hi: 25 };
+      check( "a typed limit replaces the relative gate",
+             Frames.verdict( soft, gates, typed ).state, Frames.STATE.APPROVED );
       check( "and rejects on its own ceiling",
              Frames.verdict( { psfSNR: 1000, fwhm: 30, eccentricity: 0.4, stars: 10000 },
-                              gates, abs ).state, Frames.STATE.REJECTED );
-      check( "Absolute with no limits keeps everything",
-             Frames.verdict( soft, gates,
-                ( function(){ var a = Frames.defaultSettings();
-                              a.mode = Frames.MODE.ABSOLUTE; return a; } )()
-             ).state, Frames.STATE.APPROVED );
-
-      var both = Frames.defaultSettings();
-      both.mode = Frames.MODE.BOTH;
-      both.limits.fwhm = { hi: 25 };
-      check( "Both rejects on either condition",
-             Frames.verdict( soft, gates, both ).state, Frames.STATE.REJECTED );
+                              gates, typed ).state, Frames.STATE.REJECTED );
+      check( "the other metrics keep their relative gates",
+             Frames.verdict( { psfSNR: 1000, fwhm: 5.5, eccentricity: 0.9, stars: 10000 },
+                              gates, typed ).state, Frames.STATE.REJECTED );
 
       /*
-       * The minimum-count rule disables RELATIVE gates only. In Relative mode
-       * a thin channel therefore rejects nothing; it does not fall through to
-       * limits that mode ignores by definition.
+       * The minimum-count rule disables RELATIVE gates only. A thin channel
+       * rejects nothing automatically -- but a limit typed by hand still
+       * applies, because it does not depend on the channel's statistics.
        */
       var thin = Frames.relativeGates( [ { psfSNR: 1, fwhm: 1, eccentricity: 0.5, stars: 200 } ], 2.5 );
-      var relThin = Frames.defaultSettings();
-      relThin.limits.fwhm = { hi: 2 };
-      check( "a thin channel in Relative rejects nothing",
+      check( "a thin channel rejects nothing automatically",
              Frames.verdict( { psfSNR: 1000, fwhm: 30, eccentricity: 0.4, stars: 10000 },
-                              thin, relThin ).state, Frames.STATE.APPROVED );
+                              thin, Frames.defaultSettings() ).state, Frames.STATE.APPROVED );
+      var thinTyped = Frames.defaultSettings();
+      thinTyped.limits.fwhm = { hi: 2 };
+      check( "but a typed limit still applies there",
+             Frames.verdict( { psfSNR: 1000, fwhm: 30, eccentricity: 0.4, stars: 10000 },
+                              thin, thinTyped ).state, Frames.STATE.REJECTED );
 
       check( "an unmeasurable frame is neither approved nor rejected",
              Frames.verdict( { psfSNR: 1000, fwhm: 5, eccentricity: 0, stars: 10000 },
@@ -2210,6 +2234,381 @@ function runTests()
    check( "but rescuing one leaves it unmeasurable",
           Frames.finalState( Frames.STATE.UNMEASURABLE, Frames.OVERRIDE.RESCUED ),
           Frames.STATE.UNMEASURABLE );
+
+   /* ---- leftOut: what Run actually leaves out, per mode ---------------- */
+   ( function()
+   {
+      function r( state, override ) { return { state: state, override: override || null }; }
+      var A = Frames.STATE.APPROVED, R = Frames.STATE.REJECTED, U = Frames.STATE.UNMEASURABLE;
+      var C = Frames.OVERRIDE.CONDEMNED, S = Frames.OVERRIDE.RESCUED;
+      // culling in place: only an enabled channel's rejected frames go
+      check( "leftOut cull rejected",          Frames.leftOut( r( R ), true,  false ), true );
+      check( "leftOut cull approved",          Frames.leftOut( r( A ), true,  false ), false );
+      check( "leftOut cull disabled channel",  Frames.leftOut( r( R ), false, false ), false );
+      check( "leftOut cull unmeasurable kept", Frames.leftOut( r( U ), true,  false ), false );
+      check( "leftOut cull condemned unmeas.", Frames.leftOut( r( U, C ), true, false ), true );
+      check( "leftOut cull rescued kept",      Frames.leftOut( r( R, S ), true, false ), false );
+      // copying out: a disabled channel is not copied at all
+      check( "leftOut copy rejected",          Frames.leftOut( r( R ), true,  true ), true );
+      check( "leftOut copy approved",          Frames.leftOut( r( A ), true,  true ), false );
+      check( "leftOut copy disabled channel",  Frames.leftOut( r( A ), false, true ), true );
+      check( "leftOut copy condemned unmeas.", Frames.leftOut( r( U, C ), true, true ), true );
+      check( "leftOut copy unmeasurable kept", Frames.leftOut( r( U ), true,  true ), false );
+
+      var rows = [ r( A ), r( R ), r( U ), r( U, C ), r( R, S ) ];
+      check( "keepCount cull", Frames.keepCount( rows, true, false ), { keep: 3, total: 5 } );
+      check( "keepCount cull disabled", Frames.keepCount( rows, false, false ), { keep: 5, total: 5 } );
+      check( "keepCount copy disabled", Frames.keepCount( rows, false, true ), { keep: 0, total: 5 } );
+
+      /*
+       * Cross-checked against what Run does: buildManifest (culling) lists
+       * exactly the rows leftOut names, and the filter approvedPaths
+       * applies (copying) keeps exactly the others.
+       */
+      var paths = rows.map( function( x, i ) { x.path = "/p" + i; return x; } );
+      var manifest = Frames.buildManifest( paths ).entries.map( function( e ) { return e.path; } );
+      var cull = paths.filter( function( x ) { return Frames.leftOut( x, true, false ); } )
+                      .map( function( x ) { return x.path; } );
+      check( "leftOut cull equals the manifest", cull, manifest );
+      var copied = paths.filter( function( x )
+         { return Frames.finalState( x.state, x.override ) != Frames.STATE.REJECTED; } )
+         .map( function( x ) { return x.path; } );
+      var notLeft = paths.filter( function( x ) { return !Frames.leftOut( x, true, true ); } )
+                         .map( function( x ) { return x.path; } );
+      check( "leftOut copy equals the copy filter", notLeft, copied );
+   } )();
+
+   /* ---- criteria: operators, parsing, per-metric limits ---------------- */
+   ( function()
+   {
+      for ( var i = 0; i < Frames.METRICS.length; ++i )
+      {
+         var m = Frames.METRICS[i];
+         check( "OPERATOR agrees with WORSE_WHEN for " + m, Frames.OPERATOR[m],
+                Frames.WORSE_WHEN[m] == "higher" ? "<=" : ">=" );
+      }
+      check( "CRITERIA_ORDER is every scoring metric once",
+             Frames.CRITERIA_ORDER.slice().sort(), Frames.METRICS.slice().sort() );
+
+      check( "parseLimit blank",         Frames.parseLimit( "  " ), null );
+      check( "parseLimit number",        Frames.parseLimit( " 4.76 " ), 4.76 );
+      check( "parseLimit comma",         Frames.parseLimit( "4,5" ) === undefined, true );
+      check( "parseLimit words",         Frames.parseLimit( "abc" ) === undefined, true );
+      check( "parseLimit negative",      Frames.parseLimit( "-1" ) === undefined, true );
+      check( "parseLimit zero",          Frames.parseLimit( "0" ) === undefined, true );
+      check( "parseLimit trailing junk", Frames.parseLimit( "4.7x" ) === undefined, true );
+
+      check( "formatLimit null",  Frames.formatLimit( "fwhm", null ), "" );
+      check( "formatLimit fwhm",  Frames.formatLimit( "fwhm", 4.7612 ), "4.76" );
+      check( "formatLimit stars", Frames.formatLimit( "stars", 2345.6 ), "2346" );
+
+      var s = Frames.defaultSettings();
+      check( "defaults have no typed limits", s.limits, {} );
+      var s2 = Frames.withLimit( s, "fwhm", 5 );
+      check( "withLimit writes the worse side (hi)", s2.limits.fwhm, { hi: 5 } );
+      check( "withLimit does not touch the original", s.limits.fwhm === undefined, true );
+      check( "withLimit writes lo for stars", Frames.withLimit( s2, "stars", 900 ).limits.stars, { lo: 900 } );
+      check( "null clears back to automatic",
+             Frames.withLimit( s2, "fwhm", null ).limits.fwhm === undefined, true );
+      var legacy = Frames.copyOf( s ); legacy.limits = { fwhm: { lo: 4, hi: 9 } };
+      check( "writing a limit replaces the whole object",
+             Frames.withLimit( legacy, "fwhm", 6 ).limits.fwhm, { hi: 6 } );
+
+      // an unticked criterion rejects nothing and does not narrow the band
+      var lim = { fwhm: { hi: 4 } };
+      var metrics = { fwhm: 5, eccentricity: 0.5, stars: 1000, psfSNR: 10 };
+      check( "a ticked typed limit rejects",
+             Frames.absoluteFailures( metrics, lim, { fwhm: true } ).length, 1 );
+      check( "an unticked typed limit rejects nothing",
+             Frames.absoluteFailures( metrics, lim, { fwhm: false } ).length, 0 );
+      check( "omitted gating means all on",
+             Frames.absoluteFailures( metrics, lim ).length, 1 );
+      var off = Frames.copyOf( s ); off.limits = lim;
+      off.gating = { fwhm: false, eccentricity: true, stars: true, psfSNR: false };
+      check( "an unticked typed limit does not narrow the band",
+             Frames.acceptedBand( "fwhm", {}, off ), { lo: null, hi: null } );
+      check( "verdict honours the checkbox",
+             Frames.verdict( metrics, {}, off ).state, Frames.STATE.APPROVED );
+      off.gating = { fwhm: true, eccentricity: true, stars: true, psfSNR: false };
+      check( "and rejects when it is ticked",
+             Frames.verdict( metrics, {}, off ).state, Frames.STATE.REJECTED );
+
+      // what each box shows
+      var gates = { fwhm: { active: true, limit: 4.2 }, stars: { active: false, limit: null } };
+      var auto = Frames.copyOf( s ); auto.limits = {};
+      check( "an untouched box shows the gate, greyed",
+             Frames.displayLimit( "fwhm", gates, auto ), { value: 4.2, auto: true } );
+      check( "with no usable gate it is blank",
+             Frames.displayLimit( "stars", gates, auto ), { value: null, auto: true } );
+      check( "a typed box shows its own number",
+             Frames.displayLimit( "fwhm", gates, Frames.withLimit( auto, "fwhm", 9 ) ),
+             { value: 9, auto: false } );
+
+      // autoGates: only a metric with a typed limit loses its gate
+      var ag = Frames.autoGates( { fwhm: { active: true, limit: 4 },
+                                   stars: { active: true, limit: 7000 } }, { fwhm: { hi: 9 } } );
+      check( "a typed metric's gate is set aside", ag.fwhm.active, false );
+      check( "the others keep theirs", ag.stars.active, true );
+   } )();
+
+   /* ---- recompute: per-metric limits on a real-shaped channel ---------- */
+   ( function()
+   {
+      var ch = Frames.recompute( fsFixtureChannel() );
+      var autoStates = ch.rows.map( function( r ) { return r.state; } );
+      check( "the fixture has genuine rejects",
+             autoStates.filter( function( s ) { return s == Frames.STATE.REJECTED; } ).length, 2 );
+      check( "the FWHM gate is active", ch.gates.fwhm.active, true );
+
+      // typing the gate's own value changes nothing (both comparisons strict)
+      ch.settings = Frames.withLimit( ch.settings, "fwhm", ch.gates.fwhm.limit );
+      Frames.recompute( ch );
+      check( "typing the automatic value changes no verdict",
+             ch.rows.map( function( r ) { return r.state; } ), autoStates );
+
+      // a typed limit decides, and survives a k change
+      ch.settings = Frames.withLimit( ch.settings, "fwhm", 6.6 );
+      Frames.recompute( ch );
+      check( "a typed limit decides: 6.5 now kept", ch.rows[18].state, Frames.STATE.APPROVED );
+      check( "and 7.0 still goes", ch.rows[19].state, Frames.STATE.REJECTED );
+      ch.settings.k = 1.0; ch.settings.kEdited = true;
+      Frames.recompute( ch );
+      check( "a typed limit survives a k change", Frames.limitValue( ch.settings, "fwhm" ), 6.6 );
+      check( "and still decides FWHM after it", ch.rows[18].state, Frames.STATE.APPROVED );
+
+      // clearing it returns FWHM to the relative gate
+      ch.settings = Frames.withLimit( ch.settings, "fwhm", null );
+      ch.settings.k = 2.5;
+      Frames.recompute( ch );
+      check( "clearing returns to automatic",
+             ch.rows.map( function( r ) { return r.state; } ), autoStates );
+
+      var other = Frames.recompute( fsFixtureChannel() );
+      check( "another channel's settings are untouched", other.settings.limits, {} );
+
+      var empty = Frames.newChannel( "X", [ { path: "/x", identity: null } ], {}, [] );
+      check( "an unmeasured channel recomputes", Frames.recompute( empty ).rows[0].state,
+             Frames.STATE.UNMEASURABLE );
+   } )();
+
+   /* ---- background and SNR: optional, never fatal ----------------------- */
+   ( function()
+   {
+      check( "SNR estimate is column 9", Frames.COL.snr, 9 );
+      check( "median is column 10", Frames.COL.median, 10 );
+
+      var row = []; for ( var c = 0; c < 30; ++c ) row.push( 0 );
+      row[3] = "/a.xisf"; row[5] = 3.5; row[6] = 0.5; row[12] = 0.001;
+      row[14] = 7507; row[28] = 8.815; row[9] = NaN; row[10] = NaN;
+      var m = Frames.metricsFromRow( row );
+      check( "meaningProblems ignores columns 9 and 10", Frames.meaningProblems( m ), [] );
+      check( "optionalProblems names both bad fields",
+             Frames.optionalProblems( m ), [ "background", "snrWeight" ] );
+
+      row[9] = 42.5; row[10] = 0.021;
+      m = Frames.metricsFromRow( row );
+      check( "metricsFromRow reads background", m.background, 0.021 );
+      check( "metricsFromRow reads SNR", m.snrWeight, 42.5 );
+      check( "a good row has no optional problems", Frames.optionalProblems( m ), [] );
+
+      // schema scope: a disabled field is null whatever it holds
+      check( "sanitize nulls a disabled field",
+             Frames.sanitizeOptional( { background: 0.02, snrWeight: 3 }, { background: true } ),
+             { background: null, snrWeight: 3 } );
+      // value scope: one bad reading nulls only itself
+      check( "sanitize nulls only a bad value",
+             Frames.sanitizeOptional( { background: NaN, snrWeight: 3 }, {} ),
+             { background: null, snrWeight: 3 } );
+      check( "sanitize nulls a negative value",
+             Frames.sanitizeOptional( { background: -1, snrWeight: 3 }, {} ).background, null );
+
+      var stored = Frames.storedMetrics( { path: "/a", fwhm: 1, eccentricity: 0.5,
+                                           noise: 0.1, stars: 10, psfSNR: 2.5 } );
+      check( "storedMetrics has no path", stored.path === undefined, true );
+      check( "storedMetrics carries missing optionals as null",
+             [ stored.background, stored.snrWeight ], [ null, null ] );
+
+      check( "a v1-shaped entry is not usable",
+             Frames.cacheEntryUsable( { fwhm: 1, eccentricity: 0.5, noise: 0.1,
+                                        stars: 10, psfSNR: 2.5 } ), false );
+      check( "a v2 entry with null optionals is usable", Frames.cacheEntryUsable( stored ), true );
+      check( "null is not usable", Frames.cacheEntryUsable( null ), false );
+   } )();
+
+   /* ---- SNR column: shown, never judged -------------------------------- */
+   ( function()
+   {
+      check( "display order puts SNR after PSF SNR", Frames.DISPLAY_METRICS,
+             [ "psfSNR", "snrWeight", "fwhm", "eccentricity", "stars" ] );
+      check( "SNR is not a scoring metric", Frames.METRICS.indexOf( "snrWeight" ), -1 );
+      check( "SNR column sits right after PSF SNR",
+             Frames.metricColumn( "snrWeight" ), Frames.metricColumn( "psfSNR" ) + 1 );
+      check( "SNR heading", Frames.FRAME_COLUMNS[Frames.metricColumn( "snrWeight" )], "SNR" );
+      check( "score is the last column", Frames.SCORE_COLUMN, Frames.FRAME_COLUMNS.length - 1 );
+      check( "null shows a dash", Frames.displayValue( "snrWeight", null ), "-" );
+      check( "stars shows whole", Frames.displayValue( "stars", 8000 ), "8000" );
+
+      var ch = Frames.recompute( fsFixtureChannel() );
+      var scoreBefore = ch.rows[3].score, stateBefore = ch.rows[3].state;
+      ch.rows[3].metrics.snrWeight = 0.0001;              // terrible SNR
+      Frames.recompute( ch );
+      check( "a terrible SNR is still approved", ch.rows[3].state, stateBefore );
+      check( "and its score is unchanged", ch.rows[3].score, scoreBefore );
+      check( "SNR has no band",
+             Frames.acceptedBand( "snrWeight", ch.gates, ch.settings ), { lo: null, hi: null } );
+   } )();
+
+   /* ---- anomaly flags: advisory, per metric, never a verdict ------------ */
+   ( function()
+   {
+      function M( o ) { var b = { fwhm: 4, eccentricity: 0.45, stars: 8000,
+                                  background: 0.02, psfSNR: 10 };
+                        for ( var k in o ) b[k] = o[k]; return b; }
+      function spread( n, f ) { var a = []; for ( var i = 0; i < n; ++i ) a.push( f( i ) ); return a; }
+      function none( list ) { return list.every( function( f ) { return f.length == 0; } ); }
+      // Background varies by ~0.1% frame to frame, as measured on real nights.
+      var base = spread( 12, function( i ) { return M( { fwhm: 3.8 + 0.04*i,
+         eccentricity: 0.40 + 0.01*i, stars: 7800 + 40*i, background: 0.020 + 0.00002*i } ); } );
+
+      var focus = base.concat( [ M( { fwhm: 9 } ) ] );
+      check( "FOCUS fires on a wide frame", Frames.anomalyFlags( focus, true )[12], [ "focus" ] );
+      check( "and not on its neighbours", none( Frames.anomalyFlags( focus, true ).slice( 0, 12 ) ), true );
+      check( "TRACKING fires on an eccentricity spike",
+             Frames.anomalyFlags( base.concat( [ M( { eccentricity: 0.9 } ) ] ), true )[12], [ "tracking" ] );
+      check( "CLOUD fires on bright background",
+             Frames.anomalyFlags( base.concat( [ M( { background: 0.2 } ) ] ), true )[12], [ "cloud" ] );
+      /*
+       * Background is judged RELATIVELY: SubframeSelector's median moves by
+       * about one 16-bit step between frames on a steady night, far under
+       * any spread floor, so a sigma rule never ran. A real cloud lifts it
+       * by tens of percent.
+       */
+      var steady = spread( 12, function() { return M( { background: 0.00774 } ); } );
+      check( "a one-step difference on a steady night is not cloud",
+             Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774 + 1/65535 } ) ] ), true )[12], [] );
+      check( "4% above the median is not cloud",
+             Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774*1.04 } ) ] ), true )[12], [] );
+      check( "6% above the median is cloud",
+             Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774*1.06 } ) ] ), true )[12], [ "cloud" ] );
+      check( "CLOUD fires on few stars",
+             Frames.anomalyFlags( base.concat( [ M( { stars: 6000 } ) ] ), true )[12], [ "cloud" ] );
+      check( "DROPPED, not CLOUD, on almost no stars",
+             Frames.anomalyFlags( base.concat( [ M( { stars: 40 } ) ] ), true )[12], [ "dropped" ] );
+      check( "flags keep their fixed order",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 9, eccentricity: 0.9, background: 0.2 } ) ] ), true )[12],
+             [ "focus", "tracking", "cloud" ] );
+
+      var flat = [ M( { stars: 1000 } ), M( { stars: 1000 } ), M( { stars: 1000 } ),
+                   M( { stars: 1000 } ), M( { stars: 1 } ) ];
+      check( "no spread still flags DROPPED", Frames.anomalyFlags( flat, true )[4], [ "dropped" ] );
+      flat[4] = M( { stars: 0 } );
+      check( "zero stars is DROPPED (a real count)", Frames.anomalyFlags( flat, true )[4], [ "dropped" ] );
+      check( "four frames flag nothing", none( Frames.anomalyFlags( flat.slice( 1 ), true ) ), true );
+      check( "a spread under 1% of the median flags nothing",
+             Frames.anomalyFlags( spread( 8, function( i ) { return M( { fwhm: 4 + 0.001*i } ); } )
+                                  .concat( [ M( { fwhm: 4.05 } ) ] ), true )[8], [] );
+      var noBg = base.map( function( m ) { var c = M( m ); c.background = null; return c; } )
+                     .concat( [ M( { background: null, stars: 6000 } ) ] );
+      check( "null background falls back to the star test",
+             Frames.anomalyFlags( noBg, true )[12], [ "cloud" ] );
+      check( "an unmeasured row is skipped, not thrown on",
+             Frames.anomalyFlags( base.concat( [ null ] ), true )[12], [] );
+      check( "not comparable flags nothing", Frames.anomalyFlags( focus, false )[12], [] );
+      check( "an all-unmeasured channel flags nothing",
+             none( Frames.anomalyFlags( [ null, null, null, null, null, null ], true ) ), true );
+
+      check( "summary counts frames, lists kinds",
+             Frames.flagSummary( [ [ "focus", "cloud" ], [], [ "cloud" ], [ "dropped" ] ] ),
+             "3 flagged: 2 cloud, 1 focus, 1 dropped" );
+      check( "empty summary", Frames.flagSummary( [ [], [] ] ), "" );
+
+      var R = { state: Frames.STATE.REJECTED, override: null };
+      var A = { state: Frames.STATE.APPROVED, override: null };
+      check( "tags: rejected first, then each flag separately",
+             Frames.frameTags( R, [ "cloud", "focus" ], true, false ),
+             [ { text: "REJECTED", kind: "reject" }, { text: "CLOUD", kind: "flag" },
+               { text: "FOCUS", kind: "flag" } ] );
+      check( "tags: channel off while copying",
+             Frames.frameTags( A, [], false, true ), [ { text: "CHANNEL OFF", kind: "reject" } ] );
+      // the row tooltip, word for word as fillFrames wrote it before
+      check( "row tooltip: verdict, reasons, override",
+             Frames.rowTooltip( { path: "/a.xisf", state: Frames.STATE.REJECTED,
+                                  override: Frames.OVERRIDE.CONDEMNED,
+                                  reasons: [ "FWHM 6 above the limit of 5" ] }, [] ),
+             "/a.xisf\nrejected (condemned): FWHM 6 above the limit of 5" );
+      check( "row tooltip: what it looks like",
+             Frames.rowTooltip( { path: "/b.xisf", state: Frames.STATE.APPROVED,
+                                  override: null, reasons: [] }, [ "cloud", "focus" ] ),
+             "/b.xisf\napproved\nlooks like: cloud, focus" );
+      check( "tags: kept frame, flags only",
+             Frames.frameTags( A, [ "tracking" ], true, false ),
+             [ { text: "TRACKING", kind: "flag" } ] );
+
+      var ch = fsFixtureChannel();
+      check( "a channel carries one flag list per row", ch.flags.length, ch.rows.length );
+      var mixed = Frames.newChannel( "O", ch.entries, ch.metrics, [ "exposure differs" ] );
+      check( "a non-comparable channel is not flagged", none( mixed.flags ), true );
+      var noFilter = Frames.newChannel( Frames.NO_FILTER, ch.entries,
+                                        { "/fx/f0.xisf": M( { fwhm: 99 } ) }, [] );
+      check( "the no-FILTER group is not flagged", none( noFilter.flags ), true );
+   } )();
+
+   /* ---- emptying the output folder: what may never be emptied ---------- */
+   ( function()
+   {
+      var src = [ "/data/night/O/a.xisf", "/data/night/S/b.xisf" ];
+      check( "an unrelated folder may be emptied",
+             Frames.emptyRefusal( src, "/data/out", "/Users/me" ), null );
+      check( "a sibling with a shared prefix is not a parent",
+             Frames.emptyRefusal( src, "/data/night/O2", "/Users/me" ), null );
+      check( "not a source folder",
+             Frames.emptyRefusal( src, "/data/night/O", "/Users/me" ) != null, true );
+      check( "not a folder that CONTAINS a source folder",
+             Frames.emptyRefusal( src, "/data/night", "/Users/me" ) != null, true );
+      check( "however far up",
+             Frames.emptyRefusal( src, "/data", "/Users/me" ) != null, true );
+      check( "a trailing slash changes nothing",
+             Frames.emptyRefusal( src, "/data/night/", "/Users/me" ) != null, true );
+      check( "never the filesystem root", Frames.emptyRefusal( [], "/", "/Users/me" ) != null, true );
+      check( "never the home folder",
+             Frames.emptyRefusal( [], "/Users/me/", "/Users/me" ) != null, true );
+      check( "never without a folder", Frames.emptyRefusal( src, null, "/Users/me" ) != null, true );
+   } )();
+
+   /* ---- filmstrip ordering --------------------------------------------- */
+   ( function()
+   {
+      check( "strip centres the selection",  Frames.stripFirst( 74, 40, 11 ), 35 );
+      check( "strip clamps at the start",    Frames.stripFirst( 74, 2, 11 ), 0 );
+      check( "strip clamps at the end",      Frames.stripFirst( 74, 73, 11 ), 63 );
+      check( "strip wider than the channel", Frames.stripFirst( 5, 3, 11 ), 0 );
+      /*
+       * A selection already on screen does not move the strip: clicking a
+       * tile must leave the clicked frame under the mouse. Only a selection
+       * off screen (from the table or the plot) brings it into view.
+       */
+      check( "a visible selection keeps the strip still", Frames.stripFirst( 74, 20, 11, 11 ), 11 );
+      check( "at either edge of the view too",
+             [ Frames.stripFirst( 74, 11, 11, 11 ), Frames.stripFirst( 74, 21, 11, 11 ) ], [ 11, 11 ] );
+      check( "a selection off to the right is centred", Frames.stripFirst( 74, 40, 11, 11 ), 35 );
+      check( "a selection off to the left is centred", Frames.stripFirst( 74, 3, 11, 11 ), 0 );
+      check( "a view past the end is pulled back", Frames.stripFirst( 20, 15, 11, 15 ), 9 );
+      // which frame a click lands on: none in the empty space after the tiles
+      check( "a click on a tile picks it",      Frames.tileAt( 200, 128, 8, 5, 20 ), 6 );
+      check( "left of the strip picks nothing", Frames.tileAt( -3, 128, 8, 0, 20 ), -1 );
+      check( "past the last drawn tile nothing", Frames.tileAt( 1100, 128, 8, 0, 20 ), -1 );
+      check( "past the channel's end nothing",   Frames.tileAt( 300, 128, 8, 18, 20 ), -1 );
+
+      var o = Frames.thumbnailOrder( 20, 7, 2, 11 );
+      check( "every index exactly once", o.slice().sort( function( a, b ) { return a - b; } ),
+             [ 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 ] );
+      check( "the selection first", o[0], 7 );
+      check( "the visible range before anything else",
+             o.slice( 0, 11 ).every( function( i ) { return i >= 2 && i < 13; } ), true );
+      check( "then outward from the selection", o.slice( 11, 13 ), [ 1, 13 ] );
+      check( "selection at the end", Frames.thumbnailOrder( 3, 2, 0, 11 ), [ 2, 1, 0 ] );
+      check( "empty channel", Frames.thumbnailOrder( 0, -1, 0, 11 ), [] );
+   } )();
 
    ( function()
    {
@@ -3761,6 +4160,318 @@ function runTests()
              Frames.meaningProblems( swapped ).length > 0, true );
    } )();
 
+   /*
+    * Background and SNR estimate, confirmed on a LIGHT frame -- a real
+    * subframe, copied so the original is never touched.
+    *
+    * Background is compared with an INDEPENDENT figure: the frame's own
+    * median, computed by PixInsight on the same file. SNR estimate has no
+    * independent PJSR figure, so it gets shape checks and negative
+    * controls. Honest limit: the optional-column handling inside measure()
+    * cannot be made to fail on demand -- SubframeSelector cannot be told to
+    * return a bad column -- so it is covered by the node tests of the
+    * helpers plus this live run, not by a negative live test.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var src = File.homeDirectory + "/Downloads/Light";
+      var have = File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [];
+      check( "a light frame for column confirmation is present", have.length > 0, true );
+      if ( have.length == 0 )
+         return;
+      have.sort();
+      var dir = "/tmp/agent-scratch/fs-columns";
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+      var fixture = dir + "/" + File.extractNameAndExtension( have[0] );
+      if ( !File.exists( fixture ) )
+         File.copyFile( fixture, have[0] );         // target, source
+      var measured = FrameSelector.measure( [ fixture ] );
+      check( "the light frame measured", measured != null && measured[fixture] != null, true );
+      if ( measured == null || measured[fixture] == null )
+         return;
+      var m = measured[fixture];
+
+      var ws = ImageWindow.open( fixture );
+      var own = ws[0].mainView.image.median();
+      FrameSelector.closeAll( ws );
+      check( "background is a usable number", Frames.optionalOk( m.background ), true );
+      check( "background matches the image's own median (within 2%): " +
+             m.background + " vs " + own,
+             Math.abs( m.background - own ) <= 0.02*Math.abs( own ), true );
+      check( "noise (column 12) is not the median",
+             Math.abs( m.noise - own ) > 0.02*Math.abs( own ), true );
+      check( "SNR estimate is a positive number", m.snrWeight > 0, true );
+      check( "SNR estimate is not PSF SNR", m.snrWeight != m.psfSNR, true );
+   } )();
+
+   /*
+    * convertInPlace, characterised on a real frame: it deletes originals,
+    * so what it keeps and what it removes is pinned. A copied S frame is
+    * saved as FITS in scratch. Two frames that would convert to the same
+    * name must be refused with NOTHING removed.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var src = File.homeDirectory + "/Downloads/Light";
+      var have = ( File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [] )
+                 .filter( function( p ) { return /_S_/.test( File.extractName( p ) ); } );
+      check( "a frame for the conversion test is present", have.length > 0, true );
+      if ( have.length == 0 )
+         return;
+      var dir = "/tmp/agent-scratch/fs-convert";
+      if ( File.directoryExists( dir ) )
+         FrameSelector.frameFilesIn( dir ).forEach( function( f ) { File.remove( f ); } );
+      else
+         File.createDirectory( dir, true );
+      var ws = ImageWindow.open( have[0] );
+      function saveFits( path )
+      {
+         ws[0].saveAs( path, false/*query*/, false/*messages*/, false/*strict*/, false/*verify*/ );
+      }
+      saveFits( dir + "/a.fits" );
+      saveFits( dir + "/b.fit" );
+      saveFits( dir + "/b.fits" );
+      FrameSelector.closeAll( ws );
+
+      var clash = FrameSelector.convertInPlace( [ dir + "/b.fit", dir + "/b.fits" ] );
+      check( "a name collision is refused", clash.refused != null, true );
+      check( "and removes nothing",
+             File.exists( dir + "/b.fit" ) && File.exists( dir + "/b.fits" ), true );
+      check( "and writes nothing", File.exists( dir + "/b.xisf" ), false );
+
+      /*
+       * Converting really converts: the XISF is written beside it and only
+       * then is the FITS removed. This failed until 2026-09-23 -- the
+       * output routine was set to 2, which is not SubframeSelector's
+       * OutputSubframes (1), so nothing was written and nothing converted.
+       */
+      var one = FrameSelector.convertInPlace( [ dir + "/a.fits" ] );
+      check( "a FITS frame converts",
+             { converted: one.converted, failed: one.failed, refused: one.refused },
+             { converted: 1, failed: 0, refused: null } );
+      check( "the XISF is written", File.exists( dir + "/a.xisf" ), true );
+      check( "and the FITS original removed", File.exists( dir + "/a.fits" ), false );
+      check( "no postfixed copy is left behind", File.exists( dir + "/a_a.xisf" ), false );
+
+      /*
+       * Copying out: the approved frames land in the destination under the
+       * names outputMapping promises -- no "_a" postfix -- and the sources
+       * are untouched.
+       */
+      var outDir = dir + "-out";
+      if ( File.directoryExists( outDir ) )
+         FrameSelector.frameFilesIn( outDir ).forEach( function( f ) { File.remove( f ); } );
+      var ex = FrameSelector.exportApproved( [ dir + "/b.fits" ], outDir );
+      check( "copying out writes the frame",
+             { written: ex.written, failed: ex.failed, refused: ex.refused },
+             { written: 1, failed: 0, refused: null } );
+      check( "under the promised name", File.exists( outDir + "/b.xisf" ), true );
+      check( "and leaves the source alone", File.exists( dir + "/b.fits" ), true );
+      /*
+       * Copying out EMPTIES the output folder first -- everything, hidden
+       * files and subfolders too -- and never follows a symbolic link out
+       * of it. Filled with a stale frame, a hidden file, a nested folder and
+       * a link to a folder outside; afterwards it holds exactly this run's
+       * frame, and what the link pointed at is untouched.
+       */
+      var outside = dir + "-outside";
+      if ( !File.directoryExists( outside ) )
+         File.createDirectory( outside, true );
+      File.writeTextFile( outside + "/sentinel.txt", "must survive" );
+      File.writeTextFile( outDir + "/stale.xisf", "old run" );
+      File.writeTextFile( outDir + "/.hidden", "hidden" );
+      if ( !File.directoryExists( outDir + "/nested/deeper" ) )
+         File.createDirectory( outDir + "/nested/deeper", true );
+      File.writeTextFile( outDir + "/nested/deeper/x.txt", "x" );
+      var ln = new ExternalProcess;
+      ln.start( "/bin/ln", [ "-sfn", outside, outDir + "/link-out" ] );
+      ln.waitForFinished();
+      var again = FrameSelector.exportApproved( [ dir + "/b.fits" ], outDir );
+      check( "copying out again writes the frame",
+             { written: again.written, failed: again.failed, refused: again.refused },
+             { written: 1, failed: 0, refused: null } );
+      var left = [], lf = new FileFind;
+      if ( lf.begin( outDir + "/*" ) )
+         do { if ( lf.name != "." && lf.name != ".." ) left.push( lf.name ); } while ( lf.next() );
+      check( "and the folder holds exactly this run's frame", left.sort(), [ "b.xisf" ] );
+      check( "nothing behind the link was touched", File.exists( outside + "/sentinel.txt" ), true );
+
+      /*
+       * A folder that CONTAINS the frames being copied is never emptied:
+       * refused before anything is removed.
+       */
+      var parent = dir + "-parent", inner = parent + "/src";
+      if ( !File.directoryExists( inner ) )
+         File.createDirectory( inner, true );
+      File.writeTextFile( parent + "/keep.txt", "keep" );
+      if ( !File.exists( inner + "/c.fits" ) )
+         File.copyFile( inner + "/c.fits", dir + "/b.fits" );
+      var bad = FrameSelector.exportApproved( [ inner + "/c.fits" ], parent );
+      check( "a folder containing the sources is refused", bad.refused != null, true );
+      check( "and nothing in it is removed",
+             File.exists( parent + "/keep.txt" ) && File.exists( inner + "/c.fits" ), true );
+      check( "an XISF is left alone",
+             FrameSelector.convertInPlace( [ dir + "/c.xisf" ] ).alreadyXisf, 1 );
+   } )();
+
+   /*
+    * The filmstrip on REAL frames: 20 of the S set, copied so the originals
+    * are never touched. Timer ticks are observed, every thumbnail arrives,
+    * the crosses are exactly the frames Run leaves out, a click selects, a
+    * stale result is discarded. Then five show/close cycles closing
+    * MID-LOAD through the window path alone.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var src = File.homeDirectory + "/Downloads/Light";
+      var dst = "/tmp/agent-scratch/fs-filmstrip-S";
+      /*
+       * One filter only: the folder holds R, G, O and S subs, and a mixed
+       * set is several channels, not one of 20. S has the most (60).
+       */
+      var have = ( File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [] )
+                 .filter( function( p ) { return /_S_/.test( File.extractName( p ) ); } );
+      check( "the filmstrip fixture is present (20 S frames)", have.length >= 20, true );
+      if ( have.length < 20 )
+         return;
+      if ( !File.directoryExists( dst ) )
+         File.createDirectory( dst, true );
+      have.sort();
+      for ( var i = 0; i < 20; ++i )
+      {
+         var to = dst + "/" + File.extractNameAndExtension( have[i] );
+         if ( !File.exists( to ) )
+            File.copyFile( to, have[i] );         // target, source
+      }
+
+      function waitFor( pred, seconds )
+      {
+         var until = Date.now() + seconds*1000;
+         while ( !pred() && Date.now() < until )
+            CoreApplication.processEvents();
+         return pred();
+      }
+      function loaded( d ) { return d.filmstrip.thumbs.filter( function( b ) { return b != null; } ).length; }
+
+      var state = FrameSelector.buildState( dst, null );
+      var ch = state.channels[state.order[0]];
+      check( "the fixture is one channel of 20", state.order.length == 1 && ch.rows.length == 20, true );
+
+      // nothing loads before the dialog is shown
+      var early = new FrameSelector.Dialog( FrameSelector.buildState( dst, null ) );
+      check( "the loader is not running before show", early.loaderTimer.isRunning, false );
+      early.release(); early.cancel();
+
+      // real gates: the FWHM box shows the automatic limit, greyed
+      var dlg = new FrameSelector.Dialog( state );
+      dlg.show();
+      check( "the FWHM gate on real frames is active", ch.gates.fwhm.active, true );
+      check( "the FWHM box shows the automatic limit", dlg.critEdits.fwhm.text,
+             Frames.formatLimit( "fwhm", ch.gates.fwhm.limit ) );
+      check( "greyed, because it is automatic", dlg.critEdits.fwhm.styleSheet,
+             FrameSelector.AUTO_STYLE );
+
+      /*
+       * Make the crossed set non-empty BY CONSTRUCTION: condemn the two
+       * sharpest frames (which no FWHM threshold rejects) and set the
+       * threshold to the median, which rejects every frame above it.
+       */
+      var byFwhm = ch.rows.map( function( r, k ) { return k; } )
+                     .filter( function( k ) { return ch.rows[k].metrics; } )
+                     .sort( function( a, b ) { return ch.rows[a].metrics.fwhm - ch.rows[b].metrics.fwhm; } );
+      ch.rows[byFwhm[0]].override = Frames.OVERRIDE.CONDEMNED;
+      ch.rows[byFwhm[1]].override = Frames.OVERRIDE.CONDEMNED;
+      var medFwhm = Frames.median( byFwhm.map( function( k ) { return ch.rows[k].metrics.fwhm; } ) );
+      dlg.channel().settings = Frames.withLimit( dlg.channel().settings, "fwhm", medFwhm );
+      dlg.refresh();
+      var expected = ch.rows.map( function( r ) { return Frames.leftOut( r, true, false ); } );
+      check( "at least three frames are crossed", expected.filter( Boolean ).length >= 3, true );
+      check( "crossed tiles are exactly the frames Run leaves out", dlg.filmstrip.crossed, expected );
+      check( "the counter agrees", dlg.keepLabel.text,
+             Frames.keepCount( ch.rows, true, false ).keep + " / 20 keep" );
+
+      check( "every thumbnail arrives", waitFor( function() { return loaded( dlg ) == 20; }, 180 ), true );
+      check( "the loader ticked for them", dlg.ticksObserved >= 19, true );
+      check( "the dialog is still open for the click checks", dlg.released, false );
+      if ( dlg.released )
+         return;
+      dlg.filmstrip.onPick( 12 );
+      check( "clicking a tile selects its row", dlg.selectedRowIndex(), 12 );
+      /*
+       * Through the MOUSE path, not onPick: page forward, press on a tile
+       * by position. The frame clicked is selected and is still the one
+       * under the mouse afterwards -- re-centring on every click once slid
+       * a different frame under it.
+       */
+      var fs = dlg.filmstrip;
+      fs.page( 1 );
+      var firstBefore = fs.first, k = Math.min( 2, fs.visibleCount() - 1 );
+      var px = k*fs.tileW() + 4 + Math.round( FrameSelector.THUMB.W/2 );
+      fs.onMousePress( px, 40, 1, 1, 0 );
+      check( "a click selects the tile under the mouse", dlg.selectedRowIndex(), firstBefore + k );
+      check( "and the strip does not move", fs.first, firstBefore );
+      check( "so the clicked frame is still under the mouse", fs.indexAt( px ), firstBefore + k );
+      // a table click goes through the same path: strip and tags follow
+      dlg.frameTree.currentNode = dlg.frameTree.child( 5 );
+      dlg.frameTree.child( 5 ).selected = true;
+      dlg.frameTree.onNodeSelectionUpdated();
+      check( "a table click moves the strip selection", dlg.filmstrip.selected, 5 );
+      check( "and the preview's tags", JSON.stringify( dlg.preview.tags ),
+             JSON.stringify( dlg.currentTags() ) );
+
+      /*
+       * A result for a stale generation is discarded: queue one item, move
+       * the generation on, run the stale item by hand.
+       */
+      var sd = new FrameSelector.Dialog( FrameSelector.buildState( dst, null ) );
+      sd.show();
+      sd.loaderTimer.stop();                // only the items queued by hand run
+      var rows = sd.channel().rows;
+      var stalePath = rows[15].path, freshPath = rows[16].path;
+      delete sd.thumbs[stalePath]; delete sd.thumbs[freshPath];
+      var staleItem = { path: stalePath, key: sd.channel().key, generation: sd.loadGeneration };
+      sd.rebuildQueue();
+      sd.loaderTimer.stop();
+      sd.loadQueue = [ staleItem ];
+      sd.loaderTick();
+      sd.loaderTimer.stop();
+      check( "a stale thumbnail is discarded", sd.thumbs[stalePath] == null, true );
+      // and the control: a CURRENT item is stored, so the check above can fail
+      sd.loadQueue = [ { path: freshPath, key: sd.channel().key, generation: sd.loadGeneration } ];
+      sd.loaderTick();
+      sd.loaderTimer.stop();
+      check( "a current thumbnail is stored", sd.thumbs[freshPath] != null, true );
+      sd.release(); sd.cancel();
+      dlg.release(); dlg.cancel();
+
+      /*
+       * Close mid-load, five times, through the WINDOW path only: cancel(),
+       * no explicit release(). cancel() on a dialog opened with show() does
+       * not fire onClose, so it is the loader's own visibility check that
+       * must stop the timer -- within a tick or two.
+       */
+      var midLoad = 0, reached = 0;
+      for ( var c = 0; c < 5; ++c )
+      {
+         var d2 = new FrameSelector.Dialog( FrameSelector.buildState( dst, null ) );
+         d2.show();
+         if ( waitFor( function() { return loaded( d2 ) >= 3; }, 60 ) )
+            ++reached;
+         if ( d2.loadQueue.length > 0 )
+            ++midLoad;
+         d2.cancel();
+         check( "closing the window stops loading (" + c + ")",
+                waitFor( function() { return !d2.loaderTimer.isRunning; }, 5 ), true );
+         var ticks = d2.ticksObserved;
+         waitFor( function() { return false; }, 0.5 );
+         check( "and nothing more is read (" + c + ")", d2.ticksObserved, ticks );
+         d2.release();                       // as the entry point's finally does
+      }
+      check( "every cycle loaded at least three thumbnails", reached, 5 );
+      check( "every cycle closed with loading still pending", midLoad, 5 );
+   } )();
+
    /* ---- digests, which are what authorise a deletion -------------------- */
 
    if ( IN_PIXINSIGHT ) ( function()
@@ -4337,7 +5048,7 @@ function runTests()
                     stars:  { active: true, median: 8900, limit: 7000 },
                     psfSNR: { active: false, median: 13.4, limit: 12.0 } };
 
-      var rel = { mode: Frames.MODE.RELATIVE, limits: {} };
+      var rel = { limits: {} };
       var f = Frames.acceptedBand( "fwhm", gates, rel );
       check( "FWHM is capped above", f.hi, 4.01 );
       check( "and open below", f.lo, null );
@@ -4349,18 +5060,10 @@ function runTests()
       check( "an inactive gate bounds nothing",
              Frames.acceptedBand( "psfSNR", gates, rel ).hi, null );
 
-      var abs = { mode: Frames.MODE.ABSOLUTE, limits: { fwhm: { lo: 2, hi: 5 } } };
-      var a = Frames.acceptedBand( "fwhm", gates, abs );
-      check( "absolute mode uses the limits", a.lo + "," + a.hi, "2,5" );
-
-      /*
-       * In BOTH a frame has to pass the gate AND the limit, so the band is
-       * their intersection -- the tighter end wins on each side.
-       */
-      var both = Frames.acceptedBand( "fwhm", gates,
-                   { mode: Frames.MODE.BOTH, limits: { fwhm: { lo: 2, hi: 5 } } } );
-      check( "both modes take the tighter cap", both.hi, 4.01 );
-      check( "and keep the only floor there is", both.lo, 2 );
+      var a = Frames.acceptedBand( "fwhm", gates, { limits: { fwhm: { lo: 2, hi: 5 } } } );
+      check( "a typed limit replaces the gate's band", a.lo + "," + a.hi, "2,5" );
+      check( "other metrics keep the gate's band",
+             Frames.acceptedBand( "stars", gates, { limits: { fwhm: { hi: 5 } } } ).lo, 7000 );
 
       /*
        * Vertical extent. The band's edge is included even when no frame
@@ -4394,7 +5097,7 @@ function runTests()
          fwhm:         { active: true, median: 3.83, limit: 4.01 },
          eccentricity: { active: true, median: 0.60, limit: 0.75 },
          stars:        { active: true, median: 8900, limit: 7000 } };
-      var settings = { mode: Frames.MODE.RELATIVE, limits: {} };
+      var settings = { limits: {} };
 
       // The frame from the screenshot: only FWHM is over its limit.
       var wide = Frames.verdict( { psfSNR: 13.36, fwhm: 4.06,
@@ -4417,34 +5120,33 @@ function runTests()
              "psfSNR,fwhm" );
 
       /*
-       * In BOTH mode a metric can fail the relative gate and the absolute
-       * limit at once. It is one column, so it must be named once.
+       * A metric is named once however many of its bounds it fails. It
+       * is one column, so it must be coloured once.
        */
       var dup = Frames.verdict( { psfSNR: 13.4, fwhm: 4.50,
                                   eccentricity: 0.60, stars: 8900 },
-                                gates,
-                                { mode: Frames.MODE.BOTH,
-                                  limits: { fwhm: { hi: 4.2 } } } );
-      check( "a metric failing twice is named once", dup.failing.join( "," ), "fwhm" );
-      check( "but both sentences are kept", dup.reasons.length, 2 );
+                                gates, { limits: { fwhm: { hi: 4.2 } } } );
+      check( "a typed limit replaces the gate: one reason", dup.reasons.length, 1 );
+      check( "and names the metric once", dup.failing.join( "," ), "fwhm" );
 
       /*
        * The column map is what turns those names into cells. Wrong indices
        * would colour the wrong measurement, which is worse than none.
        */
       check( "PSF SNR is column 1", Frames.metricColumn( "psfSNR" ), 1 );
-      check( "FWHM is column 2", Frames.metricColumn( "fwhm" ), 2 );
-      check( "eccentricity is column 3", Frames.metricColumn( "eccentricity" ), 3 );
-      check( "stars is column 4", Frames.metricColumn( "stars" ), 4 );
+      check( "SNR is column 2", Frames.metricColumn( "snrWeight" ), 2 );
+      check( "FWHM is column 3", Frames.metricColumn( "fwhm" ), 3 );
+      check( "eccentricity is column 4", Frames.metricColumn( "eccentricity" ), 4 );
+      check( "stars is column 5", Frames.metricColumn( "stars" ), 5 );
       check( "a metric with no column says so",
              Frames.metricColumn( "noise" ), null );
       /*
        * Headings and columns come from one list, so a metric added to
-       * METRICS cannot land in the table without a heading or push the
-       * verdict column out from under the code that writes it.
+       * DISPLAY_METRICS cannot land in the table without a heading or push
+       * the score column out from under the code that writes it.
        */
-      check( "the headings cover every metric plus name and score",
-             Frames.FRAME_COLUMNS.length, Frames.METRICS.length + 2 );
+      check( "the headings cover every shown metric plus name and score",
+             Frames.FRAME_COLUMNS.length, Frames.DISPLAY_METRICS.length + 2 );
       check( "FWHM's heading sits in FWHM's column",
              Frames.FRAME_COLUMNS[Frames.metricColumn( "fwhm" )], "FWHM" );
       check( "the score is the last column",
@@ -4606,6 +5308,135 @@ function runTests()
 
          var full = new FrameSelector.Dialog( pState );
          full.refresh();                       // the summary, the label, the plot
+         /*
+          * The criteria panel: every box editable; untouched boxes are
+          * automatic and greyed; a typed number is that metric's limit and
+          * clearing it goes back to automatic. The counter says what Run
+          * keeps. Six frames is below MIN_FRAMES, so there are no gates --
+          * the 20-frame check with real gates is in the filmstrip block.
+          */
+         var chH = pState.channels.H;
+         var crit = [];
+         crit.push( full.criteriaGroup.title == "Approval criteria" );
+         crit.push( full.critEdits.fwhm.readOnly === false );
+         crit.push( full.critEdits.fwhm.styleSheet == FrameSelector.AUTO_STYLE );
+         crit.push( full.keepLabel.text ==
+                    Frames.keepCount( chH.rows, true, false ).keep + " / 6 keep" );
+         // a clean field survives focus loss and Run: no silent rounding
+         full.critEdits.fwhm.onEditCompleted();
+         full.commitPendingEdits();
+         crit.push( Frames.limitValue( chH.settings, "fwhm" ) === null );
+         // an invalid entry reverts
+         full.critEdits.fwhm.text = "abc";
+         full.critEdits.fwhm.modified = true;
+         full.critEdits.fwhm.onEditCompleted();
+         crit.push( Frames.limitValue( chH.settings, "fwhm" ) === null );
+         crit.push( full.critEdits.fwhm.text == "" );
+         // two dirty fields both survive a Run-time commit, and turn plain
+         full.critEdits.fwhm.text = "6.6";   full.critEdits.fwhm.modified = true;
+         full.critEdits.stars.text = "9000"; full.critEdits.stars.modified = true;
+         full.commitPendingEdits();
+         crit.push( Frames.limitValue( chH.settings, "fwhm" ) === 6.6 );
+         crit.push( Frames.limitValue( chH.settings, "stars" ) === 9000 );
+         crit.push( full.critEdits.fwhm.styleSheet == "" );
+         // clearing a box goes back to automatic
+         full.critEdits.fwhm.text = ""; full.critEdits.fwhm.modified = true;
+         full.critEdits.stars.text = ""; full.critEdits.stars.modified = true;
+         full.commitPendingEdits();
+         crit.push( Frames.limitValue( chH.settings, "fwhm" ) === null );
+         crit.push( full.critEdits.fwhm.styleSheet == FrameSelector.AUTO_STYLE );
+         // the tile number follows its own chooser
+         var snrAt = Frames.DISPLAY_METRICS.indexOf( "snrWeight" );
+         full.stripMetric.currentItem = snrAt;
+         full.stripMetric.onItemSelected( snrAt );
+         crit.push( full.filmstrip.metric == "snrWeight" );
+         check( "the criteria panel behaves", crit, crit.map( function() { return true; } ) );
+
+         /*
+          * Separate tags, top-right, in viewport coordinates, in every
+          * mode -- and actually PAINTED: rendered into a bitmap the size of
+          * the viewport and read back at each tag's fill.
+          */
+         full.preview.setTags( [ { text: "REJECTED", kind: "reject" },
+                                 { text: "CLOUD", kind: "flag" },
+                                 { text: "FOCUS", kind: "flag" } ] );
+         var tr = full.preview.tagRects(), tg = [];
+         tg.push( tr.length == 3 );
+         tg.push( tr[0].y1 <= tr[1].y0 && tr[1].y1 <= tr[2].y0 );     // stacked, apart
+         tg.push( full.preview.tagRects( 600 )[0].x1 == 590 );        // right margin
+         full.preview.setFit( false );
+         tg.push( full.preview.tagRects()[0].x1 == tr[0].x1 );        // not moved by 1:1
+         // The dialog is never shown here, so its viewport has no real
+         // width; paint into a bitmap of a known one.
+         var tb = new Bitmap( 600, 400 );
+         tb.fill( 0xff000000 );
+         var gfx = new Graphics( tb );
+         try { full.preview.paintTags( gfx, 600 ); } finally { gfx.end(); }
+         tr = full.preview.tagRects( 600 );
+         // just inside the left edge: the fill, clear of the centred text
+         function fillAt( r ) { return tb.pixel( r.x0 + 4, Math.round( ( r.y0 + r.y1 )/2 ) ); }
+         tg.push( fillAt( tr[0] ) == FrameSelector.TAG_COLOURS.reject.fill );
+         tg.push( fillAt( tr[1] ) == FrameSelector.TAG_COLOURS.flag.fill );
+         tg.push( fillAt( tr[2] ) == FrameSelector.TAG_COLOURS.flag.fill );
+         check( "the preview's tags are separate, placed and painted", tg,
+                tg.map( function() { return true; } ) );
+         full.preview.setTags( [] );
+
+         /*
+          * What the plot DRAWS, not only that it runs: the fixture channel's
+          * FWHM painted into a bitmap, and colours read at known places --
+          * the band's fill, paper outside it, the rejected frame's cross,
+          * the selected frame's ring. Antialiased, so compared within a
+          * tolerance. Geometry as Plot.paintOn lays it out.
+          */
+         var pch = Frames.recompute( fsFixtureChannel() );
+         var pband = Frames.acceptedBand( "fwhm", pch.gates, pch.settings );
+         // A plot of its own: the dialog's is checked by what follows.
+         var tplot = new FrameSelector.Plot( full );
+         tplot.setSeries( pch.rows, "fwhm", pband );
+         tplot.selected = 5;
+         var PW = 600, PH = 200, pbmp = new Bitmap( PW, PH );
+         pbmp.fill( 0xff000000 );
+         var pg = new Graphics( pbmp );
+         try { tplot.paintOn( pg, PW, PH ); } finally { pg.end(); }
+         tplot.release();
+         var L = 52, T = 10, pw = PW - 52 - 8, ph = PH - 10 - 18;
+         var vals = pch.rows.map( function( r ) { return r.metrics.fwhm; } );
+         var pb = Frames.plotBounds( vals, pband ), pspan = pb.hi - pb.lo;
+         function yOf( v ) { return Math.round( T + ph - ( ( v - pb.lo )/pspan )*ph ); }
+         function xOf( i ) { return Math.round( L + ( i/( vals.length - 1 ) )*pw ); }
+         function dist( c, want )
+         {
+            var d = 0;
+            for ( var sh = 0; sh < 24; sh += 8 )
+               d = Math.max( d, Math.abs( ( ( c >>> sh ) & 255 ) - ( ( want >>> sh ) & 255 ) ) );
+            return d;
+         }
+         function near( c, want ) { return dist( c, want ) <= 70; }
+         /*
+          * Band grey and paper white are only 25 apart, inside any useful
+          * tolerance, so those two are told apart by which is CLOSER.
+          */
+         function closer( c, a, b ) { return dist( c, a ) < dist( c, b ); }
+         // Antialiased strokes land within a pixel of where they are aimed.
+         function nearAround( x, y, want )
+         {
+            for ( var dy = -1; dy <= 1; ++dy )
+               for ( var dx = -1; dx <= 1; ++dx )
+                  if ( near( pbmp.pixel( x + dx, y + dy ), want ) )
+                     return true;
+            return false;
+         }
+         var PC = FrameSelector.PLOT_COLOURS, qx = Math.round( L + 0.25*pw ), pl = [];
+         pl.push( closer( pbmp.pixel( qx, yOf( 5.5 ) ), PC.BAND, PC.PAPER ) );  // inside the band
+         pl.push( closer( pbmp.pixel( qx, yOf( 6.9 ) ), PC.PAPER, PC.BAND ) );  // above it
+         pl.push( nearAround( xOf( 19 ), yOf( 7.0 ), PC.REJECT ) );   // 7.0 is rejected
+         pl.push( nearAround( xOf( 5 ), yOf( vals[5] ) + FrameSelector.PICK_RADIUS,
+                              PC.PICKED ) );                         // the ring's bottom
+         pl.push( !nearAround( xOf( 2 ), yOf( vals[2] ) + FrameSelector.PICK_RADIUS,
+                               PC.PICKED ) );                        // and no ring elsewhere
+         check( "the plot draws its band, paper, cross and ring", pl,
+                pl.map( function() { return true; } ) );
          ok = ok && ( full.frameTree.numberOfChildren == 6 );
          /*
           * The review opens on a frame, not on an empty pane -- so the
