@@ -51,6 +51,39 @@ decision, made once you have looked at the result.
 
 ## Installation
 
+There are two ways to install Loom: from its PixInsight update repository,
+which is the easiest and keeps it up to date, or from the git repository.
+Use one or the other, not both — two copies register the scripts twice.
+
+### From the PixInsight update repository (recommended)
+
+1. **Resources → Updates → Manage Repositories.**
+2. Click **Add**, enter the repository address, and confirm:
+
+   ```
+   https://fcarucci.github.io/Loom/
+   ```
+
+   The address must end with the `/`.
+3. **Resources → Updates → Check for Updates.** Loom is listed among the
+   available packages; make sure it is selected and click **Apply**.
+4. The repository is not yet signed, so PixInsight asks you to confirm the
+   download from an unsigned source. Confirm it.
+5. **Restart PixInsight** when asked — updates are installed while it
+   restarts.
+
+Both scripts then appear under **Script → Batch Processing**: **Loom** and
+**Loom Frame Selector**. If they do not, run **Script → Feature Scripts →
+Regenerate**, then **Done**.
+
+**Updating** is the same **Check for Updates**: a new Loom version is offered
+like any other update.
+
+Loom needs PixInsight 1.9.4 or newer; the repository offers it only to those
+versions.
+
+### From the git repository
+
 **Get the code.** Clone the repository:
 
 ```
