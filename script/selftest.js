@@ -559,6 +559,97 @@ function runTests()
           Steps.profileNameFor( { mainView: { image: { numberOfChannels: 1 } } } ),
           Steps.PROFILE_GRAY );
 
+   /*
+    * Not every machine HAS ROMM RGB. It is a macOS system profile: on a
+    * Windows PixInsight, AssignICCProfile could not find it, nor Generic
+    * Gray, and every plate went out untagged. So the installed profiles
+    * are read, and the closest standard working space is chosen instead --
+    * never a monitor's calibration profile, and never a linear one.
+    */
+   ( function()
+   {
+      function be32( n ) { return [ ( n >>> 24 ) & 255, ( n >>> 16 ) & 255, ( n >>> 8 ) & 255, n & 255 ]; }
+      function ascii( t ) { return t.split( "" ).map( function( c ) { return c.charCodeAt( 0 ); } ); }
+      /* A minimal ICC file: header, one 'desc' tag, v2 'desc' or v4 'mluc' body. */
+      function fakeIcc( cls, space, desc, v4 )
+      {
+         var body;
+         if ( v4 )
+         {
+            var u = [];
+            desc.split( "" ).forEach( function( c ) { u.push( 0, c.charCodeAt( 0 ) ); } );
+            body = ascii( "mluc" ).concat( [ 0, 0, 0, 0 ], be32( 1 ), be32( 12 ),
+                                           ascii( "enUS" ), be32( u.length ), be32( 28 ), u );
+         }
+         else
+            body = ascii( "desc" ).concat( [ 0, 0, 0, 0 ], be32( desc.length + 1 ), ascii( desc ), [ 0 ] );
+         var head = [];
+         for ( var i = 0; i < 128; ++i ) head.push( 0 );
+         ascii( cls ).forEach( function( b, i ) { head[12 + i] = b; } );
+         ascii( space ).forEach( function( b, i ) { head[16 + i] = b; } );
+         return head.concat( be32( 1 ), ascii( "desc" ), be32( 144 ), be32( body.length ), body );
+      }
+      function parse( bytes ) { return Steps.parseIccProfile( function( i ) { return bytes[i]; }, bytes.length ); }
+
+      check( "an ICC v2 description is read",
+             parse( fakeIcc( "mntr", "RGB ", "Adobe RGB (1998)", false ) ),
+             { deviceClass: "mntr", colorSpace: "RGB", description: "Adobe RGB (1998)" } );
+      check( "an ICC v4 (mluc) description is read",
+             parse( fakeIcc( "mntr", "GRAY", "Gray Gamma 2.2", true ) ).description, "Gray Gamma 2.2" );
+      check( "a file too short to be a profile is not one", parse( [ 1, 2, 3 ] ), null );
+
+      function P( d, space, cls ) { return { deviceClass: cls || "mntr", colorSpace: space || "RGB", description: d }; }
+      var windowsLike = [ P( "sRGB IEC61966-2.1" ), P( "Adobe RGB (1998)" ), P( "Dell U2720Q calibrated" ),
+                          P( "ACES CG Linear (Academy Color Encoding System AP1)" ), P( "Gray Gamma 2.2", "GRAY" ),
+                          P( "Rec. ITU-R BT.2020-1" ), P( "RSWOP", "CMYK", "prtr" ),
+                          P( "Rec. 2020 Linear" ) ];
+      var plan = Steps.profilePlan( windowsLike );
+      check( "without ROMM, the widest standard space wins: Rec. 2020 over Adobe RGB and sRGB",
+             plan.rgb, [ Steps.PROFILE_RGB, "Rec. ITU-R BT.2020-1", "Adobe RGB (1998)", "sRGB IEC61966-2.1" ] );
+      check( "a calibration profile and a linear space are never candidates",
+             plan.rgb.filter( function( d ) { return /Dell|Linear/.test( d ); } ), [] );
+      check( "gray follows the RGB space's gamma (2.2 here)", plan.gray, [ "Gray Gamma 2.2", Steps.PROFILE_GRAY ] );
+
+      var macLike = [ P( "ROMM RGB: ISO 22028-2:2013" ), P( "Display P3" ), P( "Generic Gray Profile", "GRAY" ),
+                      P( "Generic Gray Gamma 2.2 Profile", "GRAY" ), P( "sRGB IEC61966-2.1" ) ];
+      var mp = Steps.profilePlan( macLike );
+      check( "with ROMM installed, nothing changes", mp.rgb[0], Steps.PROFILE_RGB );
+      check( "and gray stays at ProPhoto's gamma 1.8 first",
+             mp.gray, [ Steps.PROFILE_GRAY, "Generic Gray Gamma 2.2 Profile" ] );
+      check( "sRGB is always the last resort, even when not enumerated",
+             Steps.profilePlan( [] ).rgb, [ Steps.PROFILE_RGB, "sRGB IEC61966-2.1" ] );
+      check( "no gray profile anywhere: only the preferred name is tried",
+             Steps.profilePlan( [] ).gray, [ Steps.PROFILE_GRAY ] );
+
+      check( "Windows profiles live under the system root",
+             Steps.iccProfileDirectories( Util.PLATFORM_WINDOWS, "C:/Users/x", "D:\\WINNT" )[0],
+             "D:/WINNT/System32/spool/drivers/color" );
+      check( "macOS reads the three ColorSync folders",
+             Steps.iccProfileDirectories( Util.PLATFORM_MACOS, "/Users/x", "" ).slice( 0, 3 ),
+             [ "/System/Library/ColorSync/Profiles", "/Library/ColorSync/Profiles",
+               "/Users/x/Library/ColorSync/Profiles" ] );
+   } )();
+
+   if ( IN_PIXINSIGHT )
+   {
+      var installed = Steps.installedIccProfiles();
+      check( "this Mac's installed profiles are enumerated",
+             installed.filter( function( p ) { return p.description == Steps.PROFILE_RGB; } ).length, 1 );
+      var w1 = new ImageWindow( 8, 8, 3, 16, false, true, Util.freeWindowId( "icc_plan_probe" ) );
+      try
+      {
+         Steps.assignProfile( w1, "probe", { rgb: [ "No Such Profile", "Adobe RGB (1998)" ], gray: [] } );
+         check( "a missing profile falls through to the next candidate",
+                Steps.lastAssignedProfile, "Adobe RGB (1998)" );
+         var kept = Steps.rgbProfileInUse;
+         var psb = Steps.psbProfileBytes();
+         Steps.rgbProfileInUse = kept;
+         check( "the PSB carries the profile the plates were given, not ProPhoto",
+                psb.length, Steps.iccProfileBytes( "Adobe RGB (1998)" ).length );
+      }
+      finally { w1.forceClose(); Steps.rgbProfileInUse = null; }
+   }
+
    // The PSB carries its profile in image resource 1039, which the writer
    // builds by hand: nothing embeds it for us there.
    /*

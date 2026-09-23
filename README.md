@@ -352,6 +352,14 @@ because Photoshop matches its working space by profile *name*: ROMM RGB and
 ProPhoto RGB are the same space, and Photoshop will still offer to convert
 between them.
 
+ROMM RGB and Generic Gray ship with macOS but not with Windows. Where they are
+missing, Loom reads the profiles installed on the machine and uses the widest
+standard working space it finds: Rec. 2020, then Wide Gamut RGB, Adobe RGB
+(1998), Display P3, and finally sRGB. Mono plates get a gray profile with the
+same gamma as the colour one, and the PSB carries the same profile as the
+plates. Monitor calibration profiles and linear spaces are never used. The run
+log says which profile was chosen, and why.
+
 #### Frequency separation
 
 **Frequency-separate the L stars plate** splits it into `L_stars_low` and
