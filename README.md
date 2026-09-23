@@ -549,9 +549,3 @@ under **Resources → Updates**. Loom finds one itself — the install's `librar
 then `~/PixInsight/library`, then `~/PixInsight/models` — and offers MLDenoise
 only when module *and* model are both present, so a tool that would die mid-run
 is never in the dropdown.
-
-For the record, since the parameter names are easy to get wrong: they are
-`mask`, `maskClipLow`, `maskBackground` and `maskSmoothness`. There is no
-`linearMask`. PJSR accepts assignment to a property a process does not have
-without complaining, so measuring against that name reports "the mask changes
-nothing" with complete confidence.
