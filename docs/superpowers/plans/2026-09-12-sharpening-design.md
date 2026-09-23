@@ -31,7 +31,7 @@ sharper channels to a common FWHM is the crude fallback: it removes halos by
 degrading R and B to match G, so everything ends up as soft as the worst
 channel. Correcting each channel's stars instead raises the floor.
 
-Measured on the Elephant Trunk masters: G is 4.72" against R's 2.95", so
+Measured on the <target> masters: G is 4.72" against R's 2.95", so
 matching would cost R about 60% of its resolution. Per-channel aberration
 correction targets the same artefact without paying that.
 
@@ -74,7 +74,7 @@ something to pre-emptively add a knob for.
 
 **Why this is the halo fix:** colour halos on stars come from the channels
 having different star sizes. G measured 4.72" against R's 2.95" on the
-Elephant Trunk masters — a green star genuinely half again as large as the red
+<target> masters — a green star genuinely half again as large as the red
 one beneath it, so it spills past the edge of the combined star. Matching the
 widths removes the halo at its source.
 

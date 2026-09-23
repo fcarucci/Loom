@@ -1037,11 +1037,20 @@ per row: enabled, path, local normalization data, drizzle data.
 | 9 | SNR estimate (Frame Selector: display only) |
 | 10 | median (Frame Selector: background, for the CLOUD flag) |
 | 12 | noise |
+| 20 | altitude, degrees (Frame Selector: ALTITUDE tag, airmass corrections) |
+| 21 | PSF flux (Frame Selector: CLOUD tag) |
 | 14 | stars |
 | 28 | PSF SNR |
 
+Columns 20 and 21 are named Altitude and PSFFlux in WeightsOptimizer's
+`WeightsOptimizer-SSCustomFormula.js`, which lists every column by index.
+Confirmed 2026-09-23 on six S frames: column 20 matched the altitude computed
+independently from each frame's RA, Dec, DATE-OBS, SITELAT and SITELONG to
+0.1 degree, and column 21 held steady under 40% blur while falling about 10%
+from airmass 1.07 to 1.8, as total flux under extinction should.
+
 Columns 9 and 10 were confirmed on 2026-09-22 on a single 2600MM O light
-frame (`~/Downloads/Light`, copied to scratch): column 10 matches the frame's
+frame (copied to scratch): column 10 matches the frame's
 own `Image.median()` within 2%, so it is in the same normalised 0..1 units,
 and column 12 (noise) does not. Column 9 has no independent PJSR figure; it is
 checked for shape and against PSF SNR and column 8's constant zero. Both are

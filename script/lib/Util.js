@@ -958,7 +958,7 @@ Util.paletteMissing = function( palette, available )
  *
  * A WBPP master folder accumulates many masters per filter -- successive
  * runs write _(1), _(2) generations, and each integration may exist as
- * plain, drizzled, autocropped, or both. On the Elephant Trunk set that is
+ * plain, drizzled, autocropped, or both -- one real target folder held
  * 51 masterLight files for 7 filters.
  *
  * Ranking, in order:

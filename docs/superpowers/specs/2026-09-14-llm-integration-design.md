@@ -179,7 +179,7 @@ condemn a perfectly good RGB set on every emission target.
 ### Stars must be excluded
 
 A region over the nebula in a dense field is mostly stars: 1353 detections in
-a 1200x900 ROI on the Elephant Trunk data. Without masking them the
+a 1200x900 ROI on the <target> data. Without masking them the
 measurement returns star flux, not object SNR.
 
 Star rejection is **Loom's** job, not the model's, and is a prerequisite
@@ -534,7 +534,7 @@ Look for each executable on `PATH`, then at known locations. Verified on this
 machine 2026-09-14:
 
 ```
-claude   /Users/francescocarucci/.local/bin/claude     2.1.268
+claude   ~/.local/bin/claude     2.1.268
 codex    /opt/homebrew/bin/codex                       codex-cli 0.153.4
 ```
 

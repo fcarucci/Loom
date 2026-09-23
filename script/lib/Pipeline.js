@@ -168,7 +168,7 @@ Pipeline.psbBaseName = function( config )
  * project name, path or title anywhere in the object reference -- so the
  * name of "the current project" cannot be read. The next most useful thing
  * is the folder the masters came out of, which is how these are organised
- * in practice: .../Elephant Trunk/master/masterLight_...xisf
+ * in practice: .../<target>/master/masterLight_...xisf
  *
  * Generic container folders are skipped so the answer is the target's name
  * rather than the layout's.

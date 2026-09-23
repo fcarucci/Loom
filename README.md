@@ -567,28 +567,33 @@ never waits for a picture.
 Frames that look wrong compared with the rest of their channel are tagged, the
 way SubframeStudio tags them. The tags are **advisory and always on**: they
 never reject a frame, never change a verdict, and never reach the deletion
-log. They name symptoms, not causes.
+log. Each names the most likely *cause* of what the numbers show, because
+causes that look alike are told apart:
 
 | tag | letter | fires when |
 |---|---|---|
-| FOCUS | F | FWHM more than 3σ above the channel's median |
-| TRACKING | T | eccentricity more than 3σ above the median |
-| CLOUD | C | background more than 5% above the channel's median, or stars more than 3σ below it |
+| ALTITUDE | A | FWHM 20% above the sharpest quarter of the channel, but not once corrected for airmass — the target was low |
+| FOCUS | F | FWHM 20% above, even after the airmass correction, and it persists across consecutive frames |
+| SEEING | S | FWHM 20% above after the correction, on one frame whose neighbours in time are sharp |
+| TRACKING | T | eccentricity more than 3σ above the channel's median |
+| CLOUD | C | star flux 25% below the channel's median beyond what extinction at that altitude explains, or background 5% above it |
 | DROPPED | D | fewer than 10% of the channel's median star count |
 
-σ is 1.4826 × MAD, as for the gates. A metric raises nothing with fewer than
-5 usable values in the channel, and the 3σ rules raise nothing when the spread
-is under 1% of the median — measurement noise, not a spread. Background is
-judged as a percentage instead: SubframeSelector's background moves by about
-one 16-bit step between frames on a steady night, far too little to have a
-spread, while a real cloud lifts it by tens of percent. A dropped frame
-is not also called cloud for the same missing stars. A channel whose frames are
-not comparable, or that has no readable filter, is not tagged at all: comparing
-the background of unlike frames means nothing.
+Blur loses faint stars exactly as cloud does, so **a low star count alone names
+nothing**: what separates them is whether the stars got wider (blur) or dimmer
+(cloud). Seeing is scaled to airmass^0.6 and extinction taken as 0.15 mag per
+airmass. Altitude and star flux come from SubframeSelector; the time order from
+each frame's `DATE-OBS`. Without an altitude the airmass correction is skipped,
+and without times a blurred frame cannot be called isolated, so it is FOCUS. A
+metric raises nothing with fewer than 5 usable values, and a channel whose
+frames are not comparable, or that has no readable filter, is not tagged at
+all.
 
-Background is SubframeSelector's median column, checked against PixInsight's
-own median of the frame. If it cannot be read, CLOUD falls back to the star
-count alone.
+Checked on a clear night of 125 frames: the late S session, 20–39% wider at
+airmass 1.3–1.7, came out ALTITUDE; two frames stayed wide after the
+correction and were FOCUS (the next refocus brought the stars back); one lone
+spike was SEEING. That night had no cloud, so the CLOUD rule is checked only
+against constructed cases so far.
 
 Each tag is its own box, top right of the preview, under a red **REJECTED**
 when Run leaves the frame out (**CHANNEL OFF** when that is only because the

@@ -51,7 +51,7 @@ Cache.setDir = function( path )
  * created on demand if it does not.
  *
  * This matters because Cache.ensureDir creates intermediate directories.
- * With the cache on an external volume -- /Volumes/A008 here -- an
+ * With the cache on an external volume -- under /Volumes -- an
  * unmounted drive would otherwise have Loom CREATE that path on the boot
  * disk and quietly fill it with the tens of gigabytes a few runs produce,
  * in a folder the user would never think to look in.

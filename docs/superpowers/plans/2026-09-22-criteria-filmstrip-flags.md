@@ -14,11 +14,11 @@
 
 - Branch `feature/criteria-filmstrip-flags`; squash before fast-forwarding to main.
 - JS only, no C++. `#engine v8` stays line 1 of every entry point.
-- No hardcoded personal paths in shipped code (tests may use `/tmp/agent-scratch` and `/Volumes/A008`).
+- No hardcoded personal paths in shipped code (tests may use `/tmp/agent-scratch` and `/Volumes/<drive>`).
 - Scratch files in `/tmp/agent-scratch`, never `$TMPDIR`.
 - Never assign `onViewportScrolled` on any control.
 - Never launch a second PixInsight; dispatch into the running one (`/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight -x=1:<script>`), start it only if closed.
-- The originals in `~/Downloads/Light` are never modified; tests copy them.
+- The originals in a local folder of subframes are never modified; tests copy them.
 - Flags are always on: no switch, preference or checkbox for any detector.
 - A flag never changes a verdict or the manifest.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
@@ -818,7 +818,7 @@ uses. New IN_PIXINSIGHT block right after it:
 ```js
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var src = File.homeDirectory + "/Downloads/Light";
+      var src = "<a local folder of subframes>";
       var have = File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [];
       check( "a light frame for column confirmation is present", have.length > 0, true );
       if ( have.length == 0 )
@@ -871,7 +871,7 @@ If "within 2%" fails because SubframeSelector reports data units (e.g. ×65535),
 
 - [ ] **Step 6: Run in PixInsight**
 
-Ensure PixInsight is running (start it only if `ps -axo pid,comm | awk '$2 ~ /PixInsight$/'` is empty), mount check `/Volumes/A008`, then:
+Ensure PixInsight is running (start it only if `ps -axo pid,comm | awk '$2 ~ /PixInsight$/'` is empty), mount check `/Volumes/<drive>`, then:
 
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
@@ -2135,7 +2135,7 @@ Wrap the constructor body after `super()`:
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var src = File.homeDirectory + "/Downloads/Light";
+      var src = "<a local folder of subframes>";
       var dst = "/tmp/agent-scratch/fs-filmstrip";
       var have = File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [];
       check( "the filmstrip fixture is present (20 frames)", have.length >= 20, true );

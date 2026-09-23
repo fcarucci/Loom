@@ -18,7 +18,7 @@ var Frames = {};
  * from an older definition compared against a fresh one is exactly the
  * quiet wrongness this tool exists to report.
  */
-Frames.MEASURE_VERSION = "v2";   // v2: adds background and SNR estimate
+Frames.MEASURE_VERSION = "v3";   // v3: adds altitude and star flux
 
 /*
  * SubframeSelector's measurement row, by position.
@@ -34,10 +34,13 @@ Frames.MEASURE_VERSION = "v2";   // v2: adds background and SNR estimate
  *
  * 9 and 10 are WBPP's iSNREstimate and iMedian (BPP-SubframeAnalyzer.js
  * 487-488), confirmed on a live light frame; see verified-parameters.md.
- * Both are optional here: shown or advisory, never deciding a deletion.
+ * 20 and 21 are Altitude and PSFFlux, named in WeightsOptimizer's
+ * SSCustomFormula.js and confirmed live: column 20 matched the altitude
+ * computed from each frame's RA, Dec, time and site to 0.1 degree.
+ * All four are optional here: shown or advisory, never deciding a deletion.
  */
 Frames.COL = { path: 3, fwhm: 5, eccentricity: 6, snr: 9, median: 10,
-               noise: 12, stars: 14, psfSNR: 28 };
+               noise: 12, stars: 14, altitude: 20, psfFlux: 21, psfSNR: 28 };
 
 Frames.metricsFromRow = function( row )
 {
@@ -48,7 +51,9 @@ Frames.metricsFromRow = function( row )
             stars:        row[Frames.COL.stars],
             psfSNR:       row[Frames.COL.psfSNR],
             background:   row[Frames.COL.median],
-            snrWeight:    row[Frames.COL.snr] };
+            snrWeight:    row[Frames.COL.snr],
+            altitude:     row[Frames.COL.altitude],
+            psfFlux:      row[Frames.COL.psfFlux] };
 };
 
 /*
@@ -56,7 +61,7 @@ Frames.metricsFromRow = function( row )
  * decide nothing. A problem with one of them blanks that figure; it never
  * abandons a channel the way meaningProblems does.
  */
-Frames.OPTIONAL = [ "background", "snrWeight" ];
+Frames.OPTIONAL = [ "background", "snrWeight", "altitude", "psfFlux" ];
 
 Frames.optionalOk = function( v )
 {
@@ -93,7 +98,7 @@ Frames.sanitizeOptional = function( m, disabled )
  * somewhere else must not come back naming the first file.
  */
 Frames.STORED_KEYS = [ "fwhm", "eccentricity", "noise", "stars", "psfSNR",
-                       "background", "snrWeight" ];
+                       "background", "snrWeight", "altitude", "psfFlux" ];
 
 Frames.storedMetrics = function( m )
 {
@@ -1407,6 +1412,7 @@ Frames.newChannel = function( key, entries, metrics, problems )
       var e = entries[i];
       rows.push( { path: e.path, channel: key,
                    metrics: metrics[e.path] || null,
+                   time: e.time || null,              // DATE-OBS, for time order
                    digest: e.identity ? e.identity.digest : null,
                    size: e.identity ? e.identity.size : 0,
                    mtime: e.identity ? e.identity.mtime : 0,
@@ -1425,7 +1431,8 @@ Frames.newChannel = function( key, entries, metrics, problems )
     * background compared across unlike frames means nothing.
     */
    ch.flags = Frames.anomalyFlags( list, ch.problems.length == 0 &&
-                                         Frames.autoRejectAllowed( key ) );
+                                         Frames.autoRejectAllowed( key ),
+                                   rows.map( function( r ) { return Frames.obsTime( r.time ); } ) );
    return ch;
 };
 
@@ -1488,27 +1495,79 @@ Frames.judgeRow = function( row, gates, meds, settings, mayReject )
 /* ---- anomaly flags ----------------------------------------------------
  *
  * Advisory, always on, and never a verdict: a flag does not reject, does
- * not change a state, does not reach the manifest. The tags name symptoms
- * -- "looks like" -- not diagnoses, and they are relative to the channel,
- * the way SubframeStudio's are.
+ * not change a state, does not reach the manifest. The tags name the most
+ * likely cause of what the numbers show, relative to the channel, the way
+ * SubframeStudio's are -- and they separate causes that look alike:
+ *
+ *   blur (FWHM up)     ALTITUDE if the airmass explains it, else SEEING if
+ *                      it is one frame among sharp neighbours in time, else
+ *                      FOCUS (it persists)
+ *   dimming            CLOUD: star flux down beyond what extinction at that
+ *                      altitude explains, or the sky background up
+ *   elongation         TRACKING
+ *   (almost) no stars  DROPPED
+ *
+ * A low star count alone names nothing: blur loses faint stars as surely
+ * as cloud does, and only FWHM and flux say which it was. Validated on a
+ * clear 125-frame night (2026-09-23): the late S session, 20-39% wider at
+ * airmass 1.3-1.7, came out ALTITUDE, two frames FOCUS, one spike SEEING.
  */
 Frames.FLAG_K = 3;
 Frames.FLAG_MIN_FRAMES = 5;
 Frames.DROPPED_FRACTION = 0.1;
+/* Blur: FWHM this far above the channel's sharpest quarter. */
+Frames.BLUR_MARGIN = 0.20;
+/* Seeing grows with airmass to this power (Kolmogorov turbulence). */
+Frames.SEEING_AIRMASS_POWER = 0.6;
+/* Extinction, magnitudes per airmass: enough to not call the horizon cloud. */
+Frames.EXTINCTION = 0.15;
+/* CLOUD: extinction-corrected star flux this far below the channel median. */
+Frames.CLOUD_DIMMING = 0.25;
 /*
  * CLOUD from background: this far above the channel's median, as a
  * fraction. Relative, not sigma: SubframeSelector's median moves by about
- * one 16-bit step between frames on a steady night (measured on four
- * channels, 2026-09-23), far under any spread floor, so a sigma rule never
- * ran -- and without the floor it would tag noise. A real cloud lifts the
- * background by tens of percent.
+ * one 16-bit step between frames on a steady night, far under any spread
+ * floor, while a real cloud lifts it by tens of percent.
  */
 Frames.CLOUD_BACKGROUND_RISE = 0.05;
-Frames.FLAG_ORDER = [ "focus", "tracking", "cloud", "dropped" ];
-Frames.FLAG_TAG = { focus: "FOCUS", tracking: "TRACKING", cloud: "CLOUD", dropped: "DROPPED" };
-Frames.FLAG_BADGE = { focus: "F", tracking: "T", cloud: "C", dropped: "D" };
+Frames.FLAG_ORDER = [ "focus", "seeing", "altitude", "tracking", "cloud", "dropped" ];
+Frames.FLAG_TAG = { focus: "FOCUS", seeing: "SEEING", altitude: "ALTITUDE",
+                    tracking: "TRACKING", cloud: "CLOUD", dropped: "DROPPED" };
+Frames.FLAG_BADGE = { focus: "F", seeing: "S", altitude: "A",
+                      tracking: "T", cloud: "C", dropped: "D" };
 /* Summary order, as SubframeStudio words it. */
-Frames.FLAG_SUMMARY_ORDER = [ "cloud", "focus", "tracking", "dropped" ];
+Frames.FLAG_SUMMARY_ORDER = [ "cloud", "focus", "seeing", "altitude", "tracking", "dropped" ];
+
+/* An observation time (DATE-OBS, UTC) in ms, or null. */
+Frames.obsTime = function( value )
+{
+   if ( value == null )
+      return null;
+   var t = String( value ).replace( /'/g, "" ).trim();
+   if ( t === "" )
+      return null;
+   if ( !/[zZ]|[+-]\d\d:?\d\d$/.test( t ) )
+      t += "Z";                            // FITS DATE-OBS is UTC
+   var ms = Date.parse( t );
+   return isFinite( ms ) ? ms : null;
+};
+
+/* Airmass from altitude in degrees, or null when there is no usable altitude. */
+Frames.airmass = function( altitude )
+{
+   if ( !Frames.isNumber( altitude ) || altitude <= 1 || altitude > 90 )
+      return null;
+   return 1/Math.sin( altitude*Math.PI/180 );
+};
+
+Frames.isNumber = function( v ) { return typeof v == "number" && isFinite( v ); };
+
+/* The value a quarter of the way up a list: the channel's good end. */
+Frames.lowerQuartile = function( values )
+{
+   var v = values.slice().sort( function( a, b ) { return a - b; } );
+   return v[Math.floor( v.length/4 )];
+};
 
 /*
  * One metric's baseline over the channel: every row with a usable value --
@@ -1522,17 +1581,15 @@ Frames.flagBaseline = function( list, metric, allowZero )
    for ( var i = 0; i < list.length; ++i )
    {
       var x = list[i] ? list[i][metric] : null;
-      if ( typeof x == "number" && isFinite( x ) && ( allowZero ? x >= 0 : x > 0 ) )
+      if ( Frames.isNumber( x ) && ( allowZero ? x >= 0 : x > 0 ) )
          v.push( x );
    }
    if ( v.length < Frames.FLAG_MIN_FRAMES )
       return null;
    var med = Frames.median( v ), sd = Frames.sigma( v );
-   return { median: med, sigma: sd,
+   return { median: med, sigma: sd, values: v,
             spread: sd > 0 && sd >= Frames.SIGMA_FLOOR_FRACTION*Math.abs( med ) };
 };
-
-Frames.isNumber = function( v ) { return typeof v == "number" && isFinite( v ); };
 
 /* Above the channel by more than FLAG_K sigma, on a baseline with spread. */
 Frames.flagHigh = function( base, v )
@@ -1541,38 +1598,119 @@ Frames.flagHigh = function( base, v )
           v > base.median + Frames.FLAG_K*base.sigma;
 };
 
-/* One frame's flags against the channel's baselines, in FLAG_ORDER. */
-Frames.frameFlags = function( m, b )
+/*
+ * Per frame: FWHM corrected for airmass (null without a usable altitude,
+ * then the raw FWHM stands in), and star flux corrected for extinction.
+ */
+Frames.corrected = function( m )
 {
-   var st = b.stars;
-   var dropped = st != null && Frames.isNumber( m.stars ) &&
-                 m.stars < Frames.DROPPED_FRACTION*st.median;
-   // A dropped frame is not ALSO cloud for the same low star count.
-   var fewStars = !dropped && st != null && st.spread && Frames.isNumber( m.stars ) &&
-                  m.stars < st.median - Frames.FLAG_K*st.sigma;
-   var bright = b.background != null && Frames.isNumber( m.background ) &&
-                m.background > b.background.median*( 1 + Frames.CLOUD_BACKGROUND_RISE );
-   var f = { focus: Frames.flagHigh( b.fwhm, m.fwhm ),
-             tracking: Frames.flagHigh( b.eccentricity, m.eccentricity ),
-             cloud: bright || fewStars,
-             dropped: dropped };
-   return Frames.FLAG_ORDER.filter( function( k ) { return f[k]; } );
+   var X = m ? Frames.airmass( m.altitude ) : null;
+   return {
+      X: X,
+      fwhm: ( m && Frames.isNumber( m.fwhm ) )
+            ? m.fwhm/Math.pow( X || 1, Frames.SEEING_AIRMASS_POWER ) : null,
+      flux: ( m && Frames.isNumber( m.psfFlux ) && m.psfFlux > 0 )
+            ? m.psfFlux*Math.pow( 10, 0.4*Frames.EXTINCTION*( ( X || 1 ) - 1 ) ) : null };
 };
 
-Frames.anomalyFlags = function( list, comparable )
+/*
+ * The channel-wide references the rules compare against: the sharp end of
+ * the night for FWHM, raw and airmass-corrected, and the median corrected
+ * flux and background. A reference is null below FLAG_MIN_FRAMES values.
+ */
+Frames.flagReferences = function( list, corr )
 {
-   var out = [];
-   for ( var n = 0; n < list.length; ++n )
-      out.push( [] );
-   if ( !comparable )
-      return out;
-   var b = { fwhm: Frames.flagBaseline( list, "fwhm", false ),
-             eccentricity: Frames.flagBaseline( list, "eccentricity", false ),
-             background: Frames.flagBaseline( list, "background", false ),
-             stars: Frames.flagBaseline( list, "stars", true ) };
+   function ref( values, pick )
+   {
+      var v = values.filter( function( x ) { return Frames.isNumber( x ) && x > 0; } );
+      return ( v.length < Frames.FLAG_MIN_FRAMES ) ? null : pick( v );
+   }
+   return {
+      fwhm: ref( list.map( function( m ) { return m ? m.fwhm : null; } ), Frames.lowerQuartile ),
+      fwhmCorr: ref( corr.map( function( c ) { return c.fwhm; } ), Frames.lowerQuartile ),
+      flux: ref( corr.map( function( c ) { return c.flux; } ), Frames.median ),
+      background: ref( list.map( function( m ) { return m ? m.background : null; } ), Frames.median ),
+      eccentricity: Frames.flagBaseline( list, "eccentricity", false ),
+      stars: Frames.flagBaseline( list, "stars", true ) };
+};
+
+/*
+ * Why a blurred frame is blurred: "altitude", "seeing", "focus", or null
+ * when it is not blurred. `blurredCorr[i]` says whether frame i is still
+ * wide once airmass is taken out; `order` is the frames in time order, or
+ * null when times are not known.
+ */
+Frames.blurCause = function( i, list, corr, refs, blurredCorr, order )
+{
+   var m = list[i];
+   if ( refs.fwhm == null || !Frames.isNumber( m.fwhm ) ||
+        m.fwhm <= ( 1 + Frames.BLUR_MARGIN )*refs.fwhm )
+      return null;
+   if ( corr[i].X != null && !blurredCorr[i] )
+      return "altitude";                   // the airmass explains the blur
+   if ( order == null )
+      return "focus";                      // no time order: cannot tell it is isolated
+   var at = order.indexOf( i );
+   var neighbours = [ order[at - 1], order[at + 1] ].filter( function( j ) { return j != null; } );
+   var isolated = neighbours.length > 0 &&
+                  neighbours.every( function( j ) { return !blurredCorr[j]; } );
+   return isolated ? "seeing" : "focus";
+};
+
+/* Dimmed beyond extinction, or a brighter sky: CLOUD. */
+Frames.isCloud = function( m, c, refs )
+{
+   var dim = refs.flux != null && c.flux != null &&
+             c.flux < ( 1 - Frames.CLOUD_DIMMING )*refs.flux;
+   var bright = refs.background != null && Frames.isNumber( m.background ) &&
+                m.background > refs.background*( 1 + Frames.CLOUD_BACKGROUND_RISE );
+   return dim || bright;
+};
+
+/* The frames in time order, or null unless every measured frame has a time. */
+Frames.timeOrder = function( list, times )
+{
+   if ( times == null )
+      return null;
+   var idx = [];
    for ( var i = 0; i < list.length; ++i )
       if ( list[i] != null )
-         out[i] = Frames.frameFlags( list[i], b );
+      {
+         if ( times[i] == null )
+            return null;
+         idx.push( i );
+      }
+   return idx.sort( function( a, b ) { return times[a] - times[b]; } );
+};
+
+Frames.anomalyFlags = function( list, comparable, times )
+{
+   var out = list.map( function() { return []; } );
+   if ( !comparable )
+      return out;
+   var corr = list.map( Frames.corrected );
+   var refs = Frames.flagReferences( list, corr );
+   var blurredCorr = corr.map( function( c )
+   {
+      return refs.fwhmCorr != null && c.fwhm != null &&
+             c.fwhm > ( 1 + Frames.BLUR_MARGIN )*refs.fwhmCorr;
+   } );
+   var order = Frames.timeOrder( list, times );
+   for ( var i = 0; i < list.length; ++i )
+   {
+      var m = list[i];
+      if ( m == null )
+         continue;
+      var st = refs.stars;
+      var f = { tracking: Frames.flagHigh( refs.eccentricity, m.eccentricity ),
+                cloud: Frames.isCloud( m, corr[i], refs ),
+                dropped: st != null && Frames.isNumber( m.stars ) &&
+                         m.stars < Frames.DROPPED_FRACTION*st.median };
+      var cause = Frames.blurCause( i, list, corr, refs, blurredCorr, order );
+      if ( cause != null )
+         f[cause] = true;
+      out[i] = Frames.FLAG_ORDER.filter( function( k ) { return f[k]; } );
+   }
    return out;
 };
 

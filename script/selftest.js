@@ -130,6 +130,76 @@ function fsFixtureChannel()
    return Frames.newChannel( "O", entries, metrics, [] );
 }
 
+/*
+ * A synthetic star field, so the suite depends on nothing but PixInsight:
+ * flat background, Gaussian noise and Gaussian stars from a seeded
+ * generator, with the header keywords the Frame Selector groups and orders
+ * by. FWHM and background are known by construction.
+ */
+function synthRandom( seed )
+{
+   var a = seed >>> 0;
+   return function()
+   {
+      a = ( a + 0x6D2B79F5 ) >>> 0;
+      var t = Math.imul( a ^ ( a >>> 15 ), 1 | a );
+      t = ( t + Math.imul( t ^ ( t >>> 7 ), 61 | t ) ) ^ t;
+      return ( ( t ^ ( t >>> 14 ) ) >>> 0 )/4294967296;
+   };
+}
+
+function synthFrame( path, o )
+{
+   var w = o.width || 800, h = o.height || 600, sigma = o.fwhm/2.3548;
+   var rnd = synthRandom( o.seed || 1 ), starRnd = synthRandom( 12345 );   // same sky every frame
+   var buf = new Float32Array( w*h );
+   for ( var i = 0; i < buf.length; i += 2 )
+   {
+      var u = Math.max( 1e-12, rnd() ), v = rnd(), r = Math.sqrt( -2*Math.log( u ) );
+      buf[i] = o.background + o.noise*r*Math.cos( 2*Math.PI*v );
+      if ( i + 1 < buf.length ) buf[i + 1] = o.background + o.noise*r*Math.sin( 2*Math.PI*v );
+   }
+   var n = o.stars || 400, reach = Math.ceil( 4*sigma );
+   for ( var s = 0; s < n; ++s )
+   {
+      var cx = 10 + starRnd()*( w - 20 ), cy = 10 + starRnd()*( h - 20 );
+      var peak = ( o.flux || 1 )*( 0.03 + 0.5*Math.pow( starRnd(), 3 ) )*( 2.0/o.fwhm )*( 2.0/o.fwhm );
+      for ( var y = Math.max( 0, Math.floor( cy - reach ) ); y <= Math.min( h - 1, Math.ceil( cy + reach ) ); ++y )
+         for ( var x = Math.max( 0, Math.floor( cx - reach ) ); x <= Math.min( w - 1, Math.ceil( cx + reach ) ); ++x )
+         {
+            var dx = x - cx, dy = y - cy;
+            buf[y*w + x] += peak*Math.exp( -( dx*dx + dy*dy )/( 2*sigma*sigma ) );
+         }
+   }
+   for ( var k = 0; k < buf.length; ++k )
+      buf[k] = Math.min( 1, Math.max( 0, buf[k] ) );
+   var win = new ImageWindow( w, h, 1, 32, true, false, Util.freeWindowId( "fs_synth" ) );
+   try
+   {
+      win.mainView.beginProcess( UndoFlag_NoSwapFile );
+      win.mainView.image.setSamples( buf );
+      win.mainView.endProcess();
+      win.keywords = [ new FITSKeyword( "FILTER", "'" + ( o.filter || "S" ) + "'", "" ),
+                       new FITSKeyword( "EXPTIME", "60", "" ),
+                       new FITSKeyword( "IMAGETYP", "'Light Frame'", "" ),
+                       new FITSKeyword( "DATE-OBS", "'" + ( o.date || "2026-01-01T00:00:00" ) + "'", "" ) ];
+      win.saveAs( path, false, false, false, false );
+   }
+   finally { win.forceClose(); }
+   return path;
+}
+
+/* The suite's own scratch folder for generated frames. Emptied on entry. */
+function synthDir( name )
+{
+   var dir = "/tmp/agent-scratch/" + name;
+   if ( File.directoryExists( dir ) )
+      FrameSelector.emptyDirectory( dir );
+   else
+      File.createDirectory( dir, true );
+   return dir;
+}
+
 function runTests()
 {
    // uniqueWindowId: no clash returns the bare base
@@ -498,8 +568,8 @@ function runTests()
     */
    check( "the target folder becomes the project name",
           Pipeline.projectNameFromPath(
-             "/Volumes/A008/Elephant Trunk/master/masterLight_FILTER-H.xisf" ),
-          "Elephant Trunk" );
+             "/Volumes/Data/Crescent Nebula/master/masterLight_FILTER-H.xisf" ),
+          "Crescent Nebula" );
    check( "generic folders are skipped, however many",
           Pipeline.projectNameFromPath(
              "/data/NGC 7000/integration/master/autocrop/masterLight.xisf" ),
@@ -1824,7 +1894,7 @@ function runTests()
     */
    check( "Frames loads", typeof Frames, "object" );   // var Frames = {}
    check( "and declares the version its numbers came from",
-          Frames.MEASURE_VERSION, "v2" );      // v2: background and SNR estimate
+          Frames.MEASURE_VERSION, "v3" );      // v3: altitude and star flux
 
    /*
     * The measurement row is positional. An earlier draft of the spec had PSF
@@ -2409,16 +2479,21 @@ function runTests()
       m = Frames.metricsFromRow( row );
       check( "metricsFromRow reads background", m.background, 0.021 );
       check( "metricsFromRow reads SNR", m.snrWeight, 42.5 );
+      check( "altitude is column 20, star flux 21", [ Frames.COL.altitude, Frames.COL.psfFlux ], [ 20, 21 ] );
+      row[20] = 58.3; row[21] = 647.3;
+      m = Frames.metricsFromRow( row );
+      check( "metricsFromRow reads altitude and flux", [ m.altitude, m.psfFlux ], [ 58.3, 647.3 ] );
       check( "a good row has no optional problems", Frames.optionalProblems( m ), [] );
 
       // schema scope: a disabled field is null whatever it holds
       check( "sanitize nulls a disabled field",
-             Frames.sanitizeOptional( { background: 0.02, snrWeight: 3 }, { background: true } ),
-             { background: null, snrWeight: 3 } );
+             Frames.sanitizeOptional( { background: 0.02, snrWeight: 3, altitude: 50, psfFlux: 600 },
+                                      { background: true } ),
+             { background: null, snrWeight: 3, altitude: 50, psfFlux: 600 } );
       // value scope: one bad reading nulls only itself
       check( "sanitize nulls only a bad value",
-             Frames.sanitizeOptional( { background: NaN, snrWeight: 3 }, {} ),
-             { background: null, snrWeight: 3 } );
+             Frames.sanitizeOptional( { background: NaN, snrWeight: 3, altitude: 50, psfFlux: 600 }, {} ),
+             { background: null, snrWeight: 3, altitude: 50, psfFlux: 600 } );
       check( "sanitize nulls a negative value",
              Frames.sanitizeOptional( { background: -1, snrWeight: 3 }, {} ).background, null );
 
@@ -2461,76 +2536,94 @@ function runTests()
    /* ---- anomaly flags: advisory, per metric, never a verdict ------------ */
    ( function()
    {
-      function M( o ) { var b = { fwhm: 4, eccentricity: 0.45, stars: 8000,
-                                  background: 0.02, psfSNR: 10 };
+      function M( o ) { var b = { fwhm: 4, eccentricity: 0.45, stars: 8000, psfFlux: 600,
+                                  background: 0.02, psfSNR: 10, altitude: 70 };
                         for ( var k in o ) b[k] = o[k]; return b; }
       function spread( n, f ) { var a = []; for ( var i = 0; i < n; ++i ) a.push( f( i ) ); return a; }
       function none( list ) { return list.every( function( f ) { return f.length == 0; } ); }
-      // Background varies by ~0.1% frame to frame, as measured on real nights.
-      var base = spread( 12, function( i ) { return M( { fwhm: 3.8 + 0.04*i,
+      function minutes( n ) { return spread( n, function( i ) { return 1790000000000 + i*60000; } ); }
+      // A steady night: FWHM within 4%, eccentricity with real spread, flat background.
+      var base = spread( 12, function( i ) { return M( { fwhm: 3.9 + 0.01*i,
          eccentricity: 0.40 + 0.01*i, stars: 7800 + 40*i, background: 0.020 + 0.00002*i } ); } );
 
-      var focus = base.concat( [ M( { fwhm: 9 } ) ] );
-      check( "FOCUS fires on a wide frame", Frames.anomalyFlags( focus, true )[12], [ "focus" ] );
-      check( "and not on its neighbours", none( Frames.anomalyFlags( focus, true ).slice( 0, 12 ) ), true );
+      // blur, and what explains it
+      var wide = base.concat( [ M( { fwhm: 9 } ) ] );
+      check( "FOCUS: blur not explained by altitude, no time order",
+             Frames.anomalyFlags( wide, true )[12], [ "focus" ] );
+      check( "and nothing on its neighbours", none( Frames.anomalyFlags( wide, true ).slice( 0, 12 ) ), true );
+      check( "ALTITUDE: blur the airmass explains",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 5.6, altitude: 30 } ) ] ), true )[12],
+             [ "altitude" ] );
+      check( "not ALTITUDE when the correction still leaves it wide",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 7.5, altitude: 30 } ) ] ), true )[12],
+             [ "focus" ] );
+      var t13 = minutes( 13 );
+      check( "SEEING: one frame blurred, its neighbours in time sharp",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 9 } ) ] ), true, t13 )[12], [ "seeing" ] );
+      var run = base.slice( 0, 10 ).concat( [ M( { fwhm: 9 } ), M( { fwhm: 9 } ), M( { fwhm: 3.95 } ) ] );
+      check( "FOCUS: blur that persists across consecutive frames",
+             Frames.anomalyFlags( run, true, t13 ).slice( 10, 12 ), [ [ "focus" ], [ "focus" ] ] );
+      check( "no altitude reading means no altitude correction",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 5.6, altitude: 0 } ) ] ), true )[12],
+             [ "focus" ] );
+      check( "a spread under 20% is not blur",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 4.5 } ) ] ), true )[12], [] );
+
       check( "TRACKING fires on an eccentricity spike",
              Frames.anomalyFlags( base.concat( [ M( { eccentricity: 0.9 } ) ] ), true )[12], [ "tracking" ] );
-      check( "CLOUD fires on bright background",
+
+      // cloud: dimming or a brighter sky, never just fewer stars
+      check( "CLOUD: star flux down by more than a quarter",
+             Frames.anomalyFlags( base.concat( [ M( { psfFlux: 400 } ) ] ), true )[12], [ "cloud" ] );
+      check( "extinction at low altitude is not cloud",
+             Frames.anomalyFlags( base.concat( [ M( { psfFlux: 510, altitude: 30, fwhm: 3.9 } ) ] ), true )[12],
+             [] );
+      check( "CLOUD: background up",
              Frames.anomalyFlags( base.concat( [ M( { background: 0.2 } ) ] ), true )[12], [ "cloud" ] );
-      /*
-       * Background is judged RELATIVELY: SubframeSelector's median moves by
-       * about one 16-bit step between frames on a steady night, far under
-       * any spread floor, so a sigma rule never ran. A real cloud lifts it
-       * by tens of percent.
-       */
+      check( "fewer stars alone names nothing",
+             Frames.anomalyFlags( base.concat( [ M( { stars: 6000 } ) ] ), true )[12], [] );
       var steady = spread( 12, function() { return M( { background: 0.00774 } ); } );
-      check( "a one-step difference on a steady night is not cloud",
+      check( "a one-step background difference is not cloud",
              Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774 + 1/65535 } ) ] ), true )[12], [] );
-      check( "4% above the median is not cloud",
+      check( "4% above the median background is not cloud",
              Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774*1.04 } ) ] ), true )[12], [] );
-      check( "6% above the median is cloud",
+      check( "6% above it is",
              Frames.anomalyFlags( steady.concat( [ M( { background: 0.00774*1.06 } ) ] ), true )[12], [ "cloud" ] );
-      check( "CLOUD fires on few stars",
-             Frames.anomalyFlags( base.concat( [ M( { stars: 6000 } ) ] ), true )[12], [ "cloud" ] );
-      check( "DROPPED, not CLOUD, on almost no stars",
+      check( "no flux reading falls back to background alone",
+             Frames.anomalyFlags( base.map( function( m ) { var c = M( m ); c.psfFlux = null; return c; } )
+                                  .concat( [ M( { psfFlux: null, background: 0.2 } ) ] ), true )[12], [ "cloud" ] );
+
+      check( "DROPPED on almost no stars",
              Frames.anomalyFlags( base.concat( [ M( { stars: 40 } ) ] ), true )[12], [ "dropped" ] );
+      var flat = [ M( { stars: 1000 } ), M( { stars: 1000 } ), M( { stars: 1000 } ),
+                   M( { stars: 1000 } ), M( { stars: 0 } ) ];
+      check( "zero stars is DROPPED (a real count)", Frames.anomalyFlags( flat, true )[4], [ "dropped" ] );
+      check( "four frames flag nothing", none( Frames.anomalyFlags( flat.slice( 1 ), true ) ), true );
       check( "flags keep their fixed order",
              Frames.anomalyFlags( base.concat( [ M( { fwhm: 9, eccentricity: 0.9, background: 0.2 } ) ] ), true )[12],
              [ "focus", "tracking", "cloud" ] );
-
-      var flat = [ M( { stars: 1000 } ), M( { stars: 1000 } ), M( { stars: 1000 } ),
-                   M( { stars: 1000 } ), M( { stars: 1 } ) ];
-      check( "no spread still flags DROPPED", Frames.anomalyFlags( flat, true )[4], [ "dropped" ] );
-      flat[4] = M( { stars: 0 } );
-      check( "zero stars is DROPPED (a real count)", Frames.anomalyFlags( flat, true )[4], [ "dropped" ] );
-      check( "four frames flag nothing", none( Frames.anomalyFlags( flat.slice( 1 ), true ) ), true );
-      check( "a spread under 1% of the median flags nothing",
-             Frames.anomalyFlags( spread( 8, function( i ) { return M( { fwhm: 4 + 0.001*i } ); } )
-                                  .concat( [ M( { fwhm: 4.05 } ) ] ), true )[8], [] );
-      var noBg = base.map( function( m ) { var c = M( m ); c.background = null; return c; } )
-                     .concat( [ M( { background: null, stars: 6000 } ) ] );
-      check( "null background falls back to the star test",
-             Frames.anomalyFlags( noBg, true )[12], [ "cloud" ] );
       check( "an unmeasured row is skipped, not thrown on",
              Frames.anomalyFlags( base.concat( [ null ] ), true )[12], [] );
-      check( "not comparable flags nothing", Frames.anomalyFlags( focus, false )[12], [] );
+      check( "not comparable flags nothing", Frames.anomalyFlags( wide, false )[12], [] );
       check( "an all-unmeasured channel flags nothing",
              none( Frames.anomalyFlags( [ null, null, null, null, null, null ], true ) ), true );
 
       check( "summary counts frames, lists kinds",
-             Frames.flagSummary( [ [ "focus", "cloud" ], [], [ "cloud" ], [ "dropped" ] ] ),
-             "3 flagged: 2 cloud, 1 focus, 1 dropped" );
+             Frames.flagSummary( [ [ "focus", "cloud" ], [], [ "cloud" ], [ "altitude" ], [ "seeing" ] ] ),
+             "4 flagged: 2 cloud, 1 focus, 1 seeing, 1 altitude" );
       check( "empty summary", Frames.flagSummary( [ [], [] ] ), "" );
 
       var R = { state: Frames.STATE.REJECTED, override: null };
       var A = { state: Frames.STATE.APPROVED, override: null };
       check( "tags: rejected first, then each flag separately",
-             Frames.frameTags( R, [ "cloud", "focus" ], true, false ),
-             [ { text: "REJECTED", kind: "reject" }, { text: "CLOUD", kind: "flag" },
-               { text: "FOCUS", kind: "flag" } ] );
+             Frames.frameTags( R, [ "altitude", "cloud" ], true, false ),
+             [ { text: "REJECTED", kind: "reject" }, { text: "ALTITUDE", kind: "flag" },
+               { text: "CLOUD", kind: "flag" } ] );
       check( "tags: channel off while copying",
              Frames.frameTags( A, [], false, true ), [ { text: "CHANNEL OFF", kind: "reject" } ] );
-      // the row tooltip, word for word as fillFrames wrote it before
+      check( "every flag has a tag and a badge",
+             Frames.FLAG_ORDER.every( function( k ) { return !!Frames.FLAG_TAG[k] && !!Frames.FLAG_BADGE[k]; } ),
+             true );
       check( "row tooltip: verdict, reasons, override",
              Frames.rowTooltip( { path: "/a.xisf", state: Frames.STATE.REJECTED,
                                   override: Frames.OVERRIDE.CONDEMNED,
@@ -2540,9 +2633,6 @@ function runTests()
              Frames.rowTooltip( { path: "/b.xisf", state: Frames.STATE.APPROVED,
                                   override: null, reasons: [] }, [ "cloud", "focus" ] ),
              "/b.xisf\napproved\nlooks like: cloud, focus" );
-      check( "tags: kept frame, flags only",
-             Frames.frameTags( A, [ "tracking" ], true, false ),
-             [ { text: "TRACKING", kind: "flag" } ] );
 
       var ch = fsFixtureChannel();
       check( "a channel carries one flag list per row", ch.flags.length, ch.rows.length );
@@ -2551,6 +2641,12 @@ function runTests()
       var noFilter = Frames.newChannel( Frames.NO_FILTER, ch.entries,
                                         { "/fx/f0.xisf": M( { fwhm: 99 } ) }, [] );
       check( "the no-FILTER group is not flagged", none( noFilter.flags ), true );
+      var timed = ch.entries.map( function( e, i ) { var c = Frames.copyOf( e ); c.time = "2026-09-18T0" + ( i % 10 ) + ":00:00"; return c; } );
+      check( "entry times reach the channel's rows",
+             Frames.newChannel( "O", timed, ch.metrics, [] ).rows[3].time, "2026-09-18T03:00:00" );
+      check( "an observation time parses as UTC", Frames.obsTime( "'2026-09-18T03:29:11.730898'" ),
+             Date.UTC( 2026, 8, 18, 3, 29, 11, 730 ) );
+      check( "no time is null", Frames.obsTime( null ), null );
    } )();
 
    /* ---- emptying the output folder: what may never be emptied ---------- */
@@ -4095,27 +4191,21 @@ function runTests()
    /* ---- the Frame Selector measures, and the columns still mean --------- */
 
    /*
-    * Measure a real frame and check each column still MEANS what it is read
-    * as. Pinning the constants cannot do this -- Frames.COL.psfSNR === 28
+    * Measure a frame and check each column still MEANS what it is read as.
+    * Pinning the constants cannot do this -- Frames.COL.psfSNR === 28
     * passes unchanged after the process reorders its table -- and neither
     * can disjoint ranges, which real data rules out (see Frames.PLAUSIBLE).
     * The shape checks in Frames.meaningProblems are what carry it.
     *
-    * A missing fixture must FAIL, not skip. An assertion that silently
-    * disappears when a path is absent is how column-meaning coverage
-    * evaporates on another machine. The list is tried in order because WBPP
-    * renumbers its masters between runs: the plan's (1) became (2).
+    * The frame is GENERATED here, a synthetic star field, so the suite
+    * depends on nothing but PixInsight itself.
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var base = "/Volumes/A008/Elephant Trunk/master/" +
-                 "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-R_mono_drizzle_2x";
-      var fixture = Steps.firstExistingPath( [
-         base + "_(1)_autocrop.xisf",
-         base + "_(2)_autocrop.xisf",
-         base + "_(3)_autocrop.xisf" ] );
-      check( "the measurement fixture is present", fixture != null, true );
-      if ( fixture == null )
+      var fixture = synthFrame( synthDir( "fs-measure" ) + "/sub.xisf",
+                                { fwhm: 3.5, background: 0.02, noise: 0.002, seed: 3 } );
+      check( "the measurement fixture was generated", File.exists( fixture ), true );
+      if ( !File.exists( fixture ) )
          return;
 
       var measured = FrameSelector.measure( [ fixture ] );
@@ -4161,12 +4251,10 @@ function runTests()
    } )();
 
    /*
-    * Background and SNR estimate, confirmed on a LIGHT frame -- a real
-    * subframe, copied so the original is never touched.
-    *
-    * Background is compared with an INDEPENDENT figure: the frame's own
-    * median, computed by PixInsight on the same file. SNR estimate has no
-    * independent PJSR figure, so it gets shape checks and negative
+    * Background and SNR estimate, confirmed on a generated frame whose
+    * background is KNOWN (0.02) -- and against a second independent
+    * figure, the frame's own median computed by PixInsight. SNR estimate
+    * has no independent PJSR figure, so it gets shape checks and negative
     * controls. Honest limit: the optional-column handling inside measure()
     * cannot be made to fail on demand -- SubframeSelector cannot be told to
     * return a bad column -- so it is covered by the node tests of the
@@ -4174,20 +4262,10 @@ function runTests()
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var src = File.homeDirectory + "/Downloads/Light";
-      var have = File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [];
-      check( "a light frame for column confirmation is present", have.length > 0, true );
-      if ( have.length == 0 )
-         return;
-      have.sort();
-      var dir = "/tmp/agent-scratch/fs-columns";
-      if ( !File.directoryExists( dir ) )
-         File.createDirectory( dir, true );
-      var fixture = dir + "/" + File.extractNameAndExtension( have[0] );
-      if ( !File.exists( fixture ) )
-         File.copyFile( fixture, have[0] );         // target, source
+      var fixture = synthFrame( synthDir( "fs-columns" ) + "/sub.xisf",
+                                { fwhm: 3.5, background: 0.02, noise: 0.002, seed: 5 } );
       var measured = FrameSelector.measure( [ fixture ] );
-      check( "the light frame measured", measured != null && measured[fixture] != null, true );
+      check( "the generated frame measured", measured != null && measured[fixture] != null, true );
       if ( measured == null || measured[fixture] == null )
          return;
       var m = measured[fixture];
@@ -4196,8 +4274,9 @@ function runTests()
       var own = ws[0].mainView.image.median();
       FrameSelector.closeAll( ws );
       check( "background is a usable number", Frames.optionalOk( m.background ), true );
-      check( "background matches the image's own median (within 2%): " +
-             m.background + " vs " + own,
+      check( "background is the one the frame was made with (within 2%): " + m.background,
+             Math.abs( m.background - 0.02 ) <= 0.02*0.02, true );
+      check( "and matches the image's own median (within 2%): " + m.background + " vs " + own,
              Math.abs( m.background - own ) <= 0.02*Math.abs( own ), true );
       check( "noise (column 12) is not the median",
              Math.abs( m.noise - own ) > 0.02*Math.abs( own ), true );
@@ -4206,33 +4285,21 @@ function runTests()
    } )();
 
    /*
-    * convertInPlace, characterised on a real frame: it deletes originals,
-    * so what it keeps and what it removes is pinned. A copied S frame is
-    * saved as FITS in scratch. Two frames that would convert to the same
-    * name must be refused with NOTHING removed.
+    * convertInPlace, characterised on generated frames: it deletes
+    * originals, so what it keeps and what it removes is pinned. Frames are
+    * written as FITS into scratch. Two frames that would convert to the
+    * same name must be refused with NOTHING removed.
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var src = File.homeDirectory + "/Downloads/Light";
-      var have = ( File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [] )
-                 .filter( function( p ) { return /_S_/.test( File.extractName( p ) ); } );
-      check( "a frame for the conversion test is present", have.length > 0, true );
-      if ( have.length == 0 )
-         return;
-      var dir = "/tmp/agent-scratch/fs-convert";
-      if ( File.directoryExists( dir ) )
-         FrameSelector.frameFilesIn( dir ).forEach( function( f ) { File.remove( f ); } );
-      else
-         File.createDirectory( dir, true );
-      var ws = ImageWindow.open( have[0] );
-      function saveFits( path )
+      var dir = synthDir( "fs-convert" );
+      [ "a.fits", "b.fit", "b.fits" ].forEach( function( name, i )
       {
-         ws[0].saveAs( path, false/*query*/, false/*messages*/, false/*strict*/, false/*verify*/ );
-      }
-      saveFits( dir + "/a.fits" );
-      saveFits( dir + "/b.fit" );
-      saveFits( dir + "/b.fits" );
-      FrameSelector.closeAll( ws );
+         synthFrame( dir + "/" + name, { fwhm: 3.5, background: 0.02, noise: 0.002, seed: 20 + i } );
+      } );
+      check( "the conversion fixtures were generated",
+             File.exists( dir + "/a.fits" ) && File.exists( dir + "/b.fit" ) &&
+             File.exists( dir + "/b.fits" ), true );
 
       var clash = FrameSelector.convertInPlace( [ dir + "/b.fit", dir + "/b.fits" ] );
       check( "a name collision is refused", clash.refused != null, true );
@@ -4316,34 +4383,23 @@ function runTests()
    } )();
 
    /*
-    * The filmstrip on REAL frames: 20 of the S set, copied so the originals
-    * are never touched. Timer ticks are observed, every thumbnail arrives,
-    * the crosses are exactly the frames Run leaves out, a click selects, a
+    * The filmstrip on 20 GENERATED frames of one filter, a minute apart:
+    * FWHM spread from 3.0 so the relative gate is active, and two wide ones
+    * it rejects. Timer ticks are observed, every thumbnail arrives, the
+    * crosses are exactly the frames Run leaves out, a click selects, a
     * stale result is discarded. Then five show/close cycles closing
     * MID-LOAD through the window path alone.
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var src = File.homeDirectory + "/Downloads/Light";
-      var dst = "/tmp/agent-scratch/fs-filmstrip-S";
-      /*
-       * One filter only: the folder holds R, G, O and S subs, and a mixed
-       * set is several channels, not one of 20. S has the most (60).
-       */
-      var have = ( File.directoryExists( src ) ? FrameSelector.frameFilesIn( src ) : [] )
-                 .filter( function( p ) { return /_S_/.test( File.extractName( p ) ); } );
-      check( "the filmstrip fixture is present (20 S frames)", have.length >= 20, true );
-      if ( have.length < 20 )
-         return;
-      if ( !File.directoryExists( dst ) )
-         File.createDirectory( dst, true );
-      have.sort();
+      var dst = synthDir( "fs-filmstrip" );
       for ( var i = 0; i < 20; ++i )
-      {
-         var to = dst + "/" + File.extractNameAndExtension( have[i] );
-         if ( !File.exists( to ) )
-            File.copyFile( to, have[i] );         // target, source
-      }
+         synthFrame( dst + "/frame_" + ( i < 10 ? "0" : "" ) + i + ".xisf",
+                     { fwhm: ( i == 18 ) ? 6.0 : ( i == 19 ) ? 7.0 : 3.0 + 0.05*i,
+                       background: 0.02, noise: 0.002, seed: 100 + i,
+                       date: "2026-01-01T02:" + ( i < 10 ? "0" : "" ) + i + ":00" } );
+      check( "the filmstrip fixture was generated (20 frames)",
+             FrameSelector.frameFilesIn( dst ).length, 20 );
 
       function waitFor( pred, seconds )
       {

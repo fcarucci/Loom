@@ -420,7 +420,7 @@ at a limit:
 - Every test above is checked to fail with the guarded code removed.
 
 PixInsight suite (running core):
-- Fixture: 20 distinct frames from the `~/Downloads/Light` O set, copied to
+- Fixture: 20 distinct frames from the a local folder of subframes O set, copied to
   `/tmp/agent-scratch` (the originals are never touched).
 - Column confirmation on the first of them, as specified in section 4.
 - Dialog on the copy: fields read-only in Relative, editable in

@@ -1287,7 +1287,7 @@ These are pure, so they live here rather than on `FrameSelector`. `FrameSelector
    check( "the root is inside itself",
           AsiairNames.isInside( "/Volumes/ASIAIR", "/Volumes/ASIAIR" ), true );
    check( "a folder elsewhere is not",
-          AsiairNames.isInside( "/Volumes/A008/M42", "/Volumes/ASIAIR" ), false );
+          AsiairNames.isInside( "/Volumes/<drive>/M42", "/Volumes/ASIAIR" ), false );
    check( "a sibling sharing a prefix is not",
           AsiairNames.isInside( "/Volumes/ASIAIR-backup", "/Volumes/ASIAIR" ), false );
    check( "a trailing slash changes nothing",

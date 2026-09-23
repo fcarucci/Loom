@@ -366,6 +366,9 @@ FrameSelector.entryFor = function( path )
              */
             binningY:  keyword( "YBINNING" ),
             imageType: keyword( "IMAGETYP" ),
+            // When it was taken: blur that persists over consecutive frames
+            // is focus, a single blurred frame among sharp ones is seeing.
+            time:      keyword( "DATE-OBS" ),
             width:  info ? info.width  : 0,
             height: info ? info.height : 0,
             calibrated: calibrated };
@@ -2562,15 +2565,19 @@ FrameSelector.Dialog = class extends Dialog
       this.sizer = new VerticalSizer;
       this.sizer.margin = 8;
       this.sizer.spacing = 6;
-      this.sizer.add( middle, 100 );
-      this.sizer.add( this.plotPane );
+      /*
+       * The strip right under the frames and the preview it belongs with,
+       * then the plot.
+       */
       var strip = new HorizontalSizer;
       strip.spacing = 4;
       strip.add( this.stripMetric );
       strip.add( this.stripPrev );
       strip.add( this.filmstrip, 100 );
       strip.add( this.stripNext );
+      this.sizer.add( middle, 100 );
       this.sizer.add( strip );
+      this.sizer.add( this.plotPane );
       this.sizer.add( this.criteriaGroup );
       this.sizer.add( this.problemsLabel );
       this.sizer.add( this.summaryLabel );
@@ -3229,7 +3236,8 @@ FrameSelector.Filmstrip = class extends Frame
       this.setScaledMinHeight( FrameSelector.THUMB.H + 12 );
       this.toolTip = "<p>Click a frame to review it. A red cross marks a " +
                      "frame Run leaves out; the letters are advisory: " +
-                     "C cloud, F focus, T tracking, D dropped.</p>";
+                     "F focus, S seeing, A altitude, T tracking, C cloud, " +
+                     "D dropped.</p>";
       this.onPaint = function() { self.paint(); };
       this.onMousePress = function( x, y )
       {

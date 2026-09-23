@@ -94,7 +94,7 @@ duplicate's pixels, renders it once, and shows it in a pannable control:
 #engine v8
 #include <pjsr/UndoFlag.jsh>
 
-#define SUB "/Volumes/A008/Elephant Trunk/calibrated/Light_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-G_mono_DAY-11 - Pinnacles"
+#define SUB "/Volumes/<drive>/<target>/calibrated/Light_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-G_mono_DAY-11 - Pinnacles"
 
 var LOG = "/tmp/agent-scratch/preview-proto.txt";
 var lines = [];
@@ -273,7 +273,7 @@ Add to `runTests()` in `script/selftest.js`, immediately before the closing
 - [ ] **Step 2: Run it to make sure it fails**
 
 ```bash
-cd /Users/francescocarucci/PixInsight/scripts/Loom && node ci/run-tests.js
+cd ~/PixInsight/scripts/Loom && node ci/run-tests.js
 ```
 
 Expected: `FAILED TO LOAD` or `Frames loads: expected "object", got "undefined"`.
@@ -335,7 +335,7 @@ mechanisms and a library must be added to both.
 node ci/run-tests.js
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -1807,7 +1807,7 @@ Inside the `IN_PIXINSIGHT` block in `script/selftest.js`:
        * evaporates on another machine.
        */
       var fixture = Steps.firstExistingPath( [
-         "/Volumes/A008/Elephant Trunk/master/" +
+         "/Volumes/<drive>/<target>/master/" +
          "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-R_mono_drizzle_2x_(1)_autocrop.xisf" ] );
       check( "the measurement fixture is present", fixture != null, true );
       if ( fixture != null )
@@ -1844,7 +1844,7 @@ Inside the `IN_PIXINSIGHT` block in `script/selftest.js`:
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -1965,7 +1965,7 @@ FrameSelector.measure = function( paths )
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 node ci/run-tests.js
@@ -2027,7 +2027,7 @@ Inside `IN_PIXINSIGHT`:
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2190,7 +2190,7 @@ since `entryFor` uses `Pipeline.readImageInfo`.
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 node ci/run-tests.js
@@ -2254,7 +2254,7 @@ Inside `IN_PIXINSIGHT`, using copies in scratch:
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2355,7 +2355,7 @@ FrameSelector.scan = function( folder )
 node ci/run-tests.js
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2436,7 +2436,7 @@ Inside `IN_PIXINSIGHT`. It operates on **copies in scratch**, never on real subs
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2585,7 +2585,7 @@ FrameSelector.execute = function( manifest )
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 node ci/run-tests.js
@@ -2652,7 +2652,7 @@ Inside `IN_PIXINSIGHT`:
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2819,7 +2819,7 @@ FrameSelector.PreviewControl = class extends Control
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 node ci/run-tests.js
@@ -2882,7 +2882,7 @@ Inside `IN_PIXINSIGHT`:
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
@@ -2914,7 +2914,7 @@ into its own constructor in the same file.
 ```bash
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 node ci/run-tests.js
@@ -3116,7 +3116,7 @@ Absolute mode is the only one that keeps an entire good night.
 node ci/run-tests.js
 rm -f /tmp/agent-scratch/lhso-selftest.txt
 /Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
-  -x=1:/Users/francescocarucci/PixInsight/scripts/Loom/script/selftest.js
+  -x=1:~/PixInsight/scripts/Loom/script/selftest.js
 until [ -f /tmp/agent-scratch/lhso-selftest.txt ]; do sleep 5; done
 head -4 /tmp/agent-scratch/lhso-selftest.txt
 ```
