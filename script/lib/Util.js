@@ -296,7 +296,14 @@ Util.CHANNELS   = [ "L", "R", "G", "B", "H", "S", "O" ];
 Util.BROADBAND  = [ "L", "R", "G", "B" ];
 Util.RGB_GROUP  = [ "R", "G", "B" ];
 Util.NARROWBAND = [ "H", "S", "O" ];
-Util.REQUIRED   = [ "L" ];
+/*
+ * No channel is required on its own. L used to be, only because it was
+ * the hard-wired registration reference; without it Loom now registers to
+ * the best channel it has (Pipeline.registrationReference), so RGB-only
+ * and narrowband-only sets are valid. The "nothing to do" check below
+ * still demands something to combine.
+ */
+Util.REQUIRED   = [];
 
 Util.isBroadband = function( key )
 {

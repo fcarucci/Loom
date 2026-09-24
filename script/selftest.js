@@ -162,7 +162,8 @@ function synthFrame( path, o )
    var n = o.stars || 400, reach = Math.ceil( 4*sigma );
    for ( var s = 0; s < n; ++s )
    {
-      var cx = 10 + starRnd()*( w - 20 ), cy = 10 + starRnd()*( h - 20 );
+      var cx = 10 + starRnd()*( w - 20 ) + ( o.dx || 0 ),
+          cy = 10 + starRnd()*( h - 20 ) + ( o.dy || 0 );
       var peak = ( o.flux || 1 )*( 0.03 + 0.5*Math.pow( starRnd(), 3 ) )*( 2.0/o.fwhm )*( 2.0/o.fwhm );
       for ( var y = Math.max( 0, Math.floor( cy - reach ) ); y <= Math.min( h - 1, Math.ceil( cy + reach ) ); ++y )
          for ( var x = Math.max( 0, Math.floor( cx - reach ) ); x <= Math.min( w - 1, Math.ceil( cx + reach ) ); ++x )
@@ -295,11 +296,23 @@ function runTests()
                                     G: "/a/G.xisf" } ),
           [ "Incomplete RGB set: missing B. Supply all three or none." ] );
 
-   // L is the registration reference and is always required
-   check( "validate missing L",
+   /*
+    * L is no longer required. It is the registration reference when it is
+    * there; without it Loom registers to the best of the channels it has
+    * (Pipeline.registrationReference), so RGB-only and narrowband-only
+    * sets are real work, not a validation error.
+    */
+   check( "validate RGB without L",
           Util.validateSelection( { R: "/a/R.xisf", G: "/a/G.xisf",
                                     B: "/a/B.xisf" } ),
-          [ "Missing required channel: L" ] );
+          [] );
+   check( "validate narrowband without L",
+          Util.validateSelection( { H: "/a/H.xisf", S: "/a/S.xisf",
+                                    O: "/a/O.xisf" } ),
+          [] );
+   check( "validate a single narrowband channel without L",
+          Util.validateSelection( { H: "/a/H.xisf" } ),
+          [] );
 
    // L on its own has nothing to do
    check( "validate L alone",
@@ -380,9 +393,10 @@ function runTests()
    check( "validate view L plus view narrowband",
           Util.validateSelection( {}, { L: "L", H: "H" } ),
           [] );
-   check( "validate missing L when only views given",
+   // views count the same as files for the no-L case too
+   check( "validate RGB views without L",
           Util.validateSelection( {}, { R: "R1", G: "G1", B: "B1" } ),
-          [ "Missing required channel: L" ] );
+          [] );
 
    // the selection list is remembered between runs
    check( "serializeEntries round trip",
@@ -6558,6 +6572,315 @@ function runTests()
       if ( Steps.RESIDUALS_CONFIG[needed[ri]] === undefined )
          missing.push( needed[ri] );
    check( "every parameter AstrometricResiduals requires is present", missing, [] );
+
+   // ---- registration reference --------------------------------------------
+
+   /*
+    * Which channel everything is registered to. L when there is one --
+    * that must never change -- and otherwise the channel whose stars pin
+    * the transform down best: FWHM / sqrt(star count), lowest wins. The
+    * figures are the SubframeSelector ones Loom already measures per
+    * master (Steps.measureMasterFWHM), so the fixtures are shaped alike.
+    */
+   ( function()
+   {
+      var rr = Pipeline.registrationReference;
+      var sharpRich = { fwhm: 2.8, stars: 3000 };
+
+      check( "L is the reference whenever it is present",
+             rr( [ "L", "R", "G", "B" ],
+                 { L: { fwhm: 6.0, stars: 50 }, G: sharpRich } ).key, "L" );
+      check( "L wins with no measurements at all",
+             rr( [ "H", "O", "L" ], {} ).key, "L" );
+
+      // A typical RGB set: G is the sharpest and richest
+      check( "RGB without L registers to the best-measured channel",
+             rr( [ "R", "G", "B" ],
+                 { R: { fwhm: 3.4, stars: 2400 },
+                   G: { fwhm: 3.0, stars: 2600 },
+                   B: { fwhm: 3.9, stars: 1900 } } ).key, "G" );
+
+      // Sharpness alone does not win: a starved OIII registers nothing well
+      check( "a sharp but star-starved channel loses to a deep one",
+             rr( [ "H", "S", "O" ],
+                 { H: { fwhm: 3.2, stars: 3000 },
+                   S: { fwhm: 3.4, stars: 900 },
+                   O: { fwhm: 2.9, stars: 150 } } ).key, "H" );
+
+      // ...and neither does star count alone: a soft channel places every
+      // centroid less precisely
+      check( "a soft channel loses despite a few more stars",
+             rr( [ "R", "G", "B" ],
+                 { R: { fwhm: 6.0, stars: 2000 },
+                   G: { fwhm: 3.0, stars: 1800 },
+                   B: { fwhm: 5.5, stars: 1900 } } ).key, "G" );
+
+      // Nothing measured: the fixed order, broadband before narrowband
+      check( "unmeasured RGB falls back to G",
+             rr( [ "R", "G", "B" ], {} ).key, "G" );
+      check( "unmeasured RGB plus Ha still falls back to G",
+             rr( [ "R", "G", "B", "H" ], null ).key, "G" );
+      check( "unmeasured narrowband falls back to H",
+             rr( [ "O", "S", "H" ], {} ).key, "H" );
+      check( "unmeasured SII + OIII falls back to S",
+             rr( [ "O", "S" ], {} ).key, "S" );
+      check( "a lone channel is its own reference",
+             rr( [ "O" ], {} ).key, "O" );
+
+      // A measured channel beats one that could not be measured
+      check( "measured channels rank ahead of unmeasured ones",
+             rr( [ "R", "G", "B" ],
+                 { R: { fwhm: 4.0, stars: 1000 }, G: null,
+                   B: { fwhm: 3.5, stars: 1200 } } ).key, "B" );
+
+      // Garbage is not a measurement
+      check( "zero, negative and non-numeric measurements are ignored",
+             rr( [ "R", "G", "B" ],
+                 { R: { fwhm: 0, stars: 5000 },
+                   G: { fwhm: NaN, stars: 5000 },
+                   B: { fwhm: 3.0, stars: 0 } } ).key, "G" );
+      check( "a failed measurement does not beat a real one",
+             rr( [ "H", "O" ],
+                 { H: { fwhm: -1, stars: 9000 },
+                   O: { fwhm: 3.0, stars: 200 } } ).key, "O" );
+
+      // Ties go to the fixed order, never to object or argument order
+      check( "an exact tie goes to the fixed order (G over R)",
+             rr( [ "R", "G" ], { R: sharpRich, G: sharpRich } ).key, "G" );
+      check( "an exact tie goes to the fixed order (H over S)",
+             rr( [ "S", "H" ], { S: sharpRich, H: sharpRich } ).key, "H" );
+      check( "the argument order does not change the answer",
+             rr( [ "B", "G", "R" ],
+                 { R: { fwhm: 3.4, stars: 2400 },
+                   G: { fwhm: 3.0, stars: 2600 },
+                   B: { fwhm: 3.9, stars: 1900 } } ).key,
+             rr( [ "R", "G", "B" ],
+                 { B: { fwhm: 3.9, stars: 1900 },
+                   R: { fwhm: 3.4, stars: 2400 },
+                   G: { fwhm: 3.0, stars: 2600 } } ).key );
+
+      check( "no channels, no reference", rr( [], {} ).key, null );
+
+      // The reason is what the log says; it has to name the evidence
+      var why = rr( [ "H", "O" ], { H: { fwhm: 3.2, stars: 3000 },
+                                    O: { fwhm: 2.9, stars: 150 } } ).reason;
+      check( "the reason quotes the winner's FWHM and star count",
+             why.indexOf( "3.20" ) >= 0 && why.indexOf( "3000" ) >= 0, true );
+      check( "the fallback says it is a fallback",
+             rr( [ "R", "G", "B" ], {} ).reason.indexOf( "no usable" ) >= 0, true );
+   } )();
+
+   /*
+    * The wiring: every place that assumed L now follows the chosen key.
+    * StarAlignment and SubframeSelector are stubbed, so this runs under
+    * node; the real processes are exercised by the PixInsight block below.
+    */
+   ( function()
+   {
+      var realRegister = Steps.register, realMeasure = Steps.measureMasterFWHM;
+      var realValidRect = Steps.validRect, realCropTo = Steps.cropTo;
+      var calls = [], measured = [];
+      function fakeWin( id, w, h )
+      {
+         var win = { id: id, closed: false,
+                     forceClose: function() { this.closed = true; } };
+         win.mainView = { id: id, image: { width: w || 100, height: h || 100 } };
+         return win;
+      }
+      function chan( key, path, loaded )
+      {
+         var c = { key: key, path: path, window: null, view: null,
+                   sourceKey: "src-" + key, currentKey: "cur-" + key };
+         if ( loaded )
+         {
+            c.window = fakeWin( key + "_work" );
+            c.view = c.window.mainView;
+         }
+         else
+            c.load = function()
+            {
+               this.window = fakeWin( this.key + "_work" );
+               this.view = this.window.mainView;
+               return this.window;
+            };
+         return c;
+      }
+      var quality = { "/m/R.xisf": { fwhm: 3.4, stars: 2400 },
+                      "/m/G.xisf": { fwhm: 3.0, stars: 2600 },
+                      "/m/B.xisf": { fwhm: 3.9, stars: 1900 },
+                      "/m/H.xisf": { fwhm: 3.2, stars: 3000 },
+                      "/m/O.xisf": { fwhm: 2.9, stars: 150 },
+                      "/m/L.xisf": { fwhm: 9.0, stars: 10 } };
+      try
+      {
+         Steps.register = function( view, refView )
+         {
+            calls.push( view.id + ">" + refView.id );
+            return fakeWin( view.id + "_registered" );
+         };
+         Steps.measureMasterFWHM = function( path )
+         {
+            measured.push( path );
+            return quality[path] || null;
+         };
+         var cfg = { useCache: false };
+
+         // RGB without L: G is the reference, R and B register to it
+         var chans = { R: chan( "R", "/m/R.xisf", true ),
+                       G: chan( "G", "/m/G.xisf", true ),
+                       B: chan( "B", "/m/B.xisf", true ) };
+         var gKey = chans.G.currentKey, rKey = chans.R.currentKey;
+         var ref = Pipeline.registerToReference( chans, cfg, new Util.Registry );
+         check( "without L the reference is the chosen channel", ref.refKey, "G" );
+         check( "everything else registers to it, and it is not registered itself",
+                calls, [ "R_work>G_work", "B_work>G_work" ] );
+         check( "the reference view is the chosen channel's",
+                ref.refView === chans.G.view, true );
+         check( "the cache fingerprint is the chosen channel's key",
+                ref.refFingerprint, gKey );
+         check( "the reference keeps its own running key", chans.G.currentKey, gKey );
+         check( "a registered channel's key chains from the chosen reference",
+                chans.R.currentKey,
+                Cache.chainKey( rKey, "register", { ref: gKey } ) );
+
+         // L present: L is the reference, keys exactly as before, and
+         // nothing is measured -- the L path costs nothing new
+         calls = []; measured = [];
+         var lchans = { L: chan( "L", "/m/L.xisf", true ),
+                        R: chan( "R", "/m/R.xisf", true ),
+                        G: chan( "G", "/m/G.xisf", true ),
+                        B: chan( "B", "/m/B.xisf", true ) };
+         var lKey = lchans.L.currentKey, lrKey = lchans.R.currentKey;
+         var lref = Pipeline.registerToReference( lchans, cfg, new Util.Registry );
+         check( "with L present the reference is still L", lref.refKey, "L" );
+         check( "with L present every other channel registers to L",
+                calls, [ "R_work>L_work", "G_work>L_work", "B_work>L_work" ] );
+         check( "with L present the register key is unchanged",
+                lchans.R.currentKey,
+                Cache.chainKey( lrKey, "register", { ref: lKey } ) );
+         check( "with L present no master is measured", measured, [] );
+
+         // Narrowband only, reference not yet loaded: it must be loaded
+         // before StarAlignment is pointed at it
+         calls = [];
+         var nchans = { H: chan( "H", "/m/H.xisf", false ),
+                        O: chan( "O", "/m/O.xisf", true ) };
+         var nref = Pipeline.registerToReference( nchans, cfg, new Util.Registry );
+         check( "narrowband only: Ha is the reference", nref.refKey, "H" );
+         check( "an unloaded reference is loaded before registering to it",
+                calls, [ "O_work>H_work" ] );
+
+         /*
+          * The crop's sanity floor is a percentage of the REFERENCE frame.
+          * A 600x600 common area of a 1000x1000 G is 36%, and the error
+          * must say so -- reading chans.L here would throw a TypeError.
+          */
+         Steps.validRect = function( view, margin )
+         {
+            return { x0: 0, y0: 0, x1: 600, y1: 600 };
+         };
+         Steps.cropTo = function( view, rect ) {};
+         var cchans = { R: chan( "R", "/m/R.xisf", true ),
+                        G: chan( "G", "/m/G.xisf", true ),
+                        B: chan( "B", "/m/B.xisf", true ) };
+         cchans.G.view.image = { width: 1000, height: 1000 };
+         var cropError = "";
+         try { Pipeline.cropToCommonArea( cchans, "G" ); }
+         catch ( e ) { cropError = String( e ); }
+         check( "the crop floor is measured against the chosen reference",
+                cropError.indexOf( "only 36.0%" ) >= 0, true );
+         Steps.validRect = function( view, margin )
+         {
+            return { x0: 0, y0: 0, x1: 900, y1: 1000 };
+         };
+         var common = Pipeline.cropToCommonArea( cchans, "G" );
+         check( "and without L the crop goes ahead on the chosen reference",
+                common.x1, 900 );
+
+         // The composite's camera follows L, and the reference without it
+         check( "the composite camera is L's when L is present",
+                Pipeline.compositeInstrument(
+                   { L: { instrume: "ZWO ASI6200MM" }, G: { instrume: "other" } }, "L" ),
+                "ZWO ASI6200MM" );
+         check( "and the reference channel's without L",
+                Pipeline.compositeInstrument(
+                   { R: { instrume: "r-cam" }, G: { instrume: "ZWO ASI2600MM" } }, "G" ),
+                "ZWO ASI2600MM" );
+         check( "and nothing when there is no camera to name",
+                Pipeline.compositeInstrument( {}, null ), null );
+      }
+      finally
+      {
+         Steps.register = realRegister;
+         Steps.measureMasterFWHM = realMeasure;
+         Steps.validRect = realValidRect;
+         Steps.cropTo = realCropTo;
+      }
+   } )();
+
+   /*
+    * The same choice on real measurements and a real StarAlignment, from
+    * GENERATED masters: a sharp G and a softer, shallower R and B.
+    * The quality table and cache are pointed at the suite's own scratch
+    * folder so nothing of the user's is read or written.
+    *
+    * All three share ONE star population, as three filters on one field
+    * do, and differ in width and depth -- R and B are fainter, so fewer
+    * of the same stars are detected. The first version gave R and B 120
+    * stars against G's 500, and StarAlignment refused R outright: the
+    * 120 were a sparse subset of G's field. Measured directly, with no
+    * Loom code between the files and the process, it fails whenever one
+    * frame sees only ~a fifth of the other's stars -- at equal FWHM too,
+    * and with the roles reversed -- and succeeds on matched populations,
+    * on an identity transform and on an offset one. So that was the
+    * fixture, not the wiring. R and B are also shifted by a few pixels,
+    * so the registration is a real transform, not an identity.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "reg-reference" );
+      var savedCacheDir = Cache.overrideDir, savedTable = Steps.qualityTable;
+      var reg = new Util.Registry;
+      try
+      {
+         Cache.setDir( dir + "/cache" );
+         Steps.qualityTable = null;
+         var paths = {
+            R: synthFrame( dir + "/R.xisf", { fwhm: 5.0, stars: 500, flux: 0.6,
+                                               dx: 3.3, dy: -2.1, background: 0.02,
+                                               noise: 0.002, seed: 31, filter: "R" } ),
+            G: synthFrame( dir + "/G.xisf", { fwhm: 2.6, stars: 500,
+                                               background: 0.02,
+                                               noise: 0.002, seed: 32, filter: "G" } ),
+            B: synthFrame( dir + "/B.xisf", { fwhm: 5.5, stars: 500, flux: 0.6,
+                                               dx: -1.7, dy: 2.4, background: 0.02,
+                                               noise: 0.002, seed: 33, filter: "B" } )
+         };
+         var q = {};
+         for ( var k in paths )
+            q[k] = Steps.measureMasterFWHM( paths[k] );
+         check( "the generated masters all measure",
+                q.R != null && q.G != null && q.B != null, true );
+         check( "the sharp, star-rich generated master is chosen",
+                Pipeline.registrationReference( [ "R", "G", "B" ], q ).key, "G" );
+
+         var chans = Pipeline.loadChannels( { paths: paths, views: {} }, reg );
+         var ref = Pipeline.registerToReference( chans, { useCache: false }, reg );
+         check( "a real no-L run registers to G", ref.refKey, "G" );
+         var gw = chans.G.view.image.width, gh = chans.G.view.image.height;
+         check( "every channel lands on the reference grid",
+                chans.R.view.image.width == gw && chans.R.view.image.height == gh &&
+                chans.B.view.image.width == gw && chans.B.view.image.height == gh, true );
+         var common = Pipeline.cropToCommonArea( chans, ref.refKey );
+         check( "and the common-area crop runs without L", common != null, true );
+      }
+      finally
+      {
+         reg.closeAll();
+         Steps.qualityTable = savedTable;
+         Cache.setDir( savedCacheDir );
+      }
+   } )();
 
 }
 

@@ -1060,7 +1060,8 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
          temps.push( w );
 
          /*
-          * NOTE: refView is L, and L has ALREADY been cropped to `common` by
+          * NOTE: refView is the registration reference (L, or the channel
+          * chosen in its place), and it has ALREADY been cropped to `common` by
           * the time this runs -- the crop is applied in place, so the same
           * view object is now the cropped one. Registering against it
           * therefore lands these channels directly in the cropped frame, the
@@ -1758,9 +1759,10 @@ Pipeline.correctBroadband = function( chans, config, reg )
 };
 
 /*
- * Register every channel onto L. L is the reference and is never
- * resampled. Returns the reference view and the cache key identifying
- * it, both of which later stages key their own work against.
+ * Register every channel onto the reference: L when present, otherwise
+ * the channel Pipeline.registrationReference picks. The reference is
+ * never resampled. Returns its key, its view and the cache key
+ * identifying it, all of which later stages key their own work against.
  */
 /*
  * The stages a narrowband channel runs before registration, or null.
@@ -1813,29 +1815,198 @@ Pipeline.correctNarrowband = function( chans, config, reg )
    }
 };
 
-Pipeline.registerToReference = function( chans, config, reg )
+/*
+ * The order channels are preferred in when measurements cannot decide:
+ * nothing measured, a measurement failed, or an exact tie.
+ *
+ * Broadband before narrowband, because a broadband filter passes every
+ * star's continuum and a 3-7 nm line filter passes a sliver of it -- on
+ * the same field and exposure a broadband master simply holds more
+ * stars. G first among them: it sits near the peak of a typical sensor's
+ * QE curve, between R and B. Among narrowband, Ha is almost
+ * always the deepest; OIII is the channel most often starved of stars.
+ */
+Pipeline.REGISTRATION_FALLBACK_ORDER = [ "G", "R", "B", "H", "S", "O" ];
+
+/*
+ * The channel every other channel is registered to.
+ *
+ * `present` lists the channel keys in the run; `quality` maps a key to
+ * the SubframeSelector measurement of its master ({ fwhm, stars }, as
+ * Steps.measureMasterFWHM returns it) or to nothing. Pure: returns
+ * { key, reason } and touches no image.
+ *
+ * L, whenever it is there. It is the detail channel and the one plate
+ * that is never resampled; that is a decision about the output, not
+ * about registration quality, and it must not change behind the user's
+ * back -- so it is not even measured.
+ *
+ * Without L, the channel whose stars pin the transform down best. How
+ * well a star field fixes a registration goes as the centroid error of
+ * one star over the square root of how many stars there are, and a
+ * star's centroid error scales with its width. So the figure is
+ *
+ *    FWHM / sqrt( stars ),  lowest wins
+ *
+ * which punishes both failure modes: a sharp OIII with 150 stars
+ * (2.9/12.2 = 0.24) loses to an Ha with 3000 (3.2/54.8 = 0.058), and a
+ * soft R with a few more stars than G still loses to it. Per-star SNR
+ * would divide the figure too, but it is not comparable across
+ * filters (see Steps.measureMasterFWHM for why an SNR comparison was
+ * abandoned); a deeper master detects more stars, so the count carries
+ * most of it anyway. The median, the linear fit's criterion, says
+ * nothing about stars at all and is not used here.
+ *
+ * A channel without a usable measurement ranks after every channel with
+ * one -- a master SubframeSelector could not measure is a poor thing to
+ * point StarAlignment at. Ties and the unmeasured go by
+ * REGISTRATION_FALLBACK_ORDER, never by object or argument order, so the
+ * same inputs always give the same reference and the same cache keys.
+ */
+Pipeline.registrationReference = function( present, quality )
 {
-   var refView = chans.L.view;
-   /*
-    * The reference is identified by L's own CACHE KEY, not by
-    * fingerprinting its window.
-    *
-    * Cache.fingerprintView hashes view.id, and L's working copy is
-    * named differently on every run (L_work, L_graxpert_1, ...), so a
-    * fingerprint never matched across runs and register missed every
-    * time even when the pixels were identical.
-    *
-    * L's chained key already identifies exactly which data, corrected
-    * exactly how, is being registered against -- and it is stable
-    * across runs by construction. Registering to a different L, or to
-    * the same L corrected differently, changes that key and correctly
-    * invalidates every dependent register entry.
-    */
-   var refFingerprint = chans.L.currentKey;
+   quality = quality || {};
+   if ( present.indexOf( "L" ) >= 0 )
+      return { key: "L", reason: "L is present, and L is always the reference" };
+
+   var order = Pipeline.REGISTRATION_FALLBACK_ORDER;
+   var ranked = [];
+   for ( var i = 0; i < order.length; ++i )
+      if ( present.indexOf( order[i] ) >= 0 )
+         ranked.push( order[i] );
+   // Anything not in the order still takes part, after it and sorted.
+   var extra = [];
+   for ( var j = 0; j < present.length; ++j )
+      if ( ranked.indexOf( present[j] ) < 0 && extra.indexOf( present[j] ) < 0 )
+         extra.push( present[j] );
+   ranked = ranked.concat( extra.sort() );
+   if ( ranked.length == 0 )
+      return { key: null, reason: "no channels" };
+
+   function usable( q )
+   {
+      return q != null && isFinite( q.fwhm ) && q.fwhm > 0 &&
+             isFinite( q.stars ) && q.stars >= 1;
+   }
+
+   var best = null, bestScore = Infinity;
+   for ( var r = 0; r < ranked.length; ++r )
+   {
+      var q = quality[ranked[r]];
+      if ( !usable( q ) )
+         continue;
+      var score = q.fwhm / Math.sqrt( q.stars );
+      // strictly less: an exact tie keeps the earlier channel in the order
+      if ( score < bestScore )
+      {
+         best = ranked[r];
+         bestScore = score;
+      }
+   }
+
+   if ( best == null )
+      return { key: ranked[0],
+               reason: "no L, and no usable star measurements; " + ranked[0] +
+                       " by the fixed order " + ranked.join( " > " ) };
+
+   var others = [];
+   for ( var o = 0; o < ranked.length; ++o )
+   {
+      var k = ranked[o];
+      if ( k == best ) continue;
+      others.push( usable( quality[k] )
+                   ? k + " " + quality[k].fwhm.toFixed( 2 ) + " px / " +
+                     Math.round( quality[k].stars ) + " stars"
+                   : k + " unmeasured" );
+   }
+   return { key: best,
+            reason: "no L; " + best + " has the best FWHM/sqrt(stars): " +
+                    quality[best].fwhm.toFixed( 2 ) + " px FWHM, " +
+                    Math.round( quality[best].stars ) + " stars" +
+                    ( others.length ? " (against " + others.join( ", " ) + ")" : "" ) };
+};
+
+/*
+ * The measurements registrationReference ranks by, for the channels in
+ * the run -- and only when there is no L, since with L nothing is
+ * compared and a measurement would be wasted work.
+ *
+ * Steps.measureMasterFWHM is the figure the dialog already takes when a
+ * master folder is scanned, and it is cached per file, so on a normal run
+ * this is a table lookup. A channel taken from an open view has no file
+ * for SubframeSelector to read and stays unmeasured; it then ranks after
+ * the measured ones, deterministically.
+ */
+Pipeline.registrationQuality = function( chans )
+{
+   var quality = {};
+   if ( chans.L )
+      return quality;
    for ( var c = 0; c < Util.CHANNELS.length; ++c )
    {
       var ck = Util.CHANNELS[c];
-      if ( ck == "L" || !chans[ck] ) continue;
+      if ( !chans[ck] || !chans[ck].path ) continue;
+      quality[ck] = Steps.measureMasterFWHM( chans[ck].path );
+   }
+   return quality;
+};
+
+/*
+ * The camera the composite is calibrated against. It has no camera of
+ * its own, so its QE curve follows L; without L it follows the
+ * registration reference, which inheritInstrument has already tied to
+ * the same session camera as its siblings.
+ */
+Pipeline.compositeInstrument = function( chans, refKey )
+{
+   if ( chans.L )
+      return chans.L.instrume;
+   return ( refKey && chans[refKey] ) ? chans[refKey].instrume : null;
+};
+
+Pipeline.registerToReference = function( chans, config, reg )
+{
+   var present = [];
+   for ( var p = 0; p < Util.CHANNELS.length; ++p )
+      if ( chans[Util.CHANNELS[p]] )
+         present.push( Util.CHANNELS[p] );
+   var choice = Pipeline.registrationReference( present,
+                                                Pipeline.registrationQuality( chans ) );
+   var refKey = choice.key;
+   if ( refKey == null )
+      throw new Error( "No channels to register." );
+   Util.log( "register", "reference is " + refKey + ": " + choice.reason );
+
+   /*
+    * Loaded here, not assumed. L always has broadband stages that load or
+    * restore it before now; a narrowband reference with nothing to run
+    * (no GraXpert) is still an unopened file, and StarAlignment would be
+    * handed a null view.
+    */
+   Pipeline.ensureLoaded( chans[refKey] );
+   var refView = chans[refKey].view;
+   /*
+    * The reference is identified by its own CACHE KEY, not by
+    * fingerprinting its window.
+    *
+    * Cache.fingerprintView hashes view.id, and the reference's working
+    * copy is named differently on every run (L_work, L_graxpert_1, ...),
+    * so a fingerprint never matched across runs and register missed
+    * every time even when the pixels were identical.
+    *
+    * The reference's chained key already identifies exactly which data,
+    * corrected exactly how, is being registered against -- and it is
+    * stable across runs by construction. Registering to a different
+    * reference (another L, or G instead of R when there is no L), or to
+    * the same one corrected differently, changes that key and correctly
+    * invalidates every dependent register entry. With L present the key
+    * is exactly what it always was, so existing caches stay valid.
+    */
+   var refFingerprint = chans[refKey].currentKey;
+   for ( var c = 0; c < Util.CHANNELS.length; ++c )
+   {
+      var ck = Util.CHANNELS[c];
+      if ( ck == refKey || !chans[ck] ) continue;
       /*
        * Swap the channel over to its registered window; the original
        * working copy is finished with. Without this the pipeline would
@@ -1867,8 +2038,8 @@ Pipeline.registerToReference = function( chans, config, reg )
        * Without this, currentKey still named the channel as it was
        * BEFORE being registered, and everything built from it -- the RGB
        * composite, and now the palettes -- keyed on pre-registration
-       * pixels. Registration depends on the reference (L), so a changed
-       * L re-registered R/G/B while leaving the composite's key
+       * pixels. Registration depends on the reference, so a changed
+       * reference re-registered R/G/B while leaving the composite's key
        * identical: a stale composite served for a different reference.
        * Wrong pixels, silently, which is the one thing a cache must
        * never do.
@@ -1878,10 +2049,14 @@ Pipeline.registerToReference = function( chans, config, reg )
       Pipeline.checkAbort( "registered " + ck );
    }
 
-   return { refView: refView, refFingerprint: refFingerprint };
+   return { refKey: refKey, refView: refView, refFingerprint: refFingerprint };
 };
 
-Pipeline.cropToCommonArea = function( chans )
+/*
+ * `refKey` is the registration reference registerToReference chose: the
+ * frame every channel now sits on, and the one the crop is judged against.
+ */
+Pipeline.cropToCommonArea = function( chans, refKey )
 {
    /*
     * Crop every channel to the area all of them actually cover.
@@ -1906,7 +2081,7 @@ Pipeline.cropToCommonArea = function( chans )
     * normally >90%; anything under half the reference area means the
     * edge scan misread something, not that the data is that small.
     */
-   var refImg = chans.L.view.image;
+   var refImg = chans[refKey].view.image;
    var refArea = refImg.width * refImg.height;
    var cropArea = ( common.x1 - common.x0 ) * ( common.y1 - common.y0 );
    var pct = 100 * cropArea / refArea;
@@ -1929,7 +2104,8 @@ Pipeline.cropToCommonArea = function( chans )
        * Halo reduction: match every channel's PSF to the widest.
        *
        * Runs after registration and cropping, where all channels sit on
-       * L's grid and their sigmas are directly comparable in pixels.
+       * the reference's grid and their sigmas are directly comparable in
+       * pixels.
        * Destructive by nature -- the sharpest channel is blurred down --
        * which is acceptable in LRGB because L carries the detail.
        */
@@ -2508,12 +2684,13 @@ Pipeline.run = function( config )
 
       var ref = Pipeline.registerToReference( chans, config, reg );
       var refView = ref.refView, refFingerprint = ref.refFingerprint;
-      var common = Pipeline.cropToCommonArea( chans );
+      var common = Pipeline.cropToCommonArea( chans, ref.refKey );
       Pipeline.matchHalos( chans, config );
       Pipeline.balanceNarrowband( chans, config );
 
-      // The composite has no camera of its own, so its QE curve follows L.
-      var lumInstrume = chans.L ? chans.L.instrume : null;
+      // The composite has no camera of its own, so its QE curve follows L
+      // (or the registration reference when there is no L).
+      var lumInstrume = Pipeline.compositeInstrument( chans, ref.refKey );
 
       var cleanFactors = Pipeline.cleanWhiteBalance( chans, config, reg, common,
                                                      lumInstrume, refView, refFingerprint );

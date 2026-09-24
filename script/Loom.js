@@ -3,7 +3,8 @@
 #feature-id    Loom : Batch Processing > Loom
 #feature-info  The mechanical first steps, from integrated masters to plates \
    ready for creative work: solve, flux-calibrate, remove gradients, correct \
-   aberration, register to L, crop, combine and colour-calibrate RGB and any \
+   aberration, register to L (or the best channel without one), crop, \
+   combine and colour-calibrate RGB and any \
    narrowband palette. Optionally sharpens, reduces noise, splits stars from \
    starless, stretches, and exports 16-bit TIFFs. Makes no artistic choices: \
    every value is measured from the data or fixed by a published convention. \

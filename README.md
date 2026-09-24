@@ -271,7 +271,7 @@ reported only.
 
 | step | what | options |
 |---|---|---|
-| **Register** | everything to L; L is the reference and is never resampled | — |
+| **Register** | everything to L; L is the reference and is never resampled. Without an L master, to the channel whose stars fix a registration best — lowest FWHM / √(star count), from the SubframeSelector measurement Loom already takes of each master — falling back to G, R, B, Ha, SII, OIII in that order when nothing could be measured. The run log names the choice and why | — |
 | **Crop** | to the area every channel actually covers | — |
 | **Halo match** | matches each channel's PSF to the widest, L excluded | on/off |
 | **White balance reference** | measured on channels the aberration correction never touched, because corrected photometry gives a wrong balance | automatic |
