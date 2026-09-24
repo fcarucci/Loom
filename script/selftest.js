@@ -709,6 +709,51 @@ function runTests()
           Pipeline.psbBaseName( {} ), "Loom" );
 
    /*
+    * ChannelCombination warns "Inconsistent ... (FILTER keyword) value(s) -
+    * metadata not generated" whenever R, G and B disagree -- which FILTER
+    * always does. The disagreeing keywords are held back for the combine
+    * and restored after, so the warnings go and nothing is lost: the
+    * composite never received that metadata anyway (probed 2026-09-23).
+    */
+   ( function()
+   {
+      function K( name, value ) { return { name: name, value: value }; }
+      var r = [ K( "FILTER", "'R'" ), K( "EGAIN", "1.0" ), K( "TELESCOP", "'RC8'" ), K( "EXPTIME", "300" ) ];
+      var g = [ K( "FILTER", "'G'" ), K( "EGAIN", "1.1" ), K( "TELESCOP", "'RC8'" ), K( "EXPTIME", "300" ) ];
+      var b = [ K( "FILTER", "'B'" ), K( "EGAIN", "1.0" ), K( "TELESCOP", "'RC8'" ) ];
+      check( "keywords whose values differ between the channels are found",
+             Steps.inconsistentKeywords( [ r, g, b ] ), [ "EGAIN", "EXPTIME", "FILTER" ] );
+      check( "keywords every channel agrees on are left alone",
+             Steps.inconsistentKeywords( [ r, r, r ] ), [] );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      function mk( id, filter )
+      {
+         var w = new ImageWindow( 16, 16, 1, 32, true, false, Util.freeWindowId( id ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile ); w.mainView.image.fill( 0.1 ); w.mainView.endProcess();
+         w.keywords = [ new FITSKeyword( "FILTER", "'" + filter + "'", "" ), new FITSKeyword( "TELESCOP", "'RC8'", "" ) ];
+         return w;
+      }
+      var r = mk( "cc_R", "R" ), g = mk( "cc_G", "G" ), b = mk( "cc_B", "B" ), rgb = null;
+      try
+      {
+         console.beginLog();
+         try { rgb = Steps.combineRGB( r.mainView, g.mainView, b.mainView, Util.freeWindowId( "cc_RGB" ) ); }
+         finally { var text = String( console.endLog() ); }
+         check( "combining R, G and B raises no metadata warnings", ( text.match( /Inconsistent/g ) || [] ).length, 0 );
+         check( "and each channel keeps its own keywords",
+                r.keywords.map( function( k ) { return k.name + "=" + k.value; } ), [ "FILTER='R'", "TELESCOP='RC8'" ] );
+      }
+      finally
+      {
+         [ r, g, b ].forEach( function( w ) { w.forceClose(); } );
+         if ( rgb ) rgb.forceClose();
+      }
+   } )();
+
+   /*
     * A result's final name. Star extraction already calls its window
     * "L_stars", so asking for a FREE "L_stars" found it taken -- by the
     * window being renamed -- and every stars plate came out "L_stars_1"

@@ -1972,6 +1972,60 @@ Steps.narrowbandNormalize = function( view, palette, label )
    return true;
 };
 
+/*
+ * Names of the keywords the channels disagree on (a different value, or
+ * present in some and not others), sorted. `lists` holds each channel's
+ * keywords, as {name, value} records.
+ */
+Steps.inconsistentKeywords = function( lists )
+{
+   var values = {};
+   lists.forEach( function( list, i )
+   {
+      list.forEach( function( k )
+      {
+         var name = String( k.name ).trim();
+         ( values[name] = values[name] || [] )[i] = String( k.value ).trim();
+      } );
+   } );
+   return Object.keys( values ).filter( function( name )
+   {
+      var v = values[name];
+      for ( var i = 0; i < lists.length; ++i )
+         if ( v[i] === undefined || v[i] !== v[0] )
+            return true;
+      return false;
+   } ).sort();
+};
+
+/*
+ * ChannelCombination warns "Inconsistent Instrument:Filter:Name (FILTER
+ * keyword) value(s) - metadata not generated" for every keyword the
+ * channels disagree on -- FILTER always does. Holding those keywords back
+ * for the call silences it and loses nothing: the composite never receives
+ * that metadata either way (probed 2026-09-23). They are restored after,
+ * whatever happens.
+ */
+Steps.withoutInconsistentKeywords = function( views, fn )
+{
+   var windows = views.map( function( v ) { return v.window; } );
+   var saved = windows.map( function( w ) { return w.keywords; } );
+   var drop = Steps.inconsistentKeywords( saved );
+   try
+   {
+      if ( drop.length > 0 )
+         windows.forEach( function( w, i )
+         {
+            w.keywords = saved[i].filter( function( k ) { return drop.indexOf( String( k.name ).trim() ) < 0; } );
+         } );
+      return fn();
+   }
+   finally
+   {
+      windows.forEach( function( w, i ) { try { w.keywords = saved[i]; } catch ( e ) {} } );
+   }
+};
+
 Steps.combineRGB = function( rView, gView, bView, id )
 {
    Util.reportStage( "channel combination \u2192 " + id );
@@ -1988,7 +2042,7 @@ Steps.combineRGB = function( rView, gView, bView, id )
                   [ true, gView.id ],
                   [ true, bView.id ] ];
    P.inheritAstrometricSolution = true;
-   P.executeGlobal();
+   Steps.withoutInconsistentKeywords( [ rView, gView, bView ], function() { return P.executeGlobal(); } );
 
    /*
     * Identify the window ChannelCombination created by diffing the open set.
