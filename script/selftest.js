@@ -709,6 +709,48 @@ function runTests()
           Pipeline.psbBaseName( {} ), "Loom" );
 
    /*
+    * A result's final name. Star extraction already calls its window
+    * "L_stars", so asking for a FREE "L_stars" found it taken -- by the
+    * window being renamed -- and every stars plate came out "L_stars_1"
+    * (seen on a Windows run, 2026-09-23). A window keeps a name it holds.
+    */
+   ( function()
+   {
+      var taken = { "L_stars": true, "RGB": true };
+      var exists = function( id ) { return taken[id] === true; };
+      check( "a window already holding its final name keeps it",
+             Pipeline.publishId( "L_stars", "L_stars", exists ), "L_stars" );
+      check( "another window holding the name still gets a suffix",
+             Pipeline.publishId( "RGB_work", "RGB", exists ), "RGB_1" );
+      check( "a free name is used as is",
+             Pipeline.publishId( "x", "RGB_starless", exists ), "RGB_starless" );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var reg = new Util.Registry(), keep = [];
+      var w = new ImageWindow( 8, 8, 1, 32, true, false, Util.freeWindowId( "pubtest_stars" ) );
+      var want = w.mainView.id;
+      try
+      {
+         var out = Pipeline.publish( w, want, reg, keep, null, null );
+         check( "publishing a window under the name it holds does not add _1", out.mainView.id, want );
+      }
+      finally { w.forceClose(); }
+
+      // the cached path: a new window is built while the cached one holds the name
+      var c = new ImageWindow( 8, 8, 1, 32, true, false, Util.freeWindowId( "pubtest_cached" ) );
+      var name = c.mainView.id, clean = Steps.detachFromFile( c, name );
+      try
+      {
+         c.forceClose();
+         clean.mainView.id = name;
+         check( "a detached copy takes the name once the cached one is closed", clean.mainView.id, name );
+      }
+      finally { clean.forceClose(); }
+   } )();
+
+   /*
     * ROMM RGB and ProPhoto RGB are the same colour space under different
     * names, and Photoshop matches its working space by NAME -- so the PSB
     * prefers Adobe's profile file, which PixInsight cannot assign.

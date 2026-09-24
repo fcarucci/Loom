@@ -518,6 +518,16 @@ Pipeline.SKIP_CACHE = "loom-skip-cache";
  * through here so a starless frame, a stars frame and an unsplit composite
  * are all published identically.
  */
+/*
+ * The id a result is published under: `wanted`, unless ANOTHER window holds
+ * it. Star extraction already names its window "L_stars"; asking for a
+ * free "L_stars" found the window itself and renamed it "L_stars_1".
+ */
+Pipeline.publishId = function( currentId, wanted, exists )
+{
+   return ( currentId == wanted ) ? wanted : Util.uniqueWindowId( wanted, exists );
+};
+
 Pipeline.publish = function( win, id, reg, keepIds, results, resultKey )
 {
    /*
@@ -532,7 +542,7 @@ Pipeline.publish = function( win, id, reg, keepIds, results, resultKey )
                             "run is unaffected" );
       return null;
    }
-   var freeId = Util.freeWindowId( id );
+   var freeId = Pipeline.publishId( win.mainView.id, id, Util.windowIdExists );
    win = Pipeline.detachIfCached( win, freeId, reg );
    try { win.mainView.id = freeId; }
    catch ( e ) { Util.warn( "output", "could not rename " + id + ": " + e ); }
