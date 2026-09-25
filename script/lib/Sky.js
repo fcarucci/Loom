@@ -15,18 +15,20 @@ Sky.readNgcIc = function()
 };
 
 /*
- * Gaia's data releases as the Gaia process numbers them (its menu order,
- * probed 2026-09-24: on a machine with only DR3/SP installed, 3 answers
- * and 1 and 2 do not). The default resolved to DR3/SP, which holds only
- * stars with published spectra -- the Iris's lighting star HD 200775 is
- * not in it -- so full DR3 is asked first, then DR3/SP, then DR2.
+ * Gaia's data releases, as the Gaia process numbers them (its own
+ * DataRelease_* constants: 0 best available, 1 DR2, 2 EDR3, 3 DR3, 4 DR3/SP).
+ * The menu's order is not the numbering: guessed from it, "DR3" asked for
+ * EDR3 and every lookup logged errors for releases that were not set up.
+ * Read once, so a stand-in Gaia (the suite's) does not change them.
  */
-Sky.GAIA_DR2 = 0;
-Sky.GAIA_EDR3 = 1;
-Sky.GAIA_DR3 = 2;
-Sky.GAIA_DR3SP = 3;
-Sky.GAIA_RELEASES = [ Sky.GAIA_DR3, Sky.GAIA_DR3SP, Sky.GAIA_DR2 ];
-
+Sky.gaiaRelease = function( name, fallback )
+{
+   return ( typeof Gaia != "undefined" && Gaia[name] != null ) ? Gaia[name] : fallback;
+};
+Sky.GAIA_DR2 = Sky.gaiaRelease( "DataRelease_2", 1 );
+Sky.GAIA_EDR3 = Sky.gaiaRelease( "DataRelease_E3", 2 );
+Sky.GAIA_DR3 = Sky.gaiaRelease( "DataRelease_3", 3 );
+Sky.GAIA_DR3SP = Sky.gaiaRelease( "DataRelease_3_SP", 4 );
 Sky.GAIA_NAMES = {};
 Sky.GAIA_NAMES[Sky.GAIA_DR2] = "DR2";
 Sky.GAIA_NAMES[Sky.GAIA_EDR3] = "EDR3";
@@ -36,20 +38,40 @@ Sky.GAIA_MAG_LIMIT = 17.6;
 Sky.GAIA_ONLINE_TIMEOUT = 60;       // seconds to connect
 
 /*
+ * The releases asked, in order: DR3/SP first -- SPCC needs it, so it is
+ * what most have set up -- then full DR3. A script cannot read Process >
+ * Gaia's setup (its settings are out of a script's reach, every instance's
+ * databaseFilePaths is empty), and "best available" picks DR3 even when only
+ * DR3/SP is there (measured 2026-09-24). So the first lookup of a session
+ * finds out, and the answer is kept: Sky.gaiaWorking, the release that
+ * answered, or Sky.gaiaNone when none did. A working setup logs no errors;
+ * none set up logs them once a session.
+ */
+Sky.GAIA_ORDER = [ Sky.GAIA_DR3SP, Sky.GAIA_DR3 ];
+
+Sky.resetGaia = function()
+{
+   Sky.gaiaWorking = null;
+   Sky.gaiaNone = false;
+};
+Sky.resetGaia();
+
+/*
  * The Gaia stars around `centre` to magnitude `gMax` (default
- * GAIA_MAG_LIMIT): from the first release installed in the order
- * Sky.GAIA_RELEASES (the databases configured in Process > Gaia), else
- * from Gaia DR3 online. The list's `origin` names where it came from
- * ("DR3/SP", "online"...). Replaceable, so the suite can inject a list.
+ * GAIA_MAG_LIMIT): from the release set up in Process > Gaia (Sky.GAIA_ORDER,
+ * remembered for the session), else from Gaia DR3 online. The list's
+ * `origin` names where it came from ("DR3/SP", "online"...). Replaceable, so
+ * the suite can inject a list.
  */
 Sky.querySources = function( centre, radiusDeg, gMax )
 {
    var limit = gMax || Sky.GAIA_MAG_LIMIT;
-   for ( var k = 0; k < Sky.GAIA_RELEASES.length; ++k )
+   var releases = Sky.gaiaWorking != null ? [ Sky.gaiaWorking ] : ( Sky.gaiaNone ? [] : Sky.GAIA_ORDER );
+   for ( var k = 0; k < releases.length; ++k )
    {
       var G = new Gaia;
       G.command = "search";
-      G.dataRelease = Sky.GAIA_RELEASES[k];
+      G.dataRelease = releases[k];
       G.centerRA = centre.ra;
       G.centerDec = centre.dec;
       G.radius = radiusDeg;
@@ -58,13 +80,15 @@ Sky.querySources = function( centre, radiusDeg, gMax )
       G.verbosity = 0;
       if ( !G.executeGlobal() )
          continue;
+      Sky.gaiaWorking = releases[k];
       var s = G.sources.map( function( s )
       {
          return { ra: s[0], dec: s[1], plx: s[2], pmra: s[3], pmdec: s[4], G: s[5], BP: s[6], RP: s[7] };
       } );
-      s.origin = Sky.GAIA_NAMES[Sky.GAIA_RELEASES[k]];
+      s.origin = Sky.GAIA_NAMES[releases[k]];
       return s;
    }
+   if ( Sky.gaiaWorking == null ) Sky.gaiaNone = true;
    return Sky.queryOnline( centre, radiusDeg, limit ) || [];
 };
 

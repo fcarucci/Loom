@@ -6961,10 +6961,12 @@ function runFlyTests()
    // and offline: the suite never asks the Gaia archive; a test that needs an answer fakes one
    var fetch = typeof Sky == "undefined" ? null : Sky.fetchText;
    if ( fetch ) Sky.fetchText = function() { return null; };
+   if ( typeof Sky != "undefined" && Sky.resetGaia ) Sky.resetGaia();
    try { runFlyTestsClean(); }
    finally
    {
       if ( fetch ) Sky.fetchText = fetch;
+      if ( typeof Sky != "undefined" && Sky.resetGaia ) Sky.resetGaia();
       keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } );
    }
 }
@@ -9989,26 +9991,35 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * Gaia is asked for full DR3 first -- every star's parallax -- then
-    * DR3/SP (only stars with spectra: the Iris's lighting star HD 200775 is
-    * not in it), then DR2: the first release that is installed answers.
+    * Gaia: DR3/SP first (what SPCC needs, so what most set up), then full
+    * DR3. The first release that answers is used for the rest of the
+    * session, so a working setup logs no errors. With none set up, the
+    * first lookup finds out and every later one goes straight online. (A
+    * script cannot read Process > Gaia's setup, and "best available" picks
+    * DR3 even when only DR3/SP is there -- measured 2026-09-24.)
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var RealGaia = Gaia, asked = [];
+      var RealGaia = Gaia, asked = [], savedFetch = Sky.fetchText, fetched = 0;
       var fake = function( installed ) { return function() { this.sources = []; this.executeGlobal = function() { asked.push( this.dataRelease ); if ( installed.indexOf( this.dataRelease ) < 0 ) return false; this.sources = [ [ 1, 2, 3, 0, 0, 7, 7, 7 ] ]; return true; }; }; };
+      Sky.fetchText = function() { ++fetched; return null; };
       try
       {
-         Gaia = fake( [ Sky.GAIA_DR3, Sky.GAIA_DR3SP ] );
-         Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
-         check( "full DR3 is asked first", asked, [ Sky.GAIA_DR3 ] );
-         asked = []; Gaia = fake( [ Sky.GAIA_DR3SP ] );
+         check( "the releases are PixInsight's own numbers", [ Sky.GAIA_DR2, Sky.GAIA_EDR3, Sky.GAIA_DR3, Sky.GAIA_DR3SP ],
+                [ RealGaia.DataRelease_2, RealGaia.DataRelease_E3, RealGaia.DataRelease_3, RealGaia.DataRelease_3_SP ] );
+         Sky.resetGaia();
+         Gaia = fake( [ Sky.GAIA_DR3SP ] );
          var s = Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
-         check( "then DR3/SP when DR3 is not installed", [ asked, s.length ], [ [ Sky.GAIA_DR3, Sky.GAIA_DR3SP ], 1 ] );
-         asked = []; Gaia = fake( [] );
-         check( "nothing installed, nothing found", [ Sky.querySources( { ra: 1, dec: 2 }, 0.1 ).length, asked.length ], [ 0, Sky.GAIA_RELEASES.length ] );
+         Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "DR3/SP set up: asked first, and only it, every time", [ asked, s.length, s.origin ], [ [ Sky.GAIA_DR3SP, Sky.GAIA_DR3SP ], 1, "DR3/SP" ] );
+         Sky.resetGaia(); asked = []; Gaia = fake( [ Sky.GAIA_DR3 ] );
+         Sky.querySources( { ra: 1, dec: 2 }, 0.1 ); Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "only full DR3: one miss the first time, then straight to it", asked, [ Sky.GAIA_DR3SP, Sky.GAIA_DR3, Sky.GAIA_DR3 ] );
+         Sky.resetGaia(); asked = []; Gaia = fake( [] );
+         Sky.querySources( { ra: 1, dec: 2 }, 0.1 ); Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "nothing set up: found out once, then straight online", [ asked.length, fetched ], [ 2, 2 ] );
       }
-      finally { Gaia = RealGaia; }
+      finally { Gaia = RealGaia; Sky.fetchText = savedFetch; Sky.resetGaia(); }
    } )();
 
    /*
@@ -10040,6 +10051,7 @@ function runFlyTestsClean()
    {
       var RealGaia = Gaia, savedFetch = Sky.fetchText, fetched = [];
       var local = function( rows ) { return function() { this.sources = []; this.executeGlobal = function() { if ( !rows || this.dataRelease != Sky.GAIA_DR3SP ) return false; this.sources = rows; return true; }; }; };
+      Sky.resetGaia();
       var header = "RA_ICRS,DE_ICRS,Plx,pmRA,pmDE,Gmag,BPmag,RPmag\n";
       Sky.fetchText = function( url ) { fetched.push( url ); return header + "315.404,68.163,2.8175,0,0,7.18,7.3,6.9\n"; };
       try
@@ -10065,7 +10077,7 @@ function runFlyTestsClean()
                 [ "star", Math.round( 1000/( 2.8175 + Fly.PARALLAX_ZERO_POINT ) ), true, true ] );
          check( "and said so", FlyThrough.describeDistance( id ).indexOf( "online" ) >= 0, true );
       }
-      finally { Gaia = RealGaia; Sky.fetchText = savedFetch; }
+      finally { Gaia = RealGaia; Sky.fetchText = savedFetch; Sky.resetGaia(); }
    } )();
 
    /*
