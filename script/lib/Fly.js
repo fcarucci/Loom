@@ -1056,16 +1056,19 @@ Fly.audioArgs = function( audio, formatId )
 };
 
 /*
- * A looping video's music, D seconds, looping too: no fade in or out; its
- * first x seconds fade in under the music's next x seconds (D to D + x)
- * fading out, so the end runs on into the beginning.
+ * A looping video's music, D seconds, looping too, blended at the END like
+ * the video's dissolve: the video's music starts x seconds into the song
+ * and fades out over its last x seconds, while the song's first x seconds
+ * fade in over them -- so the loop point runs on into second x, where the
+ * video's music began. No fade in or out.
  */
 Fly.loopAudio = function( D, x )
 {
-   var graph = "[1:a]atrim=0:" + ( D + x ) + ",asetpts=PTS-STARTPTS,asplit=2[a][b];" +
-               "[a]atrim=0:" + D + ",asetpts=PTS-STARTPTS,afade=t=in:st=0:d=" + x + "[head];" +
-               "[b]atrim=" + D + ":" + ( D + x ) + ",asetpts=PTS-STARTPTS,afade=t=out:st=0:d=" + x + "[tail];" +
-               "[head][tail]amix=inputs=2:duration=first:normalize=0[aout]";
+   var r = function( v ) { return +v.toFixed( 3 ); }, delayMs = Math.round( ( D - x )*1000 );
+   var graph = "[1:a]atrim=0:" + r( D + x ) + ",asetpts=PTS-STARTPTS,asplit=2[a][b];" +
+               "[a]atrim=" + r( x ) + ":" + r( D + x ) + ",asetpts=PTS-STARTPTS,afade=t=out:st=" + r( D - x ) + ":d=" + r( x ) + "[body];" +
+               "[b]atrim=0:" + r( x ) + ",asetpts=PTS-STARTPTS,afade=t=in:st=0:d=" + r( x ) + ",adelay=" + delayMs + ":all=1[head];" +
+               "[body][head]amix=inputs=2:duration=first:normalize=0[aout]";
    return [ "-filter_complex", graph, "-map", "0:v", "-map", "[aout]" ];
 };
 

@@ -19,6 +19,7 @@ section of this file.
 **Rendering.**
 - While a video renders, the preview shows the frame just finished. HDR frames are labelled "HDR Preview", because their PQ/HLG signal looks flat on an SDR screen.
 - A crossfade loop's dissolve and its music's loop blend now take 1 s (they took 2 s).
+- A looping video's music blends at the end, like the video's dissolve, instead of at the beginning: the video's music starts 1 s into the song, and the song's first second fades in over the last.
 - A video is named after its object, preset and colour encoding, for example `NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ.mp4`.
 
 **The dialog while an image is analysed.**

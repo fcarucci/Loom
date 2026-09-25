@@ -9666,15 +9666,17 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * A looping video's music loops too: no fade in or out, the music's end
-    * crossfaded into its beginning, so the loop point is seamless.
+    * A looping video's music loops too: no fade in or out, and like the
+    * video it blends at the end -- the song's first second fading in over
+    * the last -- so the loop point is seamless.
     */
    ( function()
    {
       var s = Fly.ffmpegArgs( "/f", 30, "/out/v", "hevc", "high", null, { path: "/m/song.mp3", fade: true, duration: 20, loop: true } ).join( " " );
       check( "a loop's music is not faded in or out", /afade=t=in:st=0:d=2,afade=t=out/.test( s ), false );
-      check( "its first 1 s mixes in the music's next 1 s, fading out, as quick as the video's dissolve", s.indexOf( "atrim=20:21" ) >= 0 && /amix=inputs=2:duration=first/.test( s ), true );
-      check( "and the head fades in under it", /atrim=0:20[^;]*afade=t=in:st=0:d=1\b/.test( s ), true );
+      // at the END, like the video's dissolve: the music runs 1 s ahead, and its last second blends in the song's first
+      check( "the video's music starts 1 s into the song and fades out over its last second", /atrim=1:21[^;]*afade=t=out:st=19:d=1\b/.test( s ), true );
+      check( "while the song's first second fades in over it, at the end", /atrim=0:1[^;]*afade=t=in:st=0:d=1[^;]*adelay=19000/.test( s ), true );
       check( "it is the mixed audio that is encoded", /-map \[aout\]/.test( s ), true );
       var plain = Fly.ffmpegArgs( "/f", 30, "/out/v", "hevc", "high", null, { path: "/m/song.mp3", fade: true, duration: 20 } ).join( " " );
       check( "a video that does not loop keeps its fades", /afade=t=in:st=0:d=2,afade=t=out:st=18:d=2/.test( plain ), true );
