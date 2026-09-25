@@ -1197,7 +1197,7 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          // an online answer at the row limit is split; one still at the limit at a quarter degree fails the build
          var savedMax = Fly.GAIA_ONLINE_MAX_ROWS, sizes = [];
          Fly.GAIA_ONLINE_MAX_ROWS = 10;
-         Sky.querySources = function( c, r ) { sizes.push( r ); var a = []; for ( var i = 0; i < ( r > 1 ? 10 : 3 ); ++i ) a.push( { ra: c.ra, dec: c.dec + i*1e-3, G: 10 } ); a.origin = "online"; return a; };
+         Sky.querySources = function( c, r ) { sizes.push( r ); var a = []; for ( var i = 0; i < ( r >= 2 ? 10 : 3 ); ++i ) a.push( { ra: c.ra, dec: c.dec + i*1e-3, G: 10 } ); a.origin = "online"; return a; };
          check( "a tile at the row limit is read again as four", Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ).length, 12 );
          Sky.querySources = function( c ) { var a = []; for ( var i = 0; i < 10; ++i ) a.push( { ra: c.ra, dec: c.dec, G: 10 } ); a.origin = "online"; return a; };
          msg = "";
