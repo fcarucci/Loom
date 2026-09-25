@@ -227,6 +227,18 @@ Util.windowIdExists = function( id )
    return !ImageWindow.windowById( id ).isNull;
 };
 
+/*
+ * A function reading byte i of a PJSR ByteArray (or a plain array).
+ * PixInsight 1.9.5 deprecates ByteArray.at() and prints a console warning
+ * for it, so bytes are read by subscript wherever that works; at() is
+ * kept for a core where it doesn't.
+ */
+Util.byteReader = function( b )
+{
+   if ( b.length == 0 || typeof b[0] == "number" ) return function( i ) { return b[i]; };
+   return function( i ) { return b.at( i ); };
+};
+
 Util.freeWindowId = function( base )
 {
    return Util.uniqueWindowId( base, Util.windowIdExists );

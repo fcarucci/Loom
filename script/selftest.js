@@ -660,6 +660,10 @@ function runTests()
          return head.concat( be32( 1 ), ascii( "desc" ), be32( 144 ), be32( body.length ), body );
       }
       function parse( bytes ) { return Steps.parseIccProfile( function( i ) { return bytes[i]; }, bytes.length ); }
+      // PixInsight 1.9.5 prints "ByteArray.at() is deprecated" for every call site: bytes are read by subscript where it works
+      var viaAt = { length: 2, at: function( i ) { return [ 7, 9 ][i]; } };
+      check( "byteReader reads by subscript", Util.byteReader( [ 4, 5 ] )( 1 ), 5 );
+      check( "byteReader falls back to at() where subscripts don't work", Util.byteReader( viaAt )( 1 ), 9 );
 
       check( "an ICC v2 description is read",
              parse( fakeIcc( "mntr", "RGB ", "Adobe RGB (1998)", false ) ),
@@ -675,10 +679,12 @@ function runTests()
                           P( "Rec. 2020 Linear" ) ];
       var plan = Steps.profilePlan( windowsLike );
       check( "without ROMM, the widest standard space wins: Rec. 2020 over Adobe RGB and sRGB",
-             plan.rgb, [ Steps.PROFILE_RGB, "Rec. ITU-R BT.2020-1", "Adobe RGB (1998)", "sRGB IEC61966-2.1" ] );
+             plan.rgb, [ "Rec. ITU-R BT.2020-1", "Adobe RGB (1998)", "sRGB IEC61966-2.1" ] );
+      check( "a preferred profile that is not installed is not tried (each miss prints a PixInsight error)",
+             plan.rgb.indexOf( Steps.PROFILE_RGB ) < 0 && plan.gray.indexOf( Steps.PROFILE_GRAY ) < 0, true );
       check( "a calibration profile and a linear space are never candidates",
              plan.rgb.filter( function( d ) { return /Dell|Linear/.test( d ); } ), [] );
-      check( "gray follows the RGB space's gamma (2.2 here)", plan.gray, [ "Gray Gamma 2.2", Steps.PROFILE_GRAY ] );
+      check( "gray follows the RGB space's gamma (2.2 here)", plan.gray, [ "Gray Gamma 2.2" ] );
 
       var macLike = [ P( "ROMM RGB: ISO 22028-2:2013" ), P( "Display P3" ), P( "Generic Gray Profile", "GRAY" ),
                       P( "Generic Gray Gamma 2.2 Profile", "GRAY" ), P( "sRGB IEC61966-2.1" ) ];
@@ -694,6 +700,25 @@ function runTests()
       check( "Windows profiles live under the system root",
              Steps.iccProfileDirectories( Util.PLATFORM_WINDOWS, "C:/Users/x", "D:\\WINNT" )[0],
              "D:/WINNT/System32/spool/drivers/color" );
+      check( "Adobe's profile folders are not searched: PixInsight does not load profiles from them",
+             Steps.iccProfileDirectories( Util.PLATFORM_WINDOWS, "C:/Users/x", "C:/Windows" ).concat(
+                Steps.iccProfileDirectories( Util.PLATFORM_MACOS, "/Users/x", "" ) ).filter( function( d ) { return /Adobe/.test( d ); } ), [] );
+      ( function()
+      {
+         // a name that failed once is not tried again this session: the Windows report had four errors per plate
+         var tried = [], saved = Steps.tryAssignProfile, fakeWin = { mainView: { id: "fake", image: { numberOfChannels: 3 } } };
+         Steps.tryAssignProfile = function( w, name ) { tried.push( name ); return name == "sRGB IEC61966-2.1"; };
+         Steps.missingProfiles = {};
+         try
+         {
+            var plan2 = { rgb: [ "ProPhoto RGB", "Adobe RGB (1998)", "sRGB IEC61966-2.1" ], gray: [] };
+            Steps.assignProfile( fakeWin, "a", plan2 );
+            tried = [];
+            Steps.assignProfile( fakeWin, "b", plan2 );
+            check( "a profile PixInsight could not find is not tried again", tried, [ "sRGB IEC61966-2.1" ] );
+         }
+         finally { Steps.tryAssignProfile = saved; Steps.missingProfiles = {}; Steps.rgbProfileInUse = null; Steps.lastAssignedProfile = null; }
+      } )();
       check( "macOS reads the three ColorSync folders",
              Steps.iccProfileDirectories( Util.PLATFORM_MACOS, "/Users/x", "" ).slice( 0, 3 ),
              [ "/System/Library/ColorSync/Profiles", "/Library/ColorSync/Profiles",

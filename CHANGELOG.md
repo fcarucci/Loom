@@ -3,6 +3,14 @@
 What changed in each Loom release. Each release's notes on GitHub are its
 section of this file.
 
+## [Unreleased]
+
+### Loom
+
+**Fixes.**
+- Where Loom's preferred colour profiles (ROMM RGB, Generic Gray) are missing, as on Windows, the fallback printed "Couldn't find the 'ProPhoto RGB' profile" and similar errors for every plate. It offered profiles from Adobe's folders, which PixInsight doesn't load. Now only profiles PixInsight can find are tried, and a name that fails is not tried again.
+- On newer PixInsight versions, the console warning "ByteArray.at() is deprecated" no longer appears.
+
 ## [0.2.1] — 2026-09-25
 
 ### Loom Fly-Through

@@ -4471,10 +4471,13 @@ Steps.iccDescription = function( byteAt, off, length, u32, str4 )
 };
 
 /*
- * Where profiles are installed. `systemRoot` is %SystemRoot% on Windows
+ * Where PixInsight finds profiles. `systemRoot` is %SystemRoot% on Windows
  * (C:\Windows unless the system was installed elsewhere). Adobe's folders
- * are included: PixInsight may not load from them, and a name it cannot
- * find is simply skipped when the candidates are tried.
+ * are NOT searched: PixInsight does not load from them, and every name it
+ * cannot find prints "Couldn't find the ... profile" (a Windows user's log
+ * had ProPhoto, Wide Gamut and Adobe RGB from there failing on every
+ * plate). The PSB's own profile file is looked for separately
+ * (Steps.PSB_PROFILE_FILES).
  */
 Steps.iccProfileDirectories = function( platform, home, systemRoot )
 {
@@ -4482,16 +4485,13 @@ Steps.iccProfileDirectories = function( platform, home, systemRoot )
    if ( Util.isWindows( platform ) )
    {
       var root = String( systemRoot || "C:/Windows" ).replace( /\\/g, "/" ).replace( /\/+$/, "" );
-      return [ root + "/System32/spool/drivers/color",
-               "C:/Program Files/Common Files/Adobe/Color/Profiles",
-               "C:/Program Files/Common Files/Adobe/Color/Profiles/Recommended" ];
+      return [ root + "/System32/spool/drivers/color" ];
    }
    if ( Util.platform( platform ) == Util.PLATFORM_MACOS )
    {
       var mac = [ "/System/Library/ColorSync/Profiles", "/Library/ColorSync/Profiles" ];
       if ( hasHome ) mac.push( home + "/Library/ColorSync/Profiles" );
-      return mac.concat( [ "/Library/Application Support/Adobe/Color/Profiles",
-                           "/Library/Application Support/Adobe/Color/Profiles/Recommended" ] );
+      return mac;
    }
    var unix = [ "/usr/share/color/icc", "/usr/local/share/color/icc" ];
    if ( hasHome ) unix.push( home + "/.color/icc", home + "/.local/share/icc" );
@@ -4531,7 +4531,7 @@ Steps.readIccProfileFile = function( path )
       if ( ( new FileInfo( path ) ).size > Steps.ICC_MAX_FILE_BYTES )
          return null;
       var b = File.readFile( path );
-      return Steps.parseIccProfile( function( i ) { return b.at( i ); }, b.length );
+      return Steps.parseIccProfile( Util.byteReader( b ), b.length );
    }
    catch ( e ) { return null; }
 };
@@ -4559,9 +4559,12 @@ Steps.uniqueList = function( list )
 };
 
 /*
- * The names to try, best first, for colour and for mono plates. The
- * preferred names lead so that nothing changes where they exist; sRGB
- * closes the RGB list because PixInsight always has it. The gray list is
+ * The names to try, best first, for colour and for mono plates. Only
+ * profiles found installed are tried -- each name PixInsight cannot find
+ * prints an error in the console -- except when nothing could be read at
+ * all, when the preferred names are tried blind. The preferred names lead
+ * where they exist, so nothing changes there; sRGB closes the RGB list
+ * because PixInsight always has it. The gray list is
  * ordered by the gamma of the RGB space this machine will actually get,
  * so mono and colour plates keep the same tone response.
  */
@@ -4580,8 +4583,11 @@ Steps.profilePlan = function( profiles )
    var order = ( gamma == 1.8 ) ? [ "1.8", "2.2" ] : [ "2.2", "1.8" ];
    var grayPatterns = Steps.GRAY_PROFILE_PREFERENCE[order[0]].concat( Steps.GRAY_PROFILE_PREFERENCE[order[1]] );
    var gray = Steps.profilesMatching( profiles, "GRAY", grayPatterns );
-   var grayList = ( gamma == 1.8 ) ? [ Steps.PROFILE_GRAY ].concat( gray ) : gray.concat( [ Steps.PROFILE_GRAY ] );
-   return { rgb: Steps.uniqueList( [ Steps.PROFILE_RGB ].concat( rgb, [ Steps.PROFILE_SRGB ] ) ),
+   var blind = ( profiles.length == 0 );
+   var has = function( name ) { return blind || profiles.some( function( p ) { return p.description == name; } ); };
+   var preferredGray = has( Steps.PROFILE_GRAY ) ? [ Steps.PROFILE_GRAY ] : [];
+   var grayList = ( gamma == 1.8 ) ? preferredGray.concat( gray ) : gray.concat( preferredGray );
+   return { rgb: Steps.uniqueList( ( has( Steps.PROFILE_RGB ) ? [ Steps.PROFILE_RGB ] : [] ).concat( rgb, [ Steps.PROFILE_SRGB ] ) ),
             gray: Steps.uniqueList( grayList ) };
 };
 
@@ -4608,17 +4614,23 @@ Steps.tryAssignProfile = function( window, name )
    catch ( e ) { return false; }
 };
 
+/* Names PixInsight could not find this session: each try prints an error, so one is enough. */
+Steps.missingProfiles = {};
+
 /* `plan` is for the suite; a run uses the installed profiles. */
 Steps.assignProfile = function( window, label, plan )
 {
    plan = plan || Steps.currentProfilePlan();
    var isColor = window.mainView.image.numberOfChannels >= 3;
-   var names = isColor ? plan.rgb : plan.gray;
+   var names = ( isColor ? plan.rgb : plan.gray ).filter( function( n ) { return !Steps.missingProfiles[n]; } );
    var who = label || window.mainView.id;
    for ( var i = 0; i < names.length; ++i )
    {
       if ( !Steps.tryAssignProfile( window, names[i] ) )
+      {
+         Steps.missingProfiles[names[i]] = true;
          continue;
+      }
       Steps.lastAssignedProfile = names[i];
       if ( isColor )
          Steps.rgbProfileInUse = names[i];

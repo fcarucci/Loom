@@ -888,9 +888,9 @@ Psb.write = function( path, entries, width, height, iccProfile )
        */
       if ( iccProfile != null && iccProfile.length > 0 )
       {
-         var icc = [];
+         var icc = [], byteAt = Util.byteReader( iccProfile );
          for ( var ib = 0; ib < iccProfile.length; ++ib )
-            icc.push( iccProfile.at( ib ) );
+            icc.push( byteAt( ib ) );
          var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, icc );
          h.u32( res.length() );
          for ( var rb = 0; rb < res.bytes.length; ++rb )

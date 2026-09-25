@@ -948,7 +948,7 @@ Sky.colourOf = function( window )
    var b = Sky.iccBytes( window );
    if ( b == null )
       return { colour: Fly.SRGB_COLOUR, note: "no colour profile: taken as sRGB" };
-   var c = Fly.parseIccColour( function( i ) { return b.at( i ); }, b.length );
+   var c = Fly.parseIccColour( Util.byteReader( b ), b.length );
    if ( c == null )
       return { colour: Fly.SRGB_COLOUR, note: "colour profile is not a matrix/curve profile: taken as sRGB" };
    return { colour: c, note: "colour converted from the image's own profile" };
