@@ -8071,6 +8071,7 @@ function runFlyTestsClean()
          Sky.querySources = function() { return fx.sources; };
          dlg = new FlyThrough.Dialog( fx.image );
          check( "the dialog has its title", dlg.windowTitle, "Loom Fly-Through" );
+         check( "Star quality: three levels, High by default, in the options", [ dlg.starQualityCombo.numberOfItems, dlg.options().starQuality ], [ 3, "high" ] );
          check( "an untouched type lets NGC/IC decide (a PGC number makes a galaxy)", dlg.choices().type, undefined );
          dlg.analyse();
          check( "no cluster: travel is not guessed before the distance is known", dlg.travelEdit.text, "" );
@@ -10485,6 +10486,272 @@ function runFlyTestsClean()
          if ( dlg ) dlg.release();
          fx.windows.forEach( function( w ) { w.forceClose(); } );
       }
+   } )();
+
+   /* Star quality: Highest is the renderer as it was, from the full-size scene; High and Medium draw from it shrunk to the video (one scene px per output px) and sample glows by their footprint; Medium draws its stars at half size. */
+   check( "the three levels", [ Fly.starQuality( "highest" ), Fly.starQuality( "high" ), Fly.starQuality( "medium" ) ],
+          [ { footprint: false, outScale: 0, starRes: 1 }, { footprint: true, outScale: 1, starRes: 1 }, { footprint: true, outScale: 1, starRes: 0.5 } ] );
+   check( "without a level (old callers, the tests) it is Highest", [ Fly.starQuality(), Fly.starQuality( "ultra" ), Fly.starQuality( "constructor" ) ], [ Fly.starQuality( "highest" ), Fly.starQuality( "highest" ), Fly.starQuality( "highest" ) ] );
+   ( function()
+   {
+      var spec = { id: "youtube_1080", w: 1920, h: 1080, pingPong: false }, o = { travel: 184, duration: 20, fps: 30, starQuality: "highest" };
+      check( "the level changes the frames, not only the encode", Fly.frameSignature( o, spec, "k" ) != Fly.frameSignature( Object.assign( {}, o, { starQuality: "medium" } ), spec, "k" ), true );
+   } )();
+
+   /*
+    * High: a magnified glow sampled only as densely as its footprint needs.
+    * Against the full count (Highest): per pixel and per channel within 1% of the
+    * star's peak, the same light, as steady while it drifts; Highest never thins.
+    */
+   ( function()
+   {
+      var R = 20, n = 2*R + 1, cols = [ 1, 0.7, 0.45 ], patches = cols.map( function( k ) { var p = new Float32Array( n*n ); for ( var y = 0; y < n; ++y ) for ( var x = 0; x < n; ++x ) p[y*n + x] = k*( Math.exp( -( ( x - R )*( x - R ) + ( y - R )*( y - R ) )/( 2*1.6*1.6 ) ) + 0.03*Math.exp( -Math.hypot( x - R, y - R )/6 ) ); return p; } );
+      var sp = { rect: { x0: 0, y0: 0, x1: n, y1: n }, det: { x: R, y: R } }, W = 120, cam = { x: 0, y: 0, fx: 2.4, fy: 2.4 };
+      var thin = Render.glowSamples( { cam: cam, g: 3.5, seen: 1, rc: 3, nx: 3, ny: 3, f2: 1, radial: true }, 30, 0 );
+      check( "a magnified glow takes fewer samples (" + thin + " a side)", thin >= 1 && thin < 3, true );
+      check( "a pixel at the core's edge takes them all (0: the full count, on both axes)", Render.glowSamples( { cam: cam, g: 3.5, seen: 1, rc: 3, nx: 3, ny: 3, f2: 1, radial: true }, 4, 0 ), 0 );
+      // taller output pixels than wide: the core still gets every row
+      var tall = { cam: { x: 0, y: 0, fx: 2, fy: 3 }, mps: [ { d: new Float32Array( [ 1 ] ), w: 1, h: 1 } ], ks: [ 1 ], kOs: [ 1 ], nx: 2, ny: 3, f2: 1, ox: 0, oy: 0, cx: 0, cy: 0, g: 1.2, rc: 3, seen: 1, radial: true, axes: null };
+      var sums = new Float64Array( 1 ), rows = 0, real = Render.patchSample;
+      Render.patchSample = function() { ++rows; return 0; };
+      try { Render.spritePixels( tall, 0, 0, sums, Render.glowSamples( tall, 0, 0 ) ); } finally { Render.patchSample = real; }
+      check( "a core pixel of a taller-than-wide frame takes all 2 x 3 samples", rows, 6 );
+      function draw( g, cx, footprint, seen )
+      {
+         var accs = cols.map( function() { return new Float32Array( W*W ); } );
+         Render.drawSprites( accs, W, W, patches, sp, cx, cx, g, [ 1, 1, 1 ], cam, [ 1/( g*g ), 1/( g*g ), 1/( g*g ) ], 3, { footprint: footprint, seen: seen } );
+         return accs;
+      }
+      function compare( a, b )
+      {
+         var worst = 0, peak = 0, sa = 0, sb = 0;
+         for ( var c = 0; c < a.length; ++c ) for ( var i = 0; i < a[c].length; ++i ) { worst = Math.max( worst, Math.abs( a[c][i] - b[c][i] ) ); peak = Math.max( peak, b[c][i] ); sa += a[c][i]; sb += b[c][i]; }
+         return { local: worst/peak, light: sa/sb };
+      }
+      [ 1.3, 2, 3.5 ].forEach( function( g )
+      {
+         var d = compare( draw( g, 140, true ), draw( g, 140, false ) );
+         check( "g " + g + ": every pixel within 1% of the peak (" + ( 100*d.local ).toFixed( 2 ) + "%), the same light (" + d.light.toFixed( 4 ) + ")",
+                [ d.local < 0.01, Math.abs( d.light - 1 ) < 0.005 ], [ true, true ] );
+         var spread = function( fp ) { var v = []; for ( var k = 0; k < 24; ++k ) { var a = draw( g, 140 + k*0.1, fp ), s = 0; a.forEach( function( ch ) { for ( var i = 0; i < ch.length; ++i ) s += ch[i]; } ); v.push( s ); } return Math.max.apply( null, v )/Math.min.apply( null, v ) - 1; };
+         var sa = spread( true ), sb = spread( false );
+         check( "g " + g + ": as steady while it drifts (" + ( 100*sa ).toFixed( 2 ) + "% vs " + ( 100*sb ).toFixed( 2 ) + "%)", sa <= sb + 0.002, true );
+      } );
+      var h = compare( draw( 2, 140, true, 0.4 ), draw( 2, 140, false, 0.4 ) );
+      check( "a partly hidden star: every pixel within 1% (" + ( 100*h.local ).toFixed( 2 ) + "%)", h.local < 0.01, true );
+   } )();
+
+   /* Highest draws exactly what the full count draws; High draws within the gate on a whole scene, occlusion included. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-quality" ), fx = flyTestScene( dir ), real = Render.glowSamples, calls = 0;
+      try
+      {
+         var sc = fx.scene, W = 160, H = 90, crop = Fly.presetCrop( sc.w, sc.h, sc.tp.x, sc.tp.y, W, H );
+         var o = { travel: 600, easing: "smoothstep", growth: 0.15, brightening: true, output: Fly.outputTransform( null, "sdr" ) };
+         var pix = function( img ) { var p = Render.channels( img ); img.free(); return p; };
+         Render.glowSamples = function() { ++calls; return real.apply( this, arguments ); };
+         var high = pix( Render.frame( sc, 0.9, Object.assign( {}, o, { starQuality: "highest" } ), W, H, crop ) );
+         check( "Highest never thins the samples", calls, 0 );
+         var med = pix( Render.frame( sc, 0.9, Object.assign( {}, o, { starQuality: "high" } ), W, H, crop ) );
+         check( "High does", calls > 0, true );
+         Render.glowSamples = function() { return 0; };   // the full count
+         var full = pix( Render.frame( sc, 0.9, Object.assign( {}, o, { starQuality: "high" } ), W, H, crop ) );
+         var same = true, worst = 0, top = 0;
+         for ( var c = 0; c < high.length; ++c ) for ( var i = 0; i < high[c].length; ++i ) { if ( high[c][i] !== full[c][i] ) same = false; worst = Math.max( worst, Math.abs( med[c][i] - high[c][i] ) ); top = Math.max( top, high[c][i] ); }
+         check( "Highest is pixel for pixel the full count", same, true );
+         check( "High within 1% of the brightest pixel everywhere (" + ( 100*worst/top ).toFixed( 2 ) + "%)", worst < 0.01*top, true );
+      }
+      finally { Render.glowSamples = real; fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * A crossfade loop's last frames dissolve into the moments before the
+    * start; with the camera at rest there (smoothstep), those are all frame 0
+    * -- the clock that drives twinkle, bloom and the logo holds at 0 too -- so
+    * the still is rendered once per preset, not once a frame.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-still-once" ), fx = flyTestScene( dir, 12 ), real = Render.frame, calls = 0;
+      try
+      {
+         var W = 160, H = 90, ps = Render.sceneFor( fx.scene, W, H ), crop = Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, W, H );
+         var o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 2, twinkle: 0.2, bloom: 1, output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) };
+         var same = function( a, b ) { var d = 0, pa = Render.channels( a ), pb = Render.channels( b ); for ( var c = 0; c < pa.length; ++c ) for ( var i = 0; i < pa[c].length; ++i ) d = Math.max( d, Math.abs( pa[c][i] - pb[c][i] ) ); a.free(); b.free(); return d; };
+         check( "a moment before the start is frame 0 exactly (twinkle and bloom held too)", same( Render.frame( ps, -0.07, o, W, H, crop ), Render.frame( ps, 0, o, W, H, crop ) ), 0 );
+         var n = 10, F = 3, plain = [], cached = [], cache = {};
+         for ( var i = n - F; i < n; ++i ) plain.push( FlyThrough.loopImage( ps, i, n, F, o, W, H, crop ) );
+         Render.frame = function() { ++calls; return real.apply( this, arguments ); };
+         for ( i = n - F; i < n; ++i ) cached.push( FlyThrough.loopImage( ps, i, n, F, o, W, H, crop, cache ) );
+         check( "with a cache the still is rendered once: " + calls + " frames for " + F + " blended ones", calls, F + 1 );
+         var worst = 0; for ( i = 0; i < F; ++i ) worst = Math.max( worst, same( plain[i], cached[i] ) );
+         check( "and the frames are the same", worst < 1e-6, true );
+         calls = 0; var lin = Object.assign( {}, o, { easing: "linear" } ), c2 = {};
+         for ( i = n - F; i < n; ++i ) FlyThrough.loopImage( ps, i, n, F, lin, W, H, crop, c2 ).free();
+         check( "linear easing keeps moving before the start: every frame rendered", calls, 2*F );
+         if ( cache.still ) cache.still.free();
+      }
+      finally { Render.frame = real; fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * Dark pixels skipped exactly: each patch knows, per pixel, how far it is
+    * to the nearest lit one (Render.darkMap, the larger of the x and y
+    * distances), so an output pixel whose every sample lands farther than
+    * the sampler reads is not sampled -- it would have summed to exactly 0.
+    */
+   ( function()
+   {
+      var p = new Float32Array( 7*5 ); p[2*7 + 3] = 1;
+      var d = Render.darkMap( p, 7, 5 );
+      check( "the distance to the nearest lit pixel", [ d[2*7 + 3], d[2*7 + 4], d[0], d[4*7 + 6], d[2*7 + 0] ], [ 0, 1, 3, 3, 3 ] );
+      check( "an all-dark patch is far from everything", Render.darkMap( new Float32Array( 6 ), 3, 2 )[0] > 100, true );
+
+      // a patchy sprite: scattered light, as a deblended glow is -- drawn with and without the skipping
+      var n = 61, R = 30, patches = [ 1, 0.6, 0.3 ].map( function( k, c ) { var q = new Float32Array( n*n ); for ( var i = 0; i < 60; ++i ) { var x = ( i*37 + c*11 ) % n, y = ( i*53 + c*7 ) % n; q[y*n + x] = k*( 0.2 + ( i % 5 )/5 ); } q[R*n + R] = k; return q; } );
+      var sp = { rect: { x0: 0, y0: 0, x1: n, y1: n }, det: { x: R, y: R } }, W = 90;
+      var worst = 0, skipped = 0, total = 0, real = Render.spritePixels;
+      [ { g: 1, seen: 1, fx: 1 }, { g: 1.7, seen: 1, fx: 2 }, { g: 3, seen: 0.4, fx: 2.4 }, { g: 1.2, seen: 0.2, fx: 1.3 }, { g: 0.8, seen: 1, fx: 3 } ].forEach( function( v )
+      {
+         [ 0, 0.37, 0.71 ].forEach( function( ph )
+         {
+            var draw = function( skip ) { var was = Render.SKIP_DARK, accs = [ 0, 1, 2 ].map( function() { return new Float32Array( W*W ); } ); Render.SKIP_DARK = skip;
+               try { Render.drawSprites( accs, W, W, patches, sp, 100 + ph, 90 - ph, v.g, [ 1, 1, 1 ], { x: 0, y: 0, fx: v.fx, fy: v.fx }, [ 0.5, 0.5, 0.5 ], 4, { seen: v.seen } ); } finally { Render.SKIP_DARK = was; } return accs; };
+            var calls = 0; Render.spritePixels = function() { ++calls; return real.apply( this, arguments ); };
+            var off, on;
+            try { off = draw( false ); var c0 = calls; calls = 0; on = draw( true ); total += c0; skipped += c0 - calls; }
+            finally { Render.spritePixels = real; }
+            for ( var c = 0; c < 3; ++c ) for ( var i = 0; i < W*W; ++i ) worst = Math.max( worst, Math.abs( on[c][i] - off[c][i] ) );
+         } );
+      } );
+      check( "skipping dark pixels changes nothing (" + worst + ")", worst, 0 );
+      check( "and skips a good part of them (" + skipped + " of " + total + ")", skipped > 0.2*total, true );
+   } )();
+
+   /*
+    * High and Medium draw from the scene scaled down toward the video's size
+    * (Render.scaledScene): every buffer area-averaged onto the coarser grid
+    * (Render.shrinkPatch), every position and length scaled by d; Highest
+    * always draws from the full-size scene.
+    */
+   ( function()
+   {
+      var w = 23, h = 17, buf = new Float32Array( w*h ), total = 0;
+      for ( var i = 0; i < w*h; ++i ) { buf[i] = ( ( i*37 ) % 11 )/10; total += buf[i]; }
+      [ 0.5, 0.37, 0.8 ].forEach( function( d )
+      {
+         var sh = Render.shrinkPatch( buf, 0, 0, w, h, d ), sum = 0;
+         for ( var k = 0; k < sh.buf.length; ++k ) sum += sh.buf[k];
+         check( "d " + d + ": the light is kept (area-averaged: the sum scales by d^2)", Math.abs( sum/( d*d ) - total ) < 1e-3*total, true );
+      } );
+      // a star (a smooth profile: a single pixel would snap to a coarse pixel's centre) lands where its centre maps, (x + 0.5) d - 0.5
+      var G = 41, star = new Float32Array( G*G ), sx0 = 19.3, sy0 = 21.6;
+      for ( var yy = 0; yy < G; ++yy ) for ( var xx = 0; xx < G; ++xx ) star[yy*G + xx] = Math.exp( -( ( xx - sx0 )*( xx - sx0 ) + ( yy - sy0 )*( yy - sy0 ) )/( 2*2.5*2.5 ) );
+      var s = Render.shrinkPatch( star, 0, 0, G, G, 0.5 ), cx = 0, cy = 0, m = 0;
+      for ( var y = 0; y < s.h; ++y ) for ( var x = 0; x < s.w; ++x ) { var v = s.buf[y*s.w + x]; cx += v*( s.x0 + x ); cy += v*( s.y0 + y ); m += v; }
+      check( "a star lands where its centre maps (" + ( cx/m ).toFixed( 4 ) + ", " + ( cy/m ).toFixed( 4 ) + ")",
+             [ Math.abs( cx/m - ( ( sx0 + 0.5 )*0.5 - 0.5 ) ) < 0.01, Math.abs( cy/m - ( ( sy0 + 0.5 )*0.5 - 0.5 ) ) < 0.01 ], [ true, true ] );
+      var one = new Float32Array( w*h ); one[7*w + 10] = 1;
+      var part = Render.shrinkPatch( one.subarray( 0 ), 0, 0, w, h, 0.5 ), off = Render.shrinkPatch( new Float32Array( [ 1 ] ), 10, 7, 1, 1, 0.5 );
+      check( "a patch shrinks onto the same grid as the whole image", [ off.x0, off.y0, off.buf[0] ], [ 5, 3, part.buf[3*part.w + 5] ] );
+      check( "the levels: Highest full size; High and Medium the video's own size, never enlarged",
+             [ Fly.qualityScale( "highest", 2160, 1080 ), Fly.qualityScale( "high", 2160, 1080 ), Fly.qualityScale( "medium", 2160, 1080 ), Fly.qualityScale( "medium", 900, 1080 ) ], [ 1, 0.5, 0.5, 1 ] );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-scaled" ), fx = flyTestScene( dir, 6 );
+      try
+      {
+         var sc = fx.scene, W = 400, H = 300, crop = { x: 0, y: 0, w: sc.w, h: sc.h };
+         var o = { travel: 200, easing: "smoothstep", growth: 0.15, brightening: true, duration: 2, output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) };
+         var half = Render.scaledScene( sc, 0.5 ), hcrop = { x: 0, y: 0, w: half.w, h: half.h };
+         check( "the scaled scene: half the size, every sprite with it", [ half.w, half.h, half.sprites.length, half.tp.x ], [ Math.ceil( sc.w/2 ), Math.ceil( sc.h/2 ), sc.sprites.length, ( sc.tp.x + 0.5 )*0.5 - 0.5 ] );
+         [ 0, 0.6 ].forEach( function( t )
+         {
+            var a = Render.channels( Render.frame( sc, t, o, W, H, crop ) ), b = Render.channels( Render.frame( half, t, o, W, H, hcrop ) ), la = 0, lb = 0;
+            for ( var i = 0; i < a[0].length; ++i ) { la += a[0][i]; lb += b[0][i]; }
+            // the 10 brightest stars of the full-size frame are where they were
+            var peaks = [];
+            for ( var y = 2; y < H - 2; ++y ) for ( var x = 2; x < W - 2; ++x ) { var k = y*W + x, top = true; for ( var dy = -2; dy <= 2 && top; ++dy ) for ( var dx = -2; dx <= 2; ++dx ) if ( ( dx || dy ) && a[0][k + dy*W + dx] > a[0][k] ) { top = false; break; } if ( top ) peaks.push( [ a[0][k], x, y ] ); }
+            peaks.sort( function( p, q ) { return q[0] - p[0]; } );
+            // sub-pixel centroids (7 x 7, above the local minimum): a brightest-pixel test ties on flat-topped stars
+            var cen = function( img, x, y ) { var mn = Infinity, dx, dy; for ( dy = -3; dy <= 3; ++dy ) for ( dx = -3; dx <= 3; ++dx ) mn = Math.min( mn, img[( y + dy )*W + x + dx] );
+               var sx = 0, sy = 0, sw = 0; for ( dy = -3; dy <= 3; ++dy ) for ( dx = -3; dx <= 3; ++dx ) { var wv = img[( y + dy )*W + x + dx] - mn; sx += wv*dx; sy += wv*dy; sw += wv; } return [ sx/sw, sy/sw ]; };
+            var shift = peaks.slice( 0, 10 ).filter( function( p ) { return p[1] > 3 && p[2] > 3 && p[1] < W - 4 && p[2] < H - 4; } )
+                             .map( function( p ) { var u = cen( a[0], p[1], p[2] ), v = cen( b[0], p[1], p[2] ); return Math.hypot( u[0] - v[0], u[1] - v[1] ); } );
+            var worstShift = Math.max.apply( null, shift );
+            check( "t " + t + ": the same frame from half the scene: its light (" + ( lb/la ).toFixed( 4 ) + ") and its brightest stars where they were (" + worstShift.toFixed( 3 ) + " px at most)",
+                   [ Math.abs( lb/la - 1 ) < 0.01, worstShift < 0.1 ], [ true, true ] );
+         } );
+         check( "and it is kept for the same scale", Render.scaledScene( sc, 0.5 ) === half, true );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * Medium: the stars layer (the residual stars, the sprites, their bloom
+    * and HDR headroom) is drawn at half the video's resolution from coarse
+    * patches -- a quarter of the fill -- then upsampled onto the full-size
+    * nebula. The light is kept; stars are softer.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-half" ), fx = flyTestScene( dir, 6 ), real = Render.spritePixels, calls = 0;
+      try
+      {
+         var sc = fx.scene, W = 400, H = 300, crop = { x: 0, y: 0, w: sc.w, h: sc.h };
+         var o = { travel: 200, easing: "smoothstep", growth: 0.15, brightening: true, duration: 2, output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) };
+         Render.spritePixels = function() { ++calls; return real.apply( this, arguments ); };
+         var frame = function( level ) { calls = 0; var img = Render.frame( sc, 0.6, Object.assign( {}, o, { starQuality: level } ), W, H, crop ), p = Render.channels( img ); img.free(); return { p: p, calls: calls }; };
+         var hi = frame( "high" ), me = frame( "medium" ), la = 0, lb = 0;
+         for ( var c = 0; c < hi.p.length; ++c ) for ( var i = 0; i < hi.p[c].length; ++i ) { la += hi.p[c][i]; lb += me.p[c][i]; }
+         // a quarter of the layer's pixels; these test stars are under a pixel wide at half size, so their boxes shrink less
+         check( "Medium samples far fewer star pixels (" + me.calls + " vs " + hi.calls + ")", me.calls < 0.75*hi.calls, true );
+         check( "and keeps the frame's light (" + ( lb/la ).toFixed( 4 ) + ")", Math.abs( lb/la - 1 ) < 0.02, true );
+         // Medium's upsampled stars sit where High's do (sub-pixel centroids of the 10 brightest)
+         var g0 = hi.p[0], g1 = me.p[0], pk = [];
+         for ( var y = 4; y < H - 4; ++y ) for ( var x = 4; x < W - 4; ++x ) { var k = y*W + x, top = true; for ( var dy = -2; dy <= 2 && top; ++dy ) for ( var dx = -2; dx <= 2; ++dx ) if ( ( dx || dy ) && g0[k + dy*W + dx] > g0[k] ) { top = false; break; } if ( top ) pk.push( [ g0[k], x, y ] ); }
+         pk.sort( function( p, q ) { return q[0] - p[0]; } );
+         var cen = function( img, x, y ) { var mn = Infinity, dx, dy; for ( dy = -3; dy <= 3; ++dy ) for ( dx = -3; dx <= 3; ++dx ) mn = Math.min( mn, img[( y + dy )*W + x + dx] ); var sx = 0, sy = 0, sw = 0; for ( dy = -3; dy <= 3; ++dy ) for ( dx = -3; dx <= 3; ++dx ) { var wv = img[( y + dy )*W + x + dx] - mn; sx += wv*dx; sy += wv*dy; sw += wv; } return [ sx/sw, sy/sw ]; };
+         var worstShift = Math.max.apply( null, pk.slice( 0, 10 ).map( function( p ) { var u = cen( g0, p[1], p[2] ), v = cen( g1, p[1], p[2] ); return Math.hypot( u[0] - v[0], u[1] - v[1] ); } ) );
+         check( "and its stars where High's are (" + worstShift.toFixed( 3 ) + " px at most)", worstShift < 0.25, true );
+         check( "the levels' star layers: full, full, half", [ Fly.starQuality( "highest" ).starRes, Fly.starQuality( "high" ).starRes, Fly.starQuality( "medium" ).starRes ], [ 1, 1, 0.5 ] );
+      }
+      finally { Render.spritePixels = real; fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* A shrunk image's edge pixel that the old one only partly covers is the mean of what it covers, not darker. */
+   ( function()
+   {
+      var ones = new Float32Array( 5*3 ); ones.fill( 1 );
+      var sh = Render.shrinkPatch( ones, 0, 0, 5, 3, 0.5, 5, 3 );
+      check( "a flat image stays flat to its edges when shrunk (" + sh.w + "x" + sh.h + ")", Array.prototype.every.call( sh.buf, function( v ) { return Math.abs( v - 1 ) < 1e-6; } ), true );
+   } )();
+
+   /* The dark skipping stays exact on shrunk levels, flat draws and Medium's coarse patches too. */
+   ( function()
+   {
+      var n = 61, R = 30, patches = [ 1, 0.6 ].map( function( k, c ) { var q = new Float32Array( n*n ); for ( var i = 0; i < 70; ++i ) { var x = ( i*37 + c*11 ) % n, y = ( i*53 + c*7 ) % n; q[y*n + x] = k*( 0.2 + ( i % 5 )/5 ); } q[R*n + R] = k; return q; } );
+      var sp = { rect: { x0: 0, y0: 0, x1: n, y1: n }, det: { x: R, y: R } }, W = 60, worst = 0;
+      [ { g: 1, seen: 1, fx: 6, rc: 4 }, { g: 1.5, seen: 1, fx: 2, rc: 0 }, { g: 0.7, seen: 1, fx: 5, rc: 0 }, { g: 1.3, seen: 0.5, fx: 2.5, rc: 4, coarse: true }, { g: 2, seen: 1, fx: 8, rc: 4, coarse: true } ].forEach( function( v )
+      {
+         var draw = function( skip ) { var was = Render.SKIP_DARK, accs = [ 0, 1 ].map( function() { return new Float32Array( W*W ); } ); Render.SKIP_DARK = skip;
+            try { Render.drawSprites( accs, W, W, patches, sp, 150.3, 140.7, v.g, [ 1, 1 ], { x: 0, y: 0, fx: v.fx, fy: v.fx }, [ 0.5, 0.5 ], v.rc, { seen: v.seen, coarse: v.coarse } ); } finally { Render.SKIP_DARK = was; } return accs; };
+         var off = draw( false ), on = draw( true );
+         for ( var c = 0; c < 2; ++c ) for ( var i = 0; i < W*W; ++i ) worst = Math.max( worst, Math.abs( on[c][i] - off[c][i] ) );
+      } );
+      check( "skipping stays exact on shrunk levels, flat and coarse draws (" + worst + ")", worst, 0 );
+   } )();
+
+   /* A vertical preset after a horizontal one at High draws from the turned scene, not the shrunk horizontal one. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var mk = function( n ) { var a = new Float32Array( n ); return a; };
+      var sc = { w: 60, h: 40, nc: 1, S: [ mk( 2400 ) ], R: [ mk( 2400 ) ], sprites: [], tp: { x: 30, y: 20 }, D: 500, target: { ra: 1, dec: 2 }, project: function() { return null; } };
+      var o = { starQuality: "high" }, across = FlyThrough.qualityScene( sc, o, { id: "h", w: 30, h: 20 } ), up = FlyThrough.qualityScene( sc, o, { id: "v", w: 20, h: 30 } );
+      check( "horizontal then vertical at High: the vertical one is turned (" + up.w + "x" + up.h + ")", [ across.w > across.h, up.w < up.h, up !== across ], [ true, true, true ] );
    } )();
 
    /* fly-tests-end */

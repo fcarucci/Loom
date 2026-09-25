@@ -114,10 +114,23 @@ FlyThrough.framesReady = function( folder, signature, n )
    return true;
 };
 
+/*
+ * The scene a preset's frames are drawn from: turned for it (Render.sceneFor)
+ * and, at High and Medium star quality, shrunk toward the preset's size
+ * (Fly.qualityScale, Render.scaledScene) -- decided by the preset, so a
+ * draft of it draws from the same scene. Highest: the full-size scene.
+ */
+FlyThrough.qualityScene = function( scene, opts, spec )
+{
+   var ps = Render.sceneFor( scene, spec.w, spec.h ), crop = Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, spec.w, spec.h );
+   var d = Fly.qualityScale( opts.starQuality, crop.w, spec.w );
+   return d < 0.999 ? Render.scaledScene( ps, d ) : ps;
+};
+
 /* One preset's render: its frames, scene (a vertical image turned, never cut to a band), crop and options. */
 FlyThrough.presetJob = function( scene, p, opts )
 {
-   var n = Fly.frameCount( opts.duration, opts.fps, p.pingPong ), ps = Render.sceneFor( scene, p.w, p.h );
+   var n = Fly.frameCount( opts.duration, opts.fps, p.pingPong ), ps = FlyThrough.qualityScene( scene, opts, p );
    var F = p.crossfade ? Fly.crossfadeFrames( opts.duration, opts.fps ) : 0;
    var po = Object.assign( {}, FlyThrough.presetOptions( opts, p.preset || p.id ), { frameDt: Fly.frameStep( n, F, p.pingPong ), loops: !!( p.pingPong || p.crossfade ),
                logo: opts.logoImage ? Render.logoLayer( opts.logoImage, p.w, p.h, opts.logoPlace, scene.nc, opts.logoOpacity ) : null } );
@@ -133,13 +146,20 @@ FlyThrough.presetJob = function( scene, p, opts )
  */
 FlyThrough.renderFrames = function( job, folder, res, progress, total, cancelled, resume )
 {
-   var p = job.p, icc = job.po.transfer == "sdr" ? Render.srgbIcc() : null;
+   var p = job.p, icc = job.po.transfer == "sdr" ? Render.srgbIcc() : null, still = {};
+   try { FlyThrough.renderFrameRange( job, folder, res, progress, total, cancelled, resume, icc, still ); }
+   finally { if ( still.still ) still.still.free(); }
+};
+
+FlyThrough.renderFrameRange = function( job, folder, res, progress, total, cancelled, resume, icc, still )
+{
+   var p = job.p;
    for ( var i = 0; i < job.n; ++i )
    {
       var path = Fly.framePath( folder, i );
       if ( resume && File.exists( path ) ) { ++res.reused; continue; }
       if ( cancelled() ) { res.cancelled = true; return; }
-      var img = p.crossfade ? FlyThrough.loopImage( job.ps, i, job.n, job.F, job.po, p.w, p.h, job.crop )
+      var img = p.crossfade ? FlyThrough.loopImage( job.ps, i, job.n, job.F, job.po, p.w, p.h, job.crop, still )
                             : Render.frame( job.ps, Fly.timeAt( i, job.n, p.pingPong ), job.po, p.w, p.h, job.crop );
       try { Render.writeTiff( img, path + FlyThrough.PARTIAL_SUFFIX, icc ); }
       finally { img.free(); }
@@ -376,14 +396,20 @@ FlyThrough.build = function( window, id, choices, progress )
  * Draft preview.
  * ------------------------------------------------------------------------ */
 
-/* Frame i of an n-frame crossfade loop fading over F frames (Fly.loopFrame): one render, or two mixed. */
-FlyThrough.loopImage = function( scene, i, n, F, opts, w, h, crop )
+/*
+ * Frame i of an n-frame crossfade loop fading over F frames (Fly.loopFrame):
+ * one render, or two mixed. The pre-roll it dissolves into is frame 0 when
+ * the camera rests before the start (any easing but linear): with a `cache`
+ * ({}) that still is rendered once and kept in cache.still (the caller frees it).
+ */
+FlyThrough.loopImage = function( scene, i, n, F, opts, w, h, crop, cache )
 {
    var f = Fly.loopFrame( i, n, F ), img = Render.frame( scene, f.a, opts, w, h, crop );
    if ( f.alpha >= 1 ) return img;
-   var b = Render.frame( scene, f.b, opts, w, h, crop );
+   var still = !!cache && f.b <= 0 && opts.easing != "linear";
+   var b = still ? ( cache.still || ( cache.still = Render.frame( scene, 0, opts, w, h, crop ) ) ) : Render.frame( scene, f.b, opts, w, h, crop );
    try { return Render.blend( img, b, f.alpha ); }
-   finally { b.free(); }
+   finally { if ( !still ) b.free(); }
 };
 
 /*
@@ -395,24 +421,28 @@ FlyThrough.renderDraft = function( scene, opts, spec, progress )
 {
    progress = progress || {};
    var plan = Fly.draftPlan( opts.duration, opts.fps, Fly.DRAFT_LONG, spec.w/spec.h );
-   scene = Render.sceneFor( scene, spec.w, spec.h );
+   scene = FlyThrough.qualityScene( scene, opts, spec );
    var crop = Fly.presetCrop( scene.w, scene.h, scene.tp.x, scene.tp.y, spec.w, spec.h );
    var o = Object.assign( {}, opts, { kernel: "bilinear", output: Fly.outputTransform( opts.colour || Fly.SRGB_COLOUR, "sdr" ) } );
-   var bitmaps = [];
+   var bitmaps = [], still = {};   // a crossfade's pre-roll still, rendered once (FlyThrough.loopImage)
    var F = spec.crossfade ? Fly.crossfadeFrames( opts.duration, plan.fps ) : 0;
    o.frameDt = Fly.frameStep( plan.frames, F, false );
    o.logo = opts.logoImage ? Render.logoLayer( opts.logoImage, plan.width, plan.height, opts.logoPlace, scene.nc, opts.logoOpacity ) : null;
-   for ( var i = 0; i < plan.frames; ++i )
+   try
    {
-      if ( progress.isCancelled && progress.isCancelled() )
-         break;
-      var img = spec.crossfade ? FlyThrough.loopImage( scene, i, plan.frames, F, o, plan.width, plan.height, crop )
-                               : Render.frame( scene, plan.frames > 1 ? i/( plan.frames - 1 ) : 0, o, plan.width, plan.height, crop );
-      try { bitmaps.push( img.render() ); }
-      finally { img.free(); }
-      if ( progress.onFrame ) progress.onFrame( i + 1, plan.frames );
-      CoreApplication.processEvents();
+      for ( var i = 0; i < plan.frames; ++i )
+      {
+         if ( progress.isCancelled && progress.isCancelled() )
+            break;
+         var img = spec.crossfade ? FlyThrough.loopImage( scene, i, plan.frames, F, o, plan.width, plan.height, crop, still )
+                                  : Render.frame( scene, plan.frames > 1 ? i/( plan.frames - 1 ) : 0, o, plan.width, plan.height, crop );
+         try { bitmaps.push( img.render() ); }
+         finally { img.free(); }
+         if ( progress.onFrame ) progress.onFrame( i + 1, plan.frames );
+         CoreApplication.processEvents();
+      }
    }
+   finally { if ( still.still ) still.still.free(); }   // a crossfade's still, even when a frame fails
    return { bitmaps: bitmaps, fps: plan.fps, pingPong: spec.pingPong };
 };
 
@@ -598,6 +628,8 @@ FlyThrough.FPS = [ 24, 25, 30, 60 ];
 /* Render speed on this scene, ms per output megapixel, from one 1920x1080 frame. */
 FlyThrough.measureSpeed = function( scene, opts )
 {
+   // from the scene the chosen Star quality draws from (High and Medium: shrunk to the video's size)
+   scene = FlyThrough.qualityScene( scene, opts, { id: "speed", w: 1920, h: 1080 } );
    var crop = Fly.presetCrop( scene.w, scene.h, scene.tp.x, scene.tp.y, 1920, 1080 );
    var t0 = Date.now();
    Render.frame( scene, 0.5, Object.assign( {}, opts, { travel: opts.travel || 1,
@@ -649,6 +681,8 @@ FlyThrough.still = function( window )
 };
 
 FlyThrough.LOOPS = [ [ "none", "None" ], [ "pingpong", "Back and forth" ], [ "crossfade", "Crossfade" ] ];   // the Loop choices
+FlyThrough.STAR_QUALITIES = [ "highest", "high", "medium" ];   // the Star quality combo's items, in order
+FlyThrough.STAR_QUALITY_DEFAULT = "high";                 // the dialog's default (code without a level gets Highest)
 FlyThrough.OPTIONS_SETTING = "Loom/flyOptions";   // the dialog's options, JSON, restored next time
 FlyThrough.OBJECTS_SETTING = "Loom/flyObjects";   // each image's solve hints, JSON by file (or name, unsaved)
 FlyThrough.LOGO_SETTING = "Loom/flyLogo";         // the logo file last chosen
@@ -1159,11 +1193,20 @@ FlyThrough.Dialog = class extends Dialog
       this.blurCheck.text = "Motion blur";
       this.blurCheck.checked = true;
       this.blurCheck.toolTip = "<p>Stars streak slightly along their path, as a camera with a 180\u00b0 shutter records them.</p>";
+      this.starQualityCombo = new ComboBox( this );
+      [ "Highest", "High", "Medium" ].forEach( function( t ) { self.starQualityCombo.addItem( t ); } );
+      this.starQualityCombo.currentItem = FlyThrough.STAR_QUALITIES.indexOf( FlyThrough.STAR_QUALITY_DEFAULT );
+      this.starQualityCombo.toolTip = "<p><b>Highest</b>: every star drawn in full from the 4K working image (for 1080p, computed at 4K and downsampled). " +
+                                      "<b>High</b>: drawn from the image shrunk to the video's size, glows sampled only as finely as they need: " +
+                                      "the same look, about a third faster. " +
+                                      "<b>Medium</b>: the stars drawn at half the video's resolution and scaled up onto the full-size nebula: " +
+                                      "softer stars, about three times faster.</p>";
+      this.starQualityCombo.onItemSelected = function() { self.redraft(); };
       this.motion = this.group( "Motion", [
          this.row( [ this.label( "Travel (pc):" ), this.travelEdit, this.travelNote, this.label( "Easing:" ), this.easingCombo, "stretch" ] ),
          this.row( [ this.label( "Growth:" ), this.growthEdit, this.label( "Nebula motion (%):" ), this.nebulaSpin, this.brightCheck, "stretch" ] ),
          this.row( [ this.label( "Twinkle (%):" ), this.twinkleSpin, this.label( "Bloom (%):" ), this.bloomSpin, this.blurCheck, "stretch" ] ),
-         this.row( [ this.label( "Star colour:" ), this.saturationSlider, this.saturationLabel, "stretch" ] ) ] );
+         this.row( [ this.label( "Star colour:" ), this.saturationSlider, this.saturationLabel, this.label( "Star quality:" ), this.starQualityCombo, "stretch" ] ) ] );
    }
 
    buildOutput()
@@ -1594,6 +1637,7 @@ FlyThrough.Dialog = class extends Dialog
                twinkle: this.twinkleSpin.value/100, motionBlur: this.blurCheck.checked, bloom: this.bloomSpin.value/100,
                starSaturation: this.saturationSlider.value/100,
                starHdr: this.starHdrCheck.checked,
+               starQuality: FlyThrough.STAR_QUALITIES[this.starQualityCombo.currentItem],
                logoOpacity: this.logoOpacity.value/100, logoDelay: this.logoDelaySpin.value,
                logoPath: this.logoEdit.text.trim(), logoPlace: this.logoPlaceCombo.currentItem > 0 ? Fly.LOGO_PLACES[this.logoPlaceCombo.currentItem - 1] : "off",
                music: { path: this.musicEdit.text.trim(), fade: this.fadeCheck.checked },
@@ -1844,7 +1888,7 @@ FlyThrough.Dialog = class extends Dialog
       var self = this, list = [
          [ "starSaturation", this.saturationSlider, "value" ], [ "easing", this.easingCombo, "currentItem" ], [ "growth", this.growthEdit, "text" ], [ "nebula", this.nebulaSpin, "value" ],
          [ "brighten", this.brightCheck, "checked" ], [ "twinkle", this.twinkleSpin, "value" ], [ "bloom", this.bloomSpin, "value" ],
-         [ "blur", this.blurCheck, "checked" ], [ "starHdr", this.starHdrCheck, "checked" ], [ "duration", this.durationSpin, "value" ], [ "fps", this.fpsCombo, "currentItem" ],
+         [ "blur", this.blurCheck, "checked" ], [ "starHdr", this.starHdrCheck, "checked" ], [ "starQuality", this.starQualityCombo, "currentItem" ], [ "duration", this.durationSpin, "value" ], [ "fps", this.fpsCombo, "currentItem" ],
          [ "orientation", this.orientationCombo, "currentItem" ], [ "loopMode", this.loopCombo, "currentItem" ],
          [ "dynamic", this.dynamicCombo, "currentItem" ], [ "peak", this.peakSpin, "value" ], [ "logoOpacity", this.logoOpacity, "value" ], [ "logoDelay", this.logoDelaySpin, "value" ],
          [ "music", this.musicEdit, "text" ], [ "fade", this.fadeCheck, "checked" ], [ "video", this.videoCheck, "checked" ],

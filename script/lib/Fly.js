@@ -58,6 +58,36 @@ Fly.screenPosition = function( c, p0, tp, K )
 Fly.BACKDROP_MOTION_DEFAULT = 0.4;
 
 /*
+ * Star quality: how the star sprites are drawn. Highest is the full renderer
+ * from the full-size (4K working) scene -- at 1080p each output pixel
+ * averages 2 x 2 or 3 x 3 samples of it. High and Medium draw from the scene
+ * shrunk to the video's size (Fly.qualityScale: one scene pixel per output
+ * pixel) and sample a magnified glow only as densely as its
+ * footprint needs (Render.glowSamples). Medium also draws the stars layer
+ * at half the video's resolution (starRes) from coarse patches -- a quarter
+ * of the fill -- and upsamples it onto the full-size nebula: softer stars.
+ * Without a level: Highest.
+ */
+Fly.STAR_QUALITY = { highest: { footprint: false, outScale: 0, starRes: 1 }, high: { footprint: true, outScale: 1, starRes: 1 },
+                     medium: { footprint: true, outScale: 1, starRes: 0.5 } };
+Fly.starQuality = function( level )
+{
+   return Object.prototype.hasOwnProperty.call( Fly.STAR_QUALITY, level ) ? Fly.STAR_QUALITY[level] : Fly.STAR_QUALITY.highest;
+};
+
+/*
+ * The scale a level draws its scene at, for a crop cropW scene pixels wide
+ * drawn outW wide: High and Medium shrink the scene until one output pixel
+ * spans outScale scene pixels (1 for both), never enlarging it; Highest keeps
+ * the full-size (4K working) scene: 1.
+ */
+Fly.qualityScale = function( level, cropW, outW )
+{
+   var target = Fly.starQuality( level ).outScale;
+   return target > 0 ? Math.min( 1, target*outW/cropW ) : 1;
+};
+
+/*
  * The nebula's zoom at camera travel s: `motion` (0-1) of the physically
  * correct growth D/(D - s). At its true distance the Elephant's Trunk grew
  * 1.25x over a clip, far too much to watch; the stars keep their real
@@ -1189,8 +1219,10 @@ Fly.frameStep = function( n, F, pingPong )
  * from an older renderer are rendered again, not reused or resumed.
  * 2: HDR headroom as a bump on each star; crossfade loops dissolve at the end.
  * 3: the headroom bumps follow the backdrop's zoom.
+ * 4: a crossfade's pre-roll holds the clock (twinkle, bloom, logo) at 0.
+ * 5: vertical High/Medium drafts could be drawn from the unturned shrunk scene.
  */
-Fly.RENDERER_VERSION = 3;
+Fly.RENDERER_VERSION = 5;
 
 Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output" ];   // options that change only the encode
 

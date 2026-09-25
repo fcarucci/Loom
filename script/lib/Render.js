@@ -126,9 +126,10 @@ Render.patchSample = function( patch, rw, rh, x, y )
  * pixel, so it is still averaged from 2-3 samples a side (the coarsest
  * level put a sharp core on a single sample: 27% off at the peak).
  */
-Render.mipLevel = function( fx, g )
+Render.mipLevel = function( fx, g, coarse )
 {
    var r = fx/g;
+   if ( coarse ) return r >= 2 ? Math.floor( Math.log( r )/Math.LN2 ) : 0;   // Medium: a level pixel fills the output pixel (one sample)
    return r >= 4 ? Math.floor( Math.log( r )/Math.LN2 ) - 1 : 0;
 };
 
@@ -184,7 +185,7 @@ Render.drawSprites = function( accs, outW, outH, patches, sp, cx, cy, g, ks, cam
     */
    var gs = ( radial || spike ) ? 1 : g;      // the core, and a spike's width, are sampled at their own scale
    // shrunk far down, sample a pre-shrunk copy (a mip level), not n x n points of the full one
-   var L = ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs ), f2 = 1 << L;
+   var L = ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs, how && how.coarse ), f2 = 1 << L;
    var ctx = { mps: patches.map( function( p ) { return L ? Render.mipOf( p, rw, rh, L ) : { d: p, w: rw, h: rh }; } ), f2: f2, ox: sp.det.x - r.x0, oy: sp.det.y - r.y0,
                cx: cx, cy: cy, g: g, rc: rc, seen: seen, radial: radial, cam: cam,
                ks: ks.map( function( k ) { return spike ? k*seen : k; } ),
@@ -201,22 +202,86 @@ Render.drawSprites = function( accs, outW, outH, patches, sp, cx, cy, g, ks, cam
       if ( t !== true ) darks.push( t );
    }
    if ( !all && !darks.length ) return;                  // every channel dark
-   var sums = new Float64Array( nc );
+   // High: a glow sampled by its footprint (Render.glowSamples) -- only when its farthest light, stretched least
+   // (1/(g seen)), could take fewer than the full count; otherwise the per-pixel test would cost time for nothing
+   var sums = new Float64Array( nc ), footprint = !!( how && how.footprint ) && radial &&
+              Math.ceil( Math.max( cam.fx, cam.fy )/( g*Math.max( 0.05, seen )*f2 ) - 1e-9 ) < ctx.nx;
+   // and of those, only the ones whose samples land near a lit patch pixel (Render.darkMap): a sample lands
+   // within lip x half the pixel's diagonal of where its centre maps (lip: the map's largest stretch), and reads
+   // the pixels within 1 of it; the centre is rounded to a pixel (0.5). Farther, every read is 0: exactly nothing
+   var dm = null, reachLevel = 0;
+   if ( Render.SKIP_DARK && !spike )
+   {
+      dm = ctx.mps.map( function( mp, i ) { return L ? ( mp._dark || ( mp._dark = Render.darkMap( mp.d, mp.w, mp.h ) ) )
+                                                     : ( patches[i]._dark || ( patches[i]._dark = Render.darkMap( patches[i], rw, rh ) ) ); } );
+      var lip = radial ? Math.max( 1, 1/( g*Math.max( 0.05, seen ) ) ) : 1/g;
+      reachLevel = lip*0.5*Math.sqrt( cam.fx*cam.fx + cam.fy*cam.fy )/f2 + 1.5 + 1e-6;
+   }
    for ( var v = b.v0; v <= b.v1; ++v )
    {
       var dy = cam.y + ( v + 0.5 )*cam.fy - 0.5 - cy;
       for ( var u = b.u0; u <= b.u1; ++u )
       {
+         var dx = cam.x + ( u + 0.5 )*cam.fx - 0.5 - cx;
          if ( !all )
          {
-            var dx = cam.x + ( u + 0.5 )*cam.fx - 0.5 - cx, lit = false;
+            var lit = false;
             for ( var j = 0; j < darks.length && !lit; ++j ) lit = !darks[j]( dx, dy );
             if ( !lit ) continue;
          }
-         Render.spritePixels( ctx, u, v, sums );
+         if ( dm && !Render.nearLight( ctx, dm, dx, dy, reachLevel ) ) continue;
+         var n = footprint ? Render.glowSamples( ctx, dx, dy ) : 0;
+         Render.spritePixels( ctx, u, v, sums, n );
          for ( ch = 0; ch < nc; ++ch ) if ( sums[ch] != 0 ) accs[ch][v*outW + u] += sums[ch];
       }
    }
+};
+
+Render.SKIP_DARK = true;   // skip output pixels whose samples can only read dark patch pixels (exact; off in the tests that compare)
+
+/*
+ * Per patch pixel, the distance to the nearest lit (non-zero) one, as the
+ * larger of the x and y distances (two passes over the 8 neighbours); an
+ * all-dark patch is 1e9 everywhere. Cached on the patch by Render.drawSprites.
+ */
+Render.darkMap = function( p, w, h )
+{
+   var d = new Float32Array( w*h ), x, y, i, BIG = 1e9;
+   for ( i = 0; i < w*h; ++i ) d[i] = p[i] != 0 ? 0 : BIG;
+   for ( y = 0; y < h; ++y )
+      for ( x = 0; x < w; ++x )
+      {
+         i = y*w + x;
+         if ( d[i] == 0 ) continue;
+         var m = d[i];
+         if ( x > 0 ) m = Math.min( m, d[i - 1] + 1 );
+         if ( y > 0 ) { m = Math.min( m, d[i - w] + 1 ); if ( x > 0 ) m = Math.min( m, d[i - w - 1] + 1 ); if ( x < w - 1 ) m = Math.min( m, d[i - w + 1] + 1 ); }
+         d[i] = m;
+      }
+   for ( y = h - 1; y >= 0; --y )
+      for ( x = w - 1; x >= 0; --x )
+      {
+         i = y*w + x;
+         if ( d[i] == 0 ) continue;
+         var n = d[i];
+         if ( x < w - 1 ) n = Math.min( n, d[i + 1] + 1 );
+         if ( y < h - 1 ) { n = Math.min( n, d[i + w] + 1 ); if ( x < w - 1 ) n = Math.min( n, d[i + w + 1] + 1 ); if ( x > 0 ) n = Math.min( n, d[i + w - 1] + 1 ); }
+         d[i] = n;
+      }
+   return d;
+};
+
+/* Does the output pixel centred (dx, dy) from the star map near light in some channel (Render.drawSprites' dark skipping)? */
+Render.nearLight = function( c, dm, dx, dy, reach )
+{
+   var ro = Math.sqrt( dx*dx + dy*dy ), f = c.radial ? ( ro > 0 ? Fly.radialSource( ro, c.rc, c.g, c.seen )/ro : 1 ) : 1/c.g;
+   var ix = Math.round( ( c.ox + dx*f + 0.5 )/c.f2 - 0.5 ), iy = Math.round( ( c.oy + dy*f + 0.5 )/c.f2 - 0.5 );
+   for ( var ch = 0; ch < dm.length; ++ch )
+   {
+      var mp = c.mps[ch], ex = ix < 0 ? -ix : ( ix >= mp.w ? ix - mp.w + 1 : 0 ), ey = iy < 0 ? -iy : ( iy >= mp.h ? iy - mp.h + 1 : 0 );
+      if ( ( ex || ey ? Math.max( ex, ey ) : dm[ch][iy*mp.w + ix] ) <= reach ) return true;
+   }
+   return false;
 };
 
 /* Where a spike sample at offset (dx, dy) reads its patch: along the nearest spike axis, beyond the core, shrunk by c.stretch; across it, as it is. Null when no axis points its way. */
@@ -322,16 +387,17 @@ Render.spriteBounds = function( sp, cx, cy, g, cam, outW, outH )
  * gain k to the glow's kO -- or, for a spike, along its axis
  * (Render.spikeSource).
  */
-Render.spritePixels = function( c, u, v, sums )
+Render.spritePixels = function( c, u, v, sums, n )
 {
-   var cam = c.cam, nc = c.mps.length, ch, mp;
+   // n samples a side (Render.glowSamples), never more than the full count; 0 or missing: the full count
+   var cam = c.cam, nc = c.mps.length, ch, mp, nx = n ? Math.min( n, c.nx ) : c.nx, ny = n ? Math.min( n, c.ny ) : c.ny;
    for ( ch = 0; ch < nc; ++ch ) sums[ch] = 0;
-   for ( var sy = 0; sy < c.ny; ++sy )
+   for ( var sy = 0; sy < ny; ++sy )
    {
-      var dy = cam.y + ( v + ( sy + 0.5 )/c.ny )*cam.fy - 0.5 - c.cy;
-      for ( var sx = 0; sx < c.nx; ++sx )
+      var dy = cam.y + ( v + ( sy + 0.5 )/ny )*cam.fy - 0.5 - c.cy;
+      for ( var sx = 0; sx < nx; ++sx )
       {
-         var dx = cam.x + ( u + ( sx + 0.5 )/c.nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, sm = -1;
+         var dx = cam.x + ( u + ( sx + 0.5 )/nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, sm = -1;
          if ( c.axes )
          {
             var at = Render.spikeSource( c, dx, dy );
@@ -358,7 +424,28 @@ Render.spritePixels = function( c, u, v, sums )
          }
       }
    }
-   for ( ch = 0; ch < nc; ++ch ) sums[ch] /= c.nx*c.ny;
+   for ( ch = 0; ch < nc; ++ch ) sums[ch] /= nx*ny;
+};
+
+/*
+ * Samples a side for the glow pixel centred (dx, dy) from the star, in
+ * High and Medium (Fly.starQuality): its footprint in the sprite, cam.f x
+ * radialSource(ro)/ro sprite pixels at its nearest point to the star (the
+ * wider of the radial and tangential stretch beyond the core), rounded up,
+ * at most the full count c.nx. A pixel reaching into the core, where the
+ * gain blends from k to kO, keeps the full count.
+ */
+Render.glowSamples = function( c, dx, dy )
+{
+   // 0: the full count, c.nx x c.ny (a single number would drop rows where the pixels are taller than wide)
+   if ( !c.radial ) return 0;
+   var h = 0.5*Math.sqrt( c.cam.fx*c.cam.fx + c.cam.fy*c.cam.fy ), ro = Math.sqrt( dx*dx + dy*dy ) - h;
+   if ( ro <= c.rc ) return 0;
+   // tangentially radialSource(ro)/ro; radially 1/(g seen), the wider when a hidden star's glow shrinks by less than it grows
+   var stretch = Math.max( Fly.radialSource( ro, c.rc, c.g, c.seen )/ro, 1/( c.g*Math.max( 0.05, c.seen ) ) );
+   var span = Math.max( c.cam.fx, c.cam.fy )*stretch/c.f2;
+   var n = Math.max( 1, Math.ceil( span - 1e-9 ) );
+   return n >= Math.max( c.nx, c.ny || c.nx ) ? 0 : n;
 };
 
 /* ---------------------------------------------------------------------------
@@ -752,6 +839,14 @@ Render.unpackScene = function( meta, arrays, project )
 /* a = alpha*a + (1 - alpha)*b, per channel (same size); a crossfade loop's frames. */
 Render.blend = function( a, b, alpha )
 {
+   // in PixInsight's own image operations (a copy of b, so b -- a crossfade's reused still -- is left as it is)
+   if ( typeof ImageOp_Mul != "undefined" )
+   {
+      var bb = new Image( b );
+      try { a.apply( alpha, ImageOp_Mul ); bb.apply( 1 - alpha, ImageOp_Mul ); a.apply( bb, ImageOp_Add ); }
+      finally { bb.free(); }
+      return a;
+   }
    var n = a.width*a.height, pa = new Float32Array( n ), pb = new Float32Array( n );
    for ( var c = 0; c < a.numberOfChannels; ++c )
    {
@@ -777,21 +872,33 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    var kernel = opts.kernel || "bicubic";
    var ax = Render.axisWeights( outW, crop.x, crop.w, sc.tp.x, K, sc.w, kernel );
    var ay = Render.axisWeights( outH, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
-   var cam = { x: crop.x, y: crop.y, fx: crop.w/outW, fy: crop.h/outH };
+   // the stars layer at starRes of the video (Medium: half), the nebula always at full size
+   var sr = Fly.starQuality( opts.starQuality ).starRes || 1, tw = sr < 1 ? Math.max( 1, Math.round( outW*sr ) ) : outW, th = sr < 1 ? Math.max( 1, Math.round( outH*sr ) ) : outH;
+   var cam = { x: crop.x, y: crop.y, fx: crop.w/tw, fy: crop.h/th };
+   var tax = tw == outW ? ax : Render.axisWeights( tw, crop.x, crop.w, sc.tp.x, K, sc.w, kernel ), tay = th == outH ? ay : Render.axisWeights( th, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
    var S = [], T = [], c;
    for ( c = 0; c < sc.nc; ++c )
    {
       S.push( Render.resample( sc.S[c], sc.w, sc.h, ax, ay ) );
-      T.push( Render.resample( sc.R[c], sc.w, sc.h, ax, ay ) );
+      T.push( Render.resample( sc.R[c], sc.w, sc.h, tax, tay ) );
    }
-   var placed = Render.addSprites( sc, T, s, Object.assign( {}, opts, { t: t, K: K } ), outW, outH, cam );
-   Render.saturateStars( T, outW*outH, opts.starSaturation != null ? opts.starSaturation : 1 );
+   // before the start (a crossfade's pre-roll) the clock that drives twinkle, bloom, the logo and the shutter holds at 0:
+   // with the camera at rest there, every such moment is frame 0 (FlyThrough.loopImage renders it once)
+   var clock = Math.max( 0, t );
+   var placed = Render.addSprites( sc, T, s, Object.assign( {}, opts, { t: clock, K: K, coarseMips: sr < 1 } ), tw, th, cam );
+   Render.saturateStars( T, tw*th, opts.starSaturation != null ? opts.starSaturation : 1 );
    // light past white blooms (none in the image itself, so frame 0 is untouched)
-   Render.bloom( T, outW, outH, { amount: opts.bloom != null ? opts.bloom : 0, seconds: t*( opts.duration || 0 ) } );
+   Render.bloom( T, tw, th, { amount: opts.bloom != null ? opts.bloom : 0, seconds: clock*( opts.duration || 0 ) } );
    // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
    var hdrOut = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
    // the map with the frame's backdrop zoom, so a catalogue star's bump follows the star the backdrop carries
-   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, Object.assign( {}, opts, { K: K } ), outW, outH, cam ), outW );
+   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, tw*th, Render.headroomMap( sc, placed, Object.assign( {}, opts, { K: K } ), tw, th, cam ), tw );
+   // up onto the full-size frame (Catmull-Rom, pixel centres as everywhere: output u reads (u + 0.5) tw/outW - 0.5)
+   if ( tw != outW || th != outH )
+   {
+      var ux = Render.axisWeights( outW, 0, tw, 0, 1, tw, "bicubic" ), uy = Render.axisWeights( outH, 0, th, 0, 1, th, "bicubic" );
+      T = T.map( function( b ) { return Render.resample( b, tw, th, ux, uy ); } );
+   }
    var img = new Image( outW, outH, sc.nc, sc.nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
    var n = outW*outH, out = [], excess = [];
    var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
@@ -801,7 +908,7 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
       out.push( r.out );
       excess.push( r.excess );
    }
-   if ( opts.logo ) Render.addLogo( opts.logo, out, excess, outW, Fly.logoFade( t*( opts.duration || 0 ), opts.logoDelay || 0 ) );
+   if ( opts.logo ) Render.addLogo( opts.logo, out, excess, outW, Fly.logoFade( clock*( opts.duration || 0 ), opts.logoDelay || 0 ) );
    // the composite is in the image's own encoding; the output transform
    // converts it to the video's colour space (Fly.outputTransform)
    if ( opts.output )
@@ -901,13 +1008,14 @@ Render.headroomMap = function( sc, placed, opts, outW, outH, cam )
          }
    }
    // a star's reach grows with its brightness; only pixels above the knee are changed, so it can be generous
-   var reach = function( gain ) { return Fly.HEADROOM_RADIUS*( 1 + 3*( gain - 1 )/Math.max( 1e-6, peak - 1 ) ); };
+   var px = sc.pxScale || 1;       // a scaled scene's pixels are larger (Render.scaledScene)
+   var reach = function( gain ) { return px*Fly.HEADROOM_RADIUS*( 1 + 3*( gain - 1 )/Math.max( 1e-6, peak - 1 ) ); };
    var moving = {};
    placed.forEach( function( q )
    {
       var s = q.sp.source || {}, gain = isFinite( s.G ) ? Fly.magnitudeGain( s.G, sc.gBright, peak ) : 1;
       moving[Render.starKey( s )] = true;
-      if ( gain > 1 ) paint( q.cx, q.cy, Math.max( reach( gain ), q.rc*Math.max( 1, q.g ) + 2 ), gain );
+      if ( gain > 1 ) paint( q.cx, q.cy, Math.max( reach( gain ), q.rc*Math.max( 1, q.g ) + 2*px ), gain );
    } );
    // every other catalogued star, where the zooming backdrop carries it
    stars.forEach( function( st )
@@ -985,7 +1093,8 @@ Render.splitPatches = function( sp, c, rc, photo )
    var cw = cr.x1 - cr.x0, ch = cr.y1 - cr.y0;
    var out = { photoCore: new Float32Array( cw*ch ), modelCore: new Float32Array( cw*ch ), modelOuter: new Float32Array( rw*rh ),
                coreSprite: { rect: cr, det: sp.det } };
-   var coreShare = function( x, y ) { return 1 - Fly.smoothstep( rc, rc + 3, Math.hypot( x - sp.det.x, y - sp.det.y ) ); };
+   var edge = 3*( sp.pxScale || 1 );    // 3 px of the full-size scene
+   var coreShare = function( x, y ) { return 1 - Fly.smoothstep( rc, rc + edge, Math.hypot( x - sp.det.x, y - sp.det.y ) ); };
    for ( var y = 0; y < rh; ++y )
       for ( var x = 0; x < rw; ++x )
          out.modelOuter[y*rw + x] = ( 1 - coreShare( r.x0 + x, r.y0 + y ) )*M[y*rw + x];
@@ -1034,7 +1143,7 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
       parts.push( ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow[c] ) : null );
    }
    var pick = function( key ) { return parts.map( function( p ) { return p[key]; } ); };
-   var draws = [ [ glow, sp, 1 - wo ] ];
+   var draws = [ [ glow, sp, 1 - wo ] ], glowHow = { seen: q.seen, coarse: !!opts.coarseMips, footprint: Fly.starQuality( opts.starQuality ).footprint };
    if ( parts[0] ) draws.push( [ pick( "photoCore" ), parts[0].coreSprite, wo - wc ], [ pick( "modelCore" ), parts[0].coreSprite, wc ] );
    if ( parts[0] && wo > 0 ) draws.push( [ pick( "modelOuter" ), sp, wo ] );
    draws.forEach( function( pw )
@@ -1042,11 +1151,11 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
       if ( pw[2] == 0 ) return;
       var s1 = tw.map( function( t ) { return t*pw[2]/path.length; } );
       var ks = s1.map( function( x ) { return q.kCore*x; } ), kOs = s1.map( function( x ) { return q.kOuter*x; } );
-      path.forEach( function( p ) { Render.drawSprites( T, outW, outH, pw[0], pw[1], p.x, p.y, q.g, ks, cam, kOs, q.rc, { seen: q.seen } ); } );
+      path.forEach( function( p ) { Render.drawSprites( T, outW, outH, pw[0], pw[1], p.x, p.y, q.g, ks, cam, kOs, q.rc, glowHow ); } );
    } );
    if ( spikes[0] )
    {
-      var sk = tw.map( function( t ) { return q.alpha*t/path.length; } ), how = { seen: q.seen, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
+      var sk = tw.map( function( t ) { return q.alpha*t/path.length; } ), how = { seen: q.seen, coarse: !!opts.coarseMips, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
       path.forEach( function( p ) { Render.drawSprites( T, outW, outH, spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
    }
 };
@@ -1267,13 +1376,102 @@ Render.rotateScene = function( sc )
       return { s: turned, p0: pt( e.p0 ) };
    } );
    var project = sc.project;
-   return Object.assign( {}, sc, {
+   var out = Object.assign( {}, sc, {
       w: h, h: w,
       S: sc.S.map( function( b ) { return turn( b, w, h ); } ),
       R: sc.R.map( function( b ) { return turn( b, w, h ); } ),
       sprites: sprites, tp: pt( sc.tp ),
       catalogue: sc.catalogue ? sc.catalogue.map( function( c ) { return Object.assign( {}, c, pt( c ) ); } ) : null,
       project: function( ra, dec ) { return pt( project( ra, dec ) ); } } );
+   delete out._scaled;             // the shrunk copy of the unturned scene is not this one's (Render.scaledScene)
+   return out;
+};
+
+/*
+ * One axis of an area-average shrink by d: old pixel i covers [i, i + 1),
+ * new pixel j covers [j/d, (j + 1)/d) (so a centre x maps to (x + 0.5) d -
+ * 0.5, and a patch shrinks onto the same grid as the whole image). For the
+ * n old pixels from i0: the new ones j0 .. j0 + m - 1, each with its old
+ * pixels and their overlap x d (weights summing to 1 inside).
+ */
+Render.shrinkAxis = function( i0, n, d, N )
+{
+   var j0 = Math.floor( i0*d ), j1 = Math.ceil( ( i0 + n )*d ), m = j1 - j0, start = [ 0 ], idx = [], w = [];
+   for ( var j = j0; j < j1; ++j )
+   {
+      var a = j/d, b = ( j + 1 )/d;
+      for ( var i = Math.max( i0, Math.floor( a ) ); i < Math.min( i0 + n, Math.ceil( b ) ); ++i )
+      {
+         var ov = Math.min( b, i + 1 ) - Math.max( a, i );
+         if ( ov > 0 ) { idx.push( i - i0 ); w.push( ov*d ); }
+      }
+      // a new pixel reaching past the image (N old pixels: its last row or column) is the mean of what it covers;
+      // one cut by a patch's edge keeps just its share, as the whole image's pixel there has the rest from outside the patch
+      if ( N > 0 && ( j + 1 )/d > N )
+      {
+         var sum = 0, k;
+         for ( k = start[start.length - 1]; k < idx.length; ++k ) sum += w[k];
+         if ( sum > 0 ) for ( k = start[start.length - 1]; k < idx.length; ++k ) w[k] /= sum;
+      }
+      start.push( idx.length );
+   }
+   return { j0: j0, m: m, start: start, idx: idx, w: w };
+};
+
+/* A w x h patch whose top-left pixel is (x0, y0) of an imgW x imgH image (optional: its edges), area-averaged by d (Render.shrinkAxis): { buf, x0, y0, w, h }. */
+Render.shrinkPatch = function( buf, x0, y0, w, h, d, imgW, imgH )
+{
+   var ax = Render.shrinkAxis( x0, w, d, imgW ), ay = Render.shrinkAxis( y0, h, d, imgH ), tmp = new Float32Array( ax.m*h ), out = new Float32Array( ax.m*ay.m ), k, j, y;
+   for ( y = 0; y < h; ++y )
+      for ( j = 0; j < ax.m; ++j )
+      {
+         var s = 0;
+         for ( k = ax.start[j]; k < ax.start[j + 1]; ++k ) s += ax.w[k]*buf[y*w + ax.idx[k]];
+         tmp[y*ax.m + j] = s;
+      }
+   for ( j = 0; j < ay.m; ++j )
+      for ( k = ay.start[j]; k < ay.start[j + 1]; ++k )
+      {
+         var wy = ay.w[k], row = ay.idx[k]*ax.m;
+         for ( var x = 0; x < ax.m; ++x ) out[j*ax.m + x] += wy*tmp[row + x];
+      }
+   return { buf: out, x0: ax.j0, y0: ay.j0, w: ax.m, h: ay.m };
+};
+
+/*
+ * The scene area-averaged by d (< 1) for High and Medium star quality
+ * (Fly.qualityScale): the backdrop, every sprite's patches and positions,
+ * its core's size, the catalogue and the projection, as Render.rotateScene
+ * turns them; pxScale carries d for the lengths the renderer counts in scene
+ * pixels. Kept on the scene for the same d; the distance follows the scene's.
+ */
+Render.scaledScene = function( sc, d )
+{
+   if ( sc._scaled && sc._scaled.d == d ) { sc._scaled.scene.D = sc.D; return sc._scaled.scene; }
+   var pt = function( p ) { return p == null ? null : { x: ( p.x + 0.5 )*d - 0.5, y: ( p.y + 0.5 )*d - 0.5 }; };
+   var whole = function( b ) { return Render.shrinkPatch( b, 0, 0, sc.w, sc.h, d, sc.w, sc.h ).buf; };
+   var sprites = sc.sprites.map( function( e )
+   {
+      var s = e.s, r = s.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
+      var cut = function( b ) { return Render.shrinkPatch( b, r.x0, r.y0, rw, rh, d, sc.w, sc.h ); };
+      var px = s.pixels.map( cut ), g0 = px[0], dr = s.det.rect;
+      var det = Object.assign( {}, s.det, pt( s.det ) );
+      if ( s.det.model ) det.model = Object.assign( {}, s.det.model, { core: s.det.model.core*d } );
+      if ( dr ) det.rect = { x0: dr.x0*d, y0: dr.y0*d, x1: dr.x1*d, y1: dr.y1*d };
+      var out = Object.assign( {}, s, { det: det, rect: { x0: g0.x0, y0: g0.y0, x1: g0.x0 + g0.w, y1: g0.y0 + g0.h },
+                                        pixels: px.map( function( q ) { return q.buf; } ), pxScale: ( s.pxScale || 1 )*d } );
+      if ( s.radius != null ) out.radius = s.radius*d;
+      [ "modelCore", "modelSpikes" ].forEach( function( k ) { if ( s[k] ) out[k] = s[k].map( function( b ) { return cut( b ).buf; } ); } );
+      delete out._split; delete out._glow; delete out.mask;     // caches and the mask belong to the full-size patches
+      return { s: out, p0: pt( e.p0 ) };
+   } );
+   var project = sc.project, scaled = Object.assign( {}, sc, {
+      w: Math.ceil( sc.w*d ), h: Math.ceil( sc.h*d ), S: sc.S.map( whole ), R: sc.R.map( whole ), sprites: sprites, tp: pt( sc.tp ),
+      catalogue: sc.catalogue ? sc.catalogue.map( function( c ) { return Object.assign( {}, c, pt( c ) ); } ) : null,
+      project: function( ra, dec ) { return pt( project( ra, dec ) ); }, pxScale: ( sc.pxScale || 1 )*d } );
+   delete scaled.turned; delete scaled._scaled;
+   sc._scaled = { d: d, scene: scaled };
+   return scaled;
 };
 
 /* The scene in the orientation a preset needs, turning it once and keeping it. */
