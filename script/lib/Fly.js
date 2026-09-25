@@ -284,9 +284,14 @@ Fly.ILLUMINATOR_MIN_RADIUS = 0.1; // degrees: the smallest area searched about t
  * reliable parallax and bright enough (G < ILLUMINATOR_MAX_G). Returns
  * { distance (pc), G, source } or null.
  */
+Fly.illuminatorRadius = function( target )
+{
+   return Math.max( Fly.ILLUMINATOR_MIN_RADIUS, ( target.diameter > 0 ? target.diameter/120 : 0 ) );
+};
+
 Fly.illuminatorDistance = function( sources, target )
 {
-   var r = Math.max( Fly.ILLUMINATOR_MIN_RADIUS, ( target.diameter > 0 ? target.diameter/120 : 0 ) ), best = null;
+   var r = Fly.illuminatorRadius( target ), best = null;
    ( sources || [] ).forEach( function( s )
    {
       if ( !( s.G < Fly.ILLUMINATOR_MAX_G ) || Fly.separation( s, target ) > r ) return;
@@ -1923,4 +1928,36 @@ Fly.deblend = function( Mi, Msum, L, sigma )
    if ( !( Msum > 0 ) || !( Mi > 0 ) ) return 0;
    var a = Fly.smoothstep( 1, 5, Msum/sigma );
    return a*( Mi/Msum )*Math.min( L, Fly.DEBLEND_CAP*Msum ) + ( 1 - a )*Mi;
+};
+
+/*
+ * Gaia DR3 online, for when no configured catalogue answers: a cone search
+ * at VizieR (CDS), which answers a field in seconds (ESA's own archive timed
+ * out after 65 s on the Iris's 0.8 degree field). Positions are ICRS at
+ * epoch 2016.0, as in the Gaia process's databases.
+ */
+Fly.GAIA_ONLINE_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync";
+Fly.GAIA_ONLINE_COLUMNS = [ "RA_ICRS", "DE_ICRS", "Plx", "pmRA", "pmDE", "Gmag", "BPmag", "RPmag" ];
+Fly.GAIA_ONLINE_MAX_ROWS = 500000;
+
+Fly.gaiaOnlineUrl = function( centre, radiusDeg, gMax )
+{
+   var q = "SELECT " + Fly.GAIA_ONLINE_COLUMNS.join( "," ) + " FROM \"I/355/gaiadr3\" WHERE Gmag < " + gMax +
+           " AND 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),CIRCLE('ICRS'," + centre.ra + "," + centre.dec + "," + radiusDeg + "))";
+   return Fly.GAIA_ONLINE_URL + "?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&MAXREC=" + Fly.GAIA_ONLINE_MAX_ROWS + "&QUERY=" + encodeURIComponent( q );
+};
+
+/* The CSV answer as source records ({ ra, dec, plx, pmra, pmdec, G, BP, RP }; a blank is NaN), or null when it is not one. */
+Fly.parseGaiaCsv = function( text )
+{
+   var lines = String( text || "" ).split( /\r?\n/ );
+   if ( lines[0] != Fly.GAIA_ONLINE_COLUMNS.join( "," ) ) return null;
+   var num = function( v ) { return v === "" ? NaN : Number( v ); }, out = [];
+   for ( var i = 1; i < lines.length; ++i )
+   {
+      var f = lines[i].split( "," );
+      if ( f.length != Fly.GAIA_ONLINE_COLUMNS.length ) continue;
+      out.push( { ra: num( f[0] ), dec: num( f[1] ), plx: num( f[2] ), pmra: num( f[3] ), pmdec: num( f[4] ), G: num( f[5] ), BP: num( f[6] ), RP: num( f[7] ) } );
+   }
+   return out;
 };

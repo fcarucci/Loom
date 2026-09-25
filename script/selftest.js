@@ -6957,8 +6957,15 @@ function runFlyTests()
               FlyThrough.LOGO_PLACE_SETTING, FlyThrough.FOCAL_SETTING, FlyThrough.PIXEL_SETTING, FlyThrough.TOOL_SETTING ];
    var saved = keys.map( function( k ) { return Settings.read( k, DataType_String ); } );
    keys.forEach( function( k ) { Settings.remove( k ); } );
+   // and offline: the suite never asks the Gaia archive; a test that needs an answer fakes one
+   var fetch = typeof Sky == "undefined" ? null : Sky.fetchText;
+   if ( fetch ) Sky.fetchText = function() { return null; };
    try { runFlyTestsClean(); }
-   finally { keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } ); }
+   finally
+   {
+      if ( fetch ) Sky.fetchText = fetch;
+      keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } );
+   }
 }
 
 function runFlyTestsClean()
@@ -9999,6 +10006,63 @@ function runFlyTestsClean()
          check( "nothing installed, nothing found", [ Sky.querySources( { ra: 1, dec: 2 }, 0.1 ).length, asked.length ], [ 0, Sky.GAIA_RELEASES.length ] );
       }
       finally { Gaia = RealGaia; }
+   } )();
+
+   /*
+    * Gaia online, when the local catalogues cannot answer: a cone search of
+    * Gaia DR3 at VizieR (CDS), read back as CSV into the same source records
+    * the Gaia process gives.
+    */
+   ( function()
+   {
+      var url = Fly.gaiaOnlineUrl( { ra: 315.4, dec: 68.16 }, 0.1, 10 );
+      var q = decodeURIComponent( url.split( "QUERY=" )[1] );
+      check( "the query goes to VizieR's Gaia DR3 over https", url.indexOf( Fly.GAIA_ONLINE_URL + "?" ) == 0 && Fly.GAIA_ONLINE_URL.indexOf( "https://" ) == 0 && q.indexOf( "\"I/355/gaiadr3\"" ) > 0, true );
+      check( "a cone about the centre, to the magnitude limit", q.indexOf( "CIRCLE('ICRS',315.4,68.16,0.1)" ) > 0 && q.indexOf( "Gmag < 10" ) > 0, true );
+      var csv = "RA_ICRS,DE_ICRS,Plx,pmRA,pmDE,Gmag,BPmag,RPmag\n315.40392650999,68.16326234645,2.8175,7.1,-2.2,7.179865,7.3,6.9\n316.1,68.2,,,,17.1,,\n";
+      var s = Fly.parseGaiaCsv( csv );
+      check( "rows become source records", s[0], { ra: 315.40392650999, dec: 68.16326234645, plx: 2.8175, pmra: 7.1, pmdec: -2.2, G: 7.179865, BP: 7.3, RP: 6.9 } );
+      check( "a missing parallax or colour is not a number, not zero", [ s.length, isNaN( s[1].plx ), isNaN( s[1].BP ), s[1].G ], [ 2, true, true, 17.1 ] );
+      check( "an error page is no answer", [ Fly.parseGaiaCsv( "<VOTABLE><INFO name=\"QUERY_STATUS\" value=\"ERROR\"/></VOTABLE>" ), Fly.parseGaiaCsv( "" ), Fly.parseGaiaCsv( null ) ], [ null, null, null ] );
+      check( "the header alone is an empty field, an answer", Fly.parseGaiaCsv( "RA_ICRS,DE_ICRS,Plx,pmRA,pmDE,Gmag,BPmag,RPmag\n" ), [] );
+   } )();
+
+   /*
+    * Local first, then online: the configured Gaia releases are asked in
+    * order, and the online archive only when none answers. A nebula whose
+    * lighting star the local catalogue lacks (HD 200775 is not in DR3/SP)
+    * asks online for the bright stars about the target.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var RealGaia = Gaia, savedFetch = Sky.fetchText, fetched = [];
+      var local = function( rows ) { return function() { this.sources = []; this.executeGlobal = function() { if ( !rows || this.dataRelease != Sky.GAIA_DR3SP ) return false; this.sources = rows; return true; }; }; };
+      var header = "RA_ICRS,DE_ICRS,Plx,pmRA,pmDE,Gmag,BPmag,RPmag\n";
+      Sky.fetchText = function( url ) { fetched.push( url ); return header + "315.404,68.163,2.8175,0,0,7.18,7.3,6.9\n"; };
+      try
+      {
+         Gaia = local( [ [ 1, 2, 3, 0, 0, 12, 12, 12 ] ] );
+         var s = Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "a local catalogue answers: nothing is asked online", [ s.length, s.origin, fetched.length ], [ 1, "DR3/SP", 0 ] );
+         Gaia = local( null );
+         s = Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "none answers: the online archive does", [ s.length, s.origin, fetched.length, s[0].G ], [ 1, "online", 1, 7.18 ] );
+         Sky.fetchText = function( url ) { fetched.push( url ); return null; };
+         check( "offline too: nothing found", Sky.querySources( { ra: 1, dec: 2 }, 0.1 ).length, 0 );
+
+         // the Iris: the local field lacks its lighting star
+         Sky.fetchText = function( url ) { fetched.push( url ); return header + "315.404,68.163,2.8175,0,0,7.18,7.3,6.9\n"; };
+         fetched = [];
+         var target = { ra: 315.4, dec: 68.16, diameter: 18 };
+         var id = { field: { radiusDeg: 0.7 }, sources: [ { ra: 315.5, dec: 68.3, plx: 1, G: 12 } ], D: null };
+         id.sources.origin = "DR3/SP";
+         FlyThrough.clusterDistance( id, target );
+         check( "a lighting star missing locally is found online (" + Math.round( id.D ) + " pc)",
+                [ id.distanceSource, Math.round( id.D ), id.illuminator.online, decodeURIComponent( fetched[fetched.length - 1] ).indexOf( "Gmag < " + Fly.ILLUMINATOR_MAX_G ) > 0 ],
+                [ "star", Math.round( 1000/( 2.8175 + Fly.PARALLAX_ZERO_POINT ) ), true, true ] );
+         check( "and said so", FlyThrough.describeDistance( id ).indexOf( "online" ) >= 0, true );
+      }
+      finally { Gaia = RealGaia; Sky.fetchText = savedFetch; }
    } )();
 
    /* fly-tests-end */

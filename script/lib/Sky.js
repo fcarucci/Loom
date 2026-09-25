@@ -27,13 +27,24 @@ Sky.GAIA_DR3 = 2;
 Sky.GAIA_DR3SP = 3;
 Sky.GAIA_RELEASES = [ Sky.GAIA_DR3, Sky.GAIA_DR3SP, Sky.GAIA_DR2 ];
 
+Sky.GAIA_NAMES = {};
+Sky.GAIA_NAMES[Sky.GAIA_DR2] = "DR2";
+Sky.GAIA_NAMES[Sky.GAIA_EDR3] = "EDR3";
+Sky.GAIA_NAMES[Sky.GAIA_DR3] = "DR3";
+Sky.GAIA_NAMES[Sky.GAIA_DR3SP] = "DR3/SP";
+Sky.GAIA_MAG_LIMIT = 17.6;
+Sky.GAIA_ONLINE_TIMEOUT = 60;       // seconds to connect
+
 /*
- * The Gaia stars around `centre`, from the first release installed in the
- * order Sky.GAIA_RELEASES (the databases configured in Process > Gaia).
- * Replaceable, so the suite can inject a source list.
+ * The Gaia stars around `centre` to magnitude `gMax` (default
+ * GAIA_MAG_LIMIT): from the first release installed in the order
+ * Sky.GAIA_RELEASES (the databases configured in Process > Gaia), else
+ * from Gaia DR3 online. The list's `origin` names where it came from
+ * ("DR3/SP", "online"...). Replaceable, so the suite can inject a list.
  */
-Sky.querySources = function( centre, radiusDeg )
+Sky.querySources = function( centre, radiusDeg, gMax )
 {
+   var limit = gMax || Sky.GAIA_MAG_LIMIT;
    for ( var k = 0; k < Sky.GAIA_RELEASES.length; ++k )
    {
       var G = new Gaia;
@@ -42,24 +53,53 @@ Sky.querySources = function( centre, radiusDeg )
       G.centerRA = centre.ra;
       G.centerDec = centre.dec;
       G.radius = radiusDeg;
-      G.magnitudeHigh = 17.6;
+      G.magnitudeHigh = limit;
       G.generateTextOutput = false;
       G.verbosity = 0;
       if ( !G.executeGlobal() )
          continue;
-      return G.sources.map( function( s )
+      var s = G.sources.map( function( s )
       {
          return { ra: s[0], dec: s[1], plx: s[2], pmra: s[3], pmdec: s[4], G: s[5], BP: s[6], RP: s[7] };
       } );
+      s.origin = Sky.GAIA_NAMES[Sky.GAIA_RELEASES[k]];
+      return s;
    }
-   return [];
+   return Sky.queryOnline( centre, radiusDeg, limit ) || [];
+};
+
+/* Gaia DR3 online (Fly.gaiaOnlineUrl), origin "online"; null when offline or refused. */
+Sky.queryOnline = function( centre, radiusDeg, gMax )
+{
+   var s = Fly.parseGaiaCsv( Sky.fetchText( Fly.gaiaOnlineUrl( centre, radiusDeg, gMax ) ) );
+   if ( s ) s.origin = "online";
+   return s;
+};
+
+/* The body of a GET, or null on any failure. Replaceable, so the suite never touches the network. */
+Sky.fetchText = function( url )
+{
+   try
+   {
+      var t = new NetworkTransfer, buf = new ByteArray;
+      t.setURL( url );
+      t.setConnectionTimeout( Sky.GAIA_ONLINE_TIMEOUT );
+      t.onDownloadDataAvailable = function( data ) { buf.add( data ); return true; };
+      if ( !t.download() || t.responseCode != 200 )
+      {
+         Util.warn( "fly", "Gaia online: " + ( t.errorInformation || "HTTP " + t.responseCode ) );
+         return null;
+      }
+      return buf.toString();
+   }
+   catch ( e ) { Util.warn( "fly", "Gaia online: " + e ); return null; }
 };
 
 Sky.requireSources = function( centre, radiusDeg )
 {
    var s = Sky.querySources( centre, radiusDeg );
    if ( !s || s.length == 0 )
-      throw new Error( "No Gaia stars for this field: configure a Gaia DR3 database in Process > Gaia" );
+      throw new Error( "No Gaia stars for this field: configure a Gaia DR3 database in Process > Gaia, or connect to the internet" );
    return s;
 };
 

@@ -285,6 +285,12 @@ FlyThrough.clusterDistance = function( id, target )
    if ( id.D != null ) return;
    // no ionising cluster (a reflection nebula): the bright star that lights it
    var star = Fly.illuminatorDistance( id.sources, target );
+   if ( !star && id.sources.origin != "online" )
+   {
+      // the local catalogue may lack it (HD 200775, the Iris's, is not in DR3/SP): Gaia DR3 online
+      star = Fly.illuminatorDistance( Sky.queryOnline( target, Fly.illuminatorRadius( target ), Fly.ILLUMINATOR_MAX_G ), target );
+      if ( star ) star.online = true;
+   }
    if ( star )
    {
       id.illuminator = star;
@@ -596,7 +602,7 @@ FlyThrough.describeDistance = function( id )
    {
    case "cluster": return "from its cluster: " + id.cluster.members + " stars, " +
                           Math.round( id.cluster.lo ) + "–" + Math.round( id.cluster.hi ) + " pc";
-   case "star":    return "from its brightest star (G " + id.illuminator.G.toFixed( 1 ) + "), which lights it";
+   case "star":    return "from its brightest star (G " + id.illuminator.G.toFixed( 1 ) + "), which lights it" + ( id.illuminator.online ? " (Gaia DR3 online)" : "" );
    case "galaxy":  return "galaxy: fixed backdrop";
    case "typed":   return "typed";
    }
@@ -1459,7 +1465,7 @@ FlyThrough.Dialog = class extends Dialog
       this.typeCombo.currentItem = ( id.type == "galaxy" ) ? 1 : 0;
       if ( id.D != null && isFinite( id.D ) ) this.distanceEdit.text = String( Math.round( id.D ) );
       this.distanceNote.text = FlyThrough.describeDistance( id );
-      this.status.text = id.sources.length + " Gaia stars in the field.";
+      this.status.text = id.sources.length + " Gaia stars in the field" + ( id.sources.origin ? " (" + ( id.sources.origin == "online" ? "Gaia DR3 online" : "Gaia " + id.sources.origin ) + ")" : "" ) + ".";
    }
 
    /*
