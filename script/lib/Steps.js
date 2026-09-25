@@ -1469,12 +1469,18 @@ Steps.NR_TOOL_MLDENOISE = "MLDenoise";
  * Steps.prismMtfTarget exists at all -- that target is only meaningful on
  * data that has been stretched.
  *
+ * SyQon Studio's Prism is a linear tool again: Studio publishes Prism
+ * Essential's input contract as "Linear RGB or mono", so it runs in the
+ * linear slot beside NXT, not where standalone Prism ran. Prism 2.0's
+ * Ultra and Max take "Linear or non-linear", so they run there too.
+ *
  * So the dropdown offers a tool and Loom puts it where it belongs. Order is
  * the part that is easy to get wrong, and it is not configurable here.
  */
 Steps.denoiseIsLinear = function( tool )
 {
-   return tool == Steps.NR_TOOL_NXT || tool == Steps.NR_TOOL_MLDENOISE;
+   return tool == Steps.NR_TOOL_NXT || tool == Steps.NR_TOOL_MLDENOISE ||
+          tool == Steps.NR_TOOL_STUDIO || tool == Steps.NR_TOOL_STUDIO2;
 };
 
 Steps.prismConfigPath = function()
@@ -1541,7 +1547,7 @@ Steps.mlDenoiseModelPath = function()
 /* Which noise reduction tools this installation can actually run. */
 Steps.availableNoiseTools = function()
 {
-   var out = [];
+   var found = {};
    /*
     * Both halves are required. The module without a model is a tool that
     * offers itself in the dialog and then fails mid-run, which is the one
@@ -1549,15 +1555,36 @@ Steps.availableNoiseTools = function()
     */
    try
    {
-      if ( Steps.moduleAvailable( "MLDenoise" ) && Steps.mlDenoiseModelPath() != null )
-         out.push( Steps.NR_TOOL_MLDENOISE );
+      found.mldenoise = Steps.moduleAvailable( "MLDenoise" ) &&
+                        Steps.mlDenoiseModelPath() != null;
    }
    catch ( eM ) {}
-   try { if ( Steps.moduleAvailable( "NoiseXTerminator" ) ) out.push( Steps.NR_TOOL_NXT ); }
+   try { found.nxt = Steps.moduleAvailable( "NoiseXTerminator" ); }
    catch ( e ) {}
-   if ( File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Prism.js" ) &&
-        Steps.prismExecutable() != null )
-      out.push( Steps.NR_TOOL_PRISM );
+   try
+   {
+      found.prism = File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Prism.js" ) &&
+                    Steps.prismExecutable() != null;
+   }
+   catch ( eP ) {}
+   found.studio = Steps.studioAvailable();
+   return Steps.noiseToolsFrom( found );
+};
+
+/*
+ * The dropdown's entries from what was found, in a fixed order. Pure, so
+ * the selftest can drive it. SyQon Studio's two Prisms are offered BESIDE
+ * standalone Prism, not in its place: they are different models, and
+ * Prism 2.0 is paid, so a user with Studio may still want the Prism they
+ * own.
+ */
+Steps.noiseToolsFrom = function( found )
+{
+   var out = [];
+   if ( found.mldenoise ) out.push( Steps.NR_TOOL_MLDENOISE );
+   if ( found.nxt )       out.push( Steps.NR_TOOL_NXT );
+   if ( found.prism )     out.push( Steps.NR_TOOL_PRISM );
+   if ( found.studio )    out.push( Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 );
    return out;
 };
 
@@ -1607,7 +1634,46 @@ Steps.NOISE_LEVELS = {
     * to brightest. A 2.6% effect on the brightest tile is not worth
     * departing from the tool's own default for.
     */
-   mldenoise: { low: 0.60, medium: 0.90, high: 1.00 }  // 0.90 = MLDenoise default
+   mldenoise: { low: 0.60, medium: 0.90, high: 1.00 }, // 0.90 = MLDenoise default
+   /*
+    * SyQon Studio's Prism takes `application`, which SyQon_Studio.js
+    * describes as "blend the inferred result with the original input" and
+    * defaults to 1.00. Same rule: Medium is that default.
+    *
+    * High cannot push past it. A blend of the denoised image with the
+    * original tops out at all-denoised, so High is 1.00 as well -- the
+    * honest ceiling rather than an invented number above it. Low is the
+    * 0.60 MLDenoise uses, because `application` is the same kind of knob
+    * as MLDenoise's `amount`: a linear blend, measured there to remove
+    * noise exactly in proportion.
+    */
+   studio: { low: 0.60, medium: 1.00, high: 1.00 },    // 1.00 = Studio default
+   /*
+    * SyQon Studio's Prism 2.0, the paid Deep Prism models. Each level is a
+    * MODEL (and a blend, kept in the key), because Prism 2.0's strengths
+    * are its models: Studio lists Advanced, Ultra and Max. The ladder is
+    * the maintainer's choice (2026-09-26), every level at Studio's own
+    * 1.00 blend:
+    *
+    *    Low     Advanced at 1.00   the lightest Deep Prism
+    *    Medium  Ultra at 1.00      Ultra as Studio runs it
+    *    High    Max at 1.00        pushes past Medium, as High does elsewhere
+    *
+    * Measured with syqon-cli on a synthetic linear frame (384x384 RGB,
+    * sky sigma 1.73e-3), sky noise kept after each, against Essential:
+    *
+    *    Essential 1.00  0.77      Ultra 0.60  0.52      Ultra 1.00  0.20
+    *    Advanced 1.00   0.39      Max 0.60    0.40      Max 1.00    0.04
+    *
+    * so the ladder steps 0.39 -> 0.20 -> 0.04, every level stronger than
+    * Essential's full strength. Each level is its own licensed model, so
+    * preflight checks the one the chosen level runs. Max leaves 4% of the
+    * synthetic noise, which on real data is where faint signal starts to
+    * go with it: High is the level to inspect, as High is everywhere.
+    */
+   studio2: { low:    { model: "prism-advanced", application: 1.00 },
+              medium: { model: "prism-ultra", application: 1.00 },  // Ultra, Studio's blend
+              high:   { model: "prism-max",   application: 1.00 } }
 };
 
 Steps.denoise = function( view, tool, level, label, alreadyStretched )
@@ -1665,6 +1731,40 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched )
       if ( strength == null )
          throw new Error( "Unknown noise reduction level: " + level );
       Steps.prismExecuteStage( view, strength, alreadyStretched );
+      return;
+   }
+
+   if ( tool == Steps.NR_TOOL_STUDIO )
+   {
+      var application = Steps.NOISE_LEVELS.studio[level];
+      if ( application == null )
+         throw new Error( "Unknown noise reduction level: " + level );
+      Util.log( "denoise", view.id + ": SyQon Studio Prism " + level +
+                           " (application " + application.toFixed( 2 ) + ")" );
+      /*
+       * The domain is declared, not auto-detected: the pipeline puts this
+       * tool in the linear slot, and the temporary file carries no metadata
+       * for the CLI to read. An already-stretched call is declared as such,
+       * and Prism Essential then refuses it (exit 2) rather than guessing.
+       */
+      Steps.studioRun( view, "noise reduction",
+                       { model: Steps.STUDIO_MODEL_DENOISE,
+                         domain: alreadyStretched ? "nonlinear" : "linear",
+                         application: application } );
+      return;
+   }
+
+   if ( tool == Steps.NR_TOOL_STUDIO2 )
+   {
+      var step = Steps.NOISE_LEVELS.studio2[level];
+      if ( step == null )
+         throw new Error( "Unknown noise reduction level: " + level );
+      Util.log( "denoise", view.id + ": SyQon Studio Prism 2.0 " + level + " (" +
+                           step.model + ", application " + step.application.toFixed( 2 ) + ")" );
+      Steps.studioRun( view, "noise reduction",
+                       { model: step.model,
+                         domain: alreadyStretched ? "nonlinear" : "linear",
+                         application: step.application } );
       return;
    }
 
@@ -2335,15 +2435,39 @@ Steps.syqonExecutable = function()
    return Steps.findExecutable( "parallax_cli", Steps.syqonConfigPath() );
 };
 
+/*
+ * Whether a sharpening tool takes star reduction and detail levels. Every
+ * tool does except "none" and Studio Parallax's correct-only use, which is
+ * aberration correction and nothing else -- BlurXTerminator's correct_only,
+ * from Studio.
+ */
+Steps.sharpenHasLevels = function( tool )
+{
+   return !!tool && tool != "none" && tool != Steps.SHARPEN_TOOL_STUDIO_CORRECT;
+};
+
 /* Which sharpening tools are usable right now. */
 Steps.availableSharpenTools = function()
 {
+   return Steps.sharpenToolsFrom( {
+      bxt:      Steps.moduleAvailable( "BlurXTerminator" ),
+      parallax: File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Parallax.js" ) &&
+                Steps.syqonExecutable() != null,
+      studio:   Steps.studioAvailable() } );
+};
+
+/*
+ * Pure, like Steps.noiseToolsFrom. Studio Parallax sits beside standalone
+ * Parallax, and with it its correct-only use: the aberration pass alone,
+ * in BlurXTerminator's correct_only place, for those who want Studio to
+ * fix star shapes and nothing more.
+ */
+Steps.sharpenToolsFrom = function( found )
+{
    var tools = [];
-   if ( Steps.moduleAvailable( "BlurXTerminator" ) )
-      tools.push( Steps.SHARPEN_TOOL_BXT );
-   if ( File.exists( Steps.PI_SRC_SCRIPTS_DIR + "/SyQon_Parallax.js" ) &&
-        Steps.syqonExecutable() != null )
-      tools.push( Steps.SHARPEN_TOOL_SYQON );
+   if ( found.bxt )      tools.push( Steps.SHARPEN_TOOL_BXT );
+   if ( found.parallax ) tools.push( Steps.SHARPEN_TOOL_SYQON );
+   if ( found.studio )   tools.push( Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_STUDIO_CORRECT );
    return tools;
 };
 
@@ -2376,6 +2500,20 @@ Steps.SHARPEN_LEVELS = {
       // starReduction is 0 = off, 1..6 discrete levels; sharpen is a 0..1 alpha
       stars:  { none: 0,   low: 2,   medium: 3,   high: 5 },        // 3 default
       detail: { none: 0.0, low: 0.4, medium: 0.8, high: 1.0 }       // 0.8 default
+   },
+   /*
+    * SyQon Studio's Parallax: reduction level 0-10 with default 5, deblur
+    * strength 0-1 with default 0.5 (SyQon_Studio.js P.pxReductionLevel,
+    * P.pxDeblurStrength). Medium is each default. Low and High are
+    * BlurXTerminator's ratios to its own 0.50 default -- half, and 1.4x for
+    * stars (BXT's 0.70 ceiling) or 1.5x for detail -- carried onto Studio's
+    * scales, so a level means the same step away from the author's normal
+    * whichever tool is chosen. The reduction level is an integer; 2.5
+    * rounds to 3.
+    */
+   studio: {
+      stars:  { none: 0,   low: 3,    medium: 5,    high: 7 },      // 5 default
+      detail: { none: 0.0, low: 0.25, medium: 0.50, high: 0.75 }    // 0.5 default
    }
 };
 
@@ -2403,6 +2541,8 @@ Steps.sharpenAmountFor = function( tool, kind, level )
       ladder = Steps.SHARPEN_LEVELS.bxt;
    else if ( tool == Steps.SHARPEN_TOOL_SYQON )
       ladder = Steps.SHARPEN_LEVELS.syqon;
+   else if ( tool == Steps.SHARPEN_TOOL_STUDIO )
+      ladder = Steps.SHARPEN_LEVELS.studio;
    if ( ladder == null || ladder[kind] == null )
       return null;
    var v = ladder[kind][level];
@@ -2424,6 +2564,18 @@ Steps.noiseAmountFor = function( tool, level )
    {
       var s = Steps.NOISE_LEVELS.prism[level];
       return ( s == null ) ? null : s;
+   }
+   if ( tool == Steps.NR_TOOL_STUDIO )
+   {
+      var a = Steps.NOISE_LEVELS.studio[level];
+      return ( a == null ) ? null : a;
+   }
+   if ( tool == Steps.NR_TOOL_STUDIO2 )
+   {
+      // the model as well as the blend: Low and Medium share a model, High
+      // and Medium a blend. Built here so the key's field order is fixed.
+      var m = Steps.NOISE_LEVELS.studio2[level];
+      return ( m == null ) ? null : { model: m.model, application: m.application };
    }
    return null;
 };
@@ -2451,6 +2603,21 @@ Steps.aberration = function( view, tool, linked, label )
    {
       Steps.syqonExecuteStage( view, "aberration correction",
          { correctAberration: true, starReduction: 0, sharpen: 0.0 }, linked );
+      return;
+   }
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO || tool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+   {
+      /*
+       * Studio's "stellar correction / defect repair" stage alone -- for
+       * full Studio Parallax and for its correct-only use alike, which is
+       * the point of the latter: it is this pass, and only this. Linear,
+       * declared: aberration runs on the calibrated per-channel masters,
+       * before registration. `linked` is Loom's temporary-stretch choice
+       * and Studio has no temporary stretch, so it does not apply.
+       */
+      Steps.studioRun( view, "aberration correction",
+                       { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
+                         parallax: { correction: true } } );
       return;
    }
    throw new Error( "Aberration correction is not implemented for " + tool );
@@ -2488,6 +2655,20 @@ Steps.starReduction = function( view, tool, level, linked, label )
          { correctAberration: false, starReduction: syqonAmount, sharpen: 0.0 }, linked );
       return;
    }
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO )
+   {
+      var studioLevel = Steps.SHARPEN_LEVELS.studio.stars[level];
+      if ( studioLevel == null )
+         throw new Error( "Unknown star reduction level: " + level );
+      if ( studioLevel <= 0 )
+         return;
+      // the finished composite is still linear here: extraction and the
+      // stretch come after (Pipeline.STAGE_ORDER)
+      Steps.studioRun( view, "star reduction",
+                       { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
+                         parallax: { reduction: studioLevel } } );
+      return;
+   }
    throw new Error( "Star reduction is not implemented for " + tool );
 };
 
@@ -2521,6 +2702,19 @@ Steps.sharpenDetail = function( view, tool, level, linked, label )
          return;
       Steps.syqonExecuteStage( view, "detail sharpening",
          { correctAberration: false, starReduction: 0, sharpen: syqonDetail }, linked );
+      return;
+   }
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO )
+   {
+      var studioDeblur = Steps.SHARPEN_LEVELS.studio.detail[level];
+      if ( studioDeblur == null )
+         throw new Error( "Unknown detail level: " + level );
+      if ( studioDeblur <= 0.0 )
+         return;
+      // Studio calls its deconvolution "deblur"
+      Steps.studioRun( view, "detail sharpening",
+                       { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
+                         parallax: { deblur: studioDeblur } } );
       return;
    }
    throw new Error( "Detail sharpening is not implemented for " + tool );
@@ -2560,7 +2754,7 @@ Steps.sharpenDetail = function( view, tool, level, linked, label )
  */
 Steps.correctComposite = function( view, tool, starLevel, detailLevel, label )
 {
-   if ( !tool || tool == "none" )
+   if ( !Steps.sharpenHasLevels( tool ) )
       return false;
    var wantStars  = ( starLevel  && starLevel  != "none" );
    var wantDetail = ( detailLevel && detailLevel != "none" );
@@ -3117,13 +3311,25 @@ Steps.starlessModelPath = function()
 /* Which star extraction tools this installation can actually run. */
 Steps.availableStarTools = function()
 {
-   var out = [];
-   try { if ( Steps.moduleAvailable( "StarNet2" ) ) out.push( Steps.STAR_TOOL_STARNET ); }
+   var found = {};
+   try { found.starnet = Steps.moduleAvailable( "StarNet2" ); }
    catch ( e ) {}
-   try { if ( Steps.moduleAvailable( "StarXTerminator" ) ) out.push( Steps.STAR_TOOL_SXT ); }
+   try { found.sxt = Steps.moduleAvailable( "StarXTerminator" ); }
    catch ( e2 ) {}
-   if ( Steps.starlessExecutable() != null && Steps.starlessModelPath() != null )
-      out.push( Steps.STAR_TOOL_SYQON );
+   try { found.starless = Steps.starlessExecutable() != null && Steps.starlessModelPath() != null; }
+   catch ( e3 ) {}
+   found.studio = Steps.studioAvailable();
+   return Steps.starToolsFrom( found );
+};
+
+/* Pure, like Steps.noiseToolsFrom: Studio's Axiom beside SyQon Starless. */
+Steps.starToolsFrom = function( found )
+{
+   var out = [];
+   if ( found.starnet )  out.push( Steps.STAR_TOOL_STARNET );
+   if ( found.sxt )      out.push( Steps.STAR_TOOL_SXT );
+   if ( found.starless ) out.push( Steps.STAR_TOOL_SYQON );
+   if ( found.studio )   out.push( Steps.STAR_TOOL_STUDIO );
    return out;
 };
 
@@ -3190,6 +3396,21 @@ Steps.removeStars = function( window, tool, label, linear )
    if ( tool == Steps.STAR_TOOL_SYQON )
    {
       Steps.syqonStarlessRun( window, label );
+      return;
+   }
+
+   if ( tool == Steps.STAR_TOOL_STUDIO )
+   {
+      /*
+       * Axiom takes either domain, but must be TOLD which: linear input
+       * gets Axiom's own stretch, stretched input none, and applying the
+       * stretch to data already stretched is exactly the double stretch
+       * the Prism notes above measured. Same convention as StarNet2:
+       * omitted means linear, Fly-Through passes false.
+       */
+      Steps.studioRun( view, "star extraction",
+                       { model: Steps.STUDIO_MODEL_STARLESS,
+                         domain: ( linear !== false ) ? "linear" : "nonlinear" } );
       return;
    }
 
@@ -3338,7 +3559,14 @@ Steps.extractStars = function( window, tool, label, stretchStars )
       }
       catch ( e2 ) {}
 
-      Steps.removeStars( stretched, tool, name + " stars" );
+      /*
+       * Studio is told this copy's real domain. The other tools keep the
+       * call they have always had -- StarNet2 is given `linear` as well,
+       * and changing what it is told here would change every cached stars
+       * plate it has made without changing its key.
+       */
+      Steps.removeStars( stretched, tool, name + " stars",
+                         ( tool == Steps.STAR_TOOL_STUDIO && stretchStars ) ? false : undefined );
       Steps.deriveStarsByUnscreen( stars, stretched );
 
    }
@@ -3763,6 +3991,7 @@ Steps.syqonProcessOutput = function( outputFilePath, targetWindow, stretchInfo )
  *
  *   parallax_cli / prism_cli   "[  2%] [Sharpen/classic] tile 1/64... (1/64)"
  *   SyQon Starless             "[CLI] Progress: 32%"
+ *   SyQon Studio (syqon-cli)   "model 42%"  (stderr, per SyQon_Studio.js)
  *
  * Both verified against real captured output, 2026-09-16. Only the first
  * was handled before, so star extraction -- the longest stage in a run --
@@ -3798,10 +4027,23 @@ Steps.parseProgressLine = function( line )
                text: ( m[1] ? m[1] : "working" ),
                done: null, total: null };
 
+   // model 42%                  -- SyQon Studio's syqon-cli, on stderr
+   m = s.match( /^([A-Za-z][A-Za-z _\-]*?)\s+(\d+)\s*%$/ );
+   if ( m != null )
+      return { percent: parseInt( m[2], 10 ), text: m[1],
+               done: null, total: null };
+
    return null;
 };
 
-Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
+/*
+ * `wait`, optional: { text: function( elapsedMs, sawOutput ), stage } for a
+ * CLI that can stop silently before its first line -- syqon-cli on a
+ * Keychain prompt. text() is asked while the process runs; the first
+ * non-null answer goes on the progress line once, and `stage` is put back
+ * when output arrives.
+ */
+Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs, wait )
 {
    var process = new ExternalProcess;
    var stdoutBuf = "", stderrBuf = "";
@@ -3820,12 +4062,24 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
     */
    var lastPct = -1;
    var lastMilestone = -1;
-   var partial = "";
-   process.onStandardOutputDataAvailable = function()
+   var partials = { out: "", err: "" };
+   var sawOutput = false, waitShown = false;
+
+   /*
+    * One stream's new chunk, read for progress lines. Both streams come
+    * through here: the standalone CLIs report on stdout, but SyQon Studio's
+    * syqon-cli reports on STDERR ("model 42%"), so a reader of stdout alone
+    * would show nothing for a whole Studio run.
+    */
+   function takeProgress( which, chunk )
    {
-      var chunk = String( process.stdout );
-      stdoutBuf += chunk;
-      partial += chunk;
+      if ( chunk.length > 0 && !sawOutput )
+      {
+         sawOutput = true;
+         if ( waitShown && wait.stage )
+            Util.reportStage( wait.stage );
+      }
+      var partial = partials[which] + chunk;
       /*
        * Split on CR as well as LF.
        *
@@ -3836,7 +4090,7 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
        * extraction -- reported no progress whatsoever.
        */
       var lines = partial.split( /\r\n|\r|\n/ );
-      partial = lines.pop();            // keep the incomplete tail
+      partials[which] = lines.pop();    // keep the incomplete tail
       for ( var i = 0; i < lines.length; ++i )
       {
          var m = Steps.parseProgressLine( lines[i] );
@@ -3869,8 +4123,20 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
                                ( " (" + m.done + "/" + m.total + ")" ) : "" ) );
          }
       }
+   }
+
+   process.onStandardOutputDataAvailable = function()
+   {
+      var chunk = String( process.stdout );
+      stdoutBuf += chunk;
+      takeProgress( "out", chunk );
    };
-   process.onStandardErrorDataAvailable  = function() { stderrBuf += String( process.stderr ); };
+   process.onStandardErrorDataAvailable = function()
+   {
+      var chunk = String( process.stderr );
+      stderrBuf += chunk;
+      takeProgress( "err", chunk );
+   };
    process.onError = function( code )
    {
       sawError = true;
@@ -3913,12 +4179,31 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs )
    {
       CoreApplication.processEvents();
       stopIfCancelled();
+      if ( wait && !waitShown && !sawOutput )
+      {
+         var waitText = wait.text( (new Date()).getTime() - startTime, sawOutput );
+         if ( waitText != null )
+         {
+            waitShown = true;
+            Util.reportStage( waitText );
+            Util.log( "studio", waitText );
+         }
+      }
       if ( (new Date()).getTime() - startTime > timeoutMs )
          throw new Error( "SyQon Parallax CLI timed out after " +
                           Math.round( timeoutMs / 60000 ) + " minute(s): " + exePath );
    }
 
-   return { stdout: stdoutBuf, stderr: stderrBuf, sawError: sawError, errorCodes: errorCodes };
+   /*
+    * The exit code, for a CLI with a failure contract: syqon-cli's says
+    * WHY there is no output (4 is the account, not the image). The other
+    * CLIs are still judged by their output file alone.
+    */
+   var exitCode = null;
+   try { exitCode = process.exitCode; } catch ( e ) {}
+
+   return { stdout: stdoutBuf, stderr: stderrBuf, sawError: sawError, errorCodes: errorCodes,
+            exitCode: ( typeof exitCode == "number" ) ? exitCode : null };
 };
 
 /*
@@ -4019,6 +4304,668 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
       Steps.syqonDeleteFileIfExists( runPaths.inputFilePath );
       Steps.syqonDeleteFileIfExists( runPaths.outputFilePath );
       Steps.syqonDeleteFileIfExists( runPaths.jsonInfoPath );
+   }
+};
+
+/* ---------------------------------------------------------------------------
+ * SyQon Studio.
+ *
+ * Studio replaces the three standalone SyQon applications with one CLI,
+ * syqon-cli, and one command contract for every model:
+ *
+ *    syqon-cli --model MODEL [OPTIONS] INPUT OUTPUT
+ *
+ * Read from /Applications/PixInsight/src/scripts/SyQon_Studio.js v1.0.1
+ * (Franklin Marek): the model registry (~line 71), buildStudioArgs()
+ * (~line 446), the pre-CLI sanitising (~line 519) and the result import
+ * (~line 537). The models Loom uses, and the input contract Studio
+ * publishes for each:
+ *
+ *    prism-essential  Denoise          Linear RGB or mono     Included
+ *    prism-advanced   Denoise (2.0)    Linear RGB or mono     Licensed
+ *    prism-ultra      Denoise (2.0)    Linear or non-linear   Licensed
+ *    prism-max        Denoise (2.0)    Linear or non-linear   Licensed
+ *    parallax         Correct/Reduce/  Linear or non-linear   Licensed
+ *                     Deblur
+ *    axiom            Starless         Linear (Axiom stretch) Licensed
+ *                                      or non-linear
+ *    deep-gradient    Gradient removal Linear RGB or mono     Included
+ *
+ * STUDIO IS OFFERED BESIDE the standalone Prism, Parallax and Starless,
+ * each when it is found -- the maintainer's call. Studio's models are not
+ * the standalone ones under a new name (Prism 2.0 is a different network,
+ * and paid), so a choice saved with a standalone tool stays with it.
+ * Studio adds two uses of its own: Prism 2.0, whose Ultra and Max models
+ * are Loom's denoise levels (Steps.NOISE_LEVELS.studio2), and Parallax
+ * correct-only, the aberration pass alone.
+ *
+ * NO TEMPORARY STRETCH. The standalone CLIs were trained on stretched data,
+ * which is why Loom wrapped them in syqonCreateStretchedTempWindow and its
+ * inverse -- and why standalone Prism had to run after the stretch. Studio
+ * takes linear input natively and is TOLD the domain (--domain), so each
+ * model runs where Loom's pipeline already has the data it asks for:
+ * Deep Gradient where GraXpert runs, Prism in the linear denoise slot beside
+ * NXT, Parallax where BlurXTerminator runs. None of them round-trips linear
+ * flux through a convex curve.
+ *
+ * Entitlement lives in the Studio account, not on the command line: a model
+ * the account is not licensed for exits 4. There is no flag to pass and
+ * nothing Loom can check without running the model -- so preflight runs
+ * each Studio model the run will use once, on a tiny image
+ * (Steps.studioCheckEntitlement), and a refusal stops the run before any
+ * work rather than at the denoise stage an hour in. A run's own failure
+ * still names the model, in Studio's words (Steps.studioFailureText).
+ * ------------------------------------------------------------------------ */
+
+/*
+ * The names are what Settings and process icons store. "SyQon Studio
+ * Prism" was Essential's name before Prism 2.0 was offered beside it;
+ * Steps.migrateConfig maps it.
+ */
+Steps.NR_TOOL_STUDIO       = "SyQon Studio Prism Essential";
+Steps.NR_TOOL_STUDIO2      = "SyQon Studio Prism 2.0";
+Steps.NR_TOOL_STUDIO_OLD   = "SyQon Studio Prism";
+Steps.SHARPEN_TOOL_STUDIO  = "SyQon Studio Parallax";
+Steps.SHARPEN_TOOL_STUDIO_CORRECT = "SyQon Studio Parallax (correct only)";
+Steps.STAR_TOOL_STUDIO     = "SyQon Studio Axiom";
+
+Steps.GRADIENT_TOOL_NONE     = "none";
+Steps.GRADIENT_TOOL_GRAXPERT = "GraXpert";
+Steps.GRADIENT_TOOL_STUDIO   = "SyQon Studio Deep Gradient";
+
+/* The CLI's stable model identifiers (`syqon-cli --list-models`). */
+Steps.STUDIO_MODEL_DENOISE  = "prism-essential";
+Steps.STUDIO_MODEL_PARALLAX = "parallax";
+Steps.STUDIO_MODEL_STARLESS = "axiom";
+Steps.STUDIO_MODEL_GRADIENT = "deep-gradient";
+
+/*
+ * Studio's own defaults, from the P object in SyQon_Studio.js. f32 is the
+ * precision Studio recommends for the in-PixInsight round trip; 30 minutes
+ * its output timeout.
+ */
+Steps.STUDIO_PRECISION  = "f32";
+Steps.STUDIO_TILE_SIZE  = 512;
+Steps.STUDIO_OVERLAP    = 64;
+Steps.STUDIO_TIMEOUT_MS = 30 * 60 * 1000;
+
+/*
+ * Parallax family: "classic", NOT Studio's default "aesthetics".
+ *
+ * The standalone Parallax integration pins classic, and for the same
+ * reason: Loom makes no artistic choices, and the aesthetics family is by
+ * its name the one tuned for looks. Keeping classic also means switching
+ * from standalone Parallax to Studio's changes the tool, not the intent.
+ */
+Steps.STUDIO_PARALLAX_FAMILY = "classic";
+
+/*
+ * The gradient tool a configuration asks for.
+ *
+ * Gradient removal used to be a GraXpert checkbox, `useGraXpert`. Saved
+ * process icons and Settings from then carry only that, and it must mean
+ * what it meant: true is GraXpert, false is none. A configuration naming
+ * neither removes nothing, which is what `!config.useGraXpert` said too.
+ */
+Steps.gradientToolOf = function( config )
+{
+   if ( config && typeof config.gradientTool == "string" && config.gradientTool.length > 0 )
+      return config.gradientTool;
+   return ( config && config.useGraXpert === true ) ? Steps.GRADIENT_TOOL_GRAXPERT
+                                                    : Steps.GRADIENT_TOOL_NONE;
+};
+
+/*
+ * The gradient stage's cache parameters.
+ *
+ * GraXpert's and none's are byte-for-byte what the checkbox produced --
+ * { enabled, smoothing } -- so every channel cached before the dropdown
+ * existed still hits. Studio keys on its model instead of on smoothing,
+ * which it does not take: moving GraXpert's slider must not re-run a
+ * Deep Gradient result that it cannot have changed.
+ */
+Steps.gradientStageParams = function( config )
+{
+   var tool = Steps.gradientToolOf( config );
+   if ( tool == Steps.GRADIENT_TOOL_STUDIO )
+      return { enabled: true, tool: tool, model: Steps.STUDIO_MODEL_GRADIENT };
+   return { enabled: tool == Steps.GRADIENT_TOOL_GRAXPERT, smoothing: config.smoothing };
+};
+
+/* Background extraction with whichever tool is chosen; "none" does nothing. */
+Steps.removeGradient = function( view, config )
+{
+   var tool = Steps.gradientToolOf( config );
+   if ( tool == Steps.GRADIENT_TOOL_GRAXPERT )
+      Steps.graxpert( view, config.smoothing );
+   else if ( tool == Steps.GRADIENT_TOOL_STUDIO )
+   {
+      Util.reportStage( "SyQon Studio Deep Gradient → " + view.id );
+      Steps.studioRun( view, "gradient removal",
+                       { model: Steps.STUDIO_MODEL_GRADIENT, domain: "linear" } );
+   }
+   else if ( tool != Steps.GRADIENT_TOOL_NONE )
+      throw new Error( "Unknown gradient removal tool: " + tool );
+};
+
+/*
+ * Brings a loaded configuration up to date. Called by Loom.js after
+ * Parameters and Settings are read; pure apart from the object it is
+ * handed, so the selftest can drive it. Standalone SyQon choices are left
+ * alone: Studio is offered beside those tools, not in their place.
+ */
+Steps.migrateConfig = function( config )
+{
+   config.gradientTool = Steps.gradientToolOf( config );
+   // Essential's old name; the model, and so the pixels, are unchanged
+   if ( config.noiseTool == Steps.NR_TOOL_STUDIO_OLD )
+      config.noiseTool = Steps.NR_TOOL_STUDIO;
+   return config;
+};
+
+/* ---- entitlement ---- */
+
+/* Studio's names for the models Loom runs, from its model registry. */
+Steps.STUDIO_MODEL_LABELS = {
+   "prism-essential": "Prism Essential",
+   "prism-advanced":  "Prism Deep Advanced",
+   "prism-ultra":     "Prism Deep Ultra",
+   "prism-max":       "Prism Deep Max",
+   "parallax":        "Parallax",
+   "axiom":           "Axiom V3",
+   "deep-gradient":   "Deep Gradient"
+};
+
+Steps.studioModelLabel = function( model )
+{
+   return Steps.STUDIO_MODEL_LABELS[model] || model;
+};
+
+/*
+ * Every Studio model a configuration will run, each once, in pipeline
+ * order. Pure: preflight probes what this returns.
+ */
+Steps.studioModelsFor = function( config )
+{
+   var out = [];
+   function add( m ) { if ( out.indexOf( m ) < 0 ) out.push( m ); }
+   if ( Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_STUDIO )
+      add( Steps.STUDIO_MODEL_GRADIENT );
+   if ( config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO ||
+        config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+      add( Steps.STUDIO_MODEL_PARALLAX );
+   if ( config.starTool == Steps.STAR_TOOL_STUDIO )
+      add( Steps.STUDIO_MODEL_STARLESS );
+   if ( config.noiseTool == Steps.NR_TOOL_STUDIO )
+      add( Steps.STUDIO_MODEL_DENOISE );
+   if ( config.noiseTool == Steps.NR_TOOL_STUDIO2 )
+   {
+      var levels = [ config.noiseLevel, config.noiseLevelL ];
+      for ( var i = 0; i < levels.length; ++i )
+      {
+         var step = Steps.NOISE_LEVELS.studio2[levels[i]];
+         if ( step )
+            add( step.model );
+      }
+   }
+   return out;
+};
+
+/*
+ * Whether syqon-cli's answer says the ACCOUNT refused the model: exit 4,
+ * or -- whatever the code -- its "no secure SyQon session" message, which
+ * is how a signed-out device answers (seen 2026-09-25 for axiom-mini).
+ */
+Steps.studioAccountRefused = function( res )
+{
+   if ( res.exitCode === 4 )
+      return true;
+   return /secure license check failed|no secure SyQon session/i.test( String( res.stderr || "" ) );
+};
+
+/* The dropdown a model is chosen from, for "choose another ..." */
+Steps.studioModelRole = function( model )
+{
+   if ( Steps.studioIsPrism( model ) )
+      return "noise reduction tool";
+   if ( model == Steps.STUDIO_MODEL_PARALLAX )
+      return "sharpening tool";
+   if ( model == Steps.STUDIO_MODEL_STARLESS )
+      return "star extraction tool";
+   return "gradient removal tool";
+};
+
+/*
+ * A preflight probe's result as a problem to report, or null. Only the
+ * account is a problem here: any other failure on a 64x64 test image says
+ * little about the real one, and the real run reports its own.
+ */
+Steps.studioProbeProblem = function( model, res )
+{
+   if ( !Steps.studioAccountRefused( res ) )
+      return null;
+   var msg = "SyQon Studio: " + Steps.studioModelLabel( model ) + " (" + model + ") is not " +
+             "available to your SyQon account (syqon-cli exit " +
+             ( res.exitCode != null ? res.exitCode : "?" ) + "). Sign in through SyQon " +
+             "Studio, or choose another " + Steps.studioModelRole( model );
+   if ( Steps.studioIsPrism( model ) && model != Steps.STUDIO_MODEL_DENOISE )
+      msg += ": " + Steps.NR_TOOL_STUDIO + " is included";
+   return msg + ".";
+};
+
+/* Why a run produced nothing, naming the model. */
+Steps.studioFailureText = function( model, res )
+{
+   var why = ( res.exitCode != null && res.exitCode != 0 )
+             ? Steps.studioExitMessage( res.exitCode )
+             : "no output was produced.";
+   return Steps.studioModelLabel( model ) + " (" + model + "): " + why +
+          ( res.stderr ? ( " stderr: " + String( res.stderr ).trim() ) : "" );
+};
+
+/*
+ * The Keychain. syqon-cli restores its sign-in from the macOS Keychain,
+ * and that read can stop on a password prompt which waits for the user,
+ * however long. Choosing "Allow" rather than "Always Allow" brings it back
+ * on every run. Loom never touches the Keychain; it says what is
+ * happening: once a session before the first run, and on the progress
+ * line when a run has shown nothing for 10 s at its start.
+ */
+Steps.STUDIO_KEYCHAIN_NOTE =
+   "SyQon Studio may ask for your Mac password to reach its sign-in in the " +
+   "Keychain: enter it and choose Always Allow, or it will ask again every run.";
+Steps.STUDIO_SIGNIN_WAIT_MS = 10000;
+Steps.STUDIO_SIGNIN_WAIT_TEXT =
+   "Waiting for SyQon Studio's sign-in (check for a Keychain prompt)";
+
+/* The note, or null once it has been said; `state` is { noted }. */
+Steps.studioKeychainNote = function( state )
+{
+   return state.noted ? null : Steps.STUDIO_KEYCHAIN_NOTE;
+};
+
+Steps.studioWaitText = function( elapsedMs, sawOutput )
+{
+   return ( !sawOutput && elapsedMs > Steps.STUDIO_SIGNIN_WAIT_MS )
+          ? Steps.STUDIO_SIGNIN_WAIT_TEXT : null;
+};
+
+/* Per PixInsight session: the note said, and the models that ran. */
+Steps.studioSession = { noted: false, entitled: {} };
+
+/* Says the Keychain note on the console and the progress line, once. */
+Steps.studioNoteKeychain = function()
+{
+   var note = Steps.studioKeychainNote( Steps.studioSession );
+   if ( note == null )
+      return;
+   Steps.studioSession.noted = true;
+   Util.log( "studio", note );
+   Util.reportStage( note );
+};
+
+/*
+ * One syqon-cli run of `model` on a 64x64 linear image, for the account's
+ * answer. Returns { exitCode, stderr }. A model that ran is remembered for
+ * the session; a refusal is not, so signing in and running again works.
+ */
+Steps.studioProbe = function( model )
+{
+   if ( Steps.studioSession.entitled[model] )
+      return { exitCode: 0, stderr: "" };
+   var exePath = Steps.studioExecutable();
+   if ( exePath == null )
+      return { exitCode: null, stderr: "syqon-cli not found" };
+
+   var dir = File.systemTempDirectory + "/SyQonStudioCLI";
+   if ( !File.directoryExists( dir ) )
+      File.createDirectory( dir, true );
+   var stem = dir + "/loom_probe_" + model + "_" + String( (new Date()).getTime() );
+   var inPath = stem + "_input.xisf", outPath = stem + "_output.xisf";
+   var w = null;
+   try
+   {
+      w = new ImageWindow( 64, 64, 1, 32, true, false, Util.freeWindowId( "loom_studio_probe" ) );
+      w.mainView.beginProcess( UndoFlag_NoSwapFile );
+      w.mainView.image.fill( 0.01 );
+      w.mainView.endProcess();
+      Steps.studioSaveXisf( inPath, w.mainView );
+      w.forceClose();
+      w = null;
+
+      var args = Steps.studioBuildArgs( { model: model, domain: "linear", application: 1.0,
+                                          parallax: { correction: true },
+                                          input: inPath, output: outPath } );
+      Steps.studioNoteKeychain();
+      var res = Steps.syqonRunProcessBlocking( exePath, args, 5 * 60 * 1000,
+                   { text: Steps.studioWaitText, stage: "Checking SyQon Studio " + model } );
+      var ran = File.exists( outPath ) || File.exists( Steps.studioDeclaredOutput( res.stdout ) || "" );
+      var out = { exitCode: ( res.exitCode != null ) ? res.exitCode : ( ran ? 0 : null ),
+                  stderr: res.stderr };
+      if ( ran && !Steps.studioAccountRefused( out ) )
+         Steps.studioSession.entitled[model] = true;
+      return out;
+   }
+   finally
+   {
+      if ( w != null )
+         try { w.forceClose(); } catch ( e ) {}
+      Steps.syqonDeleteFileIfExists( inPath );
+      Steps.syqonDeleteFileIfExists( outPath );
+   }
+};
+
+/* Preflight's check: the problems, one per model the account refuses. */
+Steps.studioCheckEntitlement = function( config )
+{
+   var problems = [];
+   var models = Steps.studioModelsFor( config );
+   for ( var i = 0; i < models.length; ++i )
+   {
+      Util.reportStage( "Checking SyQon Studio " + models[i] );
+      var res = Steps.studioProbe( models[i] );
+      var p = Steps.studioProbeProblem( models[i], res );
+      if ( p != null )
+         problems.push( p );
+      else
+         Util.log( "studio", models[i] + ": " + ( ( res.exitCode === 0 )
+                   ? "available to this account" : "test run inconclusive (" +
+                     Steps.studioExitMessage( res.exitCode ) + ")" ) );
+   }
+   return problems;
+};
+
+/* ---- finding syqon-cli ---- */
+
+/* Where SyQon_Studio.js keeps the path chosen with its wrench button. */
+Steps.studioConfigPath = function()
+{
+   return File.systemTempDirectory + "/SyQonStudioCLI/syqon_studio_config.csv";
+};
+
+/*
+ * A path handed over by the user may name the .app bundle rather than the
+ * binary; SyQon_Studio.js's resolveBundle() accepts either, so Loom does.
+ */
+Steps.studioResolveBundle = function( p, platform )
+{
+   if ( !p )
+      return p;
+   var s = String( p );
+   if ( !Util.isWindows( platform ) && /\.app$/.test( s ) )
+      return s + "/Contents/MacOS/syqon-cli";
+   return s;
+};
+
+/*
+ * SYQON_CLI_PATH first, as in SyQon_Studio.js: it is the one route Studio
+ * documents for Linux, which has no standard install location yet. Then
+ * the same layered discovery every SyQon binary uses -- remembered path,
+ * Studio's config CSV, the bounded application scan -- which finds
+ * /Applications/SyQon Studio.app/Contents/MacOS/syqon-cli on macOS and
+ * Program Files\SyQon Studio or %LOCALAPPDATA%\Programs\SyQon Studio on
+ * Windows.
+ */
+Steps.studioExecutable = function()
+{
+   var env = "";
+   try { env = String( System.getEnvironmentVariable( "SYQON_CLI_PATH" ) || "" ); }
+   catch ( e ) { env = ""; }
+   if ( env.length > 0 )
+   {
+      var p = Steps.studioResolveBundle( env );
+      try { if ( File.exists( p ) ) return p; } catch ( e2 ) {}
+   }
+   var found = Steps.findExecutable( "syqon-cli", Steps.studioConfigPath() );
+   return ( found == null ) ? null : Steps.studioResolveBundle( found );
+};
+
+Steps.studioAvailable = function()
+{
+   try { return Steps.studioExecutable() != null; }
+   catch ( e ) { return false; }
+};
+
+/* Every Prism takes Prism's options: tiling and the application blend. */
+Steps.studioIsPrism = function( model )
+{
+   return /^prism-/.test( String( model || "" ) );
+};
+
+/* ---- the command line ---- */
+
+/*
+ * Pure, so the selftest can assert every flag. Mirrors buildStudioArgs():
+ * tiling only for the tiled models (Prism, Parallax), application only for
+ * Prism, one set of stage switches for Parallax, the Axiom stretch for
+ * Axiom, and nothing extra for Deep Gradient. --stars-output and
+ * --gradient-output are never asked for: Loom derives its stars plate by
+ * unscreen (Steps.extractStars) and has no use for the extracted gradient.
+ *
+ * opts: { model, domain, input, output, application,
+ *         parallax: { correction, reduction, deblur } }
+ * where reduction is a 0-10 level and deblur a 0-1 strength, each 0/absent
+ * for off -- Loom runs one Parallax stage per call, exactly as it does
+ * with standalone Parallax, so each stage caches on its own.
+ */
+Steps.studioBuildArgs = function( opts )
+{
+   var args = [ "--model", opts.model,
+                "--domain", opts.domain,
+                "--precision", Steps.STUDIO_PRECISION ];
+
+   var prism = Steps.studioIsPrism( opts.model );
+   if ( prism || opts.model == Steps.STUDIO_MODEL_PARALLAX )
+      args.push( "--tile-size", String( Steps.STUDIO_TILE_SIZE ),
+                 "--overlap", String( Steps.STUDIO_OVERLAP ) );
+
+   if ( prism )
+      args.push( "--application", format( "%.4f", opts.application ) );
+   else if ( opts.model == Steps.STUDIO_MODEL_PARALLAX )
+   {
+      var px = opts.parallax || {};
+      var reduction = px.reduction || 0;
+      var deblur = px.deblur || 0;
+      args.push( "--family", Steps.STUDIO_PARALLAX_FAMILY,
+                 "--correction", px.correction ? "true" : "false",
+                 "--reduction", ( reduction > 0 ) ? "true" : "false" );
+      if ( reduction > 0 )
+         args.push( "--reduction-level", String( reduction ) );
+      args.push( "--deblur", ( deblur > 0 ) ? "true" : "false" );
+      if ( deblur > 0 )
+         args.push( "--deblur-strength", format( "%.4f", deblur ) );
+   }
+   else if ( opts.model == Steps.STUDIO_MODEL_STARLESS )
+      /*
+       * "auto" is Axiom's own stretch, which is what its contract asks for
+       * on linear input; stretched input is declared "identity" so it is
+       * not stretched a second time.
+       */
+      args.push( "--axiom-stretch", ( opts.domain == "linear" ) ? "auto" : "identity" );
+
+   // a fresh per-run path Loom owns; progress is wanted, so no --quiet
+   args.push( "--overwrite", opts.input, opts.output );
+   return args;
+};
+
+/* Studio's failure contract, in its own words (exitCodeMessage()). */
+Steps.studioExitMessage = function( code )
+{
+   switch ( code )
+   {
+   case 1: return "General CLI error.";
+   case 2: return "Invalid option or incompatible input domain.";
+   case 3: return "Input/output path error (existence, permissions, or overwrite policy).";
+   case 4: return "Authentication or entitlement denied. Sign in through SyQon Studio " +
+                  "and confirm this model is available to your account.";
+   case 5: return "Inference failed; no output was produced.";
+   case 6: return "Output encoding failed.";
+   case 7: return "Output was saved, but the Studio handoff step failed.";
+   case 130: return "Interrupted.";
+   default: return "syqon-cli exited with code " + code + ".";
+   }
+};
+
+/* ---- one run ---- */
+
+/*
+ * The input file: PixInsight's own XISF at 32-bit float, as SyQon_Studio.js
+ * writes it. Its comment records why -- linear images written through
+ * PixInsight's TIFF encoder came back black from the CLI -- and float is
+ * what keeps linear samples exact through the round trip.
+ */
+Steps.studioSaveXisf = function( filePath, view )
+{
+   var F = new FileFormat( "XISF", false, true );
+   if ( F.isNull )
+      throw new Error( "SyQon Studio: the XISF format is not available" );
+   var f = new FileFormatInstance( F );
+   if ( f.isNull )
+      throw new Error( "SyQon Studio: could not create an XISF writer" );
+   var d = new ImageDescription;
+   d.bitsPerSample = 32;
+   d.ieeefpSampleFormat = true;
+   if ( !f.create( filePath, "" ) )
+      throw new Error( "SyQon Studio: could not create " + filePath );
+   try
+   {
+      if ( !f.setOptions( d ) )
+         throw new Error( "SyQon Studio: could not set 32-bit float options" );
+      if ( !f.writeImage( view.image ) )
+         throw new Error( "SyQon Studio: could not write " + filePath );
+   }
+   finally { f.close(); }
+};
+
+/*
+ * sanitizeForStudio(), ported: non-finite samples to 0, the image scaled
+ * into [0,1] if it exceeds it, then clipped. Studio's models are trained
+ * on [0,1] and return BLACK for input carrying NaN or negatives. Returns
+ * the scale, which the result is multiplied back by. Loom's plates are
+ * normally already in range, so this is normally a no-op -- but it is
+ * Studio's own precondition, and the cost of skipping it is a black plate.
+ */
+Steps.studioSanitize = function( view )
+{
+   Steps.syqonApplyPixelMath( view, "iif( $T == $T && abs( $T ) < 1e30, $T, 0 )" );
+   var mx = view.image.maximum();
+   var scale = ( isFinite( mx ) && mx > 1.01 ) ? mx : 1.0;
+   if ( scale > 1.01 )
+      Steps.syqonApplyPixelMath( view, "$T/" + format( "%.10f", scale ) );
+   return scale;
+};
+
+/*
+ * The absolute path syqon-cli prints on stdout at exit 0, or null. Loom
+ * names the output itself, but the CLI's declaration is the authority on
+ * where it actually wrote -- the reference prefers it for the same reason.
+ */
+Steps.studioDeclaredOutput = function( stdout )
+{
+   var lines = String( stdout || "" ).split( /\r\n|\r|\n/ );
+   for ( var i = lines.length - 1; i >= 0; --i )
+   {
+      var s = lines[i].trim();
+      if ( s.length > 3 && /\.xisf$/i.test( s ) )
+         try { if ( File.exists( s ) ) return s; } catch ( e ) {}
+   }
+   return null;
+};
+
+/*
+ * One syqon-cli run on `view`, in place: clone -> sanitise -> XISF ->
+ * syqon-cli -> import. `opts` is studioBuildArgs' input without the file
+ * paths. Every failure throws naming the operation and the view, the same
+ * rule the standalone stages follow: a channel silently skipped is worse
+ * than a hard failure.
+ */
+Steps.studioRun = function( view, opLabel, opts )
+{
+   var exePath = Steps.studioExecutable();
+   if ( exePath == null )
+      throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id +
+                       ": syqon-cli not found" );
+
+   var targetWindow = view.isMainView ? view.window : view.mainView.window;
+   if ( !targetWindow || targetWindow.isNull )
+      throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id +
+                       ": no valid image window" );
+
+   var dir = File.systemTempDirectory + "/SyQonStudioCLI";
+   if ( !File.directoryExists( dir ) )
+      File.createDirectory( dir, true );
+   var tag = String( (new Date()).getTime() ) + "_" + Math.round( Math.random()*1e6 );
+   var stem = dir + "/" + Steps.syqonSanitizeFileName( view.id ) + "_" + tag;
+   var inPath = stem + "_input.xisf";
+   var outPath = stem + "_output.xisf";
+   var declared = null;
+
+   var clone = null;
+   try
+   {
+      clone = Steps.syqonCloneWindowForProcessing(
+                 targetWindow, Util.freeWindowId(
+                    Steps.syqonSanitizeFileName( view.id ) + "_studio" ) );
+      var scale = Steps.studioSanitize( clone.mainView );
+      Steps.studioSaveXisf( inPath, clone.mainView );
+      clone.forceClose();
+      clone = null;
+
+      var o = {};
+      for ( var k in opts )
+         o[k] = opts[k];
+      o.input = inPath;
+      o.output = outPath;
+      var args = Steps.studioBuildArgs( o );
+      Util.log( "studio", opLabel + " " + view.id + ": " + exePath + " " + args.join( " " ) );
+
+      Steps.studioNoteKeychain();
+      var res = Steps.syqonRunProcessBlocking( exePath, args, Steps.STUDIO_TIMEOUT_MS,
+                   { text: Steps.studioWaitText, stage: "SyQon Studio " + opLabel + " → " + view.id } );
+      declared = Steps.studioDeclaredOutput( res.stdout );
+      var produced = ( declared != null ) ? declared : outPath;
+      if ( !File.exists( produced ) )
+         throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id + ": " +
+                          Steps.studioFailureText( opts.model, res ) );
+      Steps.studioSession.entitled[opts.model] = true;
+
+      var opened = ImageWindow.open( produced );
+      if ( !opened || opened.length < 1 )
+         throw new Error( "SyQon Studio " + opLabel + ": could not open " + produced );
+      var ow = opened[0];
+      try
+      {
+         /*
+          * A mono target takes channel 0 of a colour result, and the input
+          * scale goes back on -- applyResultToTarget() in the reference.
+          */
+         var src = ow.mainView.id;
+         if ( !targetWindow.mainView.image.isColor && ow.mainView.image.isColor )
+            src += "[0]";
+         var pm = new PixelMath;
+         pm.useSingleExpression = true;
+         pm.expression          = ( scale > 1.01 ) ? "(" + src + ")*" + format( "%.10f", scale )
+                                                   : src;
+         pm.createNewImage      = false;
+         pm.rescale             = false;
+         pm.truncate            = true;
+         pm.truncateLower       = 0;
+         pm.truncateUpper       = 1;
+         if ( !pm.executeOn( targetWindow.mainView ) )
+            throw new Error( "SyQon Studio " + opLabel + ": could not apply the result to " +
+                             view.id );
+      }
+      finally { try { ow.forceClose(); } catch ( e ) {} }
+      Util.log( "studio", opLabel + " " + view.id + " complete" );
+   }
+   finally
+   {
+      if ( clone != null )
+         try { clone.forceClose(); } catch ( e2 ) {}
+      Steps.syqonDeleteFileIfExists( inPath );
+      Steps.syqonDeleteFileIfExists( outPath );
+      if ( declared != null && declared != outPath )
+         Steps.syqonDeleteFileIfExists( declared );
    }
 };
 

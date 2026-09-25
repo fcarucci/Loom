@@ -49,9 +49,22 @@ Pipeline.preflight = function( config )
          problems.push( "Process not installed: " + p );
    }
 
-   // GraXpert is only required when it is enabled.
-   if ( config.useGraXpert && !Steps.moduleAvailable( "GraXpert" ) )
-      problems.push( "Process not installed: GraXpert (disable it to proceed without)" );
+   // A gradient tool is only required when it is the one chosen.
+   var gradientTool = Steps.gradientToolOf( config );
+   if ( gradientTool == Steps.GRADIENT_TOOL_GRAXPERT && !Steps.moduleAvailable( "GraXpert" ) )
+      problems.push( "Process not installed: GraXpert (choose another gradient tool to proceed without)" );
+   if ( gradientTool == Steps.GRADIENT_TOOL_STUDIO && !Steps.studioAvailable() )
+      problems.push( "SyQon Studio not found: syqon-cli (choose another gradient tool to proceed without)" );
+
+   /*
+    * SyQon Studio's paid models are the account's to allow, and only a
+    * run can ask. Each Studio model this run uses is tried once on a tiny
+    * image here, so a refusal stops the run now rather than at the denoise
+    * stage after hours of work. About 13 s a model (measured: five models
+    * took 65 s from PixInsight), once a session.
+    */
+   if ( Steps.studioModelsFor( config ).length > 0 && Steps.studioAvailable() )
+      problems = problems.concat( Steps.studioCheckEntitlement( config ) );
 
    // MGC always runs on the broadband channels present in this selection,
    // so the MARS database is never optional. Fail loudly here rather than
@@ -377,7 +390,8 @@ Pipeline.STAGE_ORDER = [ "solve", "spfc", "mgc", "graxpert",
 Pipeline.compositeSharpenParams = function( config )
 {
    var tool = config.sharpenTool;
-   if ( !tool || tool == "none" )
+   // no levels (none, or Studio's correct-only use): no composite stage
+   if ( !Steps.sharpenHasLevels( tool ) )
       return null;
    var stars  = ( config.starReduction && config.starReduction != "none" ) ?
                 config.starReduction : null;
@@ -392,9 +406,22 @@ Pipeline.compositeSharpenParams = function( config )
     * alone would go on serving the old result as current. See
     * Steps.sharpenAmountFor.
     */
-   return { tool: tool, stars: stars, detail: detail,
-            starsAmount:  Steps.sharpenAmountFor( tool, "stars", stars ),
-            detailAmount: Steps.sharpenAmountFor( tool, "detail", detail ) };
+   var p = { tool: tool, stars: stars, detail: detail,
+             starsAmount:  Steps.sharpenAmountFor( tool, "stars", stars ),
+             detailAmount: Steps.sharpenAmountFor( tool, "detail", detail ) };
+   return Pipeline.withStudioFamily( p, tool );
+};
+
+/*
+ * Studio's Parallax family is a Loom constant, but one that changes the
+ * pixels, so a Studio stage keys on it -- and only a Studio stage, so the
+ * BXT and standalone Parallax keys stay exactly as they were.
+ */
+Pipeline.withStudioFamily = function( params, tool )
+{
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO || tool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+      params.family = Steps.STUDIO_PARALLAX_FAMILY;
+   return params;
 };
 
 /*
@@ -1699,7 +1726,9 @@ Pipeline.correctBroadband = function( chans, config, reg )
          mgc: { marsFiles: marsFiles },
          // enabled flag AND smoothing: toggling GraXpert off must not
          // silently reuse a result computed with it on, and vice versa.
-         graxpert: { enabled: !!config.useGraXpert, smoothing: config.smoothing },
+         // The stage keeps its name "graxpert" whichever tool runs it --
+         // renaming it would re-key every cached channel.
+         graxpert: Steps.gradientStageParams( config ),
          // Sharpening runs per channel on native, uninterpolated pixels
          // -- before registration deliberately, since resampling spreads
          // whatever aberration is already there. The tool is part of the
@@ -1714,8 +1743,9 @@ Pipeline.correctBroadband = function( chans, config, reg )
           * finished, calibrated composite, where a linked stretch keeps
           * the colour correction intact -- see Steps.correctComposite.
           */
-         aberration:    { tool: config.sharpenTool || "none",
-                          photometry: "linearfit-v1" }
+         aberration:    Pipeline.withStudioFamily( { tool: config.sharpenTool || "none",
+                                                     photometry: "linearfit-v1" },
+                                                   config.sharpenTool )
       };
       var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
       bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;
@@ -1737,11 +1767,7 @@ Pipeline.correctBroadband = function( chans, config, reg )
                            config.filters ? config.filters[channel] : null );
             },
             mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
-            graxpert: function( c )
-            {
-               if ( config.useGraXpert )
-                  Steps.graxpert( c.view, config.smoothing );
-            },
+            graxpert: function( c ) { Steps.removeGradient( c.view, config ); },
             aberration: function( c )
             {
                // Always runs when a tool is chosen -- the safe operation,
@@ -1767,9 +1793,11 @@ Pipeline.correctBroadband = function( chans, config, reg )
 /*
  * The stages a narrowband channel runs before registration, or null.
  *
- * Null unless GraXpert is on AND it has been asked for on the narrowband
- * channels too -- "also on H, S, O" extends the GraXpert option rather
- * than standing alone.
+ * Null unless a gradient tool is chosen AND it has been asked for on the
+ * narrowband channels too -- "also on H, S, O" extends the gradient
+ * option rather than standing alone. (The config key is still
+ * graxpertNarrowband, from when GraXpert was the only tool, so saved
+ * settings keep their meaning.)
  *
  * Null rather than an always-present stage that does nothing, and that
  * is the point: a narrowband channel's cache key is its source
@@ -1777,18 +1805,19 @@ Pipeline.correctBroadband = function( chans, config, reg )
  * disabled would re-key every cached H/S/O result for everyone, on the
  * day this option shipped, for a feature they never switched on.
  *
- * GraXpert only. MGC cannot be offered here: it needs an astrometric
- * solution and SPFC, and narrowband channels are never solved.
+ * Gradient removal only. MGC cannot be offered here: it needs an
+ * astrometric solution and SPFC, and narrowband channels are never solved.
  */
 Pipeline.narrowbandStages = function( config )
 {
-   if ( !config || !config.useGraXpert || !config.graxpertNarrowband )
+   if ( !config || !config.graxpertNarrowband ||
+        Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_NONE )
       return null;
-   return { graxpert: { enabled: true, smoothing: config.smoothing } };
+   return { graxpert: Steps.gradientStageParams( config ) };
 };
 
 /*
- * GraXpert on H, S and O, before registration, on native pixels -- the
+ * Gradient removal on H, S and O, before registration, on native pixels -- the
  * same place in the chain it runs for the broadband channels, and cached
  * the same way.
  */
@@ -1808,7 +1837,7 @@ Pipeline.correctNarrowband = function( chans, config, reg )
       chans[key].currentKey = chain[chain.length-1].key;
 
       Pipeline.processChain( chans[key], chain, config, reg, {
-         graxpert: function( c ) { Steps.graxpert( c.view, config.smoothing ); }
+         graxpert: function( c ) { Steps.removeGradient( c.view, config ); }
       } );
 
       Pipeline.checkAbort( "corrected " + key );

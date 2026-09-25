@@ -33,7 +33,9 @@ function defaultConfig()
       views: {},
       savedList: "",
       filters: {},
-      useGraXpert: true,
+      // None, GraXpert or SyQon Studio's Deep Gradient. Replaces the old
+      // useGraXpert checkbox, which Steps.migrateConfig still reads.
+      gradientTool: Steps.GRADIENT_TOOL_GRAXPERT,
       // Default OFF: narrowband channels have never been through GraXpert,
       // and an upgrade must not silently change what a repeat run
       // produces -- nor re-key a cached H/S/O result nobody asked to redo.
@@ -107,8 +109,19 @@ function loadConfig()
       config.savedList = Parameters.getString( "savedList" );
    if ( Parameters.has( "smoothing" ) )
       config.smoothing = Parameters.getReal( "smoothing" );
-   if ( Parameters.has( "useGraXpert" ) )
+   /*
+    * A process icon saved before the gradient dropdown carries only
+    * useGraXpert. Loaded into the legacy field and cleared from the new
+    * one, so Steps.migrateConfig below maps it: true is GraXpert, false
+    * is none.
+    */
+   if ( Parameters.has( "gradientTool" ) )
+      config.gradientTool = Parameters.getString( "gradientTool" );
+   else if ( Parameters.has( "useGraXpert" ) )
+   {
       config.useGraXpert = Parameters.getBoolean( "useGraXpert" );
+      config.gradientTool = "";
+   }
    if ( Parameters.has( "graxpertNarrowband" ) )
       config.graxpertNarrowband = Parameters.getBoolean( "graxpertNarrowband" );
    if ( Parameters.has( "useCache" ) )
@@ -208,9 +221,19 @@ function loadConfig()
    if ( dl != null && dl.length > 0 )
       config.detailLevel = dl;
 
-   var gx = Settings.read( SETTINGS_KEY + "useGraXpert", DataType_Boolean );
-   if ( gx != null )
-      config.useGraXpert = gx;
+   var gt = Settings.read( SETTINGS_KEY + "gradientTool", DataType_String );
+   if ( gt != null && gt.length > 0 )
+      config.gradientTool = gt;
+   else
+   {
+      // settings from before the dropdown: the checkbox's value decides
+      var gx = Settings.read( SETTINGS_KEY + "useGraXpert", DataType_Boolean );
+      if ( gx != null )
+      {
+         config.useGraXpert = gx;
+         config.gradientTool = "";
+      }
+   }
 
    var au = Settings.read( SETTINGS_KEY + "autoUpdate", DataType_Boolean );
    if ( au != null )
@@ -233,6 +256,12 @@ function loadConfig()
     * constructed, and that readout has to describe the folder in use.
     */
    Cache.setDir( config.cacheDir );
+
+   /*
+    * The gradient dropdown from useGraXpert, and SyQon Studio Prism
+    * Essential's old name, so a run saved with either opens as it was.
+    */
+   Steps.migrateConfig( config );
 
    /*
     * A chosen cache folder that is not there disables the cache for this
@@ -262,12 +291,17 @@ function saveConfig( config )
    }
    Parameters.set( "savedList", config.savedList || "" );
    Parameters.set( "smoothing", config.smoothing );
-   Parameters.set( "useGraXpert", config.useGraXpert );
+   Parameters.set( "gradientTool", Steps.gradientToolOf( config ) );
+   // still written, so an older Loom opening this icon reads what it can
+   Parameters.set( "useGraXpert",
+                   Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_GRAXPERT );
    Parameters.set( "graxpertNarrowband", !!config.graxpertNarrowband );
    Parameters.set( "useCache", config.useCache );
    Parameters.set( "autoUpdate", config.autoUpdate );
 
-   Settings.write( SETTINGS_KEY + "useGraXpert", DataType_Boolean, config.useGraXpert );
+   Settings.write( SETTINGS_KEY + "gradientTool", DataType_String, Steps.gradientToolOf( config ) );
+   Settings.write( SETTINGS_KEY + "useGraXpert", DataType_Boolean,
+                   Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_GRAXPERT );
    Settings.write( SETTINGS_KEY + "graxpertNarrowband", DataType_Boolean,
                    !!config.graxpertNarrowband );
    Settings.write( SETTINGS_KEY + "narrowbandBandwidth", DataType_Double,

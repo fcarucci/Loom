@@ -551,8 +551,11 @@ UI.SelectDialog = class extends Dialog
          this.sharpenToolCombo.currentItem = tj + 1;
    this.sharpenToolCombo.enabled = tools.length > 0;
    this.sharpenToolCombo.toolTip = tools.length
-      ? "Aberration correction always runs when a tool is selected."
-      : "No sharpening tool installed (BlurXTerminator or SyQon Parallax).";
+      ? "<p>Aberration correction always runs when a tool is selected.</p>" +
+        "<p><b>SyQon Studio Parallax (correct only)</b> is that correction " +
+        "alone, as BlurXTerminator\'s correct-only pass does it: no star " +
+        "reduction, no detail.</p>"
+      : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
    this.sharpenToolCombo.onItemSelected = function( i )
    {
       self.config.sharpenTool = ( i == 0 ) ? "none" : self.sharpenToolCombo.itemText( i );
@@ -696,9 +699,15 @@ UI.SelectDialog = class extends Dialog
       "plate, after star extraction and before the stretch, which is what " +
       "their authors ask for: noise reduced before the stretch amplifies " +
       "it. SyQon Prism runs <i>after</i> the stretch, which is the data it " +
-      "is built for.</p>" +
-      "<p><b>Strength</b> is the same ladder for all three: Medium is the " +
-      "tool\'s own default, Low backs off, High pushes past it.</p>";
+      "is built for. SyQon Studio\'s Prisms, Essential and 2.0, are linear " +
+      "again, so they run where NoiseXTerminator does.</p>" +
+      "<p><b>Strength</b> is the same ladder for every tool: Medium is the " +
+      "tool\'s own default, Low backs off, High pushes past it -- except " +
+      "on SyQon Studio Prism Essential, whose default is already its full " +
+      "strength, so High is the same as Medium.</p>" +
+      "<p><b>SyQon Studio Prism 2.0</b> is Studio\'s paid Deep Prism: Low " +
+      "is Advanced, Medium is Ultra, High is Max. Loom checks " +
+      "that your SyQon account can run them before it starts.</p>";
    this.noiseCombo.onItemSelected = function( i )
    {
       self.config.noiseTool = ( i == 0 ) ? "none" : noiseTools[i-1];
@@ -1156,29 +1165,68 @@ UI.SelectDialog = class extends Dialog
       "because L carries the detail and is left untouched.";
    this.reduceHalos.onCheck = function( c ) { self.config.reduceHalos = c; };
 
-   this.useGraXpert = new CheckBox( this );
-   this.useGraXpert.text = "Run GraXpert background extraction";
-   this.useGraXpert.checked = !!config.useGraXpert;
-   this.useGraXpert.onCheck = function( c )
-   {
-      self.config.useGraXpert = c;
-      self.smoothing.enabled = c;
-      self.graxpertNarrowband.enabled = c;
-   };
+   /*
+    * Gradient removal: a dropdown like the other tools, offering only what
+    * this installation can run -- GraXpert when its module is present,
+    * SyQon Studio's Deep Gradient when syqon-cli is found. It used to be a
+    * GraXpert checkbox; Steps.migrateConfig maps the old setting.
+    */
+   var gradientTools = [ Steps.GRADIENT_TOOL_NONE ];
+   try { if ( Steps.moduleAvailable( "GraXpert" ) ) gradientTools.push( Steps.GRADIENT_TOOL_GRAXPERT ); }
+   catch ( e ) {}
+   if ( Steps.studioAvailable() )
+      gradientTools.push( Steps.GRADIENT_TOOL_STUDIO );
 
    /*
-    * Nested under GraXpert, and only live while it is on: this extends
-    * that option to H, S and O rather than standing alone.
+    * A saved tool that is not installed here shows as None AND becomes
+    * none. Leaving the config on it would show None while preflight
+    * refused the run for a tool the dialog does not display.
+    */
+   if ( gradientTools.indexOf( Steps.gradientToolOf( config ) ) < 0 )
+      config.gradientTool = Steps.GRADIENT_TOOL_NONE;
+   else
+      config.gradientTool = Steps.gradientToolOf( config );
+
+   this.gradientLabel = new Label( this );
+   this.gradientLabel.text = "Gradient removal:";
+   this.gradientLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+
+   this.gradientCombo = new ComboBox( this );
+   for ( var gti = 0; gti < gradientTools.length; ++gti )
+      this.gradientCombo.addItem( ( gti == 0 ) ? "None" : gradientTools[gti] );
+   this.gradientCombo.currentItem = Math.max( 0, gradientTools.indexOf( config.gradientTool ) );
+   this.gradientCombo.toolTip =
+      "<p>Background extraction on L, R, G and B, on the linear channels " +
+      "before registration.</p>" +
+      "<p><b>GraXpert</b> takes the smoothing below. <b>SyQon Studio Deep " +
+      "Gradient</b> takes no settings: it runs on the same linear data, which " +
+      "is what its input contract asks for.</p>";
+   this.gradientCombo.onItemSelected = function( i )
+   {
+      self.config.gradientTool = gradientTools[i];
+      self.updateGradientEnabled();
+   };
+
+   var gradientRow = new HorizontalSizer;
+   gradientRow.spacing = 6;
+   gradientRow.add( this.gradientLabel );
+   gradientRow.add( this.gradientCombo );
+   gradientRow.addStretch();
+   this.gradientRow = gradientRow;
+
+   /*
+    * Nested under gradient removal, and only live while a tool is chosen:
+    * this extends that option to H, S and O rather than standing alone.
+    * The config key stays graxpertNarrowband so saved settings keep it.
     */
    this.graxpertNarrowband = new CheckBox( this );
-   this.graxpertNarrowband.text = "Also run GraXpert on H, S and O";
+   this.graxpertNarrowband.text = "Also remove gradients from H, S and O";
    this.graxpertNarrowband.checked = !!config.graxpertNarrowband;
-   this.graxpertNarrowband.enabled = !!config.useGraXpert;
    this.graxpertNarrowband.toolTip =
       "<p>Background extraction on the narrowband channels as well, before " +
-      "registration, with the same smoothing as the broadband channels.</p>" +
+      "registration, with the same tool and settings as the broadband channels.</p>" +
       "<p>Off by default. Narrowband data usually has little gradient to " +
-      "remove, and on faint emission GraXpert can take nebulosity for " +
+      "remove, and on faint emission a gradient tool can take nebulosity for " +
       "background. Turn it on when H, S or O show a real gradient.</p>" +
       "<p>MGC is not offered here: it needs an astrometric solution and " +
       "SPFC, and narrowband channels are not solved.</p>";
@@ -1190,7 +1238,7 @@ UI.SelectDialog = class extends Dialog
    this.smoothing.setPrecision( 2 );
    this.smoothing.setValue( config.smoothing );
    this.smoothing.onValueUpdated = function( v ) { self.config.smoothing = v; };
-   this.smoothing.enabled = config.useGraXpert;
+   this.updateGradientEnabled();
 
    this.validateOnly = new CheckBox( this );
    this.validateOnly.text = "Validate only (check everything, run nothing)";
@@ -1355,7 +1403,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.exportGroup );
    this.sizer.add( this.marsGroup );
    this.sizer.add( this.reduceHalos );
-   this.sizer.add( this.useGraXpert );
+   this.sizer.add( this.gradientRow );
    this.sizer.add( this.graxpertNarrowband );
    this.sizer.add( this.smoothing );
    this.sizer.add( this.validateOnly );
@@ -1849,12 +1897,24 @@ UI.SelectDialog = class extends Dialog
       this.noiseLevelLLabel.enabled = on;
    }
 
+   /*
+    * "Also on H, S and O" means nothing without a gradient tool, and the
+    * smoothing is GraXpert's alone.
+    */
+   updateGradientEnabled()
+   {
+      var tool = Steps.gradientToolOf( this.config );
+      this.graxpertNarrowband.enabled = ( tool != Steps.GRADIENT_TOOL_NONE );
+      this.smoothing.enabled = ( tool == Steps.GRADIENT_TOOL_GRAXPERT );
+   }
+
    /* The level combos mean nothing without a tool selected. */
    updateSharpenEnabled()
    {
       // !! matters: PJSR's Control.enabled rejects a non-Boolean, and
       // `config.sharpenTool && ...` yields the string itself when falsy.
-      var on = !!( this.config.sharpenTool && this.config.sharpenTool != "none" );
+      // Steps.sharpenHasLevels: false too for Studio's correct-only use
+      var on = Steps.sharpenHasLevels( this.config.sharpenTool );
       this.starReductionCombo.enabled = on;
       this.detailCombo.enabled = on;
    }

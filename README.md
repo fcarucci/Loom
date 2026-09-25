@@ -31,8 +31,10 @@ where it does not. The stretch uses the image's own black point and sends its
 own sky to a fixed level, so no range is spent on emptiness.
 
 **It supports the XT and SyQon tools** — BlurXTerminator, StarXTerminator,
-NoiseXTerminator, SyQon Parallax, SyQon Prism, SyQon Starless — and offers
-only the ones your installation can actually run.
+NoiseXTerminator, GraXpert, SyQon Studio, and the standalone SyQon Parallax,
+Prism and Starless — and offers only the ones your installation can actually
+run. SyQon Studio's models are offered beside the standalone SyQon tools,
+each when it is found.
 
 **It hands off to Photoshop.** Results can be written as 16-bit TIFFs and as a
 single layered PSB with the plates already stacked, blended and clipped the way
@@ -124,7 +126,7 @@ installation can actually run.
 | kind | tools | how they are found |
 |---|---|---|
 | **Modules** | BlurXTerminator, StarXTerminator, NoiseXTerminator, GraXpert, StarNet2 | by name |
-| **External binaries** | SyQon Parallax (`parallax_cli`), SyQon Prism (`prism_cli`), SyQon Starless (`SyQonStarless`) | a path remembered in Loom's settings, else the config file SyQon's own scripts write, else a scan of `/Applications` and `~/Applications` two levels deep |
+| **External binaries** | SyQon Studio (`syqon-cli`), SyQon Parallax (`parallax_cli`), SyQon Prism (`prism_cli`), SyQon Starless (`SyQonStarless`) | a path remembered in Loom's settings, else the config file SyQon's own scripts write, else a scan of `/Applications` and `~/Applications` (Program Files and `%LOCALAPPDATA%\Programs` on Windows) two levels deep. For SyQon Studio, `SYQON_CLI_PATH` comes first, as in SyQon's own script |
 
 Whatever the search finds is remembered, so it normally runs once. The
 remembered path is what makes this reliable: SyQon's config files live in the
@@ -251,8 +253,8 @@ previous session has no guaranteed meaning later.
 | **Solve** | plate solution, skipped if one is already present. Solved with **recursive surface splines** and **verified** against the catalogue | — |
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera read from `INSTRUME` |
 | **MGC** | MultiscaleGradientCorrection against the MARS reference. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
-| **GraXpert** | background extraction. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | on/off, smoothing, also on H/S/O |
-| **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax |
+| **Gradient removal** | background extraction on the linear channels. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | None, GraXpert (with its smoothing), SyQon Studio Deep Gradient; also on H/S/O |
+| **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax, SyQon Studio Parallax, or SyQon Studio Parallax (correct only): this correction alone, no star reduction or detail |
 
 **Every solve is verified**, not just the first of a run: each channel is solved
 independently and SPFC calibrates each against its own solution, so each one is
@@ -282,9 +284,9 @@ reported only.
 | **Combine** | R, G, B | — |
 | **Solve, SPFC, SPCC** | calibration of the composite | filter curves |
 | **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
-| **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless |
+| **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see below | on/off |
-| **Denoise** | where the tool belongs: NoiseXTerminator and MLDenoise on linear data, after star extraction and before the stretch; SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism; strength Low/Medium/High |
+| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism Essential or SyQon Studio Prism 2.0 (Low: Advanced, Medium: Ultra, High: Max; paid, checked against your SyQon account before the run); strength Low/Medium/High |
 
 ### Narrowband palette
 
@@ -736,8 +738,8 @@ length and pixel size, which are remembered for your rig. Drizzled images are
 found at half or a third of the pixel size. What you type is remembered per
 image, so it solves by itself next time. Gaia comes from the database you
 configured for SPFC/SPCC, and stars are removed with whichever of
-StarXTerminator, StarNet2 or SyQon Starless you have (the choice is
-remembered).
+StarXTerminator, StarNet2, SyQon Studio or SyQon Starless you have (the
+choice is remembered).
 
 **Output**: 16-bit TIFF frames per preset — Social 1080×1920 and 1080×1080,
 YouTube 3840×2160 or 1920×1080, and an Exhibition 3840×2160 loop, either

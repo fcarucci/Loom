@@ -7,6 +7,18 @@ section of this file.
 
 ### Loom
 
+**SyQon Studio.** When SyQon Studio is installed (its `syqon-cli` is found in the app, through `SYQON_CLI_PATH`, or where SyQon's own script remembers it), its models are offered beside the standalone SyQon tools, which stay in the dropdowns when they are installed:
+- **Noise reduction:** SyQon Studio Prism Essential and SyQon Studio Prism 2.0. Both take linear data, so they run where NoiseXTerminator does: on the linear starless plate, before the stretch.
+  - Prism Essential's strength is Studio's blend: Low 0.60, Medium 1.00 (Studio's default). High is also 1.00, because a blend cannot go past fully denoised.
+  - Prism 2.0 is Studio's paid Deep Prism. Low is Advanced, Medium is Ultra, High is Max, each at Studio's full blend. On a synthetic linear frame they keep 39%, 20% and 4% of the sky noise; Essential at full strength keeps 77%.
+- **Sharpening:** SyQon Studio Parallax, classic family, for aberration correction, star reduction (level 3/5/7 of 10) and detail (deblur strength 0.25/0.50/0.75), all on linear data. **SyQon Studio Parallax (correct only)** runs the aberration correction alone, in the place BlurXTerminator's correct-only pass runs; star reduction and detail are greyed out.
+- **Star extraction:** SyQon Studio Axiom, in Loom and in Loom Fly-Through. Loom tells it whether the image is linear or already stretched.
+- Studio runs without Loom's temporary stretch: it takes linear data directly, so linear flux is never pushed through a curve and back.
+- **Your SyQon account is checked before the run.** Each Studio model a run will use is tried once on a tiny image, about 13 s each (65 s for all five), once per PixInsight session. A model your account cannot run stops the run before it starts and says which one ("Prism Deep Max (prism-max) is not available to your SyQon account…"). A run that fails later still names the model.
+- **The Keychain prompt.** SyQon Studio keeps its sign-in in the macOS Keychain and may ask for your Mac password to reach it. Before the first Studio run Loom says so: enter the password and choose Always Allow, or it asks again every run. A run that shows nothing for 10 s says "Waiting for SyQon Studio's sign-in (check for a Keychain prompt)".
+
+**Gradient removal is a dropdown.** None, GraXpert or SyQon Studio Deep Gradient, in place of the GraXpert checkbox. Deep Gradient runs on the same linear channels as GraXpert and takes no settings; the smoothing slider is GraXpert's alone. "Also remove gradients from H, S and O" applies to whichever tool is chosen. Saved settings and process icons from before carry over: GraXpert on becomes GraXpert, off becomes None, and cached GraXpert results are still used.
+
 **Fixes.**
 - Where Loom's preferred colour profiles (ROMM RGB, Generic Gray) are missing, as on Windows, the fallback printed "Couldn't find the 'ProPhoto RGB' profile" and similar errors for every plate. It offered profiles from Adobe's folders, which PixInsight doesn't load. Now only profiles PixInsight can find are tried, and a name that fails is not tried again.
 - On newer PixInsight versions, the console warning "ByteArray.at() is deprecated" no longer appears.

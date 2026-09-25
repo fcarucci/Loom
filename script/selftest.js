@@ -1600,6 +1600,328 @@ function runTests()
                                          Util.PLATFORM_WINDOWS ).length, 2 );
 
    /* ---------------------------------------------------------------- */
+   /* SyQon Studio                                                      */
+   /* ---------------------------------------------------------------- */
+
+   /*
+    * Finding syqon-cli. The depth-two scan already finds it inside
+    * "SyQon Studio.app"; what is new is that a path handed over by the
+    * user (Studio's own config file, SYQON_CLI_PATH) may name the bundle
+    * rather than the binary, exactly as SyQon_Studio.js allows.
+    */
+   check( "the Studio binary sits in its bundle's MacOS folder",
+          Steps.executableCandidates( "/Applications/SyQon Studio.app", "syqon-cli",
+                                      Util.PLATFORM_MACOS )[1],
+          "/Applications/SyQon Studio.app/Contents/MacOS/syqon-cli" );
+   check( "a bundle path resolves to the binary inside it",
+          Steps.studioResolveBundle( "/Applications/SyQon Studio.app", Util.PLATFORM_MACOS ),
+          "/Applications/SyQon Studio.app/Contents/MacOS/syqon-cli" );
+   check( "a binary path is left alone",
+          Steps.studioResolveBundle( "/opt/syqon/syqon-cli", Util.PLATFORM_UNIX ),
+          "/opt/syqon/syqon-cli" );
+   check( "Windows has no bundles to resolve",
+          Steps.studioResolveBundle( "C:/Program Files/SyQon Studio/syqon-cli.exe",
+                                     Util.PLATFORM_WINDOWS ),
+          "C:/Program Files/SyQon Studio/syqon-cli.exe" );
+   check( "an empty path stays empty",
+          Steps.studioResolveBundle( "", Util.PLATFORM_MACOS ), "" );
+
+   /*
+    * Studio is offered ALONGSIDE the standalone SyQon tools, each when it
+    * is found -- the maintainer's rule, replacing an earlier design in
+    * which Studio took their places. Every list below is built from what
+    * was found, so the dialogs never offer a tool that cannot run.
+    */
+   check( "denoise offers standalone Prism and both Studio Prisms together",
+          Steps.noiseToolsFrom( { nxt: true, prism: true, studio: true } ),
+          [ Steps.NR_TOOL_NXT, Steps.NR_TOOL_PRISM,
+            Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 ] );
+   check( "without Studio, only what is installed",
+          Steps.noiseToolsFrom( { mldenoise: true, prism: true } ),
+          [ Steps.NR_TOOL_MLDENOISE, Steps.NR_TOOL_PRISM ] );
+   check( "with Studio alone, only Studio's",
+          Steps.noiseToolsFrom( { studio: true } ),
+          [ Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 ] );
+   check( "sharpening offers standalone Parallax next to Studio's, and its correct-only use",
+          Steps.sharpenToolsFrom( { bxt: true, parallax: true, studio: true } ),
+          [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON,
+            Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_STUDIO_CORRECT ] );
+   check( "and no Studio entries without Studio",
+          Steps.sharpenToolsFrom( { bxt: true, parallax: true } ),
+          [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON ] );
+   check( "star extraction offers Starless and Axiom together",
+          Steps.starToolsFrom( { starnet: true, sxt: true, starless: true, studio: true } ),
+          [ Steps.STAR_TOOL_STARNET, Steps.STAR_TOOL_SXT,
+            Steps.STAR_TOOL_SYQON, Steps.STAR_TOOL_STUDIO ] );
+   check( "and nothing at all when nothing is found",
+          [ Steps.noiseToolsFrom( {} ), Steps.sharpenToolsFrom( {} ), Steps.starToolsFrom( {} ) ],
+          [ [], [], [] ] );
+
+   /*
+    * The command line, read from buildStudioArgs() in SyQon_Studio.js
+    * v1.0.1: syqon-cli --model MODEL [OPTIONS] INPUT OUTPUT. The domain is
+    * DECLARED rather than left on auto: Loom knows whether each plate is
+    * linear, and the temporary file it writes carries no metadata for
+    * the CLI to read it from.
+    */
+   check( "Prism: model, domain, precision, tiling, application, then the files",
+          Steps.studioBuildArgs( { model: "prism-essential", domain: "linear",
+                                   application: 0.6,
+                                   input: "/t/in.xisf", output: "/t/out.xisf" } ),
+          [ "--model", "prism-essential", "--domain", "linear", "--precision", "f32",
+            "--tile-size", "512", "--overlap", "64", "--application", "0.6000",
+            "--overwrite", "/t/in.xisf", "/t/out.xisf" ] );
+   check( "Parallax: only the stage asked for is switched on",
+          Steps.studioBuildArgs( { model: "parallax", domain: "linear",
+                                   parallax: { reduction: 5 },
+                                   input: "a", output: "b" } ),
+          [ "--model", "parallax", "--domain", "linear", "--precision", "f32",
+            "--tile-size", "512", "--overlap", "64",
+            "--family", "classic", "--correction", "false",
+            "--reduction", "true", "--reduction-level", "5",
+            "--deblur", "false", "--overwrite", "a", "b" ] );
+   check( "Parallax deblur carries its strength",
+          Steps.studioBuildArgs( { model: "parallax", domain: "linear",
+                                   parallax: { deblur: 0.5 },
+                                   input: "a", output: "b" } ).slice( 10 ),
+          [ "--family", "classic", "--correction", "false", "--reduction", "false",
+            "--deblur", "true", "--deblur-strength", "0.5000",
+            "--overwrite", "a", "b" ] );
+   check( "Parallax correction alone is aberration correction",
+          Steps.studioBuildArgs( { model: "parallax", domain: "linear",
+                                   parallax: { correction: true },
+                                   input: "a", output: "b" } ).slice( 10, 18 ),
+          [ "--family", "classic", "--correction", "true", "--reduction", "false",
+            "--deblur", "false" ] );
+   check( "Axiom on linear data uses Axiom's own stretch",
+          Steps.studioBuildArgs( { model: "axiom", domain: "linear",
+                                   input: "a", output: "b" } ),
+          [ "--model", "axiom", "--domain", "linear", "--precision", "f32",
+            "--axiom-stretch", "auto", "--overwrite", "a", "b" ] );
+   check( "and on stretched data none at all",
+          Steps.studioBuildArgs( { model: "axiom", domain: "nonlinear",
+                                   input: "a", output: "b" } ).slice( 6, 8 ),
+          [ "--axiom-stretch", "identity" ] );
+   check( "Deep Gradient takes no options of its own",
+          Steps.studioBuildArgs( { model: "deep-gradient", domain: "linear",
+                                   input: "a", output: "b" } ),
+          [ "--model", "deep-gradient", "--domain", "linear", "--precision", "f32",
+            "--overwrite", "a", "b" ] );
+
+   check( "exit 4 names the account, not the image",
+          /Sign in through SyQon Studio/.test( Steps.studioExitMessage( 4 ) ), true );
+   check( "exit 2 is the input domain",
+          /domain/.test( Steps.studioExitMessage( 2 ) ), true );
+   check( "an unknown code is reported as a number",
+          Steps.studioExitMessage( 99 ), "syqon-cli exited with code 99." );
+
+   /* syqon-cli streams "model 42%" on stderr, often CR-separated */
+   check( "Studio's progress line parses",
+          Steps.parseProgressLine( "model 42%" ),
+          { percent: 42, text: "model", done: null, total: null } );
+   check( "and a line that is not progress does not",
+          Steps.parseProgressLine( "/tmp/SyQonStudioCLI/x_output.xisf" ), null );
+
+   /*
+    * Where each Studio model runs follows its input contract. Prism
+    * Essential is "Linear RGB or mono", so Studio's denoiser belongs in
+    * the LINEAR slot beside NXT -- the opposite of standalone Prism.
+    */
+   check( "Studio Prism is a linear-stage denoiser",
+          Steps.denoiseIsLinear( Steps.NR_TOOL_STUDIO ), true );
+   check( "its strength is Studio's application, Medium at Studio's 1.00",
+          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO, "low" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO, "medium" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO, "high" ) ],
+          [ 0.60, 1.00, 1.00 ] );
+
+   /*
+    * Prism 2.0: Studio's paid Deep Prism models, Advanced, Ultra and Max,
+    * all linear like Essential. One model per level, each at Studio's
+    * 1.00 blend -- the maintainer's choice: Low Advanced, Medium Ultra,
+    * High Max. Measured on a synthetic linear frame, sky noise kept:
+    * 0.39, 0.20, 0.04.
+    */
+   check( "Prism 2.0 is a linear-stage denoiser too",
+          Steps.denoiseIsLinear( Steps.NR_TOOL_STUDIO2 ), true );
+   check( "Prism 2.0's ladder: Advanced, Ultra, Max",
+          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high" ) ],
+          [ { model: "prism-advanced", application: 1.00 },
+            { model: "prism-ultra",    application: 1.00 },
+            { model: "prism-max",   application: 1.00 } ] );
+   check( "an unknown Prism 2.0 level has no amount",
+          Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "extreme" ), null );
+   check( "Ultra and Max are tiled and blended like Essential",
+          Steps.studioBuildArgs( { model: "prism-max", domain: "linear", application: 1.0,
+                                   input: "a", output: "b" } ),
+          [ "--model", "prism-max", "--domain", "linear", "--precision", "f32",
+            "--tile-size", "512", "--overlap", "64", "--application", "1.0000",
+            "--overwrite", "a", "b" ] );
+   check( "Prism 2.0 denoise params key on the model as well as the blend",
+          Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
+                                          noiseLevel: "high" }, "RGB" ),
+          { tool: Steps.NR_TOOL_STUDIO2, level: "high", stretched: false,
+            amount: { model: "prism-max", application: 1.00 } } );
+
+   /*
+    * Entitlement. Ultra, Max, Parallax and Axiom are paid; the account
+    * decides, and syqon-cli says so with exit 4. The models a run will
+    * use are listed up front so preflight can try each once on a tiny
+    * image, before hours of work stop at the denoise stage.
+    */
+   check( "the Studio models a run uses, each once",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
+                                   noiseLevelL: "high",
+                                   sharpenTool: Steps.SHARPEN_TOOL_STUDIO_CORRECT,
+                                   starTool: Steps.STAR_TOOL_STUDIO,
+                                   gradientTool: Steps.GRADIENT_TOOL_STUDIO } ),
+          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-max" ] );
+   check( "Medium on both is Ultra alone",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "medium",
+                                   noiseLevelL: "medium" } ),
+          [ "prism-ultra" ] );
+   check( "a run with no Studio tool uses no Studio model",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium",
+                                   sharpenTool: Steps.SHARPEN_TOOL_BXT,
+                                   starTool: Steps.STAR_TOOL_SXT, gradientTool: "none" } ),
+          [] );
+   check( "Essential at any level is one model",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO, noiseLevel: "high" } ),
+          [ "prism-essential" ] );
+   check( "a probe that exits 4 is the account",
+          Steps.studioProbeProblem( "prism-max", { exitCode: 4, stderr: "" } ),
+          "SyQon Studio: Prism Deep Max (prism-max) is not available to your SyQon " +
+          "account (syqon-cli exit 4). Sign in through SyQon Studio, or choose " +
+          "another noise reduction tool: SyQon Studio Prism Essential is included." );
+   check( "a missing session is the account too, whatever the code",
+          /not available to your SyQon account/.test(
+             Steps.studioProbeProblem( "axiom", { exitCode: 1,
+                stderr: "syqon-cli: secure license check failed: no secure SyQon session" } ) ),
+          true );
+   check( "a probe that ran is no problem",
+          Steps.studioProbeProblem( "prism-ultra", { exitCode: 0, stderr: "" } ), null );
+   check( "any other failure is not blamed on the account",
+          Steps.studioProbeProblem( "prism-ultra", { exitCode: 5, stderr: "" } ), null );
+   check( "a run's exit 4 names the model",
+          /prism-ultra.*Sign in through SyQon Studio/.test(
+             Steps.studioFailureText( "prism-ultra", { exitCode: 4, stderr: "" } ) ),
+          true );
+
+   /*
+    * The Keychain. syqon-cli reads its sign-in from the macOS Keychain,
+    * and the first read of a session can stop on a password prompt that
+    * waits for the user. Loom says so before the first run, and names the
+    * prompt when a run has shown nothing for 10 s at its start.
+    */
+   check( "the Keychain note is said once a session",
+          [ Steps.studioKeychainNote( { noted: false } ) != null,
+            Steps.studioKeychainNote( { noted: true } ) ],
+          [ true, null ] );
+   check( "and it asks for Always Allow",
+          /Always Allow/.test( Steps.studioKeychainNote( { noted: false } ) ), true );
+   check( "no output for 10 s at the start is the sign-in wait",
+          [ Steps.studioWaitText( 9000, false ), Steps.studioWaitText( 10001, false ),
+            Steps.studioWaitText( 60000, true ) ],
+          [ null, "Waiting for SyQon Studio's sign-in (check for a Keychain prompt)", null ] );
+
+   check( "Studio Parallax star reduction is on Studio's 0-10 scale, 5 its default",
+          [ Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "stars", "low" ),
+            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "stars", "medium" ),
+            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "stars", "high" ) ],
+          [ 3, 5, 7 ] );
+   check( "and deblur strength 0.5 is Medium",
+          [ Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "detail", "low" ),
+            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "detail", "medium" ),
+            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO, "detail", "high" ) ],
+          [ 0.25, 0.50, 0.75 ] );
+
+   /*
+    * Studio Parallax, correct only: the aberration pass BlurXTerminator's
+    * correct_only makes, and nothing else. Same place (per channel, before
+    * registration), same Studio call as full Studio Parallax's aberration
+    * stage; star reduction and detail never run, whatever their levels.
+    */
+   check( "correct-only is an aberration tool",
+          Steps.aberrationWillRun( Steps.SHARPEN_TOOL_STUDIO_CORRECT ), true );
+   check( "with no composite stage, whatever the levels say",
+          Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO_CORRECT,
+                                             starReduction: "high", detailLevel: "high" } ),
+          null );
+   check( "and no star or detail amounts",
+          [ Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO_CORRECT, "stars", "high" ),
+            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO_CORRECT, "detail", "high" ) ],
+          [ null, null ] );
+   check( "its levels are not offered",
+          [ Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_STUDIO_CORRECT ),
+            Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_STUDIO ),
+            Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_BXT ),
+            Steps.sharpenHasLevels( "none" ) ],
+          [ false, true, true, false ] );
+   check( "correctComposite does nothing for it",
+          Steps.correctComposite( null, Steps.SHARPEN_TOOL_STUDIO_CORRECT, "high", "high" ),
+          false );
+   check( "its aberration pass runs Studio's classic family",
+          Pipeline.withStudioFamily( { tool: Steps.SHARPEN_TOOL_STUDIO_CORRECT },
+                                     Steps.SHARPEN_TOOL_STUDIO_CORRECT ),
+          { tool: Steps.SHARPEN_TOOL_STUDIO_CORRECT, family: "classic" } );
+
+   /*
+    * Gradient removal is a choice of tool now, not a GraXpert checkbox.
+    * A configuration from before -- a saved process icon, or Settings --
+    * carries only useGraXpert, and must mean what it meant.
+    */
+   check( "useGraXpert true is GraXpert",
+          Steps.gradientToolOf( { useGraXpert: true } ), Steps.GRADIENT_TOOL_GRAXPERT );
+   check( "useGraXpert false is none",
+          Steps.gradientToolOf( { useGraXpert: false } ), "none" );
+   check( "an empty configuration removes nothing",
+          Steps.gradientToolOf( {} ), "none" );
+   check( "the new setting wins over the old one",
+          Steps.gradientToolOf( { gradientTool: Steps.GRADIENT_TOOL_STUDIO,
+                                  useGraXpert: true } ), Steps.GRADIENT_TOOL_STUDIO );
+
+   /*
+    * The stage key. GraXpert's and "none"'s must stay byte-identical to
+    * what useGraXpert produced, or every cached channel re-runs on the
+    * day this ships for a change nobody made.
+    */
+   check( "GraXpert keys exactly as before",
+          Steps.gradientStageParams( { gradientTool: Steps.GRADIENT_TOOL_GRAXPERT,
+                                       smoothing: 0.5 } ),
+          { enabled: true, smoothing: 0.5 } );
+   check( "none keys exactly as before",
+          Steps.gradientStageParams( { gradientTool: "none", smoothing: 0.5 } ),
+          { enabled: false, smoothing: 0.5 } );
+   check( "Studio keys on its model and not on GraXpert's smoothing",
+          Steps.gradientStageParams( { gradientTool: Steps.GRADIENT_TOOL_STUDIO,
+                                       smoothing: 0.5 } ),
+          { enabled: true, tool: Steps.GRADIENT_TOOL_STUDIO, model: "deep-gradient" } );
+
+   /* Migration of a whole loaded configuration */
+   ( function()
+   {
+      var old = { useGraXpert: false, noiseTool: Steps.NR_TOOL_PRISM,
+                  sharpenTool: Steps.SHARPEN_TOOL_SYQON,
+                  starTool: Steps.STAR_TOOL_SYQON };
+      Steps.migrateConfig( old );
+      check( "an old configuration migrates to the gradient dropdown",
+             old.gradientTool, "none" );
+      check( "and keeps its standalone SyQon choices: Studio is offered beside them",
+             [ old.noiseTool, old.sharpenTool, old.starTool ],
+             [ Steps.NR_TOOL_PRISM, Steps.SHARPEN_TOOL_SYQON, Steps.STAR_TOOL_SYQON ] );
+      var studio = { gradientTool: Steps.GRADIENT_TOOL_GRAXPERT,
+                     noiseTool: "SyQon Studio Prism", sharpenTool: "none", starTool: "none" };
+      Steps.migrateConfig( studio );
+      check( "a saved \"SyQon Studio Prism\" loads as Prism Essential, the model it ran",
+             [ studio.gradientTool, studio.noiseTool ],
+             [ Steps.GRADIENT_TOOL_GRAXPERT, Steps.NR_TOOL_STUDIO ] );
+      check( "the new name is not the old one",
+             Steps.NR_TOOL_STUDIO != "SyQon Studio Prism", true );
+   } )();
+
+   /* ---------------------------------------------------------------- */
    /* The updater on Windows                                            */
    /* ---------------------------------------------------------------- */
 
@@ -3744,6 +4066,20 @@ function runTests()
                                              detailLevel: "medium" } ),
           { tool: "SyQon Parallax", stars: "high", detail: "medium",
             starsAmount: 5, detailAmount: 0.8 } );
+   check( "Studio Parallax params also carry the family it runs",
+          Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
+                                             starReduction: "high",
+                                             detailLevel: "medium" } ),
+          { tool: Steps.SHARPEN_TOOL_STUDIO, stars: "high", detail: "medium",
+            starsAmount: 7, detailAmount: 0.5, family: "classic" } );
+   check( "Studio Prism denoise params carry its application",
+          Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO,
+                                          noiseLevel: "low" }, "RGB" ),
+          { tool: Steps.NR_TOOL_STUDIO, level: "low", stretched: false, amount: 0.6 } );
+   check( "and Studio Prism never takes the stretched slot",
+          Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO,
+                                             noiseLevel: "low", stretch: true }, "RGB" ),
+          null );
    check( "no denoise params when the tool is off",
           Pipeline.compositeDenoiseParams( { noiseTool: "none",
                                              noiseLevel: "medium" } ), null );
@@ -6593,6 +6929,24 @@ function runTests()
              registerKey( on ) !=
              registerKey( { useGraXpert: true, graxpertNarrowband: true,
                             smoothing: 0.8 } ), true );
+
+      /*
+       * "Also on H, S and O" follows whichever gradient tool is chosen,
+       * and keys GraXpert exactly as the old checkbox did.
+       */
+      check( "the dropdown's GraXpert keys H, S and O as the checkbox did",
+             registerKey( { gradientTool: Steps.GRADIENT_TOOL_GRAXPERT,
+                            graxpertNarrowband: true, smoothing: 0.5 } ),
+             registerKey( on ) );
+      check( "Studio's Deep Gradient runs on them too when asked",
+             Pipeline.narrowbandStages( { gradientTool: Steps.GRADIENT_TOOL_STUDIO,
+                                          graxpertNarrowband: true, smoothing: 0.5 } ),
+             { graxpert: { enabled: true, tool: Steps.GRADIENT_TOOL_STUDIO,
+                           model: "deep-gradient" } } );
+      check( "and with no gradient tool nothing runs on them",
+             Pipeline.narrowbandStages( { gradientTool: "none",
+                                          graxpertNarrowband: true, smoothing: 0.5 } ),
+             null );
    } )();
 
    /* ---- double click zooms to WHAT WAS CLICKED ---------------------------- */

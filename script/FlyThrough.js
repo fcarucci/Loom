@@ -1744,7 +1744,7 @@ FlyThrough.Dialog = class extends Dialog
    requireTool()
    {
       if ( this.tools.length == 0 )
-         throw new Error( "No star removal tool is installed. Fly-Through needs StarXTerminator, StarNet2 or SyQon Starless." );
+         throw new Error( "No star removal tool is installed. Fly-Through needs StarXTerminator, StarNet2, SyQon Studio or SyQon Starless." );
    }
 
    analyse()
