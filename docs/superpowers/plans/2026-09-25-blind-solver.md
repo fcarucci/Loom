@@ -30,6 +30,65 @@
 2. **Index size is about 100 MB, not "tens of MB".** Measured in Task 7, step 6; reported, not hidden.
 3. **The file-hint step (spec order, step 2)** reads XISF `Observation:Center:RA/Dec`, then the FITS keywords (`RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, `CRVAL1`/`CRVAL2` on an RA axis), then `OBJECT`/`Observation:Object:Name` through `Fly.findObject`, then folder names up to 3 levels up. The hints researcher found that the user's finished TIFF/PSB/PNG/JPG exports carry **no** centre (only masters and lights do), so on real finished images folder names and blind solving do the work. `Fly.findObject` also learns letter-suffixed ids ("IC 1396A" → IC1396): that's the user's own ASIAIR target name, and it resolved to nothing. *Deferred:* a candidate list of past solved centres, which the blind solver makes unnecessary.
 
+## Revision 3 (the maintainer, 2026-09-25): the index builds fully in the background
+
+The maintainer's words: "the solver building must be fully in background". A PJSR script has one thread, and a second PixInsight was ruled out earlier for star removal. So the build runs as **timer-driven slices on the dialog's event loop**: each slice is one catalogue tile, or one batch of quad cells, and stays within about 100 ms of JavaScript. This supersedes the blocking `Sky.buildSolverIndex` call inside `Sky.solverIndex` and `Sky.solveBlind`.
+
+- **Solve (Core, Task 5):** a resumable quad builder is added. `Solve.makeIndex` stays, as a thin loop over it, so every existing test still holds.
+  ```js
+  /* Builds an index a slice at a time: step( maxCells ) makes the quads of up to maxCells more cells; done() when all bands are made. */
+  Solve.IndexBuilder = function( stars, bands, Q ) { … };
+  Solve.IndexBuilder.prototype.step = function( maxCells ) { … return this.done(); };
+  Solve.IndexBuilder.prototype.done = function() { … };
+  Solve.IndexBuilder.prototype.fraction = function() { … };   // 0..1, over all bands' cells
+  Solve.IndexBuilder.prototype.index = function() { … };      // the finished index (Solve.finishIndex), only when done()
+  Solve.makeIndex = function( stars, bands, Q ) { var b = new Solve.IndexBuilder( stars, bands, Q ); while ( !b.step( 1e9 ) ) {} return b.index(); };
+  ```
+  `bandQuads` becomes per-cell: the IndexBuilder keeps each band's grid, its list of cells and a cursor. `Solve.bandQuads` stays, for its tests, as the same per-cell code run over every cell.
+  - Test: `IndexBuilder in slices makes the same index as makeIndex`. Run step(7) repeatedly and compare `quads`, `codes` and `band` element by element with `makeIndex` on the same stars.
+- **Sky (Task 7):** `Sky.buildSolverIndex` becomes a state machine: `Sky.IndexBuild( opts )` with:
+  - `step( budgetMs ) → true when finished`;
+  - `fraction()` and `text()` (for example "Star index for blind solving: reading the catalogue, 34%");
+  - `checkpoint()`;
+  - `error` (set when it failed; the message is as before).
+
+  The phases are:
+  1. **tiles:** one `Sky.catalogueTile` per step, checkpointing every 50 tiles and on `checkpoint()`;
+  2. **quads:** `IndexBuilder.step` in batches until the budget is spent;
+  3. **write:** as before, header last.
+
+  It never calls `processEvents`: the caller's timer returns to the event loop between steps.
+
+  `Sky.buildSolverIndex( progress, opts )` remains as a blocking wrapper, used only by tests and the ad hoc real build:
+  ```js
+  var b = new Sky.IndexBuild( opts );
+  while ( !b.step( 200 ) )
+  {
+     if ( progress.isCancelled && progress.isCancelled() ) { b.checkpoint(); throw Sky.cancelled(); }
+     progress.stage( b.text(), Math.round( 1000*b.fraction() ), 1000 );
+  }
+  if ( b.error ) throw b.error;
+  return b.index;
+  ```
+  All of Task 7's existing tests keep passing through the wrapper. New tests:
+  - `IndexBuild steps are short`: on the test patch, no `step( 50 )` takes longer than 500 ms, measured with `Date.now()`.
+  - `IndexBuild: checkpoint then a new IndexBuild resumes`.
+- **Sky (Task 8):** `Sky.solverIndex( progress )` no longer builds. It returns the loaded index, or `null` when none is ready. When `Sky.solveBlind` gets `null`, it throws an error with `needsIndex = true` and the message "Blind solving needs the star index, which is still being built in the background (N%). The analysis starts again by itself when it is ready." The PixInsight test for this stubs the index to `null`.
+- **Dialog (Task 10):**
+  - **Start:** when the Fly-Through dialog opens (in `onShow` or its constructor's end), it looks for the index with `Sky.loadSolverIndex`. The load happens in a single-shot timer after the dialog is shown, so opening stays instant. If there's no index, it starts `this.indexBuild = new Sky.IndexBuild( {} )`, driven by a `Timer` (`interval` 0.05 s, `periodic`) whose `onTimeout` calls `step( 100 )`.
+  - **While the dialog is busy analysing or drafting,** the timer skips its step: the build never competes with the user's job, and never runs inside it.
+  - **Status:** a small label under the hints row shows the build's `text()` and hides when the build is done.
+  - **When the build finishes,** it sets `Sky._solverIndex`. If an analysis was waiting on it (an `identify` that threw `needsIndex`), it calls `scheduleAuto()`.
+  - **When it fails,** the label shows the error, the timer stops, and the next dialog opening retries.
+  - **Closing the dialog** (in `closing()`, where the options are already saved) calls `this.indexBuild.checkpoint()` and stops the timer.
+  - **In the analysis,** a `needsIndex` error is shown as the status line, not as an error box, and the analysis is marked waiting.
+
+  Tests (PixInsight):
+  - `the dialog starts the index build when none exists`: stub `Sky.loadSolverIndex` to return `null` and `Sky.IndexBuild` to a counter; construct the dialog.
+  - `a needsIndex analysis restarts when the build finishes`: stub a build that finishes on its second step, and check that `scheduleAuto` is called.
+  - `closing checkpoints the build`.
+- **Global constraint added:** no blocking whole-sky work ever runs on the dialog's thread inside a user action. The only blocking path is the test and ad hoc wrapper.
+
 ## Revision 1 (Codex round 1, 2026-09-25)
 
 Codex found no bug in the core maths: its code was run from this plan in node and passes all 75 of its tests in 2 s. What it found is that real-world behaviour isn't proven. Changes:
