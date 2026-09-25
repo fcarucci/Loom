@@ -43,7 +43,7 @@ Codex found no bug in the core maths: its code was run from this plan in node an
   (Finding 4.)
 - **Index identity (Task 7).** The header and the checkpoint carry the full build configuration (`version`, bands, `gMax`, M, Q, tile radius, tile count) as `config`. Load and resume both reject a mismatch; `origin` is recorded. (Finding 5.)
 - **Cancel (Task 8).** `Sky.solveWithHints` rethrows `loomCancel` errors instead of collecting them as a failed scale. (Finding 6.)
-- **Chance and spread (Task 6).** Matches must spread over at least 4 cells of a 3×3 grid on the image. The chance threshold is corrected for the number of hypotheses verified: accept when `log10Chance <= MAX_LOG10_CHANCE - log10(verified)`. (Finding 7.)
+- **Chance and spread (Task 6).** Matches must spread over at least 4 cells of a 3×3 grid on the image. The chance threshold is corrected for the whole verification budget, fixed before the first check: accept when `log10Chance <= MAX_LOG10_CHANCE - log10(min(hypotheses, MAX_VERIFY))`. (Finding 7.)
 - **Confirmation checks the position (Task 8).** After ImageSolver, the solved centre must lie within 10% of the field diagonal of the blind centre, and the solved scale within 3% of the blind scale. Otherwise that candidate is rejected. (Finding 2.)
 - **PixInsight synthetic test (Task 8).** It renders with one `setSamples` buffer and asserts StarDetector finds at least 100 stars before solving. The real ImageSolver hand-off is checked ad hoc on real images (Task 8, step 6), because CI has no Gaia database. (Finding 9.)
 - **Hint order (Task 9).** The header centre is read before names. A `CRVAL` without a full WCS is used only as a rough hint. (A full WCS is already an astrometric solution through `Sky.keywordWcs`.) (Finding 10.)
@@ -1039,7 +1039,8 @@ Solve.solve = function( index, dets, W, H, opts )
    var votes = {};
    hyps.forEach( function( h ) { votes[h.key] = ( votes[h.key] || 0 ) + 1; } );
    hyps.sort( function( a, b ) { return votes[b.key] - votes[a.key]; } );
-   var tried = {}, verified = 0;
+   // many hypotheses are tried: the threshold tightens with the whole verification budget (Bonferroni), fixed up front
+   var tried = {}, budget = Math.max( 1, Math.min( hyps.length, Solve.MAX_VERIFY ) ), limit = Solve.MAX_LOG10_CHANCE - Math.log( budget )/Math.LN10;
    for ( var i = 0; i < hyps.length && i < Solve.MAX_VERIFY && out.length < ( opts.maxResults || 3 ); ++i )
    {
       if ( i % 20 == 0 ) tick();
@@ -1050,9 +1051,7 @@ Solve.solve = function( index, dets, W, H, opts )
       var img = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ], [ W/2, H/2 ] ];
       var sky = img.map( function( p ) { var q = Solve.applySimilarity( h.fit, p[0], p[1] ), s = Solve.fromPlane( h.ref, q[0], q[1] ); return Solve.toPlane( h.centre, s.ra, s.dec ); } );
       var v = Solve.verify( index, Solve.fitSimilarity( img, sky, h.fit.parity ), h.centre, dets, W, H );
-      ++verified;
-      // many hypotheses are tried: the threshold tightens with their number (Bonferroni)
-      if ( v.matches < Solve.MIN_MATCHES || v.spread < Solve.MIN_SPREAD || v.log10Chance > Solve.MAX_LOG10_CHANCE - Math.log( verified )/Math.LN10 ) continue;
+      if ( v.matches < Solve.MIN_MATCHES || v.spread < Solve.MIN_SPREAD || v.log10Chance > limit ) continue;
       var c = Solve.applySimilarity( v.fit, W/2, H/2 ), centre = Solve.fromPlane( h.centre, c[0], c[1] );
       if ( out.some( function( o ) { return Fly.separation( o, centre ) < 0.05; } ) ) continue;
       out.push( { ra: centre.ra, dec: centre.dec, scale: v.fit.scale*3600, rotation: Math.atan2( v.fit.b, v.fit.a )/Fly.RAD,
@@ -1128,7 +1127,8 @@ git commit -m "Solve: matching and verification (Solve.solve)"
   - `Sky.solverIndexDir() → string`. It's replaceable, so tests point it elsewhere.
   - `Sky.cancelled() → Error` with `loomCancel = true`.
   - `Sky.buildSolverIndex( progress, opts ) → index`. `progress = { stage(name, done, total), isCancelled() }`. `opts = { tiles, bands, gMax, dir }` is for tests; it defaults to the whole sky.
-  - `Sky.loadSolverIndex( dir ) → index | null`.
+  - `Sky.loadSolverIndex( dir, config? ) → index | null`. `config` defaults to the whole-sky build's `Sky.solverConfig`, and a mismatch gives `null`.
+  - `Sky.solverConfig( bands, gMax, tiles ) → string`. `Sky.catalogueTile( centre, radius, gMax ) → [sources] | null`. `Sky.clearSolution( window )` (Task 8).
   - `Sky.solverIndex( progress ) → index`: loaded or built, and memoised in `Sky._solverIndex`.
   - Files in `dir`:
     - `index-v<INDEX_VERSION>.json` (the header plus `origin`, `gMax` and `built`);
@@ -1162,12 +1162,16 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          check( "buildSolverIndex queries every tile", calls, tiles.length );
          check( "buildSolverIndex writes the index", File.exists( dir + "/index-v" + Solve.INDEX_VERSION + ".json" ), true );
          check( "buildSolverIndex leaves no part files", File.exists( dir + "/build-v" + Solve.INDEX_VERSION + ".part.json" ), false );
-         var loaded = Sky.loadSolverIndex( dir );
+         var testConfig = Sky.solverConfig( bands, Solve.INDEX_G_MAX, tiles );
+         var loaded = Sky.loadSolverIndex( dir, testConfig );
          check( "loadSolverIndex reads what was built", loaded && loaded.quads.length, idx.quads.length );
          check( "the index records its origin", JSON.parse( File.readTextFile( dir + "/index-v" + Solve.INDEX_VERSION + ".json" ) ).origin, "test" );
          var savedM = Solve.STARS_PER_CELL;
          Solve.STARS_PER_CELL = savedM + 1;
-         check( "an index built with other settings is not loaded", Sky.loadSolverIndex( dir ), null );
+         check( "an index built with other settings is not loaded", Sky.loadSolverIndex( dir, Sky.solverConfig( bands, Solve.INDEX_G_MAX, tiles ) ), null );
+         Solve.STARS_PER_CELL = savedM;
+         check( "the whole-sky configuration does not load a test patch's index", Sky.loadSolverIndex( dir ), null );
+         Solve.STARS_PER_CELL = savedM + 1;
          Solve.STARS_PER_CELL = savedM;
 
          // cancelled half way, then resumed: the tiles already read are not read again
@@ -1176,7 +1180,7 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          var n = 0, stopAt = Math.floor( tiles.length/2 );
          try { Sky.buildSolverIndex( { stage: function() {}, isCancelled: function() { return ++n > stopAt; } }, { tiles: tiles, bands: bands, checkpointEvery: 5 } ); }
          catch ( e ) { check( "a cancelled build throws a cancel", !!e.loomCancel, true ); }
-         check( "a cancelled build leaves no index", Sky.loadSolverIndex( dir ), null );
+         check( "a cancelled build leaves no index", Sky.loadSolverIndex( dir, testConfig ), null );
          var first = calls;
          calls = 0;
          Sky.buildSolverIndex( quiet, { tiles: tiles, bands: bands, checkpointEvery: 5 } );
@@ -1189,6 +1193,17 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          var msg = "";
          try { Sky.buildSolverIndex( quiet, { tiles: tiles, bands: bands } ); } catch ( e ) { msg = String( e.message ); }
          check( "no catalogue: build fails fast with a clear message", calls <= 9 && /Process > Gaia/.test( msg ) && /internet/.test( msg ), true );
+
+         // an online answer at the row limit is split; one still at the limit at a quarter degree fails the build
+         var savedMax = Fly.GAIA_ONLINE_MAX_ROWS, sizes = [];
+         Fly.GAIA_ONLINE_MAX_ROWS = 10;
+         Sky.querySources = function( c, r ) { sizes.push( r ); var a = []; for ( var i = 0; i < ( r > 1 ? 10 : 3 ); ++i ) a.push( { ra: c.ra, dec: c.dec + i*1e-3, G: 10 } ); a.origin = "online"; return a; };
+         check( "a tile at the row limit is read again as four", Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ).length, 12 );
+         Sky.querySources = function( c ) { var a = []; for ( var i = 0; i < 10; ++i ) a.push( { ra: c.ra, dec: c.dec, G: 10 } ); a.origin = "online"; return a; };
+         msg = "";
+         try { Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ); } catch ( e ) { msg = String( e.message ); }
+         check( "a patch at the row limit even when small fails the build", /Process > Gaia/.test( msg ), true );
+         Fly.GAIA_ONLINE_MAX_ROWS = savedMax;
       }
       finally { Sky.querySources = savedQuery; Sky.solverIndexDir = savedDir; Sky._solverIndex = null; }
    } )();
@@ -1286,7 +1301,8 @@ Sky.buildSolverIndex = function( progress, opts )
 Sky.solverConfig = function( bands, gMax, tiles )
 {
    return JSON.stringify( { v: Solve.INDEX_VERSION, bands: bands.map( function( b ) { return +b.lo.toFixed( 6 ); } ), gMax: gMax,
-                            M: Solve.STARS_PER_CELL, Q: Solve.QUADS_PER_CELL, tileRadius: Solve.TILE_RADIUS, tiles: tiles.length } );
+                            M: Solve.STARS_PER_CELL, Q: Solve.QUADS_PER_CELL, tileRadius: Solve.TILE_RADIUS,
+                            tiles: Fly.hashKey( tiles.map( function( t ) { return t.ra.toFixed( 4 ) + "," + t.dec.toFixed( 4 ); } ).join( ";" ) ) } );
 };
 
 /*
@@ -1300,8 +1316,10 @@ Sky.catalogueTile = function( centre, radius, gMax )
    var s = null;
    for ( var attempt = 0; attempt < 3 && !( s && s.origin ); ++attempt ) s = Sky.querySources( centre, radius, gMax );
    if ( !s || !s.origin ) return null;
-   if ( s.origin == "online" && s.length >= Fly.GAIA_ONLINE_MAX_ROWS && radius > 0.25 )
+   if ( s.origin == "online" && s.length >= Fly.GAIA_ONLINE_MAX_ROWS )
    {
+      // still cut at a quarter degree: the answer cannot be made complete, and an incomplete index would miss stars silently
+      if ( radius <= 0.25 ) throw new Error( "Gaia online returned more stars than it sends in one answer, even for a small patch at RA " + centre.ra.toFixed( 2 ) + ", Dec " + centre.dec.toFixed( 2 ) + ": configure a Gaia DR3 database in Process > Gaia." );
       var out = [], r = radius/2, d = radius/2;
       [ [ -1, -1 ], [ -1, 1 ], [ 1, -1 ], [ 1, 1 ] ].forEach( function( q )
       {
@@ -1314,18 +1332,18 @@ Sky.catalogueTile = function( centre, radius, gMax )
    return s;
 };
 
-/* The cached index, or null (missing, built otherwise, or unreadable). */
-Sky.loadSolverIndex = function( dir )
+/* The cached index, or null (missing, built otherwise, or unreadable). `config` defaults to the whole-sky build's. */
+Sky.loadSolverIndex = function( dir, config )
 {
+   config = config || Sky.solverConfig( Solve.BANDS, Solve.INDEX_G_MAX, Solve.skyTiles( Solve.TILE_RADIUS ) );
    var name = Sky.indexName( dir || Sky.solverIndexDir(), false );
    try
    {
       if ( !File.exists( name + ".json" ) || !File.exists( name + ".bin" ) ) return null;
       var header = JSON.parse( File.readTextFile( name + ".json" ) );
       if ( header.version != Solve.INDEX_VERSION ) return null;
-      // made with other settings (stars or quads per cell, bands, depth): not this index
-      var cfg = JSON.parse( header.config || "{}" );
-      if ( cfg.M != Solve.STARS_PER_CELL || cfg.Q != Solve.QUADS_PER_CELL || cfg.gMax != header.gMax ) return null;
+      // made with other settings (bands, depth, stars or quads per cell, tiles): not this index
+      if ( header.config != config ) return null;
       return Solve.indexFromArrays( header, Sky.readArrays( name + ".bin", header.lengths ) );
    }
    catch ( e ) { Util.warn( "fly", "solver index: " + e ); return null; }
@@ -1337,7 +1355,7 @@ Sky.solverIndex = function( progress )
    if ( !Sky._solverIndex )
    {
       progress.stage( "Loading the star index for blind solving", 0, 0 );
-      Sky._solverIndex = Sky.loadSolverIndex() || Sky.buildSolverIndex( progress );
+      Sky._solverIndex = Sky.loadSolverIndex( Sky.solverIndexDir() ) || Sky.buildSolverIndex( progress );
    }
    return Sky._solverIndex;
 };
@@ -1507,12 +1525,30 @@ Sky.solveBlind = function( window, progress )
             throw new Error( "ImageSolver's solution (RA " + got.ra.toFixed( 3 ) + ", Dec " + got.dec.toFixed( 3 ) + ") is not where the blind match put the image" );
          return { hints: hints, solvedPixel: solvedPixel, result: results[k] };
       }
-      catch ( e ) { if ( e && e.loomCancel ) throw e; reasons.push( String( e.message || e ) ); }
+      catch ( e )
+      {
+         // a rejected or failed candidate must leave no solution behind: Sky.projector would believe it next time
+         Sky.clearSolution( window );
+         if ( e && e.loomCancel ) throw e;
+         reasons.push( String( e.message || e ) );
+      }
    }
    throw new Error( "Blind solving found " + results.length + " candidate position(s), but ImageSolver could not confirm any: " + reasons[0] );
 };
 ```
 The test regex `/could not confirm/` matches this message.
+
+Add `Sky.clearSolution`, next to `Sky.writeTanKeywords`:
+```js
+/* Removes an astrometric solution and every WCS keyword from a window (a rejected blind candidate's). */
+Sky.WCS_KEYWORD = /^(CTYPE[12]|CRVAL[12]|CRPIX[12]|CD[12]_[12]|CDELT[12]|CROTA[12]|PC[12]_[12]|PV[12]_\d+|LONPOLE|LATPOLE|EQUINOX|RADESYS|A_\w+|B_\w+|AP_\w+|BP_\w+)$/;
+Sky.clearSolution = function( window )
+{
+   try { window.clearAstrometricSolution(); } catch ( e ) {}
+   window.keywords = window.keywords.filter( function( k ) { return !Sky.WCS_KEYWORD.test( k.name.trim() ); } );
+};
+```
+Before relying on it, probe `ImageWindow.prototype.clearAstrometricSolution` in slot 2 with a one-line script. If it doesn't exist, find the PJSR way to drop a solution (search `/Applications/PixInsight/src/scripts` and `include/pjsr`), use that, and ledger a ruling. The PixInsight test adds `a rejected candidate leaves the window unsolved`: after the "somewhere else" case, `Sky.projector( win )` is `null`. Its stubs don't write a real solution, so the test also writes TAN keywords with `Sky.writeTanKeywords` and calls `win.regenerateAstrometricSolution()` inside the stubbed `solveWithHints`, which gives the clean-up something to remove.
 
 - [ ] **Step 4: Run both suites and see them pass**
 
@@ -1622,6 +1658,7 @@ Check that `Fly.parseAngle( "21 01 38.0", true )` returns degrees (315.408). If 
 
 In `FlyThrough.js`:
 - in `objectFromName()`, replace `Fly.objectFromFileName(` with `Fly.objectFromPath(`, and change the note to `" (from the file or folder name)"`;
+- in `fillFromImage()`, the name guess must not overwrite a header centre. Change `if ( this.needsHints && !this.objectEdit.text.trim() ) this.objectFromName();` to `if ( this.needsHints && !this.objectEdit.text.trim() && !this.raEdit.text.trim() ) this.objectFromName();`. The dialog test adds an image whose `OBJCTRA`/`OBJCTDEC` point at the Iris and whose view id names `IC1396`: RA stays at the header's 315.4. (`recallObject` stays as it is: a user's own remembered hints win over both.)
 - in `fillFromImage()`, **before** the `if ( this.needsHints ) this.recallObject();` line (the header's own pointing outranks a name guessed from the file or folder; remembered hints are applied after and still win), add:
 ```js
       // the header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do)
@@ -1841,7 +1878,7 @@ git commit -m "Changelog: blind plate solving"
 
 ## Swarm execution
 
-The user asked for a swarm implementation with several agents working together. The orchestrator runs it on the branch `feature/blind-solver`, cut from `main`, in one shared worktree. Agents coordinate on the board.
+The user asked for a swarm implementation with several agents working together. The orchestrator cuts the integration branch `feature/blind-solver` from `main`. Each agent works in its own worktree and branch (see the shared rules), and agents coordinate on the board. A branch is merged into `feature/blind-solver` only after its upstream work has been merged and the verifier has posted VERIFIED for it.
 
 - **Job:** `loom-blind-solver`. Its goal: "Tasks 1–11 done, node suites and the PixInsight suite green, the Iris, the Elephant's Trunk and NGC 5907 blind-solve and are confirmed by ImageSolver".
 - **Agents:**
