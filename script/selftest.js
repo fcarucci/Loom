@@ -10843,7 +10843,19 @@ function runFlyTestsClean()
       check( "but nothing it did not make: other files, other folders, the videos",
              [ File.exists( dir + "/youtube_1080_vertical/notes.txt" ), File.exists( dir + "/holiday/frame_00000.tif" ), File.exists( dir + "/NGC7023_youtube_1080_SDR.mp4" ) ], [ true, true, true ] );
       var dlg = new FlyThrough.Dialog( null );
-      try { check( "the Video section has the button", dlg.clearFramesButton.text, "Clear rendered frames…" ); }
+      try
+      {
+         check( "the Video section has the button", dlg.clearFramesButton.text, "Clear rendered frames…" );
+         // greyed out when there is nothing to clear: an output folder with no frames, then one with, then cleared
+         var empty = synthDir( "fly-clear-empty" ), full = synthDir( "fly-clear-full" );
+         File.createDirectory( full + "/youtube_1080", true ); File.writeTextFile( full + "/youtube_1080/frame_00000.tif", "x" );
+         dlg.folderEdit.text = empty; dlg.folderEdit.onEditCompleted();
+         var a = dlg.clearFramesButton.enabled;
+         dlg.folderEdit.text = full; dlg.folderEdit.onEditCompleted();
+         var b = dlg.clearFramesButton.enabled;
+         FlyThrough.clearFrames( full ); dlg.refreshClearFrames();
+         check( "greyed out with nothing to clear, enabled with frames, greyed out again once cleared", [ a, b, dlg.clearFramesButton.enabled ], [ false, true, false ] );
+      }
       finally { dlg.release(); }
    } )();
 

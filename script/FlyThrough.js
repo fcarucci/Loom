@@ -923,6 +923,7 @@ FlyThrough.Dialog = class extends Dialog
       this.refreshHdr();
       this.refreshFormats();
       this.restoreOptions();
+      this.refreshClearFrames();
       this.setImage( this.imageWindow );
       // an image active when the dialog opens is got ready as soon as the dialog is on screen
       var self = this;
@@ -1126,7 +1127,7 @@ FlyThrough.Dialog = class extends Dialog
       // the header's focal length and pixel size, else the ones last used (a rig rarely changes)
       this.focalEdit.text = has ? String( Sky.keywordNumber( this.imageWindow, "FOCALLEN" ) || Settings.read( FlyThrough.FOCAL_SETTING, DataType_String ) || "" ) : "";
       this.pixelEdit.text = has ? String( Sky.keywordNumber( this.imageWindow, "XPIXSZ" ) || Settings.read( FlyThrough.PIXEL_SETTING, DataType_String ) || "" ) : "";
-      if ( path ) this.folderEdit.text = File.extractDrive( path ) + File.extractDirectory( path );
+      if ( path ) { this.folderEdit.text = File.extractDrive( path ) + File.extractDirectory( path ); this.refreshClearFrames(); }
       this.needsHints = has && ( Sky.projector( this.imageWindow ) == null );
       // an image's hints start empty -- never the last image's -- then come from its memory or its name
       this.objectEdit.text = this.raEdit.text = this.decEdit.text = this.objectMatch.text = "";
@@ -1369,8 +1370,9 @@ FlyThrough.Dialog = class extends Dialog
       {
          var d = new GetDirectoryDialog;
          d.caption = "Output folder";
-         if ( d.execute() ) self.folderEdit.text = d.directory;
+         if ( d.execute() ) { self.folderEdit.text = d.directory; self.refreshClearFrames(); }
       };
+      this.folderEdit.onEditCompleted = function() { self.refreshClearFrames(); };
       rows.push( this.row( [ this.label( "Output:" ), this.folderEdit, this.folderButton ] ) );
       this.output = this.group( "Output", rows );
    }
@@ -1633,6 +1635,14 @@ FlyThrough.Dialog = class extends Dialog
       }
    }
 
+   /* Clear rendered frames is greyed out while frames are being written, and when the output folder holds none to clear. */
+   refreshClearFrames()
+   {
+      if ( !this.clearFramesButton || !this.folderEdit ) return;
+      var dir = this.folderEdit.text.trim();
+      this.clearFramesButton.enabled = !this.busy && !!dir && File.directoryExists( dir ) && FlyThrough.clearFrames( dir, true ).folders > 0;
+   }
+
    /* Clear rendered frames: in the output folder, after saying how many (FlyThrough.clearFrames). */
    clearRenderedFrames()
    {
@@ -1645,6 +1655,7 @@ FlyThrough.Dialog = class extends Dialog
                                 "Loom Fly-Through", StdIcon_Question, StdButton_Yes, StdButton_No );
       if ( ask.execute() != StdButton_Yes ) return;
       var res = FlyThrough.clearFrames( dir );
+      this.refreshClearFrames();
       this.status.text = "Cleared " + res.frames + " rendered frame" + ( res.frames == 1 ? "" : "s" ) + "; the next render draws every frame afresh.";
    }
 
@@ -1655,7 +1666,7 @@ FlyThrough.Dialog = class extends Dialog
       this.draftButton.enabled = has && !this.busy;
       this.renderButton.text = this.busy ? "Cancel" : "Render";
       this.renderButton.enabled = has || this.busy;
-      if ( this.clearFramesButton ) this.clearFramesButton.enabled = !this.busy;   // not while frames are being written
+      this.refreshClearFrames();
       this.playButton.enabled = !inAnalysis;
       this.starsLabel.enabled = !inAnalysis;
       this.imageList.enabled = this.openButton.enabled = !inAnalysis;   // another image cannot be taken until this one's analysis ends
