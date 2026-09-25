@@ -1638,7 +1638,7 @@ Fly.formatElapsed = function( ms )
 Fly.progressText = function( stage, done, total, elapsedMs, kept )
 {
    if ( !( total > 0 ) )
-      return stage + " — " + Fly.formatElapsed( elapsedMs );
+      return elapsedMs < 1000 ? stage : stage + " — " + Fly.formatElapsed( elapsedMs );   // no "— 0 s" before a step has run a second
    var t = stage + " — " + done + " of " + total + " (" + Math.round( 100*done/total ) + "%)";
    // `kept` of the done were there before (a resumed render): the pace is the rest's
    var fresh = done - ( kept || 0 );

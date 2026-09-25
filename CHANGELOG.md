@@ -25,7 +25,7 @@ section of this file.
 **The dialog while an image is analysed.**
 - The dialog stays usable. Draft, Play, the star counts and the image choice are greyed out; every other option can be changed, and the changes are kept.
 - Changing the star tool during star removal starts it again with the new tool once the running one finishes. The plate solve isn't repeated, and the first tool's stars stay cached.
-- The progress bar says what is running in plain words.
+- The progress bar says what is running in plain words, and shows a step's time only once it has run a second (no more "— 0 s").
 
 **Fixes.**
 - Switching Orientation back while a draft was running was ignored: the vertical draft stayed on screen until the dialog was reopened.

@@ -10812,6 +10812,10 @@ function runFlyTestsClean()
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   /* A step with no count shows its time only once there is some: never "— 0 s". */
+   check( "no time before the first second", [ Fly.progressText( "Solving", 0, 0, 0 ), Fly.progressText( "Solving", 0, 0, 400 ) ], [ "Solving", "Solving" ] );
+   check( "then the time", [ Fly.progressText( "Solving", 0, 0, 1000 ), Fly.progressText( "Solving", 0, 0, 65000 ) ], [ "Solving — 1 s", "Solving — 1 min 5 s" ] );
+
    /* fly-tests-end */
 }
 
