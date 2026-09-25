@@ -1281,5 +1281,6 @@ Render.sceneFor = function( sc, outW, outH )
    if ( !Fly.needsRotation( sc.w, sc.h, outW, outH ) )
       return sc;
    if ( !sc.turned ) sc.turned = Render.rotateScene( sc );
+   sc.turned.D = sc.D;              // the dialog sets the distance on the scene: the turned copy follows it
    return sc.turned;
 };

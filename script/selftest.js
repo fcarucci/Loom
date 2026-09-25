@@ -10236,6 +10236,19 @@ function runFlyTestsClean()
       finally { Render.headroomMap = real; fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   /*
+    * A vertical preset draws from the scene turned once and kept; a distance
+    * typed after that reaches it too (it used to keep the distance it was
+    * turned with, so vertical renders flew by the old one).
+    */
+   ( function()
+   {
+      var sc = { w: 40, h: 20, nc: 1, S: [ new Float32Array( 800 ) ], R: [ new Float32Array( 800 ) ], sprites: [], tp: { x: 20, y: 10 }, D: 500, project: function() { return null; } };
+      var turned = Render.sceneFor( sc, 9, 16 );
+      sc.D = 700;
+      check( "a distance changed after turning reaches the turned scene", [ turned !== sc, Render.sceneFor( sc, 9, 16 ).D ], [ true, 700 ] );
+   } )();
+
    /* fly-tests-end */
 }
 
