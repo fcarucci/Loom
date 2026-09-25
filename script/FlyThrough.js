@@ -11,6 +11,7 @@
 #include <pjsr/TextAlign.jsh>
 #include <pjsr/ColorSpace.jsh>
 #include <pjsr/SampleType.jsh>
+#include <pjsr/ImageOp.jsh>
 
 #ifndef LOOM_LIBS_INCLUDED
 #include "lib/Util.js"

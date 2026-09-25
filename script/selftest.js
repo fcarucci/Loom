@@ -5,6 +5,7 @@
 #include <pjsr/DataType.jsh>
 #include <pjsr/FrameStyle.jsh>
 #include <pjsr/StdButton.jsh>
+#include <pjsr/ImageOp.jsh>
 #include <pjsr/StdCursor.jsh>
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/TextAlign.jsh>
@@ -10123,6 +10124,65 @@ function runFlyTestsClean()
    {
       check( "exactly: 30 s for 1 new frame, 4 to go", Fly.progressText( "Rendering", 6, 10, 30000, 5 ), "Rendering — 6 of 10 (60%) — about 2 min left" );
       check( "without kept frames as before", Fly.progressText( "Rendering", 6, 10, 30000 ), "Rendering — 6 of 10 (60%) — less than a minute left" );
+   } )();
+
+   /*
+    * The screen composite runs in PixInsight's own image operations
+    * (clamp, screen, subtract): the same numbers as the per-pixel loop.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var n = 5000, S = new Float32Array( n ), T = new Float32Array( n );
+      for ( var i = 0; i < n; ++i ) { S[i] = -0.1 + 1.2*( ( i*37 ) % 101 )/100; T[i] = ( ( i*53 ) % 401 )/100 - 0.5; }
+      check( "PixInsight's image operations are there to run it", typeof ImageOp_Screen, "number" );
+      [ false, true ].forEach( function( hdr )
+      {
+         var js = Render.compositeJs( S, T, n, hdr ), nat = Render.composite( S, T, n, hdr, 100 ), dOut = 0, dX = 0;
+         for ( i = 0; i < n; ++i ) { dOut = Math.max( dOut, Math.abs( js.out[i] - nat.out[i] ) ); if ( hdr ) dX = Math.max( dX, Math.abs( js.excess[i] - nat.excess[i] ) ); }
+         check( ( hdr ? "HDR" : "SDR" ) + ": native composite matches (" + dOut.toExponential( 1 ) + ", excess " + dX.toExponential( 1 ) + ")",
+                [ dOut < 1e-6, dX < 1e-6, hdr ? nat.excess != null : nat.excess === null ], [ true, true, true ] );
+      } );
+   } )();
+
+   /*
+    * Bloom runs in PixInsight's own image operations (max, clamp, the blurs,
+    * the weighted sums): the same light as the per-pixel version away from
+    * the frame's edges, where the blurs meet the outside differently.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = 300, h = 200, n = w*h, T = [ 0, 1, 2 ].map( function() { return new Float32Array( n ); } );
+      for ( var k = 0; k < 40; ++k )
+      {
+         var x = 40 + ( k*67 ) % 220, y = 40 + ( k*41 ) % 120, peak = 0.5 + ( k % 9 );
+         for ( var dy = -3; dy <= 3; ++dy ) for ( var dx = -3; dx <= 3; ++dx )
+            for ( var c = 0; c < 3; ++c ) T[c][( y + dy )*w + x + dx] += peak*( 1 - 0.2*c )*Math.exp( -( dx*dx + dy*dy )/2 );
+      }
+      var js = T.map( function( a ) { return a.slice(); } ), nat = T.map( function( a ) { return a.slice(); } );
+      Render.bloomJs( js, w, h, { amount: 1, seconds: 1.5 } );
+      Render.bloom( nat, w, h, { amount: 1, seconds: 1.5 } );
+      var m = 3*Render.boxRadius( Render.bloomSigmas( Math.min( w, h ), 1.5 )[2] ) + 1, worst = 0, top = 0;
+      for ( c = 0; c < 3; ++c ) for ( y = m; y < h - m; ++y ) for ( x = m; x < w - m; ++x )
+      { var i = y*w + x; worst = Math.max( worst, Math.abs( js[c][i] - nat[c][i] ) ); top = Math.max( top, js[c][i] ); }
+      check( "native bloom matches inside the frame (" + ( worst/top ).toExponential( 1 ) + " of the peak)", worst < 1e-5*top, true );
+      var calm = [ new Float32Array( n ) ]; calm[0][100*w + 150] = 0.9; var c0 = calm[0].slice();
+      Render.bloom( calm, w, h, { amount: 1, seconds: 0 } );
+      check( "nothing past white, nothing changes", calm[0].every( function( v, i ) { return v === c0[i]; } ), true );
+   } )();
+
+   /* Stars into the HDR headroom run in PixInsight's own image operations: the same numbers as the per-pixel loop. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = 120, h = 80, n = w*h, T = [ 0, 1, 2 ].map( function( c ) { var a = new Float32Array( n ); for ( var i = 0; i < n; ++i ) a[i] = ( ( i*( 31 + 7*c ) ) % 113 )/90; return a; } );
+      var map = new Float32Array( n ); for ( var i = 0; i < n; ++i ) map[i] = 1 + ( ( i*17 ) % 50 )/10;
+      var js = T.map( function( a ) { return a.slice(); } ), nat = T.map( function( a ) { return a.slice(); } ), worst = 0;
+      Render.starsToHeadroomJs( js, n, map );
+      Render.starsToHeadroom( nat, n, map, w );
+      for ( var c = 0; c < 3; ++c ) for ( i = 0; i < n; ++i ) worst = Math.max( worst, Math.abs( js[c][i] - nat[c][i] )/Math.max( 1, js[c][i] ) );
+      check( "native headroom matches (" + worst.toExponential( 1 ) + ")", worst < 1e-6, true );
+      var one = T.map( function( a ) { return a.slice(); } ), ref = T.map( function( a ) { return a.slice(); } );
+      Render.starsToHeadroomJs( ref, n, 3 ); Render.starsToHeadroom( one, n, 3, w );
+      check( "and with one peak for every pixel", one[1].every( function( v, i ) { return Math.abs( v - ref[1][i] ) < 1e-6*Math.max( 1, v ); } ), true );
    } )();
 
    /* fly-tests-end */

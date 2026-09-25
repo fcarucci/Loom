@@ -508,12 +508,20 @@ Render.blur3 = function( a, w, h, r )
    try
    {
       img.setSamples( a, rect, 0 );
-      var k = Render.box3Kernel( r );
-      img.convolveSeparable( k, k );
+      Render.blurImage( img, r );
       img.getSamples( a, rect, 0 );
    }
    finally { img.free(); }
    return a;
+};
+
+/* Render.blur3 on a PixInsight image, in place; returns it. */
+Render.blurImage = function( img, r )
+{
+   if ( !( r >= 1 ) ) return img;
+   var k = Render.box3Kernel( r );
+   img.convolveSeparable( k, k );
+   return img;
 };
 
 /* A box of 2r + 1 convolved with itself three times, as a Vector; cached by r. */
@@ -554,8 +562,33 @@ Render.saturateStars = function( T, n, sat )
  * The stars layer into the HDR headroom (Fly.starHeadroom): each pixel's
  * channels by one factor from its brightest channel, so its hue is kept.
  * `peak` is one number or a per-pixel map (1 where no star claims more).
+ * In PixInsight's own image operations (C++, every core; w, the frame's
+ * width, lets it split the work by rows); Render.starsToHeadroomJs outside it.
  */
-Render.starsToHeadroom = function( T, n, peak )
+Render.starsToHeadroom = function( T, n, peak, w )
+{
+   if ( typeof Image == "undefined" || typeof ImageOp_Max == "undefined" ) return Render.starsToHeadroomJs( T, n, peak );
+   var cw = ( w > 0 && n % w == 0 ) ? w : n, rect = new Rect( 0, 0, cw, n/cw ), made = [], c;
+   function image( from ) { var i = from ? new Image( from ) : new Image( cw, n/cw, 1, ColorSpace_Gray, 32, SampleType_Real ); made.push( i ); return i; }
+   try
+   {
+      var L = T.map( function( t ) { var i = image(); i.setSamples( t, rect, 0 ); return i; } );
+      // t = where the brightest channel sits between the knee and white; f = 1 + (peak - 1) t^2
+      var f = image( L[0] );
+      for ( c = 1; c < L.length; ++c ) f.apply( L[c], ImageOp_Max );
+      f.truncate( -Render.EXCESS_MAX, 1 );
+      f.apply( Fly.HEADROOM_KNEE, ImageOp_Sub ); f.apply( 1 - Fly.HEADROOM_KNEE, ImageOp_Div ); f.truncate( 0, 1 );
+      f.apply( image( f ), ImageOp_Mul );
+      if ( typeof peak == "number" ) f.apply( peak - 1, ImageOp_Mul );
+      else { var g = image(); g.setSamples( peak, rect, 0 ); g.apply( 1, ImageOp_Sub ); g.truncate( 0, Render.EXCESS_MAX ); f.apply( g, ImageOp_Mul ); }
+      f.apply( 1, ImageOp_Add );
+      for ( c = 0; c < L.length; ++c ) { L[c].apply( f, ImageOp_Mul ); L[c].getSamples( T[c], rect, 0 ); }
+   }
+   finally { made.forEach( function( i ) { i.free(); } ); }
+};
+
+/* Render.starsToHeadroom as a per-pixel loop: the reference, and outside PixInsight. */
+Render.starsToHeadroomJs = function( T, n, peak )
 {
    var map = ( typeof peak == "number" ) ? null : peak;
    for ( var i = 0; i < n; ++i )
@@ -614,9 +647,60 @@ Render.pastWhite = function( T, n )
  * tight glow that rounds a clipped core, a wide faint one and a very wide
  * glare, a share of it white in every channel, as a sensor saturates.
  * Nothing past white -- the image itself -- blooms nothing. opts = {
- * amount (0 = off), seconds }.
+ * amount (0 = off), seconds }. In PixInsight's own image operations (C++,
+ * every core); Render.bloomJs, the per-pixel version, outside PixInsight.
  */
 Render.bloom = function( T, w, h, opts )
+{
+   var amount = opts.amount != null ? opts.amount : 1;
+   if ( !( amount > 0 ) ) return;
+   if ( typeof Image == "undefined" || typeof ImageOp_Max == "undefined" ) return Render.bloomJs( T, w, h, opts );
+   var rect = new Rect( 0, 0, w, h ), made = [], nc = T.length, c;
+   function image( from ) { var i = from ? new Image( from ) : new Image( w, h, 1, ColorSpace_Gray, 32, SampleType_Real ); made.push( i ); return i; }
+   try
+   {
+      var L = T.map( function( t ) { var i = image(); i.setSamples( t, rect, 0 ); return i; } );
+      var top = image( L[0] );
+      for ( c = 1; c < nc; ++c ) top.apply( L[c], ImageOp_Max );
+      if ( !( top.maximum() > 1 ) ) return;                  // nothing past white: the image itself
+      if ( nc > 1 )
+      {
+         // past white a core whitens (Render.whitenPastWhite): T += (top - T) x 0.8 smoothstep(1.5, 4, top)
+         var t = image( top ); t.apply( 1.5, ImageOp_Sub ); t.apply( 2.5, ImageOp_Div ); t.truncate( 0, 1 );
+         var f = image( t ); f.apply( t, ImageOp_Mul );
+         var u = image( t ); u.apply( -2, ImageOp_Mul ); u.apply( 3, ImageOp_Add );
+         f.apply( u, ImageOp_Mul ); f.apply( 0.8, ImageOp_Mul );
+         for ( c = 0; c < nc; ++c ) { var d = image( top ); d.apply( L[c], ImageOp_Sub ); d.apply( f, ImageOp_Mul ); L[c].apply( d, ImageOp_Add ); }
+      }
+      // each channel's light past white, and its mean
+      var E = L.map( function( l ) { var e = image( l ); e.apply( 1, ImageOp_Sub ); e.truncate( 0, Render.EXCESS_MAX ); return e; } );
+      var white = image( E[0] );
+      for ( c = 1; c < nc; ++c ) white.apply( E[c], ImageOp_Add );
+      white.apply( nc, ImageOp_Div );
+      var sg = Render.bloomSigmas( Math.min( w, h ), opts.seconds ), G = Render.BLOOM_GAINS;
+      var base = Render.blurImage( image( white ), Render.boxRadius( sg[0] ) );
+      base.apply( G[2], ImageOp_Mul );
+      var glare = Render.blurImage( white, Render.boxRadius( sg[2] ) );
+      glare.apply( G[3], ImageOp_Mul );
+      base.apply( glare, ImageOp_Add );
+      for ( c = 0; c < nc; ++c )
+      {
+         var glow = Render.blurImage( image( E[c] ), Render.boxRadius( sg[0] ) );
+         glow.apply( G[0], ImageOp_Mul );
+         var wide = Render.blurImage( E[c], Render.boxRadius( sg[1] ) );
+         wide.apply( G[1], ImageOp_Mul );
+         glow.apply( wide, ImageOp_Add );
+         glow.apply( base, ImageOp_Add );
+         glow.apply( amount, ImageOp_Mul );
+         L[c].apply( glow, ImageOp_Add );
+         L[c].getSamples( T[c], rect, 0 );
+      }
+   }
+   finally { made.forEach( function( i ) { i.free(); } ); }
+};
+
+/* Render.bloom as per-pixel loops: the reference, and outside PixInsight. */
+Render.bloomJs = function( T, w, h, opts )
 {
    var amount = opts.amount != null ? opts.amount : 1;
    if ( !( amount > 0 ) ) return;
@@ -626,10 +710,10 @@ Render.bloom = function( T, w, h, opts )
    if ( !E ) return;
    var sg = Render.bloomSigmas( Math.min( w, h ), opts.seconds ), G = Render.BLOOM_GAINS, white = new Float32Array( n );
    for ( c = 0; c < E.length; ++c ) for ( i = 0; i < n; ++i ) white[i] += E[c][i]/E.length;
-   var tightW = Render.blur3( white.slice(), w, h, Render.boxRadius( sg[0] ) ), glare = Render.blur3( white, w, h, Render.boxRadius( sg[2] ) );
+   var tightW = Render.boxBlur( white.slice(), w, h, Render.boxRadius( sg[0] ) ), glare = Render.boxBlur( white, w, h, Render.boxRadius( sg[2] ) );
    for ( c = 0; c < T.length; ++c )
    {
-      var tight = Render.blur3( E[c].slice(), w, h, Render.boxRadius( sg[0] ) ), wide = Render.blur3( E[c], w, h, Render.boxRadius( sg[1] ) );
+      var tight = Render.boxBlur( E[c].slice(), w, h, Render.boxRadius( sg[0] ) ), wide = Render.boxBlur( E[c], w, h, Render.boxRadius( sg[1] ) );
       for ( i = 0; i < n; ++i ) T[c][i] += amount*( G[0]*tight[i] + G[1]*wide[i] + G[2]*tightW[i] + G[3]*glare[i] );
    }
 };
@@ -712,13 +796,13 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    Render.bloom( T, outW, outH, { amount: opts.bloom != null ? opts.bloom : 0, seconds: t*( opts.duration || 0 ) } );
    // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
    var hdrOut = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
-   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, opts, outW, outH, cam ) );
+   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, opts, outW, outH, cam ), outW );
    var img = new Image( outW, outH, sc.nc, sc.nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
    var n = outW*outH, out = [], excess = [];
    var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
    for ( c = 0; c < sc.nc; ++c )
    {
-      var r = Render.composite( S[c], T[c], n, hdr );
+      var r = Render.composite( S[c], T[c], n, hdr, outW );
       out.push( r.out );
       excess.push( r.excess );
    }
@@ -737,9 +821,41 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
 
 /*
  * One channel's screen composite, 1 - (1 - S)(1 - T), and for HDR the star
- * light above 1 that SDR would clip.
+ * light above 1 that SDR would clip -- in PixInsight's own image operations
+ * (clamp, screen, subtract; C++, every core, which it splits by rows: the
+ * channel is held w wide, or as one row when w is not given). Render.compositeJs
+ * outside PixInsight (the Node suite).
  */
-Render.composite = function( Sc, Tc, n, hdr )
+Render.composite = function( Sc, Tc, n, hdr, w )
+{
+   if ( typeof Image == "undefined" || typeof ImageOp_Screen == "undefined" ) return Render.compositeJs( Sc, Tc, n, hdr );
+   var cw = ( w > 0 && n % w == 0 ) ? w : n, ch = n/cw;
+   var rect = new Rect( 0, 0, cw, ch ), a = new Image( cw, ch, 1, ColorSpace_Gray, 32, SampleType_Real ), b = new Image( cw, ch, 1, ColorSpace_Gray, 32, SampleType_Real );
+   var o = new Float32Array( n ), X = null;
+   try
+   {
+      a.setSamples( Sc, rect, 0 );
+      b.setSamples( Tc, rect, 0 );
+      if ( hdr )
+      {
+         // the light past white: T - 1 where T > 1
+         var x = new Image( b );
+         try { x.apply( 1, ImageOp_Sub ); x.truncate( 0, Render.EXCESS_MAX ); X = new Float32Array( n ); x.getSamples( X, rect, 0 ); }
+         finally { x.free(); }
+      }
+      a.truncate( 0, 1 );
+      b.truncate( 0, 1 );
+      a.apply( b, ImageOp_Screen );
+      a.getSamples( o, rect, 0 );
+   }
+   finally { a.free(); b.free(); }
+   return { out: o, excess: X };
+};
+
+Render.EXCESS_MAX = 1e30;   // no upper clamp on the light past white
+
+/* Render.composite as a per-pixel loop: the reference, and outside PixInsight. */
+Render.compositeJs = function( Sc, Tc, n, hdr )
 {
    var o = new Float32Array( n ), X = hdr ? new Float32Array( n ) : null;
    for ( var i = 0; i < n; ++i )
