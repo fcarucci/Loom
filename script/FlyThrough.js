@@ -88,6 +88,7 @@ FlyThrough.renderFinal = function( scene, presets, opts, dir, progress )
    return res;
 };
 
+FlyThrough.PREVIEW_EVERY = 250;          // ms between the rendered frames shown in the preview
 FlyThrough.FRAMES_RECORD = "frames.json";   // what a preset folder's frames were made from (Fly.frameSignature)
 
 FlyThrough.PARTIAL_SUFFIX = ".part";   // a frame being written; renamed when complete
@@ -161,7 +162,11 @@ FlyThrough.renderFrameRange = function( job, folder, res, progress, total, cance
       if ( cancelled() ) { res.cancelled = true; return; }
       var img = p.crossfade ? FlyThrough.loopImage( job.ps, i, job.n, job.F, job.po, p.w, p.h, job.crop, still )
                             : Render.frame( job.ps, Fly.timeAt( i, job.n, p.pingPong ), job.po, p.w, p.h, job.crop );
-      try { Render.writeTiff( img, path + FlyThrough.PARTIAL_SUFFIX, icc ); }
+      try
+      {
+         Render.writeTiff( img, path + FlyThrough.PARTIAL_SUFFIX, icc );
+         if ( progress.onImage ) progress.onImage( img, p.id );          // the frame just finished, for the preview
+      }
       finally { img.free(); }
       File.move( path + FlyThrough.PARTIAL_SUFFIX, path );
       ++res.written;
@@ -1808,7 +1813,7 @@ FlyThrough.Dialog = class extends Dialog
     */
    progressFor()
    {
-      var self = this, current = null, since = Date.now();
+      var self = this, current = null, since = Date.now(), shown = 0;
       function stage( name, done, total, kept )
       {
          if ( self.toolSwitch ) { self.bar.set( null, self.switchingText() ); return; }   // what happens next, until it does
@@ -1819,6 +1824,8 @@ FlyThrough.Dialog = class extends Dialog
          stage: stage,
          isCancelled: function() { return self.cancelRequested; },
          onFrame: function( k, n, id, kept ) { stage( id ? "Rendering " + ( FlyThrough.PRESET_LABELS[id] || id ) : "Drafting", k, n, kept ); },
+         // a render's finished frames in the preview, at most every PREVIEW_EVERY ms (turning a full frame into a bitmap costs)
+         onImage: function( img ) { if ( Date.now() - shown >= FlyThrough.PREVIEW_EVERY ) { shown = Date.now(); self.player.setFrames( [ img.render() ], 1, false ); } },
          onEncode: function( k, n ) { stage( "Encoding the video", k, n ); }
       };
    }
@@ -2045,7 +2052,16 @@ FlyThrough.Dialog = class extends Dialog
       try { if ( path && File.exists( path ) ) when = String( ( new FileInfo( path ) ).lastModified.getTime() ); } catch ( e ) {}
       o.sceneKey = [ path || this.imageWindow.mainView.id, when, o.tool, this.built.scene.D ].join( "|" );
       this.saveOptions();
+      // the preview shows the frames as they finish (progressFor's onImage); the draft comes back after
+      var draft = { frames: this.player.frames, fps: this.player.fps, pingPong: this.player.pingPong };
       this.player.pause();
+      try { this.renderJob( o ); }
+      finally { if ( draft.frames.length ) this.player.setFrames( draft.frames, draft.fps, draft.pingPong ); }
+   }
+
+   renderJob( o )
+   {
+      var self = this;
       this.run( function( progress )
       {
          o.logoImage = FlyThrough.readLogo( o );
