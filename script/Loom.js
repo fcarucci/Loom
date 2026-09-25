@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom : Batch Processing > Loom
+#feature-id    Loom : Loom > Loom
 #feature-info  The mechanical first steps, from integrated masters to plates \
    ready for creative work: solve, flux-calibrate, remove gradients, correct \
    aberration, register to L (or the best channel without one), crop, \

@@ -72,9 +72,9 @@ Use one or the other, not both — two copies register the scripts twice.
 5. **Restart PixInsight** when asked — updates are installed while it
    restarts.
 
-Both scripts then appear under **Script → Batch Processing**: **Loom** and
-**Loom Frame Selector**. If they do not, run **Script → Feature Scripts →
-Regenerate**, then **Done**.
+The three scripts then appear together under **Script → Loom**: **Loom**,
+**Frame Selector** and **Fly-Through**. If they do not, run **Script → Feature
+Scripts → Regenerate**, then **Done**.
 
 **Updating** is the same **Check for Updates**: a new Loom version is offered
 like any other update.
@@ -103,8 +103,7 @@ works — nothing in the code depends on the path.
 at the **Loom folder** — not the `script` subfolder — then **Done**. The scan
 descends into subfolders, which is how PixInsight's own bundled scripts are
 registered two levels below `src/scripts`, so the top-level folder is enough to
-find `script/Loom.js`. It then appears under **Script → Batch Processing →
-Loom**.
+find `script/Loom.js`. The scripts then appear under **Script → Loom**.
 
 **Moving or renaming the folder breaks the registration.** PixInsight registers
 feature scripts by absolute file path, so after a move you have to add it again
@@ -150,7 +149,7 @@ in `<cache>/update/update.log`, beside the run logs and safe from **Clear
 cache**. The version and commit are in the dialog's title bar —
 `Loom 0.1 (a4c1f2e)` — because many commits share one version number.
 
-**Verify the install.** Open **Script → Batch Processing → Loom**, add masters,
+**Verify the install.** Open **Script → Loom → Loom**, add masters,
 and tick **Validate only (check everything, run nothing)**. It runs every
 preflight check — files and views present, required FITS keywords, installed
 processes, the MARS database — and executes nothing. That is the intended first
@@ -407,8 +406,8 @@ palette ends on top.
 
 ## Frame Selector
 
-A second script in this repository — **Batch Processing > Loom Frame
-Selector** — and not part of a Loom run. It measures every subframe in a
+A second script in this repository — **Script → Loom → Frame Selector** — and
+not part of a Loom run. It measures every subframe in a
 folder, groups them by filter, works out where the line falls for that
 channel on that night, and removes the frames below it.
 
@@ -643,70 +642,94 @@ Overrides last for the session only.
 
 ## Fly-Through
 
-A third script — **Batch Processing > Loom Fly-Through** — that turns a finished
-image into a push-in video: the camera moves towards the target, and the
-photo's own stars pass by at their real distances.
+A third script — **Script → Loom → Fly-Through** — that turns a finished image
+into a push-in video: the camera moves towards the target, and the photo's own
+stars pass by at their real distances.
 
-**Nothing is invented.** Every moving star is a patch of your image, cut out
-with its halo. Its distance comes from its **Gaia DR3 parallax**, and its motion
-is exact 3-D geometry, not a zoom. A nearer star moves faster, grows slightly
-and brightens by the inverse-square law. Stars without a reliable parallax, and
-blends, stay in the backdrop.
+**The flight is measured, not guessed.** Each star's distance comes from its
+**Gaia DR3 parallax**, and its motion is exact 3-D geometry, not a zoom: a
+nearer star moves faster, grows and brightens by the inverse-square law. Stars
+without a reliable parallax, and blends, stay in the backdrop. The backdrop is
+the starless image. A nebula sits at the distance of its **ionising cluster**
+— stars sharing one proper motion and parallax; on IC 1396 that is Trumpler 37
+at 922 pc, against a published ~925 pc — and grows by a share of what that
+distance gives (**Nebula motion**, 40% by default; 100% is physical and far too
+much to watch). A galaxy is effectively at infinity and stays fixed. Nothing in
+front of the backdrop ever spreads slower than it, so no star reads as behind
+the nebula.
 
-**The backdrop is the starless image.** For a nebula it grows at the rate its
-own distance sets. That distance comes from the **ionising cluster**: stars that
-share one proper motion and parallax. On IC 1396 that is Trumpler 37, measured
-at 922 pc against a published ~925 pc. A galaxy is effectively at infinity and
-stays fixed. The target and its type come from PixInsight's NGC/IC table. You
-can change the type, and type the distance whenever no cluster is found.
+**The stars are your stars.** Every star is deblended from the stars layer with
+its own model — its profile on its local sky, its colour, its diffraction
+spikes fitted to the image's own spike falloff and width, in opposite pairs —
+so each moving star takes its own light and leaves the sky behind. Far away a
+star is drawn from your photograph; as it comes close it turns to its smooth
+model (its core first, so a clipped square core comes out round), its core
+stays sharp while its glow and spikes grow, light past white **blooms** into a
+round core, a halo and a faint glare, and fast stars get **motion blur** from a
+180° shutter. A star partly out of frame, or behind a nearer one, casts shorter,
+fainter spikes, and close stars fade out before they grow past what they bear.
+**Twinkle** (3% by default) adds a slow per-star shimmer; it is not physical —
+space has no air — and 0 turns it off. **Star colour** sets their saturation.
 
-**Input**: a FITS, XISF or TIFF file, or the active view. A solved image is used
-as is. For an unsolved one (typically a TIFF), give the centre (or an NGC/IC
-name), the focal length and the pixel size, and it is solved first. Gaia comes
-from the database you configured for SPFC/SPCC, and stars are removed with
-whichever of StarXTerminator, StarNet2 or SyQon Starless you have, found the
-same way as in Loom.
+**Choose an image, and it gets ready.** Open the dialog, pick an open image or
+**Open…** a FITS, XISF or TIFF file. It is resampled to a 4K working size,
+solved, analysed, its stars extracted, and a draft starts playing — with a
+progress bar and Cancel throughout, and the counts shown: stars detected,
+moving, and in the background. A solved image is used as is. An unsolved one
+(typically a TIFF) needs its centre: type the object — an NGC/IC id, a Messier
+number or a name such as *Elephant's Trunk*, typos forgiven — and the focal
+length and pixel size, which are remembered for your rig. Drizzled images are
+found at half or a third of the pixel size. What you type is remembered per
+image, so it solves by itself next time. Gaia comes from the database you
+configured for SPFC/SPCC, and stars are removed with whichever of
+StarXTerminator, StarNet2 or SyQon Starless you have (the choice is
+remembered).
 
 **Output**: 16-bit TIFF frames per preset — Social 1080×1920 and 1080×1080,
-YouTube 3840×2160 or 1920×1080, and an Exhibition 3840×2160 ping-pong loop —
-plus a video when ffmpeg is installed (`brew install ffmpeg` on macOS,
-`winget install Gyan.FFmpeg` on Windows). ffmpeg is found automatically;
+YouTube 3840×2160 or 1920×1080, and an Exhibition 3840×2160 loop, either
+**back and forth** or a **crossfade** from its end into its start — in
+**horizontal** or **vertical** orientation (a vertical image is turned, never cut
+to a band), plus a video when ffmpeg is installed (`brew install ffmpeg` on
+macOS, `winget install Gyan.FFmpeg` on Windows). ffmpeg is found automatically;
 Browse overrides it. Formats are offered only if that ffmpeg can encode them:
-MP4 H.264, MP4 H.265/HEVC (tagged for Apple players), MOV ProRes 422 HQ and
-WebM VP9. Without ffmpeg, the frames are still written and the exact command is
-printed.
+MP4 H.264, MP4 H.265/HEVC (tagged for Apple players), MOV ProRes 422 HQ and WebM
+VP9. Without ffmpeg, the frames are still written and the exact command is
+printed. The output goes next to the image. Rendering again with only a new
+format, quality or music keeps the frames and runs ffmpeg alone.
+
+**Logo and music**: a logo (PNG transparency kept) in one of seven places,
+sized and spaced for every preset, with an opacity and an optional fade-in after
+N seconds; and music, looped if shorter and cut to the video, faded in and out —
+or, for a looping video, crossfaded from its end into its beginning.
 
 **Colour**: every frame is converted from your image's own ICC profile (Loom's
 plates are ProPhoto) to Rec.709. The conversion reads the profile itself, so it
 does not matter which profiles the machine has installed.
 
 **HDR**: choose SDR or HDR. In HDR, star light that SDR would clip at white is
-kept, and rolled off towards a peak you set (default 1000 nits). An approaching
-star glows brighter than the nebula instead of flattening into a white disc.
-Social and YouTube default to **HLG**, which also looks right on SDR screens.
-Exhibition defaults to **PQ (HDR10)**, for a display you control, with the
-mastering metadata measured from the frames. HDR uses HEVC 10-bit (default),
-VP9 10-bit or ProRes; H.264 is SDR only.
+kept, and rolled off towards a peak you set (default 1000 nits). Social and
+YouTube default to **HLG**, which also looks right on SDR screens. Exhibition
+defaults to **PQ (HDR10)**, for a display you control, with the mastering
+metadata measured from the frames. HDR uses HEVC 10-bit (default), VP9 10-bit or
+ProRes; H.264 is SDR only.
 
-**Draft first**: Draft renders a 480 px preview, kept under 400 MB whatever the
-duration, and plays it in the dialog. The preview is always SDR. Render then
-writes the full frames; Cancel finishes the current frame and keeps what is
-written.
+**Draft first**: the draft is 480 px at a quarter of the video's frame rate, so
+it is quick, and it is always SDR. Changing the orientation or the logo draws it
+again. Render then writes the full frames; Cancel finishes the current frame and
+keeps what is written. Every option is remembered for next time.
 
-**Render time** on an Apple Silicon Mac, per 3840×2160 frame from an 8 MP
-image with about 1,700 moving stars: 1.2 s (SDR), 1.4 s (PQ), 1.7 s (HLG). A
-20-second clip at 30 fps is about 12 minutes per 4K preset.
+**Render time** on an Apple M4 Max, 1920×1080 frames of the Elephant's Trunk
+(1,288 moving stars): about 1.8 s a frame, so a 20-second clip at 30 fps takes
+about 18 minutes; star extraction takes a few minutes more.
 
 **Known limits**
-- Star distances use Gaia's typical parallax error for each magnitude, not
-  each star's own, so a few stars will sit at the wrong depth.
-- The cluster finder has been checked against one field, IC 1396. Its
-  distance is always shown, with member count and range, and you can edit it.
-- PixInsight's star detector gives no star outlines, so a star's area stands in
-  for its footprint. Doubles are recognised from Gaia and left in the backdrop.
-- A moving star leaves under 5% of its light behind, measured on synthetic
-  stars with realistic wide wings. That remainder zooms with the backdrop, as
-  the faintest of glows.
+- An unsolved image needs its centre (the object name or RA/Dec): PixInsight's
+  solver cannot solve blind.
+- Star distances use Gaia's typical parallax error for each magnitude, not each
+  star's own, so a few stars will sit at the wrong depth.
+- The cluster finder has been checked on IC 1396 and the North America Nebula.
+  Its distance is always shown, with member count and range, and you can edit
+  it.
 - Windows is covered by tests that simulate Windows, and has not yet been run
   by hand.
 

@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom Fly-Through : Batch Processing > Loom Fly-Through
+#feature-id    Loom Fly-Through : Loom > Fly-Through
 #feature-info  Turns a finished astrophoto into a push-in video: the photo's \
                own stars move at their real Gaia distances.
 
@@ -98,7 +98,7 @@ FlyThrough.presetJob = function( scene, p, opts )
 {
    var n = Fly.frameCount( opts.duration, opts.fps, p.pingPong ), ps = Render.sceneFor( scene, p.w, p.h );
    var F = p.crossfade ? Fly.crossfadeFrames( opts.duration, opts.fps ) : 0;
-   var po = Object.assign( {}, FlyThrough.presetOptions( opts, p.preset || p.id ), { frameDt: Fly.frameStep( n, F, p.pingPong ),
+   var po = Object.assign( {}, FlyThrough.presetOptions( opts, p.preset || p.id ), { frameDt: Fly.frameStep( n, F, p.pingPong ), loops: !!( p.pingPong || p.crossfade ),
                logo: opts.logoImage ? Render.logoLayer( opts.logoImage, p.w, p.h, opts.logoPlace, scene.nc, opts.logoOpacity ) : null } );
    return { p: p, n: n, F: F, ps: ps, po: po, crop: Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, p.w, p.h ) };
 };
@@ -199,7 +199,7 @@ FlyThrough.encodeArgs = function( folder, outBase, opts, frames )
    var hdr = ( opts.transfer == "pq" || opts.transfer == "hlg" ) ?
              { transfer: opts.transfer, peak: opts.peak || Fly.HDR_PEAK_DEFAULT,
                maxCll: opts.output.stats.maxCll, maxFall: opts.output.stats.maxFall } : null;
-   var audio = ( opts.music && opts.music.path ) ? { path: opts.music.path, fade: opts.music.fade, duration: frames/opts.fps } : null;
+   var audio = ( opts.music && opts.music.path ) ? { path: opts.music.path, fade: opts.music.fade, duration: frames/opts.fps, loop: !!opts.loops } : null;
    return Fly.ffmpegArgs( folder, opts.fps, outBase, opts.format || ( hdr ? "hevc" : "h264" ), opts.quality || "high", hdr, audio );
 };
 

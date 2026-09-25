@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom Frame Selector : Batch Processing > Loom Frame Selector
+#feature-id    Loom Frame Selector : Loom > Frame Selector
 #feature-info  Measures every subframe in a folder, groups them by filter, and \
                removes the ones this night's own statistics condemn.
 

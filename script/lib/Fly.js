@@ -929,17 +929,34 @@ Fly.audioFade = function( duration )
 };
 
 /*
- * Music under the video (audio = { path, fade, duration }): looped if it is
- * shorter, cut to the video (-shortest), faded in and out unless fade is
- * off; AAC in MP4 and MOV, Opus in WebM.
+ * Music under the video (audio = { path, fade, duration, loop }): looped if
+ * it is shorter, cut to the video (-shortest), faded in and out unless fade
+ * is off -- or, for a looping video, crossfaded end into beginning
+ * (Fly.loopAudio); AAC in MP4 and MOV, Opus in WebM.
  */
 Fly.audioArgs = function( audio, formatId )
 {
-   var d = Fly.audioFade( audio.duration ), out = [ "-map", "0:v", "-map", "1:a" ];
+   var d = Fly.audioFade( audio.duration ), codec = formatId == "vp9" ? [ "-c:a", "libopus", "-b:a", "160k" ] : [ "-c:a", "aac", "-b:a", "192k" ];
+   if ( audio.loop ) return { input: [ "-stream_loop", "-1", "-i", audio.path ], output: Fly.loopAudio( audio.duration, d ).concat( codec ).concat( [ "-shortest" ] ) };
+   var out = [ "-map", "0:v", "-map", "1:a" ];
    if ( audio.fade && d > 0 )
       out = out.concat( [ "-af", "afade=t=in:st=0:d=" + d + ",afade=t=out:st=" + ( audio.duration - d ) + ":d=" + d ] );
-   out = out.concat( formatId == "vp9" ? [ "-c:a", "libopus", "-b:a", "160k" ] : [ "-c:a", "aac", "-b:a", "192k" ] ).concat( [ "-shortest" ] );
+   out = out.concat( codec ).concat( [ "-shortest" ] );
    return { input: [ "-stream_loop", "-1", "-i", audio.path ], output: out };
+};
+
+/*
+ * A looping video's music, D seconds, looping too: no fade in or out; its
+ * first x seconds fade in under the music's next x seconds (D to D + x)
+ * fading out, so the end runs on into the beginning.
+ */
+Fly.loopAudio = function( D, x )
+{
+   var graph = "[1:a]atrim=0:" + ( D + x ) + ",asetpts=PTS-STARTPTS,asplit=2[a][b];" +
+               "[a]atrim=0:" + D + ",asetpts=PTS-STARTPTS,afade=t=in:st=0:d=" + x + "[head];" +
+               "[b]atrim=" + D + ":" + ( D + x ) + ",asetpts=PTS-STARTPTS,afade=t=out:st=0:d=" + x + "[tail];" +
+               "[head][tail]amix=inputs=2:duration=first:normalize=0[aout]";
+   return [ "-filter_complex", graph, "-map", "0:v", "-map", "[aout]" ];
 };
 
 /* What a failed solve tried -- the focal length, the pixel sizes (full, drizzled 2x and 3x), the centre -- and the solver's reason. */

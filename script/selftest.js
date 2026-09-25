@@ -9643,6 +9643,31 @@ function runFlyTestsClean()
       check( "and the solver's reason", /Initial field alignment failed/.test( m ), true );
    } )();
 
+   /*
+    * A looping video's music loops too: no fade in or out, the music's end
+    * crossfaded into its beginning, so the loop point is seamless.
+    */
+   ( function()
+   {
+      var s = Fly.ffmpegArgs( "/f", 30, "/out/v", "hevc", "high", null, { path: "/m/song.mp3", fade: true, duration: 20, loop: true } ).join( " " );
+      check( "a loop's music is not faded in or out", /afade=t=in:st=0:d=2,afade=t=out/.test( s ), false );
+      check( "its first 2 s mix in the music's next 2 s, fading out", s.indexOf( "atrim=20:22" ) >= 0 && /amix=inputs=2:duration=first/.test( s ), true );
+      check( "and the head fades in under it", /atrim=0:20[^;]*afade=t=in:st=0:d=2/.test( s ), true );
+      check( "it is the mixed audio that is encoded", /-map \[aout\]/.test( s ), true );
+      var plain = Fly.ffmpegArgs( "/f", 30, "/out/v", "hevc", "high", null, { path: "/m/song.mp3", fade: true, duration: 20 } ).join( " " );
+      check( "a video that does not loop keeps its fades", /afade=t=in:st=0:d=2,afade=t=out:st=18:d=2/.test( plain ), true );
+   } )();
+
+   /* All three scripts live in one Loom folder in PixInsight's Script menu. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      [ "Loom.js", "FrameSelector.js", "FlyThrough.js" ].forEach( function( f )
+      {
+         var m = /#feature-id\s+[^:\n]+:\s*([^\n]+)/.exec( File.readTextFile( LOOM_DIR + "/" + f ) );
+         check( f + " is in the Loom folder (" + ( m && m[1].trim() ) + ")", !!m && /^Loom > /.test( m[1].trim() ), true );
+      } );
+   } )();
+
    /* fly-tests-end */
 }
 
