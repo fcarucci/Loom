@@ -8,12 +8,18 @@
 #include <pjsr/StdCursor.jsh>
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/TextAlign.jsh>
+#include <pjsr/ColorSpace.jsh>
+#include <pjsr/SampleType.jsh>
+#include <pjsr/UndoFlag.jsh>
 
 #include "lib/Util.js"
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
 #include "lib/Frames.js"
+#include "lib/Fly.js"
+#include "lib/Sky.js"
+#include "lib/Render.js"
 #include "lib/Pipeline.js"
 #include "lib/Update.js"
 /*
@@ -42,6 +48,8 @@
 #define LOOM_LIBS_INCLUDED 1
 #define LOOM_FRAME_SELECTOR_UNDER_TEST 1
 #include "FrameSelector.js"
+#define LOOM_FLY_UNDER_TEST 1
+#include "FlyThrough.js"
 
 #define RESULT_FILE "/tmp/agent-scratch/lhso-selftest.txt"
 
@@ -159,7 +167,13 @@ function synthFrame( path, o )
       buf[i] = o.background + o.noise*r*Math.cos( 2*Math.PI*v );
       if ( i + 1 < buf.length ) buf[i + 1] = o.background + o.noise*r*Math.sin( 2*Math.PI*v );
    }
-   var n = o.stars || 400, reach = Math.ceil( 4*sigma );
+   var n = ( o.stars != null ) ? o.stars : 400, reach = Math.ceil( 4*sigma );   // stars: 0 means none
+   /*
+    * o.moffat = beta: Moffat stars with real stars' wide wings, same FWHM,
+    * reaching out to o.reach px (default 12 FWHM), so halos are in the test.
+    */
+   var beta = o.moffat || 0, alpha = beta ? o.fwhm/( 2*Math.sqrt( Math.pow( 2, 1/beta ) - 1 ) ) : 0;
+   if ( beta ) reach = Math.ceil( o.reach || 12*o.fwhm );
    for ( var s = 0; s < n; ++s )
    {
       var cx = 10 + starRnd()*( w - 20 ) + ( o.dx || 0 ),
@@ -169,7 +183,8 @@ function synthFrame( path, o )
          for ( var x = Math.max( 0, Math.floor( cx - reach ) ); x <= Math.min( w - 1, Math.ceil( cx + reach ) ); ++x )
          {
             var dx = x - cx, dy = y - cy;
-            buf[y*w + x] += peak*Math.exp( -( dx*dx + dy*dy )/( 2*sigma*sigma ) );
+            var r2 = dx*dx + dy*dy;
+            buf[y*w + x] += peak*( beta ? Math.pow( 1 + r2/( alpha*alpha ), -beta ) : Math.exp( -r2/( 2*sigma*sigma ) ) );
          }
    }
    for ( var k = 0; k < buf.length; ++k )
@@ -188,6 +203,46 @@ function synthFrame( path, o )
    }
    finally { win.forceClose(); }
    return path;
+}
+
+/* TAN WCS keywords centred on the image, so a synthetic frame has sky coordinates. */
+function withTanKeywords( window, ra, dec, scaleDeg )
+{
+   var w = window.mainView.image.width, h = window.mainView.image.height;
+   window.keywords = window.keywords.concat( [
+      new FITSKeyword( "CTYPE1", "'RA---TAN'", "" ), new FITSKeyword( "CTYPE2", "'DEC--TAN'", "" ),
+      new FITSKeyword( "CRVAL1", String( ra ), "" ), new FITSKeyword( "CRVAL2", String( dec ), "" ),
+      new FITSKeyword( "CRPIX1", String( w/2 + 0.5 ), "" ), new FITSKeyword( "CRPIX2", String( h/2 + 0.5 ), "" ),
+      new FITSKeyword( "CD1_1", String( -scaleDeg ), "" ), new FITSKeyword( "CD1_2", "0", "" ),
+      new FITSKeyword( "CD2_1", "0", "" ), new FITSKeyword( "CD2_2", String( scaleDeg ), "" ) ] );
+}
+
+/*
+ * A generated Fly-Through scene: a star field with TAN keywords at IC 1396,
+ * its starless twin (same noise, no stars), the stars layer by unscreen,
+ * and sprites for the brightest detections at 200-2000 pc. The caller
+ * closes `windows`.
+ */
+function flyTestScene( dir, flux )
+{
+   var T0 = { ra: 324.745, dec: 57.514 };
+   var o = { fwhm: 3, background: 0.05, noise: 0.002, seed: 5, flux: flux || 1 };
+   var Iwin = ImageWindow.open( synthFrame( dir + "/image.xisf", Object.assign( { stars: 150 }, o ) ) )[0];
+   var Swin = ImageWindow.open( synthFrame( dir + "/starless.xisf", Object.assign( { stars: 0 }, o ) ) )[0];
+   withTanKeywords( Iwin, T0.ra, T0.dec, 0.0005 );
+   var Twin = Sky.copyWindow( Iwin, "fly_T" );
+   Steps.deriveStarsByUnscreen( Twin, Swin );
+   var I = Iwin.mainView.image, W = I.width, H = I.height, proj = Sky.projector( Iwin ), wcs = Sky.keywordWcs( Iwin );
+   var sources = Sky.detections( Twin.mainView.image ).slice( 0, 30 ).map( function( d, i )
+   {
+      var c = Fly.tanUnproject( d.x, d.y, wcs );
+      return { ra: c.ra, dec: c.dec, plx: 1000/( 200 + 60*i ) - Fly.PARALLAX_ZERO_POINT, pmra: 0, pmdec: 0, G: 12 + i*0.01 };
+   } );
+   var placed = Fly.placeStars( sources, proj, W, H );
+   var sp = Sky.sprites( Twin.mainView.image, placed, 3, placed );
+   var scene = Render.scene( { starless: Swin.mainView.image, stars: Twin.mainView.image, sprites: sp.sprites,
+                               residual: sp.residual, project: proj, target: T0, D: 900 } );
+   return { scene: scene, sources: sources, image: Iwin, windows: [ Iwin, Swin, Twin ], W: W, H: H, target: T0 };
 }
 
 /* The suite's own scratch folder for generated frames. Emptied on entry. */
@@ -1361,7 +1416,8 @@ function runTests()
     * way from here.
     */
    var LIB_FILES = [ "Util.js", "Cache.js", "Psb.js", "Steps.js",
-                     "Pipeline.js", "Update.js", "UI.js" ];
+                     "Pipeline.js", "Update.js", "UI.js",
+                     "Fly.js", "Sky.js", "Render.js" ];
    var hardcoded = [];
    for ( var lf = 0; lf < LIB_FILES.length; ++lf )
    {
@@ -4895,7 +4951,7 @@ function runTests()
     */
    ( function()
    {
-      var ENTRY_POINTS = [ "Loom.js", "FrameSelector.js" ];
+      var ENTRY_POINTS = [ "Loom.js", "FrameSelector.js", "FlyThrough.js" ];
       /*
        * Families this engine provides as objects rather than macros are
        * excluded: KeyCode and DataType have dot forms, and a name like
@@ -6882,6 +6938,2712 @@ function runTests()
       }
    } )();
 
+   runFlyTests();
+}
+
+/*
+ * Loom Fly-Through. Fly.js is pure and runs under node; Sky and Render
+ * need PixInsight and sit behind IN_PIXINSIGHT.
+ */
+/*
+ * The Fly-Through tests run with none of the user's saved Fly-Through
+ * settings, and every one is put back after, whatever happens: tests that
+ * read the user's own saved opacity, duration or focal length broke, and
+ * one wrote 400 mm over the user's rig.
+ */
+function runFlyTests()
+{
+   var keys = typeof FlyThrough == "undefined" ? [] : [ FlyThrough.OPTIONS_SETTING, FlyThrough.OBJECTS_SETTING, FlyThrough.LOGO_SETTING,
+              FlyThrough.LOGO_PLACE_SETTING, FlyThrough.FOCAL_SETTING, FlyThrough.PIXEL_SETTING, FlyThrough.TOOL_SETTING ];
+   var saved = keys.map( function( k ) { return Settings.read( k, DataType_String ); } );
+   keys.forEach( function( k ) { Settings.remove( k ); } );
+   try { runFlyTestsClean(); }
+   finally { keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } ); }
+}
+
+function runFlyTestsClean()
+{
+   check( "Fly loads", typeof Fly, "object" );
+   check( "Sky loads", typeof Sky, "object" );
+   check( "Render loads", typeof Render, "object" );
+
+   /* ---- Fly: exact geometry ------------------------------------------- */
+   ( function()
+   {
+      function near( a, b, eps ) { return Math.abs( a - b ) <= ( eps || 1e-9 ); }
+      var r = Fly.radec( Fly.vec( 324.745, 57.514 ) );
+      check( "vec/radec round trip", near( r.ra, 324.745, 1e-9 ) && near( r.dec, 57.514, 1e-9 ), true );
+      var T = { ra: 324.745, dec: 57.514 };
+      var on = Fly.moved( 324.745, 57.514, 500, T, 100 );
+      check( "on axis: direction unchanged", near( on.ra, 324.745, 1e-9 ) && near( on.dec, 57.514, 1e-9 ), true );
+      check( "on axis: ratio is d/(d-s)", near( on.ratio, 500/400, 1e-12 ), true );
+      // off axis: a star 1 degree away at 100 pc, camera moves 50 pc
+      var off = Fly.moved( 324.745, 58.514, 100, T, 50 );
+      var th = Math.PI/180, px = 100*Math.sin( th ), pz = 100*Math.cos( th ) - 50;
+      check( "off axis: exact angle from the target",
+             near( Fly.separation( off, T ), Math.atan2( px, pz )*180/Math.PI, 1e-9 ), true );
+      check( "off axis: exact ratio", near( off.ratio, 100/Math.sqrt( px*px + pz*pz ), 1e-12 ), true );
+      check( "a passed star is behind the camera", Fly.moved( 324.745, 57.6, 40, T, 60 ).front, false );
+      check( "backdrop K", Fly.backdropScale( 900, 180 ), 900/720 );
+      check( "galaxy backdrop fixed", Fly.backdropScale( Infinity, 180 ), 1 );
+      var w = { crval1: 324.745, crval2: 57.514, crpix1: 200.5, crpix2: 150.5, cd: [ -0.0005, 0, 0, 0.0005 ] };
+      var c = Fly.tanProject( 324.745, 57.514, w );
+      check( "TAN: reference point lands on CRPIX (0-based)", near( c.x, 199.5, 1e-9 ) && near( c.y, 149.5, 1e-9 ), true );
+      var e = Fly.tanProject( 324.745, 57.514 + 0.05, w );
+      check( "TAN: north is +y for a positive CD2_2", e.y > c.y, true );
+   } )();
+
+   ( function()
+   {
+      function near( a, b ) { return Math.abs( a - b ) < 1e-12; }
+      check( "no motion, no growth", Fly.growth( 1, 0.15 ), 1 );
+      check( "growth rule", near( Fly.growth( 3, 0.15 ), 1.3 ), true );
+      // total light = pixelScale * g^2 * (original total) must equal ratio^2
+      var g = Fly.growth( 2.5, 0.2 );
+      check( "integrated flux follows inverse square whatever the growth",
+             near( Fly.pixelScale( 2.5, 0.2, true )*g*g, 2.5*2.5 ), true );
+      check( "brightening off keeps total light", near( Fly.pixelScale( 2.5, 0.2, false )*g*g, 1 ), true );
+      check( "opacity 1 far away", Fly.opacity( 2, true ), 1 );
+      check( "opacity 0 before the singularity", Fly.opacity( 25, true ), 0 );
+      var prev = 1, mono = true;
+      for ( var r = 1; r <= 25; r += 0.25 ) { var o = Fly.opacity( r, true ); if ( o > prev + 1e-12 ) mono = false; prev = o; }
+      check( "opacity never rises as a star nears", mono, true );
+      check( "never drawn behind the camera", Fly.opacity( 1.5, false ), 0 );
+   } )();
+
+   ( function()
+   {
+      function near( a, b ) { return Math.abs( a - b ) < 1e-9; }
+      check( "sigma at bright end", near( Fly.parallaxSigma( 12 ), 0.02 ), true );
+      check( "sigma at G 17", near( Fly.parallaxSigma( 17 ), 0.07 ), true );
+      check( "sigma interpolates", Fly.parallaxSigma( 16.5 ) > 0.02 && Fly.parallaxSigma( 16.5 ) < 0.07, true );
+      check( "sigma clamps faint", near( Fly.parallaxSigma( 19 ), 0.1 ), true );
+      check( "zero point added", near( Fly.usableParallax( { plx: 1.0, G: 12 } ), 1.017 ), true );
+      check( "below 5 sigma is not usable", Fly.usableParallax( { plx: 0.30, G: 17 } ), null );
+      check( "negative is not usable", Fly.usableParallax( { plx: -0.5, G: 10 } ), null );
+      check( "missing is not usable", Fly.usableParallax( { plx: null, G: 10 } ), null );
+   } )();
+
+   ( function()
+   {
+      function rng( seed ) { var a = seed >>> 0; return function() { a = ( a*1664525 + 1013904223 ) >>> 0; return a/4294967296; }; }
+      function gauss( r ) { return Math.sqrt( -2*Math.log( Math.max( 1e-12, r() ) ) )*Math.cos( 2*Math.PI*r() ); }
+      var r = rng( 7 ), T = { ra: 100, dec: 20 }, src = [];
+      for ( var i = 0; i < 1500; ++i )                   // field: broad pm, parallax 0.2..3
+      {
+         src.push( { ra: 100 + ( r() - 0.5 )*6, dec: 20 + ( r() - 0.5 )*6, plx: 0.2 + 2.8*r(),
+                     pmra: 6*gauss( r ), pmdec: 6*gauss( r ), G: 11 + 4*r() } );
+      }
+      for ( var k = 0; k < 80; ++k )                     // cluster: 1.1 mas, tight pm, inside 0.8 deg
+         src.push( { ra: 100 + ( r() - 0.5 )*1.2, dec: 20 + ( r() - 0.5 )*1.2, plx: 1.1 + 0.03*gauss( r ),
+                     pmra: -2.4 + 0.2*gauss( r ), pmdec: -4.6 + 0.2*gauss( r ), G: 11 + 4*r() } );
+      var c = Fly.findCluster( src, T, 1.0 );
+      check( "a constructed cluster is found", c != null, true );
+      check( "at its distance", c != null && Math.abs( c.distance - 1000/1.117 ) < 40, true );
+      check( "with its members", c != null && c.members >= 60, true );
+      var none = Fly.findCluster( src.slice( 0, 1500 ), T, 1.0 );
+      check( "a uniform field has no cluster", none, null );
+      check( "a small target keeps its own radius", Fly.clusterRadius( 0.2 ), 0.2 );
+      check( "a big nebula's inside radius is capped", Fly.clusterRadius( 85/60 ), Fly.CLUSTER_MAX_RADIUS );
+   } )();
+
+   ( function()
+   {
+      var path = LOOM_DIR + "/../ci/fixtures/ic1396-gaia-g16.tsv";
+      check( "the IC 1396 fixture is in the repository", File.exists( path ), true );
+      var src = Fly.parseSources( File.readTextFile( path ) );
+      check( "fixture parses", src.length > 8000, true );
+      var c = Fly.findCluster( src, { ra: 324.745, dec: 57.514 }, Fly.clusterRadius( 85/60 ) );   // NGC/IC diameter 170', capped
+      check( "IC 1396's cluster gives 870-1000 pc: " + ( c && c.distance ),
+             c != null && c.distance >= 870 && c.distance <= 1000, true );
+   } )();
+
+   ( function()
+   {
+      check( "nebula travel default", Fly.defaultTravel( "nebula", 900 ), 180 );
+      check( "galaxy travel default", Fly.defaultTravel( "galaxy", Infinity ), 200 );
+      check( "travel cap", Fly.clampTravel( 950, "nebula", 900 ), { travel: 810, clamped: true } );
+      check( "galaxy never capped", Fly.clampTravel( 950, "galaxy", Infinity ), { travel: 950, clamped: false } );
+      check( "smoothstep ends at rest",
+             Math.abs( Fly.ease( 0.001, "smoothstep" ) - Fly.ease( 0, "smoothstep" ) ) < 1e-5, true );
+      check( "frames", Fly.frameCount( 10, 30, false ), 300 );
+      check( "ping-pong doubles", Fly.frameCount( 10, 30, true ), 600 );
+      check( "ping-pong turns at the middle", Fly.timeAt( 300, 600, true ), 1 );
+      check( "ping-pong returns", Fly.timeAt( 599, 600, true ) < 0.01, true );
+      // velocity continuity at the turns: smoothstep has zero slope at 0 and 1
+      var v = function( t ) { return ( Fly.ease( t + 1e-4, "smoothstep" ) - Fly.ease( t, "smoothstep" ) )/1e-4; };
+      check( "no velocity jump at the far turn", Math.abs( v( 1 - 1e-4 ) ) < 1e-3, true );
+      var dp = Fly.draftPlan( 120, 60, 480, 16/9 );
+      check( "draft stays under 400 MB for any duration", dp.bytes <= 400e6, true );
+      check( "and keeps the clip length", Math.abs( dp.frames/dp.fps - 120 ) < 1, true );
+      var c = Fly.presetCrop( 6000, 4000, 5900, 2000, 1080, 1920 );
+      check( "vertical crop keeps the aspect", Math.abs( c.w/c.h - 1080/1920 ) < 1e-3, true );
+      check( "and stays inside the image", c.x >= 0 && c.x + c.w <= 6000 && c.y >= 0 && c.y + c.h <= 4000, true );
+   } )();
+
+   ( function()
+   {
+      var csv = "id,alpha,delta,magnitude,diameter,axisRatio,posAngle,Common name,PGC,PGC2,Messier\n" +
+                "IC1396,324.745000,57.514000,3.50,170.00,,,,,,\n" +
+                "NGC7129,325.775,66.113,11.5,7.0,,,,,,\n" +
+                "IC5146,328.36,47.27,7.2,12,,,Cocoon,,,\n" +
+                "NGC224,10.6847,41.269,3.4,190,,,Andromeda,PGC2557,,M31\n";
+      var e = Fly.parseNgcIc( csv );
+      check( "ngc/ic parses", e.length, 4 );
+      var p = Fly.pickTarget( e, { ra: 324.7, dec: 57.5 }, 1.5 );
+      check( "the big nearby nebula wins", p.best.id, "IC1396" );
+      check( "a nebula", Fly.targetType( p.best ), "nebula" );
+      check( "a PGC number makes a galaxy", Fly.targetType( e[3] ), "galaxy" );
+      var none = Fly.pickTarget( e, { ra: 200, dec: -30 }, 1 );
+      check( "no target in the field", none.best, null );
+      // a bigger object near the field's edge must not beat a big one at the centre
+      var edge = Fly.parseNgcIc( csv + "IC9999,324.745,58.914,5,200,,,,,,\n" );
+      check( "distance from the centre counts, not size alone",
+             Fly.pickTarget( edge, { ra: 324.745, dec: 57.514 }, 1.5 ).best.id, "IC1396" );
+   } )();
+
+   /*
+    * Fly-Through removes stars from a STRETCHED image; Loom's composites
+    * are linear. Only StarNet2 has the switch, and omitting the argument
+    * must keep Loom's own calls exactly as they were.
+    */
+   check( "removeStars passes linear through to StarNet2 only",
+          /P\.linear = \( linear !== false \);/.test( Steps.removeStars.toString() ), true );
+
+   /* ---- Fly: inverse projection, placed stars, sprite ownership -------- */
+   ( function()
+   {
+      var w = { crval1: 324.745, crval2: 57.514, crpix1: 200.5, crpix2: 150.5, cd: [ -0.0005, 0.0001, 0.0001, 0.0005 ] };
+      var back = Fly.tanUnproject( 37.25, 250.75, w ), there = Fly.tanProject( back.ra, back.dec, w );
+      check( "TAN inverse round-trips a pixel", Math.abs( there.x - 37.25 ) < 1e-6 && Math.abs( there.y - 250.75 ) < 1e-6, true );
+
+      var srcs = [ { ra: 1, dec: 1, plx: 2.0, G: 12 }, { ra: 2, dec: 2, plx: 0.01, G: 17 }, { ra: 3, dec: 3, plx: 1.0, G: 12 } ];
+      var at = { 1: { x: 10, y: 10 }, 2: { x: 20, y: 20 }, 3: { x: -5, y: 10 } };
+      var placed = Fly.placeStars( srcs, function( ra ) { return at[ra]; }, 100, 100 );
+      check( "placed: usable parallax and inside the image only", placed.length, 1 );
+      check( "placed: distance in parsecs from the corrected parallax", Math.abs( placed[0].d - 1000/2.017 ) < 1e-9, true );
+
+      function det( x, y, r, nmax ) { return { x: x, y: y, nmax: nmax || 1, rect: { x0: x - r, y0: y - r, x1: x + r + 1, y1: y + r + 1 } }; }
+      var dets = [ det( 20, 20, 2 ), det( 50, 20, 2, 2 ), det( 80, 20, 2 ), det( 86, 20, 1 ), det( 20, 60, 2 ), det( 30, 60, 2 ) ];
+      var P = function( x, y ) { return { source: { x: x }, d: 100, x: x, y: y }; };
+      var a = Fly.assignSprites( dets, [ P( 20.5, 20.4 ), P( 50, 20 ), P( 80, 20 ), P( 60, 80 ), P( 20, 60 ), P( 30, 60 ) ], 100, 100, 3 );
+      check( "an isolated match becomes a sprite", a.sprites.some( function( s ) { return s.det === dets[0]; } ), true );
+      check( "a detection with more than one maximum is a blend",
+             a.sprites.some( function( s ) { return s.det === dets[1]; } ), false );
+      check( "a footprint that reaches another detection is a blend",
+             a.sprites.some( function( s ) { return s.det === dets[2]; } ), false );
+      check( "counts: placed, blended, unmatched", [ a.sprites.length, a.blended, a.unmatched ], [ 3, 2, 1 ] );
+      var s0 = a.sprites.filter( function( s ) { return s.det === dets[0]; } )[0];
+      check( "the footprint is the detection grown by the FWHM", s0.rect, { x0: 15, y0: 15, x1: 26, y1: 26 } );
+      var left = a.sprites.map( function( s ) { return s.det; } ).indexOf( dets[4] );
+      check( "where footprints overlap, one sprite keeps the pixel", a.owner[60*100 + 25] >= 0, true );
+      check( "the two neighbours at y=60 both became sprites despite touching footprints",
+             a.sprites.filter( function( s ) { return s.det.y == 60; } ).length, 2 );
+      check( "the one detection two sources point at goes to the nearer",
+             Fly.assignSprites( [ det( 20, 20, 2 ) ], [ P( 21, 20 ), P( 20.2, 20 ) ], 100, 100, 3 ).sprites[0].placed.x, 20.2 );
+   } )();
+
+   /* ---- Sky: catalogues, projection, star layers, sprites (PixInsight) - */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      check( "NGC/IC is found in the core install", ( Sky.readNgcIc() || [] ).length > 9000, true );
+      var path = synthFrame( synthDir( "fly-sky" ) + "/field.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 9 } );
+      var w = ImageWindow.open( path )[0];
+      try
+      {
+         withTanKeywords( w, 324.745, 57.514, 0.0005 );
+         var proj = Sky.projector( w );
+         var c = proj( 324.745, 57.514 );
+         check( "projector: keywords give the reference pixel", Math.abs( c.x - 399.5 ) < 1e-6 && Math.abs( c.y - 299.5 ) < 1e-6, true );
+         var f = Sky.field( w );
+         check( "field radius reaches the corners", f.radiusDeg > 0.2 && f.radiusDeg < 0.3, true );
+         check( "field centre is the image centre", Fly.separation( f.centre, { ra: 324.745, dec: 57.514 } ) < 0.001, true );
+         var none = ImageWindow.open( path )[0];
+         check( "no keywords, no solution: no projector", Sky.projector( none ), null );
+         none.forceClose();
+
+         var saved = Sky.querySources, threw = false;
+         Sky.querySources = function() { return []; };
+         try { Sky.requireSources( { ra: 0, dec: 0 }, 1 ); } catch ( e ) { threw = /Gaia/.test( String( e ) ); }
+         Sky.querySources = saved;
+         check( "an empty query stops with the configure message", threw, true );
+
+         // sprites: the first 20 detections, as if Gaia had placed a star on each
+         var img = w.mainView.image, W = img.width, H = img.height;
+         var dets = Sky.detections( img );
+         check( "the synthetic field has stars to detect", dets.length > 100, true );
+         var placed = dets.slice( 0, 20 ).map( function( d ) { return { source: { ra: 0, dec: 0 }, d: 500, x: d.x + 0.3, y: d.y }; } );
+         var sp = Sky.sprites( img, placed, 3 );
+         check( "most injected stars become sprites", sp.sprites.length + sp.blended, 20 );
+         check( "every sprite's footprint contains its star",
+                sp.sprites.every( function( s ) { return s.centre.x >= s.rect.x0 && s.centre.x < s.rect.x1 &&
+                                                         s.centre.y >= s.rect.y0 && s.centre.y < s.rect.y1; } ), true );
+         // pixels are SPLIT between a sprite (its light) and the residual (the rest):
+         // together they must be the stars layer exactly, or frame 0 is not the image
+         var total = new Float32Array( W*H ), orig = new Float32Array( W*H ), worst = 0;
+         total.set( sp.residual[0] );
+         img.getSamples( orig );
+         sp.sprites.forEach( function( s )
+         {
+            var rw = s.rect.x1 - s.rect.x0;
+            for ( var y = s.rect.y0; y < s.rect.y1; ++y ) for ( var x = s.rect.x0; x < s.rect.x1; ++x )
+               total[y*W + x] += s.pixels[0][( y - s.rect.y0 )*rw + x - s.rect.x0];
+         } );
+         for ( var i = 0; i < total.length; ++i ) worst = Math.max( worst, Math.abs( total[i] - orig[i] ) );
+         check( "sprites plus residual are the stars layer exactly (worst " + worst.toExponential( 1 ) + ")", worst < 1e-6, true );
+      }
+      finally { w.forceClose(); }
+   } )();
+
+   /*
+    * One star removal on the image; the stars layer by unscreen. Screening
+    * them back must give the image, or frame 0 cannot be exact. Runs with
+    * whichever tool this installation has; skipped (not faked) without one.
+    */
+   if ( IN_PIXINSIGHT && Steps.availableStarTools().length > 0 ) ( function()
+   {
+      var path = synthFrame( synthDir( "fly-split" ) + "/field.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 4 } );
+      var w = ImageWindow.open( path )[0], parts = null;
+      try
+      {
+         parts = Sky.splitStars( w, Steps.availableStarTools()[0] );
+         var n = w.mainView.image.width*w.mainView.image.height;
+         var I = new Float32Array( n ), S = new Float32Array( n ), T = new Float32Array( n );
+         w.mainView.image.getSamples( I ); parts.starless.mainView.image.getSamples( S ); parts.stars.mainView.image.getSamples( T );
+         var worst = 0;
+         for ( var i = 0; i < n; ++i ) worst = Math.max( worst, Math.abs( 1 - ( 1 - S[i] )*( 1 - T[i] ) - I[i] ) );
+         check( "screen( starless, stars ) gives the image back (worst " + worst.toExponential( 2 ) + ")", worst <= 1/65535, true );
+      }
+      finally
+      {
+         w.forceClose();
+         if ( parts ) { parts.starless.forceClose(); parts.stars.forceClose(); }
+      }
+   } )();
+
+   /*
+    * The StarDetector in scope in PixInsight 1.9 returns position, flux and
+    * area only -- no rect, no count of maxima (probed 2026-09-23) -- and it
+    * merges a pair 3 px apart into one detection. So the footprint comes
+    * from the area, and a merged double is caught from the catalogue: a
+    * second Gaia source of comparable brightness inside the core.
+    */
+   ( function()
+   {
+      check( "footprint from the detected area: a square of half-width sqrt(area/pi)",
+             Fly.detectionRect( 10.4, 20.6, 28.3 ), { x0: 7, y0: 17, x1: 14, y1: 24 } );
+      check( "a tiny detection still gets a pixel either side",
+             Fly.detectionRect( 5.5, 5.5, 0 ), { x0: 4, y0: 4, x1: 7, y1: 7 } );
+      function det( x, y ) { return { x: x, y: y, nmax: 0, rect: Fly.detectionRect( x, y, 12 ) }; }
+      /*
+       * Of a pair, only the FAINTER star is a blend: the brighter one moves
+       * and carries the other. The G 5.6 star of a real field had a Gaia
+       * companion buried in its glow, and as an equal pair neither moved.
+       */
+      var src = { G: 10 }, twin = { G: 9.8 }, faint = { G: 14 };
+      var P = { source: src, d: 100, x: 20, y: 20 };
+      var twinNear = [ { source: src, x: 20, y: 20 }, { source: twin, x: 21.5, y: 20 } ];
+      check( "a brighter catalogue star in the core makes this one the blend",
+             Fly.assignSprites( [ det( 20, 20 ) ], [ P ], 100, 100, 3, twinNear ).blended, 1 );
+      var faintNear = [ { source: src, x: 20, y: 20 }, { source: faint, x: 21.5, y: 20 } ];
+      check( "a much fainter one does not",
+             Fly.assignSprites( [ det( 20, 20 ) ], [ P ], 100, 100, 3, faintNear ).sprites.length, 1 );
+      check( "a catalogue star outside the core does not",
+             Fly.assignSprites( [ det( 20, 20 ) ], [ P ], 100, 100, 3,
+                                [ { source: twin, x: 30, y: 20 } ] ).sprites.length, 1 );
+   } )();
+
+   /* ---- Render: resampling and sprite drawing (pure) ------------------- */
+   ( function()
+   {
+      function near( a, b, e ) { return Math.abs( a - b ) <= ( e || 1e-9 ); }
+      [ "bilinear", "bicubic" ].forEach( function( kernel )
+      {
+         var ax = Render.axisWeights( 6, 0, 6, 2.3, 1, 6, kernel ), ok = true;
+         for ( var u = 0; u < 6; ++u )
+            for ( var j = ax.start[u]; j < ax.start[u + 1]; ++j )
+            {
+               var wgt = ax.w[j], idx = ax.idx[j];
+               if ( !( near( wgt, idx == u ? 1 : 0, 1e-12 ) || wgt == 0 ) ) ok = false;
+            }
+         check( kernel + ": no zoom and the full crop is the identity", ok, true );
+
+         var w = 20, h = 3, ramp = new Float32Array( w*h );
+         for ( var y = 0; y < h; ++y ) for ( var x = 0; x < w; ++x ) ramp[y*w + x] = x/100;
+         var K = 2, tp = 9.5;
+         var out = Render.resample( ramp, w, h, Render.axisWeights( w, 0, w, tp, K, w, kernel ),
+                                    Render.axisWeights( h, 0, h, 1, K, h, kernel ) );
+         check( kernel + ": a zoom of 2 about the target maps u to tp + (u - tp)/2",
+                near( out[1*w + 4], ( tp + ( 4 - tp )/2 )/100, 1e-6 ) && near( out[1*w + 15], ( tp + ( 15 - tp )/2 )/100, 1e-6 ), true );
+      } );
+      var edge = Render.axisWeights( 5, 0, 5, 0, 1.5, 5, "bicubic" ), inside = true;
+      for ( var i = 0; i < edge.idx.length; ++i ) if ( edge.idx[i] < 0 || edge.idx[i] > 4 ) inside = false;
+      check( "sample indices stay inside the image", inside, true );
+
+      // a 3x3 sprite at (5,5) in a 12x12 frame, identity camera
+      var patch = new Float32Array( [ 0, 0.1, 0, 0.1, 0.5, 0.1, 0, 0.1, 0 ] );
+      var sp = { rect: { x0: 4, y0: 4, x1: 7, y1: 7 }, det: { x: 5, y: 5 } };
+      var acc = new Float32Array( 144 ), cam = { x: 0, y: 0, fx: 1, fy: 1 };
+      Render.drawSprite( acc, 12, 12, patch, sp, 5, 5, 1, 1, cam );
+      check( "unmoved, unscaled: the sprite lands on its own pixels", [ acc[5*12 + 5], acc[4*12 + 5], acc[5*12 + 6] ], [ patch[4], patch[1], patch[5] ] );
+      acc.fill( 0 );
+      Render.drawSprite( acc, 12, 12, patch, sp, 7, 5, 1, 2, cam );
+      check( "moved by the projection's shift, scaled by the pixel factor", near( acc[5*12 + 7], 1.0, 1e-6 ), true );
+      acc.fill( 0 );
+      Render.drawSprite( acc, 12, 12, patch, sp, 5, 5, 2, 1, cam );
+      var sum = 0; for ( i = 0; i < acc.length; ++i ) sum += acc[i];
+      check( "grown by g: its drawn light scales by g squared", near( sum, 0.9*4, 0.05 ), true );
+   } )();
+
+   /* ---- Render: compositing on a generated field (PixInsight) ---------- */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-render" ), T0 = { ra: 324.745, dec: 57.514 };
+      var o = { fwhm: 3, background: 0.05, noise: 0.002, seed: 5, stars: 150 };
+      var Iwin = ImageWindow.open( synthFrame( dir + "/image.xisf", o ) )[0];
+      var Swin = ImageWindow.open( synthFrame( dir + "/starless.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 5, stars: 0 } ) )[0];
+      var Twin = null;
+      function channel( img ) { var b = new Float32Array( img.width*img.height ); img.getSamples( b ); return b; }
+      function maxAbsDiff( a, b ) { var m = 0; for ( var i = 0; i < a.length; ++i ) m = Math.max( m, Math.abs( a[i] - b[i] ) ); return m; }
+      try
+      {
+         withTanKeywords( Iwin, T0.ra, T0.dec, 0.0005 );
+         Twin = Sky.copyWindow( Iwin, "fly_T" );
+         Steps.deriveStarsByUnscreen( Twin, Swin );
+         var I = Iwin.mainView.image, W = I.width, H = I.height, full = { x: 0, y: 0, w: W, h: H };
+         var proj = Sky.projector( Iwin ), wcs = Sky.keywordWcs( Iwin );
+         var dets = Sky.detections( Twin.mainView.image ).slice( 0, 30 );
+         var sources = dets.map( function( d, i )
+         {
+            var c = Fly.tanUnproject( d.x, d.y, wcs );
+            return { ra: c.ra, dec: c.dec, plx: 1000/( 200 + 60*i ) - Fly.PARALLAX_ZERO_POINT, pmra: 0, pmdec: 0, G: 12 + i*0.01 };
+         } );
+         var placed = Fly.placeStars( sources, proj, W, H );
+         var sp = Sky.sprites( Twin.mainView.image, placed, 3, placed );
+         check( "the render scene has sprites", sp.sprites.length >= 20, true );
+         var args = { starless: Swin.mainView.image, stars: Twin.mainView.image, sprites: sp.sprites,
+                      residual: sp.residual, project: proj, target: T0, D: 900 };
+         var scene = Render.scene( args );
+         var opts = { travel: 150, easing: "linear", growth: 0.15, brightening: true };
+
+         var f0 = Render.frame( scene, 0, opts, W, H, full );
+         var d0 = maxAbsDiff( channel( f0 ), channel( I ) );
+         check( "frame 0 equals the input within 1 in 16 bits (worst " + d0.toExponential( 2 ) + ")", d0 <= 1/65535, true );
+
+         // the nearest star whose moved position stays well inside the frame
+         var near = null, m, ex, ey;
+         sp.sprites.slice().sort( function( a, b ) { return a.d - b.d; } ).some( function( c )
+         {
+            var mm = Fly.moved( c.source.ra, c.source.dec, c.d, T0, opts.travel );
+            var p1 = proj( mm.ra, mm.dec ), p0 = proj( c.source.ra, c.source.dec );
+            var x = c.det.x + p1.x - p0.x, y = c.det.y + p1.y - p0.y;
+            if ( x < 10 || y < 10 || x > W - 10 || y > H - 10 || Math.hypot( x - c.det.x, y - c.det.y ) < 3 )
+               return false;
+            near = c; m = mm; ex = x; ey = y;
+            return true;
+         } );
+         check( "a nearby star moves visibly and stays in frame", near != null, true );
+         var fT = channel( Render.frame( scene, 1, opts, W, H, full ) ), best = -1, bx = 0, by = 0;
+         for ( var y = Math.round( ey ) - 5; y <= Math.round( ey ) + 5; ++y )
+            for ( var x = Math.round( ex ) - 5; x <= Math.round( ex ) + 5; ++x )
+               if ( x >= 0 && y >= 0 && x < W && y < H && fT[y*W + x] > best ) { best = fT[y*W + x]; bx = x; by = y; }
+         check( "the nearest star moves to its exact projection",
+                Math.abs( bx - ex ) <= 1.5 && Math.abs( by - ey ) <= 1.5, true );
+
+         var ones = new Uint8Array( W*H ); ones.fill( 1 );
+         var gscene = Render.scene( { starless: args.starless, stars: args.stars, sprites: [], residualMask: ones,
+                                      project: proj, target: T0, D: Infinity } );
+         var dg = maxAbsDiff( channel( Render.frame( gscene, 1, opts, W, H, full ) ), channel( I ) );
+         check( "a galaxy's backdrop does not move (worst " + dg.toExponential( 2 ) + ")", dg <= 1/65535, true );
+
+         var past = { travel: near.d + 50, easing: "linear", growth: 0.15, brightening: true };
+         var without = Render.scene( { starless: args.starless, stars: args.stars,
+                                       sprites: sp.sprites.filter( function( s ) { return s !== near; } ),
+                                       residual: sp.residual, project: proj, target: T0, D: 900 } );
+         check( "a star the camera has passed is never drawn",
+                maxAbsDiff( channel( Render.frame( scene, 1, past, W, H, full ) ),
+                            channel( Render.frame( without, 1, past, W, H, full ) ) ), 0 );
+
+         Render.writeTiff( f0, dir + "/f0.tif" );
+         var back = ImageWindow.open( dir + "/f0.tif" )[0];
+         check( "frames are 16-bit TIFF", back.mainView.image.bitsPerSample, 16 );
+         check( "and read back as written", maxAbsDiff( channel( back.mainView.image ), channel( f0 ) ) <= 1/65535, true );
+         back.forceClose();
+      }
+      finally
+      {
+         Iwin.forceClose(); Swin.forceClose();
+         if ( Twin ) Twin.forceClose();
+      }
+   } )();
+
+   /*
+    * What a moving star leaves behind. The sprite is the star's footprint in
+    * the stars layer; anything of the star outside it stays in the residual
+    * and zooms with the backdrop -- a ghost halo where the star used to be.
+    * Measured on Moffat stars (beta 2.5: real stars' wide wings).
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-halo" ), T0 = { ra: 324.745, dec: 57.514 };
+      var base = { fwhm: 3, background: 0.05, noise: 0.002, seed: 6, moffat: 2.5, flux: 3 };
+      var Iwin = ImageWindow.open( synthFrame( dir + "/image.xisf", Object.assign( { stars: 15 }, base ) ) )[0];
+      var Swin = ImageWindow.open( synthFrame( dir + "/starless.xisf", Object.assign( { stars: 0 }, base ) ) )[0];
+      var Twin = null;
+      try
+      {
+         withTanKeywords( Iwin, T0.ra, T0.dec, 0.0005 );
+         Twin = Sky.copyWindow( Iwin, "fly_halo_T" );
+         Steps.deriveStarsByUnscreen( Twin, Swin );
+         var T = Twin.mainView.image, W = T.width, H = T.height, wcs = Sky.keywordWcs( Iwin ), proj = Sky.projector( Iwin );
+         var tb = new Float32Array( W*H ); T.getSamples( tb );
+         var dets = Sky.detections( T ).slice( 0, 15 );
+         var placed = Fly.placeStars( dets.map( function( d ) { var c = Fly.tanUnproject( d.x, d.y, wcs );
+                         return { ra: c.ra, dec: c.dec, plx: 3, G: 10 }; } ), proj, W, H );
+         var sp = Sky.sprites( T, placed, 3, placed );
+         /*
+          * What a moving star leaves behind, two ways. VISIBLE: inside its old
+          * footprint the residual must be flat -- nothing more than 0.2% of the
+          * star's peak above the level it stood on (0.05% of full scale is far
+          * below one 8-bit step). INTEGRATED: the light left within 36 px,
+          * which since footprints stand on their background includes that
+          * flat level over the disc (a few % of a synthetic star's light),
+          * must stay under 10%, so a real leak still fails.
+          */
+         var worst = 0, bump = 0;
+         sp.sprites.forEach( function( s )
+         {
+            var inside = 0, left = 0, R = 36, peak = tb[Math.round( s.det.y )*W + Math.round( s.det.x )], b = s.det.halo.pedestal;
+            for ( var y = Math.max( 0, Math.floor( s.det.y - R ) ); y <= Math.min( H - 1, s.det.y + R ); ++y )
+               for ( var x = Math.max( 0, Math.floor( s.det.x - R ) ); x <= Math.min( W - 1, s.det.x + R ); ++x )
+               {
+                  var d = Math.hypot( x - s.det.x, y - s.det.y );
+                  if ( d > R ) continue;
+                  if ( x >= s.rect.x0 && x < s.rect.x1 && y >= s.rect.y0 && y < s.rect.y1 )
+                     inside += s.pixels[0][( y - s.rect.y0 )*( s.rect.x1 - s.rect.x0 ) + x - s.rect.x0];
+                  if ( dets.some( function( e ) { return e !== s.det && Math.hypot( x - e.x, y - e.y ) < 2*s.det.halo.outer; } ) )
+                     continue;                        // near another star: its light, not this one's
+                  left += sp.residual[0][y*W + x];
+                  if ( d < s.det.halo.radius ) bump = Math.max( bump, ( sp.residual[0][y*W + x] - b )/peak );
+               }
+            worst = Math.max( worst, left/( inside + left ) );
+         } );
+         check( "nothing visible is left where a star was (worst " + ( 100*bump ).toFixed( 3 ) + "% of its peak)", bump <= 0.002, true );
+         check( "and at most 10% of its light, the flat level it stood on included (worst " +
+                ( 100*worst ).toFixed( 1 ) + "% over " + sp.sprites.length + " sprites)", worst <= 0.10, true );
+      }
+      finally { Iwin.forceClose(); Swin.forceClose(); if ( Twin ) Twin.forceClose(); }
+   } )();
+
+   /*
+    * Halo-sized footprints. The radius grows ring by ring until the ring's
+    * mean falls below max( noise, 0.2% of the peak ); fainter stars inside
+    * a bright star's halo are left in the backdrop rather than making it a
+    * blend; brighter stars own contested pixels.
+    */
+   ( function()
+   {
+      var prof = [ 1, 0.5, 0.2, 0.05, 0.01, 0.003, 0.0015, 0.001, 0.0004 ];
+      check( "halo radius: first ring under 0.05% of the peak", Fly.haloRadius( prof, 1, 0, 2 ), 8 );
+      check( "halo radius: or under the noise, whichever is higher", Fly.haloRadius( prof, 1, 0.02, 2 ), 4 );
+      check( "halo radius: never below the core", Fly.haloRadius( prof, 1, 0.5, 3 ), 3 );
+      check( "halo radius: capped at the profile's length", Fly.haloRadius( [ 1, 1, 1 ], 1, 0, 1 ), 3 );
+
+      function det( x, y, flux ) { return { x: x, y: y, nmax: 0, flux: flux, rect: Fly.detectionRect( x, y, 5 ) }; }
+      var bright = det( 30, 30, 10 ), faint = det( 36, 30, 1 ), twin = det( 60, 30, 10 ), twin2 = det( 66, 30, 6 );
+      var dets = [ bright, faint, twin, twin2 ];
+      var P = function( x, y ) { return { source: {}, d: 100, x: x, y: y }; };
+      var halo = function() { return 10; };
+      var a = Fly.assignSprites( dets, [ P( 30, 30 ), P( 60, 30 ) ], 100, 100, 3, [], halo );
+      check( "a faint star inside a bright star's halo does not make it a blend",
+             a.sprites.some( function( s ) { return s.det === bright; } ), true );
+      /*
+       * A faint star inside a bright star's reach moves WITH it. Leaving
+       * its core behind as a hole tore the bright star apart once it was
+       * magnified near the camera (seen on a real render).
+       */
+      check( "a faint star inside a bright star's reach moves with it",
+             a.owner[30*100 + 36], a.sprites.map( function( s ) { return s.det; } ).indexOf( bright ) );
+      check( "the bright star's halo around it moves with the bright star",
+             a.owner[30*100 + 39], a.sprites.map( function( s ) { return s.det; } ).indexOf( bright ) );
+      /*
+       * A real image showed blends outnumbering placed stars (940 vs 766):
+       * a bright star's halo reaches its neighbours, and treating any
+       * comparable star inside the halo as a blend kept the brightest
+       * stars still. A blend is a comparable star near the CORE (within
+       * one FWHM of it); in the halo, a neighbour just stays behind.
+       */
+      check( "a comparable neighbour in the halo, away from the core, does not make a blend",
+             a.sprites.some( function( s ) { return s.det === twin; } ), true );
+      check( "and that neighbour's pixels go with the star whose reach they are in",
+             a.owner[30*100 + 66], a.sprites.map( function( s ) { return s.det; } ).indexOf( twin ) );
+      var close = Fly.assignSprites( [ det( 30, 30, 10 ), det( 33, 30, 12 ) ], [ P( 30, 30 ) ], 100, 100, 3, [], halo );
+      check( "a brighter star within a FWHM of the core makes this one a blend", close.blended, 1 );
+      var lead = Fly.assignSprites( [ det( 30, 30, 10 ), det( 33, 30, 8 ) ], [ P( 30, 30 ) ], 100, 100, 3, [], halo );
+      check( "a fainter one does not: the brighter star of a pair moves", lead.sprites.length, 1 );
+      var bigPair = [ { x: 60, y: 60, nmax: 0, flux: 168, rect: Fly.detectionRect( 60, 60, 1400 ) },
+                      { x: 72, y: 65, nmax: 0, flux: 161, rect: Fly.detectionRect( 72, 65, 1400 ) } ];
+      var gA = { G: 5.6 }, gB = { G: 8.0 };        // the same source objects, as in a real run
+      var bp = Fly.assignSprites( bigPair, [ { source: gA, d: 700, x: 60, y: 60 }, { source: gB, d: 900, x: 72, y: 65 } ],
+                                  140, 140, 3, [ { source: gA, x: 60, y: 60 }, { source: gB, x: 72, y: 65 } ],
+                                  function( d ) { var r = d === bigPair[0] ? 40 : 21; d.halo = { radius: r, halo: r, pedestal: 0, feather: 4, outer: r + 4 }; return r + 4; } );
+      check( "a saturated star with a Gaia companion in its glow moves (the companion goes with it)",
+             bp.sprites.length == 1 && bp.sprites[0].det === bigPair[0], true );
+      check( "the footprint is the halo radius around the centre",
+             a.sprites[0].rect, { x0: 20, y0: 20, x1: 41, y1: 41 } );
+   } )();
+
+   /*
+    * Render time: an 8 MP backdrop with ~2000 sprites, 4K output, RGB (the
+    * mono generated channel used three times). Always passes when frames
+    * render; the number goes to fly-benchmark.txt and verified-parameters.md.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-bench" ), T0 = { ra: 324.745, dec: 57.514 };
+      var base = { width: 3464, height: 2309, fwhm: 3, background: 0.05, noise: 0.002, seed: 8 };
+      var Iwin = ImageWindow.open( synthFrame( dir + "/image.xisf", Object.assign( { stars: 3000 }, base ) ) )[0];
+      var Swin = ImageWindow.open( synthFrame( dir + "/starless.xisf", Object.assign( { stars: 0 }, base ) ) )[0];
+      var Twin = null;
+      try
+      {
+         withTanKeywords( Iwin, T0.ra, T0.dec, 0.0005 );
+         Twin = Sky.copyWindow( Iwin, "fly_bench_T" );
+         Steps.deriveStarsByUnscreen( Twin, Swin );
+         var T = Twin.mainView.image, W = T.width, H = T.height, wcs = Sky.keywordWcs( Iwin ), proj = Sky.projector( Iwin );
+         var t0 = Date.now();
+         var dets = Sky.detections( T ).slice( 0, 2000 );
+         var placed = Fly.placeStars( dets.map( function( d, i ) { var c = Fly.tanUnproject( d.x, d.y, wcs );
+                         return { ra: c.ra, dec: c.dec, plx: 1000/( 150 + i ), G: 12 }; } ), proj, W, H );
+         var sp = Sky.sprites( T, placed, 3, placed );
+         var tSprites = Date.now() - t0;
+         var sc = Render.scene( { starless: Swin.mainView.image, stars: T, sprites: sp.sprites, residual: sp.residual,
+                                  project: proj, target: T0, D: 900 } );
+         sc.S = [ sc.S[0], sc.S[0], sc.S[0] ]; sc.R = [ sc.R[0], sc.R[0], sc.R[0] ]; sc.nc = 3;
+         var tp = sc.tp, crop = Fly.presetCrop( W, H, tp.x, tp.y, 3840, 2160 );
+         var ms = Render.benchmark( sc, 3840, 2160, crop, { travel: 180, easing: "smoothstep", growth: 0.15, brightening: true,
+                                    output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) }, 3 );
+         var bopts = function( mode ) { return { travel: 180, easing: "smoothstep", growth: 0.15, brightening: true,
+                                                 output: Fly.outputTransform( Fly.SRGB_COLOUR, mode, { peak: 1000 } ) }; };
+         var msHlg = Render.benchmark( sc, 3840, 2160, crop, bopts( "hlg" ), 2 ), msPq = Render.benchmark( sc, 3840, 2160, crop, bopts( "pq" ), 2 );
+         var line = "Fly-Through render: " + Math.round( ms ) + " ms/frame (SDR), " + Math.round( msHlg ) + " (HDR HLG), " +
+                    Math.round( msPq ) + " (HDR PQ) at 3840x2160 RGB with colour conversion, " + sp.sprites.length +
+                    " sprites on an 8 MP backdrop; sprite extraction " + tSprites + " ms";
+         try { File.writeTextFile( "/tmp/agent-scratch/fly-benchmark.txt", line + "\n" ); } catch ( e ) {}
+         check( line, ms > 0, true );
+      }
+      finally { Iwin.forceClose(); Swin.forceClose(); if ( Twin ) Twin.forceClose(); }
+   } )();
+
+   ( function()
+   {
+      var enc = " V....D libx264  H.264\n V....D libx265  H.265\n V....D prores_ks ProRes\n";
+      var av = Fly.availableFormats( enc );
+      check( "only what this ffmpeg can encode", av.map( function( f ) { return f.id; } ), [ "h264", "hevc", "prores" ] );
+      check( "4K defaults to HEVC", Fly.defaultFormat( av, 3840 ), "hevc" );
+      check( "1080p defaults to H.264", Fly.defaultFormat( av, 1920 ), "h264" );
+      check( "no HEVC: 4K falls back to H.264",
+             Fly.defaultFormat( Fly.availableFormats( " libx264 " ), 3840 ), "h264" );
+      var a = Fly.ffmpegArgs( "/f", 25, "/o/youtube", "h264", "high" );
+      check( "frames pattern and rate", a.slice( 0, 5 ), [ "-y", "-framerate", "25", "-i", "/f/frame_%05d.tif" ] );
+      check( "H.264 high is CRF 18", a.join( " " ).indexOf( "-c:v libx264 -crf 18" ) >= 0, true );
+      check( "output gets the format's extension", a[a.length - 1], "/o/youtube.mp4" );
+      check( "HEVC is tagged for Apple players",
+             Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "standard" ).join( " " ).indexOf( "-tag:v hvc1" ) >= 0, true );
+      var pr = Fly.ffmpegArgs( "/f", 30, "/o/x", "prores", "high" ).join( " " );
+      check( "ProRes 422 HQ, 10-bit 4:2:2, .mov", /prores_ks -profile:v 3 .*yuv422p10le.* \/o\/x\.mov$/.test( pr ), true );
+      check( "VP9 standard CRF", Fly.ffmpegArgs( "/f", 30, "/o/x", "vp9", "standard" ).join( " " ).indexOf( "-crf 32 -b:v 0" ) >= 0, true );
+      /*
+       * ffmpeg 9 takes colour tags from the frames, not only from the output
+       * flags (probed: flags alone gave primaries "unknown"), and converts
+       * RGB to YUV with BT.601 unless told. So the frames are converted with
+       * the BT.709 matrix and tagged BT.709 in the filter chain, every format.
+       */
+      [ "h264", "hevc", "prores", "vp9" ].forEach( function( id )
+      {
+         var args = Fly.ffmpegArgs( "/f", 30, "/o/x", id, "high" ), vf = args.indexOf( "-vf" );
+         check( id + ": frames converted and tagged as Rec.709", vf > 0 && args[vf + 1] ==
+                "scale=out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv", true );
+      } );
+   } )();
+
+   ( function()
+   {
+      var mac = Fly.ffmpegCandidates( "macos", "/Users/u", "/usr/bin:/opt/x/bin:", "" );
+      check( "macOS order: Homebrew, /usr/local, /usr/bin, then PATH (deduplicated, empty entries dropped)", mac,
+             [ "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/opt/x/bin/ffmpeg" ] );
+      check( "a saved path is tried first", Fly.ffmpegCandidates( "macos", "/Users/u", "", "/s/ffmpeg" )[0], "/s/ffmpeg" );
+
+      var win = Fly.ffmpegCandidates( "windows", "C:/Users/u",
+                   "C:\\Windows\\system32;\"C:\\Tools\\ffmpeg\\bin\";;C:\\Tools\\ffmpeg\\bin\\", "" );
+      check( "winget link first", win[0], "C:/Users/u/AppData/Local/Microsoft/WinGet/Links/ffmpeg.exe" );
+      check( "Windows fixed locations, in order", win.slice( 1, 5 ),
+             [ "C:/ProgramData/chocolatey/bin/ffmpeg.exe", "C:/Users/u/scoop/shims/ffmpeg.exe",
+               "C:/ffmpeg/bin/ffmpeg.exe", "C:/Program Files/ffmpeg/bin/ffmpeg.exe" ] );
+      check( "PATH on Windows: split on ';', quotes and trailing slash stripped, '/' separators, .exe, no duplicates",
+             win.slice( 5 ), [ "C:/Windows/system32/ffmpeg.exe", "C:/Tools/ffmpeg/bin/ffmpeg.exe" ] );
+      check( "Windows without a home skips the per-user locations",
+             Fly.ffmpegCandidates( "windows", "", "", "" )[0], "C:/ProgramData/chocolatey/bin/ffmpeg.exe" );
+
+      check( "install hint, Windows", Fly.ffmpegInstallHint( "windows" ).indexOf( "winget install Gyan.FFmpeg" ) >= 0, true );
+      check( "install hint, macOS", Fly.ffmpegInstallHint( "macos" ).indexOf( "brew install ffmpeg" ) >= 0, true );
+
+      check( "shown command, Windows: double quotes around spaces",
+             Fly.commandLine( "C:/Program Files/ffmpeg/bin/ffmpeg.exe", [ "-i", "D:/My Frames/frame_%05d.tif" ], "windows" ),
+             "\"C:/Program Files/ffmpeg/bin/ffmpeg.exe\" -i \"D:/My Frames/frame_%05d.tif\"" );
+      check( "shown command, macOS: single quotes, bare when safe",
+             Fly.commandLine( "/opt/homebrew/bin/ffmpeg", [ "-y", "/Volumes/My Disk/x.mp4" ], "macos" ),
+             "/opt/homebrew/bin/ffmpeg -y '/Volumes/My Disk/x.mp4'" );
+   } )();
+
+   /*
+    * The discovered ffmpeg: only the contract, so the suite passes whether
+    * or not this machine has one installed.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ff = Render.findFfmpeg();
+      check( "ffmpeg is either not found or answers -version",
+             ff == null || /^ffmpeg version/.test( Render.runProcess( ff, [ "-version" ], 10000 ).output ), true );
+      if ( ff != null )
+         check( "and its encoder list names at least one encoder", /encoders/i.test( Render.ffmpegEncoders( ff ) ), true );
+   } )();
+
+   /* ---- Fly-Through: draft timing, final render, cancel ---------------- */
+   check( "due frame by wall clock", Render.dueFrame( 1000, 1250, 10, 4 ), 2 );
+   check( "late ticks drop frames, not slow the clip", Render.dueFrame( 1000, 1390, 10, 4 ), 3 );
+   check( "and it loops", Render.dueFrame( 1000, 1450, 10, 4 ), 0 );
+   check( "no frames, nothing due", Render.dueFrame( 1000, 1450, 10, 0 ), 0 );
+   check( "a preset key resolves to its size and loop mode",
+          Fly.presetSpec( "exhibition" ), { id: "exhibition", preset: "exhibition", w: 3840, h: 2160, pingPong: true, crossfade: false } );
+   check( "social vertical is not a loop",
+          Fly.presetSpec( "social_vertical" ), { id: "social_vertical", preset: "social_vertical", w: 1080, h: 1920, pingPong: false, crossfade: false } );
+   check( "only our own frame files are cleared from a preset folder",
+          [ "frame_00000.tif", "frame_12345.tif", "notes.txt", "frame_1.tif", "frame_00001.tif.bak" ]
+             .filter( Fly.isFrameFile ), [ "frame_00000.tif", "frame_12345.tif" ] );
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-final" ), fx = flyTestScene( dir );
+      try
+      {
+         var small = { id: "small", w: 160, h: 90, pingPong: false };
+         var opts = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10, video: false };
+         if ( !File.directoryExists( dir + "/small" ) ) File.createDirectory( dir + "/small", true );
+         File.writeTextFile( dir + "/small/frame_00099.tif", "stale" );
+         var res = FlyThrough.renderFinal( fx.scene, [ small ], opts, dir, {} );
+         check( "every frame of the clip is written", res.written, 5 );
+         check( "frame files are numbered from zero", File.exists( dir + "/small/frame_00004.tif" ), true );
+         check( "a stale frame from an earlier render is gone", File.exists( dir + "/small/frame_00099.tif" ), false );
+         check( "without video, the exact ffmpeg command is given",
+                res.commands.length == 1 && res.commands[0].indexOf( dir + "/small/frame_%05d.tif" ) >= 0, true );
+
+         var cut = FlyThrough.renderFinal( fx.scene, [ "youtube_1080" ], { travel: 150, easing: "linear", growth: 0.15,
+                      brightening: true, duration: 1, fps: 10, video: true, ffmpeg: "/nonexistent/ffmpeg", format: "h264",
+                      quality: "high" }, dir, { cancelAfter: 3 } );
+         check( "cancel keeps the frames written", [ cut.written, cut.cancelled ], [ 3, true ] );
+         check( "and makes no video", File.exists( dir + "/youtube_1080.mp4" ), false );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * The whole chain on a generated image: identify (target, distance) and
+    * build (split, sprites, scene), with Gaia replaced by the detected
+    * stars. Skipped without a star tool; never faked.
+    */
+   if ( IN_PIXINSIGHT && Steps.availableStarTools().length > 0 ) ( function()
+   {
+      var dir = synthDir( "fly-chain" ), fx = flyTestScene( dir ), saved = Sky.querySources, built = null;
+      try
+      {
+         Sky.querySources = function() { return fx.sources; };
+         var id = FlyThrough.identify( fx.image, {} );
+         check( "identify: the field's NGC/IC target is IC 1396", id.target && id.target.id, "IC1396" );
+         check( "identify: a nebula with no cluster in the sources needs a typed distance", [ id.type, id.D ], [ "nebula", null ] );
+         var typed = FlyThrough.identify( fx.image, { distance: 900 } );
+         check( "identify: a typed distance is used", [ typed.D, typed.distanceSource ], [ 900, "typed" ] );
+         var gal = FlyThrough.identify( fx.image, { type: "galaxy" } );
+         check( "identify: a galaxy is at infinity", gal.D, Infinity );
+         built = FlyThrough.build( fx.image, typed, { tool: Steps.availableStarTools()[0] } );
+         check( "build: stars are placed as sprites", built.counts.placed > 10, true );
+         var f0 = Render.frame( built.scene, 0, { travel: 100, easing: "linear", growth: 0.15, brightening: true },
+                                fx.W, fx.H, { x: 0, y: 0, w: fx.W, h: fx.H } );
+         var a = new Float32Array( fx.W*fx.H ), b = new Float32Array( fx.W*fx.H ), worst = 0;
+         f0.getSamples( a ); fx.image.mainView.image.getSamples( b );
+         for ( var i = 0; i < a.length; ++i ) worst = Math.max( worst, Math.abs( a[i] - b[i] ) );
+         check( "build: frame 0 of the built scene is the image (worst " + worst.toExponential( 2 ) + ")", worst <= 1/65535, true );
+      }
+      finally
+      {
+         Sky.querySources = saved;
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+         if ( built ) built.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
+   /*
+    * End to end, when this machine has an ffmpeg: a short clip rendered and
+    * encoded in every format that ffmpeg offers. Skipped, not faked, when
+    * there is none.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ff = Render.findFfmpeg();
+      if ( ff == null )
+         return;
+      var dir = synthDir( "fly-video" ), fx = flyTestScene( dir );
+      try
+      {
+         var formats = Fly.availableFormats( Render.ffmpegEncoders( ff ) );
+         formats.forEach( function( f )
+         {
+            var opts = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10,
+                         video: true, ffmpeg: ff, format: f.id, quality: "standard" };
+            var res = FlyThrough.renderFinal( fx.scene, [ { id: "clip_" + f.id, w: 320, h: 180, pingPong: false } ], opts, dir, {} );
+            check( "a " + f.label + " video is made" + ( res.failed.length ? ": " + String( res.failed[0].output ).slice( -300 ) : "" ),
+                   res.videos.length == 1 && File.exists( dir + "/clip_" + f.id + "." + f.ext ), true );
+            var probe = File.extractDirectory( ff ) + "/ffprobe" + ( Util.isWindows() ? ".exe" : "" );
+            if ( File.exists( probe ) )
+               check( "the " + f.label + " video is tagged Rec.709",
+                      String( Render.runProcess( probe, [ "-v", "error", "-show_entries",
+                         "stream=color_space,color_transfer,color_primaries", "-of", "csv=p=0",
+                         dir + "/clip_" + f.id + "." + f.ext ], 10000 ).output ).trim(), "bt709,bt709,bt709" );
+         } );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* ---- Fly: colour management (pure) ---------------------------------- */
+   ( function()
+   {
+      function near( a, b, e ) { return Math.abs( a - b ) <= e; }
+      function near3( a, b, e ) { return near( a[0], b[0], e ) && near( a[1], b[1], e ) && near( a[2], b[2], e ); }
+      var PROPHOTO = [ 0.7976749, 0.1351917, 0.0313534, 0.2880402, 0.7118741, 0.0000857, 0, 0, 0.8252100 ];
+      var srgbCurve = Fly.SRGB_COLOUR.trc[0];
+      check( "sRGB decode at 0.5 is 0.214041 (IEC 61966-2-1)", near( Fly.trcDecode( srgbCurve, 0.5 ), 0.214041, 1e-6 ), true );
+      var p3 = { type: "para", fn: 3, p: [ 2.4, 1/1.055, 0.055/1.055, 1/12.92, 0.04045 ] }, ok = true;
+      [ 0, 0.02, 0.04045, 0.3, 1 ].forEach( function( x )
+      {
+         var want = x >= 0.04045 ? Math.pow( ( x + 0.055 )/1.055, 2.4 ) : x/12.92;
+         if ( !near( Fly.trcDecode( p3, x ), want, 1e-9 ) ) ok = false;
+      } );
+      check( "a parametric type-3 curve follows its formula", ok, true );
+      check( "a gamma curve", near( Fly.trcDecode( { type: "gamma", g: 1.8 }, 0.5 ), Math.pow( 0.5, 1.8 ), 1e-12 ), true );
+      check( "a table curve interpolates", near( Fly.trcDecode( { type: "table", t: [ 0, 0.25, 1 ] }, 0.75 ), 0.625, 1e-12 ), true );
+
+      var M709 = Fly.sourceToTarget( PROPHOTO, "rec709" ), M2020 = Fly.sourceToTarget( PROPHOTO, "rec2020" );
+      check( "ProPhoto white stays white in Rec.709 (Bradford D50 to D65)", near3( Fly.mul3( M709, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
+      check( "and in BT.2020", near3( Fly.mul3( M2020, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
+      check( "ProPhoto's green lies outside Rec.709: the matrix is really applied", Fly.mul3( M709, [ 0, 1, 0 ] )[0] < 0, true );
+      check( "sRGB's own primaries map to Rec.709 unchanged",
+             near3( Fly.mul3( Fly.sourceToTarget( Fly.SRGB_COLOUR.matrix, "rec709" ), [ 1, 0, 0 ] ), [ 1, 0, 0 ], 2e-3 ), true );
+
+      // a constructed v2 profile: rXYZ/gXYZ/bXYZ and a gamma-1.8 curv on all three
+      function be32( n ) { return [ ( n >>> 24 ) & 255, ( n >>> 16 ) & 255, ( n >>> 8 ) & 255, n & 255 ]; }
+      function ascii( t ) { return t.split( "" ).map( function( c ) { return c.charCodeAt( 0 ); } ); }
+      function s15( v ) { return be32( Math.round( v*65536 ) >>> 0 ); }
+      function xyz( a, b, c ) { return ascii( "XYZ " ).concat( [ 0, 0, 0, 0 ], s15( a ), s15( b ), s15( c ) ); }
+      var curv = ascii( "curv" ).concat( [ 0, 0, 0, 0 ], be32( 1 ), [ 1, 204, 0, 0 ] );   // 1.8 = 0x01CC (u8Fixed8), padded
+      var tags = [ [ "rXYZ", xyz( 0.7976749, 0.2880402, 0 ) ], [ "gXYZ", xyz( 0.1351917, 0.7118741, 0 ) ],
+                   [ "bXYZ", xyz( 0.0313534, 0.0000857, 0.82521 ) ], [ "rTRC", curv ], [ "gTRC", curv ], [ "bTRC", curv ] ];
+      var head = []; for ( var i = 0; i < 128; ++i ) head.push( 0 );
+      ascii( "mntrRGB " ).forEach( function( b, i ) { head[12 + i] = b; } );
+      var table = be32( tags.length ), body = [], off = 128 + 4 + 12*tags.length;
+      tags.forEach( function( t ) { table = table.concat( ascii( t[0] ), be32( off + body.length ), be32( t[1].length ) ); body = body.concat( t[1] ); } );
+      var bytes = head.concat( table, body );
+      var col = Fly.parseIccColour( function( i ) { return bytes[i]; }, bytes.length );
+      check( "a matrix/curve profile is read: its matrix", col != null && near3( [ col.matrix[0], col.matrix[3], col.matrix[6] ], [ 0.7976749, 0.2880402, 0 ], 1e-4 ), true );
+      check( "and its curves", col != null && near( Fly.trcDecode( col.trc[1], 0.5 ), Math.pow( 0.5, 1.8 ), 1e-3 ), true );
+      check( "a profile without the matrix tags is not a matrix profile",
+             Fly.parseIccColour( function( i ) { return head.concat( be32( 0 ) )[i]; }, 132 ), null );
+
+      var t = Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ), worst = 0;
+      for ( var v = 0; v <= 1; v += 1/257 )
+      {
+         var o = t.pixel( v, v*0.5, 1 - v );
+         worst = Math.max( worst, Math.abs( o[0] - v ), Math.abs( o[1] - v*0.5 ), Math.abs( o[2] - ( 1 - v ) ) );
+      }
+      check( "SDR output of an sRGB image is the image (worst " + worst.toExponential( 1 ) + ")", worst <= 1/65535, true );
+      var pp = Fly.outputTransform( { matrix: PROPHOTO, trc: [ { type: "gamma", g: 1.8 }, { type: "gamma", g: 1.8 }, { type: "gamma", g: 1.8 } ] }, "sdr" );
+      check( "SDR output of ProPhoto white is white", near3( pp.pixel( 1, 1, 1 ), [ 1, 1, 1 ], 2e-3 ), true );
+      check( "a saturated ProPhoto green is clipped into Rec.709, not wrapped", pp.pixel( 0, 1, 0 ).every( function( c ) { return c >= 0 && c <= 1; } ), true );
+   } )();
+
+   /* ---- Colour management in PixInsight -------------------------------- */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-colour" );
+      function rgbWindow( id )
+      {
+         var w = new ImageWindow( 8, 8, 3, 32, true, true, Util.freeWindowId( id ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile ); w.mainView.image.fill( 0.5 ); w.mainView.endProcess();
+         return w;
+      }
+      var plain = rgbWindow( "col_plain" );
+      try
+      {
+         var c0 = Sky.colourOf( plain );
+         // PixInsight shows an untagged image in its DEFAULT profile (a user
+         // setting: ProPhoto on the maintainer's machine) and embeds that one
+         // on save, so that is the profile its colours are read in
+         var c0b = Sky.colourOf( plain );
+         check( "an untagged image is read in PixInsight's default profile",
+                c0.colour.matrix != null && JSON.stringify( c0.colour.matrix ) == JSON.stringify( c0b.colour.matrix ), true );
+      }
+      finally { plain.forceClose(); }
+
+      // ROMM RGB is a macOS system profile: this part runs where it is installed
+      var romm = rgbWindow( "col_romm" ), P = new AssignICCProfile;
+      P.mode = 0; P.targetProfile = "ROMM RGB: ISO 22028-2:2013";
+      var tagged = P.executeOn( romm.mainView );
+      try
+      {
+         if ( tagged )
+         {
+            romm.saveAs( dir + "/romm.xisf", false, false, false, false );
+            var c1 = Sky.colourOf( romm );
+            check( "a ROMM-tagged image is read as ProPhoto primaries",
+                   c1.colour.matrix != null && Math.abs( c1.colour.matrix[0] - 0.7977 ) < 2e-3, true );
+            var o = Fly.outputTransform( c1.colour, "sdr" ).pixel( 0.2, 0.8, 0.2 );
+            check( "and its greens are converted, not passed through", Math.abs( o[1] - 0.8 ) > 0.01 || Math.abs( o[0] - 0.2 ) > 0.01, true );
+         }
+      }
+      finally { romm.forceClose(); }
+
+      // frame 0 with the output transform: an sRGB (untagged) scene is unchanged
+      var fx = flyTestScene( synthDir( "fly-colour-scene" ) );
+      try
+      {
+         var W = fx.W, H = fx.H;
+         var f0 = Render.frame( fx.scene, 0, { travel: 100, easing: "linear", growth: 0.15, brightening: true,
+                                               output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) }, W, H, { x: 0, y: 0, w: W, h: H } );
+         var a = new Float32Array( W*H ), b = new Float32Array( W*H ), worst = 0;
+         f0.getSamples( a ); fx.image.mainView.image.getSamples( b );
+         for ( var i = 0; i < a.length; ++i ) worst = Math.max( worst, Math.abs( a[i] - b[i] ) );
+         check( "frame 0 through the sRGB output transform is the image (worst " + worst.toExponential( 2 ) + ")", worst <= 1/65535, true );
+         var g18 = { gray: true, matrix: null, trc: [ 0, 1, 2 ].map( function() { return { type: "gamma", g: 1.8 }; } ) };
+         var fg = Render.frame( fx.scene, 0, { travel: 100, easing: "linear", growth: 0.15, brightening: true,
+                                               output: Fly.outputTransform( g18, "sdr" ) }, W, H, { x: 0, y: 0, w: W, h: H } );
+         var c = new Float32Array( W*H ), worstG = 0;
+         fg.getSamples( c );
+         for ( i = 0; i < c.length; i += 97 ) worstG = Math.max( worstG, Math.abs( c[i] - Fly.srgbEncode( Math.pow( b[i], 1.8 ) ) ) );
+         check( "every frame goes through the output transform (gamma 1.8 source)", worstG < 1e-5, true );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* ---- Fly: HDR (HLG and PQ) ------------------------------------------ */
+   ( function()
+   {
+      function near( a, b, e ) { return Math.abs( a - b ) <= e; }
+      check( "PQ of the 203-nit reference white is 0.5807", near( Fly.pqEncode( 203 ), 0.5807, 1e-4 ), true );
+      check( "PQ of 10000 nits is 1", near( Fly.pqEncode( 10000 ), 1, 1e-9 ), true );
+      check( "HLG of 1/12 is 0.5", near( Fly.hlgEncode( 1/12 ), 0.5, 1e-7 ), true );
+      var sw = Fly.hlgFromDisplay( [ 0.203, 0.203, 0.203 ] );
+      check( "HLG puts SDR white at 0.75 (BT.2408)", near( Fly.hlgEncode( sw[1] ), 0.75, 1e-3 ), true );
+
+      var P = 1000/203, mono = true, prev = -1;
+      check( "rolloff: identity up to white", Fly.rolloff( 0.6, P ), 0.6 );
+      check( "rolloff: slope 1 at white (smooth)", near( ( Fly.rolloff( 1 + 1e-6, P ) - 1 )/1e-6, 1, 1e-4 ), true );
+      for ( var L = 0; L < 1e6; L = L*1.5 + 0.01 ) { var y = Fly.rolloff( L, P ); if ( y < prev || y > P ) mono = false; prev = y; }
+      check( "rolloff: monotone and never above the peak", mono, true );
+
+      var pq = Fly.outputTransform( Fly.SRGB_COLOUR, "pq", { peak: 1000 } );
+      var w = pq.pixelHdr( 1, 1, 1, 0, 0, 0 );
+      check( "HDR (PQ): the image's white lands at 203 nits", near( w[0], 0.5807, 1e-3 ) && near( w[2], 0.5807, 1e-3 ), true );
+      var hot = pq.pixelHdr( 1, 1, 1, 50, 50, 50 );
+      check( "HDR (PQ): star light above white rises above it, up to the peak",
+             hot[1] > 0.6 && hot[1] <= Fly.pqEncode( 1000 ) + 1e-9, true );
+      var three = pq.pixelHdr( 1, 1, 1, 2, 2, 2 )[1];      // 3 x white = 609 nits before rolloff, ~521 after
+      check( "HDR (PQ): a moderate highlight is compressed smoothly, not clipped",
+             three > Fly.pqEncode( 500 ) && three < Fly.pqEncode( 540 ), true );
+      var hlg = Fly.outputTransform( Fly.SRGB_COLOUR, "hlg", {} ).pixelHdr( 1, 1, 1, 0, 0, 0 );
+      check( "HDR (HLG): the image's white lands at 0.75", near( hlg[1], 0.75, 2e-3 ), true );
+      var hueKept = pq.pixelHdr( 1, 0.5, 0.25, 20, 10, 5 );
+      check( "HDR: a coloured highlight keeps its hue order while rolled off", hueKept[0] > hueKept[1] && hueKept[1] > hueKept[2], true );
+      var stats = Fly.outputTransform( Fly.SRGB_COLOUR, "pq", { peak: 1000 } ), R = new Float32Array( [ 1, 0 ] ), G = new Float32Array( [ 1, 0 ] ), B = new Float32Array( [ 1, 0 ] );
+      stats.apply( R, G, B, 2, new Float32Array( 2 ), new Float32Array( 2 ), new Float32Array( 2 ) );
+      check( "PQ frames are measured for HDR10 metadata: MaxCLL and MaxFALL in nits",
+             near( stats.stats.maxCll, 203, 0.5 ) && near( stats.stats.maxFall, 101.5, 0.5 ), true );
+
+      var enc = " V....D libx264 \n V....D libx265 \n V....D prores_ks \n V....D libvpx-vp9 \n";
+      check( "HDR offers no H.264", Fly.availableFormats( enc, true ).map( function( f ) { return f.id; } ), [ "hevc", "prores", "vp9" ] );
+      check( "HDR defaults to HEVC even at 1080p", Fly.defaultFormat( Fly.availableFormats( enc, true ), 1920 ), "hevc" );
+      var hdrPq = { transfer: "pq", peak: 1000, maxCll: 850, maxFall: 120 }, hdrHlg = { transfer: "hlg" };
+      var aPq = Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "high", hdrPq ).join( " " ), aHlg = Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "high", hdrHlg ).join( " " );
+      check( "PQ: BT.2020 matrix and tags, 10-bit", /scale=out_color_matrix=bt2020:out_range=tv,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv/.test( aPq ) && /-pix_fmt yuv420p10le/.test( aPq ), true );
+      check( "PQ: HDR10 mastering display and content light level",
+             aPq.indexOf( "hdr10=1" ) >= 0 && aPq.indexOf( "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)" ) >= 0 &&
+             aPq.indexOf( "max-cll=850,120" ) >= 0, true );
+      check( "HLG: arib-std-b67 and no HDR10 metadata", /color_trc=arib-std-b67/.test( aHlg ) && aHlg.indexOf( "master-display" ) < 0, true );
+      check( "VP9 HDR is profile 2, 10-bit", /-profile:v 2 .*yuv420p10le/.test( Fly.ffmpegArgs( "/f", 30, "/o/x", "vp9", "high", hdrHlg ).join( " " ) ), true );
+      check( "ProRes HDR stays 4:2:2 10-bit with the BT.2020 tags",
+             /color_trc=smpte2084.*yuv422p10le/.test( Fly.ffmpegArgs( "/f", 30, "/o/x", "prores", "high", hdrPq ).join( " " ) ), true );
+      check( "SDR arguments are unchanged by the HDR work", Fly.ffmpegArgs( "/f", 30, "/o/x", "h264", "high" ).join( " " ).indexOf( "bt709" ) > 0, true );
+      check( "exhibition defaults to PQ, social and YouTube to HLG",
+             [ Fly.HDR_DEFAULT_TRANSFER.exhibition, Fly.HDR_DEFAULT_TRANSFER.social_vertical, Fly.HDR_DEFAULT_TRANSFER.youtube_4k ], [ "pq", "hlg", "hlg" ] );
+   } )();
+
+   /* ---- HDR rendering and encoding (PixInsight) ----------------------- */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-hdr" ), fx = flyTestScene( dir, 4 );   // bright stars: some approach past white
+      try
+      {
+         var W = fx.W, H = fx.H, full = { x: 0, y: 0, w: W, h: H };
+         var t = Fly.outputTransform( Fly.SRGB_COLOUR, "pq", { peak: 1000 } );
+         var f0 = Render.frame( fx.scene, 0, { travel: 150, easing: "linear", growth: 0.15, brightening: true, output: t }, W, H, full );
+         var a = new Float32Array( W*H ), b = new Float32Array( W*H ), worst = 0;
+         f0.getSamples( a ); fx.image.mainView.image.getSamples( b );
+         for ( var i = 0; i < a.length; i += 13 ) worst = Math.max( worst, Math.abs( a[i] - t.pixel( b[i], b[i], b[i] )[1] ) );
+         check( "HDR frame 0 is the image, mapped into PQ (worst " + worst.toExponential( 2 ) + ")", worst < 1e-5, true );
+         var t1 = Fly.outputTransform( Fly.SRGB_COLOUR, "pq", { peak: 1000 } );
+         var f1 = Render.frame( fx.scene, 1, { travel: 150, easing: "linear", growth: 0.15, brightening: true, output: t1 }, W, H, full );
+         var c = new Float32Array( W*H ), top = 0;
+         f1.getSamples( c );
+         for ( i = 0; i < c.length; ++i ) top = Math.max( top, c[i] );
+         check( "an approaching star rises above SDR white (" + top.toFixed( 3 ) + " > 0.5807) and stays under the peak",
+                top > Fly.pqEncode( 203 ) + 0.02 && top <= Fly.pqEncode( 1000 ) + 1e-6, true );
+         check( "and the frame's light is measured for HDR10 (MaxCLL " + Math.round( t1.stats.maxCll ) + " nits)",
+                t1.stats.maxCll > 203 && t1.stats.maxCll <= 1000.5, true );
+
+         var ff = Render.findFfmpeg();
+         if ( ff == null ) return;
+         var probe = File.extractDirectory( ff ) + "/ffprobe" + ( Util.isWindows() ? ".exe" : "" );
+         [ [ "hlg", "arib-std-b67" ], [ "pq", "smpte2084" ] ].forEach( function( tr )
+         {
+            var id = "hdr_" + tr[0], opts = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10,
+                         video: true, ffmpeg: ff, format: "hevc", quality: "standard", dynamic: "hdr", peak: 1000,
+                         hdrTransfer: {} };
+            opts.hdrTransfer[id] = tr[0];
+            var res = FlyThrough.renderFinal( fx.scene, [ { id: id, w: 320, h: 180, pingPong: false } ], opts, dir, {} );
+            check( "an HDR " + tr[0].toUpperCase() + " HEVC clip is made" + ( res.failed.length ? ": " + String( res.failed[0].output ).slice( -300 ) : "" ),
+                   res.videos.length, 1 );
+            if ( !File.exists( probe ) || res.videos.length != 1 ) return;
+            var info = String( Render.runProcess( probe, [ "-v", "error", "-show_entries", "stream=pix_fmt,color_space,color_transfer,color_primaries",
+                                                         "-of", "csv=p=0", res.videos[0] ], 10000 ).output ).trim();
+            check( "it is 10-bit BT.2020 " + tr[1] + " (" + info + ")", info, "yuv420p10le,bt2020nc," + tr[1] + ",bt2020" );
+            if ( tr[0] == "pq" )
+            {
+               var side = String( Render.runProcess( probe, [ "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
+                                                             "-show_frames", "-show_entries", "frame=side_data_list", res.videos[0] ], 10000 ).output );
+               check( "the PQ clip carries HDR10 mastering display and content light level metadata",
+                      /Mastering display metadata/.test( side ) && /Content light level metadata/.test( side ), true );
+            }
+         } );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* ---- Draft order, player, dialog ------------------------------------ */
+   check( "a clip plays its frames in order", [ 0, 1, 2, 3, 4 ].map( function( i ) { return Fly.sequenceFrame( i, 4, false ); } ), [ 0, 1, 2, 3, 0 ] );
+   check( "a ping-pong draft plays the forward frames there and back",
+          [ 0, 1, 2, 3, 4, 5, 6 ].map( function( i ) { return Fly.sequenceFrame( i, 4, true ); } ), [ 0, 1, 2, 3, 2, 1, 0 ] );
+   check( "and loops without repeating the ends", Fly.sequenceLength( 4, true ), 6 );
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var host = new Dialog, p = null;
+      try
+      {
+         p = new FlyThrough.Player( host );
+         var bm = [ 0, 1, 2, 3 ].map( function() { var b = new Bitmap( 16, 9 ); b.fill( 0xff000000 ); return b; } );
+         p.setFrames( bm, 10, false );
+         p.startedAt = 1000;
+         check( "the player shows the frame due by wall clock", p.frameAt( 1250 ), 2 );
+         check( "late ticks drop frames rather than slow the clip", p.frameAt( 1390 ), 3 );
+         p.setFrames( bm, 10, true );
+         check( "a ping-pong draft comes back", p.frameAt( 1000 + 450 ), 2 );
+         p.release();
+         check( "a released player keeps no timer handler", p.timer == null || p.timer.onTimeout == null, true );
+      }
+      finally { if ( p ) p.release(); }
+
+      var dir = synthDir( "fly-dialog" ), fx = flyTestScene( dir );
+      try
+      {
+         var draft = FlyThrough.renderDraft( fx.scene, { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true,
+                                                         duration: 2, fps: 30 }, Fly.presetSpec( "exhibition" ), {} );
+         check( "the draft renders only the forward half of a ping-pong (" + draft.bitmaps.length + " frames)",
+                draft.bitmaps.length, Fly.draftPlan( 2, 30, Fly.DRAFT_LONG, 16/9 ).frames );
+         check( "at the draft size on the long side", draft.bitmaps[0].width, Fly.DRAFT_LONG );
+
+         for ( var cycle = 0; cycle < 5; ++cycle )
+         {
+            var dlg = new FlyThrough.Dialog( fx.image );
+            try
+            {
+               var o = dlg.options();
+               check( "dialog " + cycle + ": sensible defaults",
+                      [ o.dynamic, o.fps, o.duration, o.presets.length > 0 ], [ "sdr", 30, 20, true ] );
+               dlg.dynamicCombo.currentItem = 1;           // HDR
+               dlg.dynamicCombo.onItemSelected( 1 );
+               check( "dialog " + cycle + ": HDR offers no H.264", dlg.formatIds.indexOf( "h264" ), -1 );
+            }
+            finally { dlg.release(); }
+         }
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * Downscaled output must not alias. Every real preset shrinks the image
+    * (a 26 MP frame is ~3.25x for 1080p) and the camera moves, so the
+    * sampling phase slides every frame; point sampling would make stars
+    * twinkle. A star's light must hold steady whatever the phase.
+    */
+   ( function()
+   {
+      var w = 300, h = 60, src = new Float32Array( w*h ), sig = 1.1;
+      for ( var y = 0; y < h; ++y ) for ( var x = 0; x < w; ++x )
+         src[y*w + x] = Math.exp( -( ( x - 150.3 )*( x - 150.3 ) + ( y - 30.2 )*( y - 30.2 ) )/( 2*sig*sig ) );
+      var total = 0; for ( var i = 0; i < src.length; ++i ) total += src[i];
+      [ "bilinear", "bicubic" ].forEach( function( kernel )
+      {
+         var lo = Infinity, hi = 0;
+         for ( var ph = 0; ph < 1; ph += 0.125 )
+         {
+            var out = Render.resample( src, w, h, Render.axisWeights( 100, ph, 300, 150, 1, w, kernel ),
+                                       Render.axisWeights( 20, ph, 60, 30, 1, h, kernel ) );
+            var sum = 0; for ( var j = 0; j < out.length; ++j ) sum += out[j];
+            lo = Math.min( lo, sum*9 ); hi = Math.max( hi, sum*9 );
+         }
+         check( kernel + ": a star downscaled 3x keeps its light at every phase (" + ( 100*lo/total ).toFixed( 1 ) + "-" +
+                ( 100*hi/total ).toFixed( 1 ) + "%)", lo > 0.97*total && hi < 1.03*total, true );
+      } );
+      var ident = Render.axisWeights( 6, 0, 6, 2.3, 1, 6, "bicubic" );
+      check( "at 1:1 the weights are still the identity", Array.prototype.slice.call( Render.resample(
+             new Float32Array( [ 1, 2, 3, 4, 5, 6 ] ), 6, 1, ident, Render.axisWeights( 1, 0, 1, 0, 1, 1, "bicubic" ) ) ), [ 1, 2, 3, 4, 5, 6 ] );
+
+      // a sprite drawn 3x smaller than its own pixels keeps its light too
+      var pw = 15, patch = new Float32Array( pw*pw ), ptot = 0;
+      for ( y = 0; y < pw; ++y ) for ( x = 0; x < pw; ++x ) { patch[y*pw + x] = Math.exp( -( ( x - 7 )*( x - 7 ) + ( y - 7 )*( y - 7 ) )/2.4 ); ptot += patch[y*pw + x]; }
+      var sp = { rect: { x0: 43, y0: 43, x1: 58, y1: 58 }, det: { x: 50, y: 50 } }, slo = Infinity, shi = 0;
+      for ( ph = 0; ph < 1; ph += 0.125 )
+      {
+         var acc = new Float32Array( 40*40 );
+         Render.drawSprite( acc, 40, 40, patch, sp, 50 + ph, 50 + ph/2, 1, 1, { x: 0, y: 0, fx: 3, fy: 3 } );
+         var s = 0; for ( i = 0; i < acc.length; ++i ) s += acc[i];
+         slo = Math.min( slo, s*9 ); shi = Math.max( shi, s*9 );
+      }
+      check( "a sprite drawn at 1/3 scale keeps its light at every phase (" + ( 100*slo/ptot ).toFixed( 1 ) + "-" +
+             ( 100*shi/ptot ).toFixed( 1 ) + "%)", slo > 0.95*ptot && shi < 1.05*ptot, true );
+   } )();
+
+   /*
+    * pjsr/StarDetector.jsh must not be included by any entry point. It
+    * replaces PixInsight's native StarDetector with the script one, and
+    * ImageSolver's PSF.fitStars then rejects the stars ("StarData object
+    * reference expected"): every unsolved image failed to solve (found on a
+    * real image, 2026-09-23). The native detector is always there.
+    */
+   check( "no entry point includes pjsr/StarDetector.jsh",
+          [ "Loom.js", "FrameSelector.js", "FlyThrough.js" ].filter( function( f )
+             { return /#include\s+<pjsr\/StarDetector\.jsh>/.test( File.readTextFile( LOOM_DIR + "/" + f ) ); } ), [] );
+
+   check( "RA in hours-minutes-seconds", Math.abs( Fly.parseAngle( "21 36 42", true ) - 324.175 ) < 1e-9, true );
+   check( "RA with colons", Math.abs( Fly.parseAngle( "21:36:42", true ) - 324.175 ) < 1e-9, true );
+   check( "Dec in degrees-minutes-seconds, signed", Math.abs( Fly.parseAngle( "-57 30 00", false ) + 57.5 ) < 1e-9, true );
+   check( "a plain number is degrees", Fly.parseAngle( "324.18", true ), 324.18 );
+   check( "garbage is not an angle", Fly.parseAngle( "north", false ), null );
+
+   /*
+    * The dialog's state flow: what is on screen is what renders. Edits made
+    * after Analyse -- distance, type, travel -- must reach the scene, and a
+    * nebula with no cluster must not render a static video.
+    */
+   if ( IN_PIXINSIGHT && Steps.availableStarTools().length > 0 ) ( function()
+   {
+      var dir = synthDir( "fly-dialog-flow" ), fx = flyTestScene( dir ), saved = Sky.querySources, dlg = null;
+      try
+      {
+         Sky.querySources = function() { return fx.sources; };
+         dlg = new FlyThrough.Dialog( fx.image );
+         check( "the dialog has its title", dlg.windowTitle, "Loom Fly-Through" );
+         check( "an untouched type lets NGC/IC decide (a PGC number makes a galaxy)", dlg.choices().type, undefined );
+         dlg.analyse();
+         check( "no cluster: travel is not guessed before the distance is known", dlg.travelEdit.text, "" );
+         dlg.distanceEdit.text = "700"; dlg.distanceEdit.onEditCompleted();
+         var o = dlg.prepare();
+         check( "a typed distance reaches the render", dlg.built.scene.D, 700 );
+         check( "and travel follows it", o.travel, 140 );
+         dlg.distanceEdit.text = "1400"; dlg.distanceEdit.onEditCompleted();
+         o = dlg.prepare();
+         check( "editing it after a build updates the scene and the travel", [ dlg.built.scene.D, o.travel ], [ 1400, 280 ] );
+         dlg.travelEdit.text = "5000"; dlg.travelEdit.onEditCompleted();
+         o = dlg.prepare();
+         check( "travel beyond the distance is capped, and the dialog says so", [ o.travel, /capped/.test( dlg.travelNote.text ) ], [ 1260, true ] );
+         dlg.typeCombo.currentItem = 1; dlg.typeCombo.onItemSelected( 1 );
+         o = dlg.prepare();
+         check( "switching to galaxy makes the backdrop fixed", dlg.built.scene.D === Infinity, true );
+         check( "the star-split windows are closed once the scene has its data", dlg.built.windows.length, 0 );
+      }
+      finally
+      {
+         Sky.querySources = saved;
+         if ( dlg ) dlg.release();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
+   /*
+    * Where the camera aims. Heading for a catalogued centre that lies
+    * outside the image (IC 1396's, in a frame of the Elephant's Trunk) put
+    * the vanishing point off-frame and the whole view streamed sideways
+    * (seen on a real image). The target is aimed at only when it is inside
+    * the image; otherwise the image centre is, and the dialog says so.
+    */
+   check( "a target inside the image is aimed at", Fly.insideImage( { x: 400, y: 300 }, 800, 600, 0.05 ), true );
+   check( "one beyond the frame is not", Fly.insideImage( { x: 400, y: -50 }, 800, 600, 0.05 ), false );
+   check( "nor one in the outer 5% margin", Fly.insideImage( { x: 790, y: 300 }, 800, 600, 0.05 ), false );
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = Sky.querySources, w = null;
+      try
+      {
+         Sky.querySources = function() { return [ { ra: 324.7, dec: 57.3, plx: 1, pmra: 0, pmdec: 0, G: 12 } ]; };
+         w = ImageWindow.open( synthFrame( synthDir( "fly-aim" ) + "/off.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 3, stars: 50 } ) )[0];
+         withTanKeywords( w, 324.745, 57.514 - 0.2, 0.0005 );     // IC 1396's centre 0.2 deg north: in the field circle, off the frame
+         var id = FlyThrough.identify( w, { distance: 900 } );
+         check( "the target is still IC 1396", id.target && id.target.id, "IC1396" );
+         check( "the camera aims at the image centre", Fly.separation( id.aim, id.field.centre ) < 1e-6, true );
+      }
+      finally { Sky.querySources = saved; if ( w ) w.forceClose(); }
+   } )();
+
+   /*
+    * Frames carry the profile of what they hold. Saving through a window
+    * embedded PixInsight's default profile (ProPhoto on the maintainer's
+    * machine) into every frame, SDR and HDR alike (read back from a real
+    * render): an editor honouring it showed them wrong. SDR frames now carry
+    * sRGB; HDR frames none -- no ICC profile describes PQ or HLG.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-frame-icc" ), img = new Image( 16, 9, 3, ColorSpace_RGB, 32, SampleType_Real );
+      img.fill( 0.5 );
+      function iccOf( path )
+      {
+         var f = new FileFormatInstance( new FileFormat( ".tif", true, false ) );
+         f.open( path, "verbosity 0" );
+         try { var b = f.iccProfile; return ( b && b.length ) ? b : null; } finally { f.close(); }
+      }
+      try
+      {
+         Render.writeTiff( img, dir + "/sdr.tif", Render.srgbIcc() );
+         var b = iccOf( dir + "/sdr.tif" ), c = b && Fly.parseIccColour( function( i ) { return b.at( i ); }, b.length );
+         check( "an SDR frame carries sRGB", c != null && Math.abs( c.matrix[0] - Fly.SRGB_COLOUR.matrix[0] ) < 2e-3, true );
+         Render.writeTiff( img, dir + "/hdr.tif", null );
+         check( "an HDR frame carries no profile", iccOf( dir + "/hdr.tif" ), null );
+         var w = ImageWindow.open( dir + "/hdr.tif" )[0];
+         check( "and frames stay 16-bit", w.mainView.image.bitsPerSample, 16 );
+         w.forceClose();
+         // a window per frame pulled PixInsight to the front on every frame, so the user could not work
+         // elsewhere during a render: frames are written straight from the image
+         check( "writing a frame opens no window", /ImageWindow/.test( Render.writeTiff.toString() ), false );
+      }
+      finally { img.free(); }
+   } )();
+
+   /* ---- Progress ------------------------------------------------------- */
+   check( "progress text: stage, count, percent, time left",
+          Fly.progressText( "Rendering YouTube 1920×1080", 150, 600, 90000 ),
+          "Rendering YouTube 1920×1080 — 150 of 600 (25%) — about 5 min left" );
+   check( "under a minute left", /less than a minute left/.test( Fly.progressText( "x", 590, 600, 60000 ) ), true );
+   check( "a stage with no count shows elapsed time", Fly.progressText( "Removing stars (StarXTerminator)", 0, 0, 75000 ),
+          "Removing stars (StarXTerminator) — 1 min 15 s" );
+   check( "the fraction for the bar", [ Fly.progressFraction( 150, 600 ), Fly.progressFraction( 0, 0 ) ], [ 0.25, null ] );
+   check( "ffmpeg's progress: the last frame count it printed",
+          Fly.ffmpegFrameProgress( "frame=   12 fps=3.1 q=28.0 size=  256kB\rframe=   37 fps=3.2 q=28.0" ), 37 );
+   check( "no frame count yet", Fly.ffmpegFrameProgress( "Input #0, image2" ), null );
+
+   /* ---- The progress bar ------------------------------------------------ */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var host = new Dialog, bar = new FlyThrough.ProgressBar( host ), bmp = new Bitmap( 200, 20 );
+      try
+      {
+         bar.set( 0.5, "half" );
+         var g = new Graphics( bmp );
+         try { bar.paintOn( g, 200, 20 ); } finally { g.end(); }
+         check( "the bar fills to its fraction", [ bmp.pixel( 50, 2 ) == FlyThrough.ProgressBar.FILL, bmp.pixel( 150, 2 ) == FlyThrough.ProgressBar.TRACK ], [ true, true ] );
+         check( "and keeps its text", bar.text, "half" );
+         bar.set( null, "waiting for the star tool" );
+         check( "no fraction: a stage with no count", bar.fraction, null );
+      }
+      finally { bar.release(); }
+
+      // renderFinal reports every frame, and the encode as ffmpeg counts frames
+      var fx = flyTestScene( synthDir( "fly-progress" ) ), frames = [], encodes = [];
+      try
+      {
+         var ff = Render.findFfmpeg();
+         FlyThrough.renderFinal( fx.scene, [ { id: "prog", w: 160, h: 90, pingPong: false } ],
+            { travel: 150, easing: "linear", growth: 0.15, brightening: true, duration: 0.5, fps: 10, video: ff != null, ffmpeg: ff, format: "h264" },
+            synthDir( "fly-progress-out" ), { onFrame: function( k, n ) { frames.push( k + "/" + n ); },
+                                              onEncode: function( k, n ) { encodes.push( k + "/" + n ); } } );
+         check( "every frame is reported", frames, [ "1/5", "2/5", "3/5", "4/5", "5/5" ] );
+         if ( ff != null )
+            check( "the encode reports ffmpeg's frame count (" + encodes.slice( -1 ) + ")", encodes.length > 0 && encodes[encodes.length - 1] == "5/5", true );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * The working size. Every frame was resampled from the full image, so a
+    * 92 MP input cost 1.7-3.1 s per frame. The image is resampled once, up
+    * front, so that the largest 16:9 frame that fits it is 3840x2160: 1:1
+    * for the 4K presets, a reduction for everything smaller. Never enlarged.
+    */
+   check( "a 3:2 image: its 16:9 band becomes 3840 wide", Math.abs( Fly.workingScale( 6000, 4000 ) - 0.64 ) < 1e-12, true );
+   check( "a wide image: its height becomes 2160", Math.abs( Fly.workingScale( 12000, 4000 ) - 0.54 ) < 1e-12, true );
+   check( "a small image is never enlarged", Fly.workingScale( 3000, 2000 ), 1 );
+
+   /* ---- The working copy ---------------------------------------------- */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = ImageWindow.open( synthFrame( synthDir( "fly-working" ) + "/big.xisf",
+                  { width: 5120, height: 2880, fwhm: 3, background: 0.05, noise: 0.002, seed: 2, stars: 300 } ) )[0], work = null;
+      try
+      {
+         withTanKeywords( w, 324.745, 57.514, 0.0005 );
+         var before = Sky.projector( w )( 324.9, 57.6 );
+         work = Sky.workingCopy( w );
+         check( "a 5120x2880 image works at 3840x2160", [ work.window.mainView.image.width, work.window.mainView.image.height, work.scale ], [ 3840, 2160, 0.75 ] );
+         check( "the original is untouched", w.mainView.image.width, 5120 );
+         var after = Sky.projector( work.window )( 324.9, 57.6 );
+         check( "sky positions follow the resample",
+                Math.abs( after.x - ( before.x + 0.5 )*0.75 + 0.5 ) < 0.01 && Math.abs( after.y - ( before.y + 0.5 )*0.75 + 0.5 ) < 0.01, true );
+         var small = ImageWindow.open( synthFrame( synthDir( "fly-working-small" ) + "/s.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 2 } ) )[0];
+         var ws = Sky.workingCopy( small );
+         check( "a small image is not resampled", [ ws.scale, ws.window.mainView.image.width ], [ 1, 800 ] );
+         ws.window.forceClose(); small.forceClose();
+      }
+      finally { if ( work ) work.window.forceClose(); w.forceClose(); }
+   } )();
+
+   /*
+    * Matching bright stars. On a real image none of the 40 brightest moved
+    * that had its Gaia star 2-4 px from the detected centre: a saturated
+    * core's centroid is that uncertain, and a fixed 1.5 px radius missed
+    * them. The radius grows with the star's core, and when several Gaia
+    * stars are in reach the brightest is the one that made the big star.
+    */
+   ( function()
+   {
+      check( "a small star keeps the 1.5 px radius", Fly.matchRadius( { rect: Fly.detectionRect( 10, 10, 3 ) } ), 1.5 );
+      var big = { x: 50, y: 50, nmax: 0, flux: 120, rect: Fly.detectionRect( 50, 50, 220 ) };
+      check( "a saturated star's radius follows its core (" + Fly.matchRadius( big ).toFixed( 1 ) + " px)", Fly.matchRadius( big ) >= 3.5, true );
+      var P = function( x, y, G ) { return { source: { G: G }, d: 300, x: x, y: y }; };
+      var a = Fly.assignSprites( [ big ], [ P( 51.2, 53.1, 16.5 ), P( 52.5, 51.5, 11.2 ) ], 100, 100, 3, [] );
+      check( "a big star 3 px from its Gaia position is matched, to the brightest candidate",
+             a.sprites.length == 1 && a.sprites[0].placed.source.G, 11.2 );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 240, c = 120, win = new ImageWindow( N, N, 1, 32, true, false, Util.freeWindowId( "fly_spike" ) );
+      try
+      {
+         var buf = new Float32Array( N*N );
+         for ( var y = 0; y < N; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var r2 = ( x - c )*( x - c ) + ( y - c )*( y - c ), v = 0.02 + 0.9*Math.pow( 1 + r2/6, -2.5 );
+            if ( ( Math.abs( x - c ) < 1 || Math.abs( y - c ) < 1 ) && r2 < 60*60 ) v += 0.08*( 1 - Math.sqrt( r2 )/60 ) + 0.02;
+            var nx = x - ( c + 30 ), ny = y - ( c + 30 );          // a patch of nebula between the spikes
+            v += 0.03*Math.exp( -( nx*nx + ny*ny )/50 );
+            buf[y*N + x] = Math.min( 1, v );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         var sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c } ], 3, [] );
+         check( "the bright star with spikes is a sprite", sp.sprites.length, 1 );
+         var s = sp.sprites[0], R = sp.residual[0];
+         check( "its footprint takes the spikes (radius " + s.radius + ")", s.radius >= 55, true );
+         var tip = R[c*N + c + 50], field = R[20*N + 20];
+         check( "a spike tip is not left behind (residual " + tip.toFixed( 4 ) + ")", Math.abs( tip - 0.02 ) < 0.004, true );
+         var under = R[( c + 10 )*N + c + 10];
+         check( "where the star was, its background remains -- no dark hole (" + under.toFixed( 4 ) + ")", Math.abs( under - 0.02 ) < 0.002, true );
+         check( "and outside its footprint nothing changes (" + field.toFixed( 4 ) + ")", Math.abs( field - 0.02 ) < 0.002, true );
+         var neb = ( c + 30 )*N + c + 30;
+         check( "nebula between the spikes stays where it is (" + R[neb].toFixed( 4 ) + " of " + buf[neb].toFixed( 4 ) + ")",
+                Math.abs( R[neb] - buf[neb] ) < 0.001, true );
+         var sum = 0, worst = 0, rw = s.rect.x1 - s.rect.x0;
+         for ( y = s.rect.y0; y < s.rect.y1; ++y ) for ( x = s.rect.x0; x < s.rect.x1; ++x )
+            worst = Math.max( worst, Math.abs( s.pixels[0][( y - s.rect.y0 )*rw + x - s.rect.x0] + R[y*N + x] - buf[y*N + x] ) );
+         check( "sprite plus residual is the stars layer exactly (worst " + worst.toExponential( 1 ) + ")", worst < 1e-6, true );
+      }
+      finally { win.forceClose(); }
+   } )();
+
+   /*
+    * A vertical image is never cut to a horizontal band: for a landscape
+    * preset it is turned 90 degrees, so its long side runs along the frame's
+    * (and the reverse for a vertical preset on a landscape image).
+    */
+   check( "portrait image, landscape preset: rotate", Fly.needsRotation( 3000, 5000, 3840, 2160 ), true );
+   check( "portrait image, vertical preset: as it is", Fly.needsRotation( 3000, 5000, 1080, 1920 ), false );
+   check( "landscape image, vertical preset: rotate", Fly.needsRotation( 5000, 3000, 1080, 1920 ), true );
+   check( "a square preset never rotates", Fly.needsRotation( 3000, 5000, 1080, 1080 ), false );
+   check( "a portrait image's long side feeds 3840", Math.abs( Fly.workingScale( 7669, 11957 ) - 3840/11957 ) < 1e-12, true );
+   ( function()
+   {
+      // a 3x2 scene: rotating 90 degrees moves pixel (x, y) to (h - 1 - y, x)
+      var sc = { w: 3, h: 2, nc: 1, S: [ new Float32Array( [ 1, 2, 3, 4, 5, 6 ] ) ], R: [ new Float32Array( [ 10, 20, 30, 40, 50, 60 ] ) ],
+                 tp: { x: 2, y: 1 }, target: { ra: 1, dec: 1 }, D: 900,
+                 project: function( ra, dec ) { return { x: ra, y: dec }; },
+                 sprites: [ { s: { det: { x: 2, y: 0 }, rect: { x0: 1, y0: 0, x1: 3, y1: 1 }, pixels: [ new Float32Array( [ 7, 8 ] ) ],
+                                   source: { ra: 2, dec: 0 }, d: 100 }, p0: { x: 2, y: 0 } } ] };
+      var r = Render.rotateScene( sc );
+      check( "rotated size", [ r.w, r.h ], [ 2, 3 ] );
+      check( "rotated backdrop", Array.from( r.S[0] ), [ 4, 1, 5, 2, 6, 3 ] );
+      check( "rotated residual", Array.from( r.R[0] ), [ 40, 10, 50, 20, 60, 30 ] );
+      check( "rotated aim point", r.tp, { x: 0, y: 2 } );
+      check( "rotated projection", r.project( 2, 0 ), { x: 1, y: 2 } );
+      var s = r.sprites[0].s;
+      check( "a rotated sprite: centre, footprint and pixels", [ s.det.x, s.det.y, s.rect, Array.from( s.pixels[0] ) ],
+             [ 1, 2, { x0: 1, y0: 1, x1: 2, y1: 3 }, [ 7, 8 ] ] );
+      var back = Render.rotateScene( Render.rotateScene( Render.rotateScene( r ) ) );
+      check( "four quarter turns are the identity", [ Array.from( back.S[0] ), back.sprites[0].s.det ], [ [ 1, 2, 3, 4, 5, 6 ], { x: 2, y: 0 } ] );
+   } )();
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-rotate" ), fx = flyTestScene( dir );
+      try
+      {
+         var res = FlyThrough.renderFinal( fx.scene, [ { id: "tall", w: 600, h: 800, pingPong: false } ],
+            { travel: 150, easing: "linear", growth: 0.15, brightening: true, duration: 0.1, fps: 10, video: false,
+              output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) }, dir, {} );
+         var f = ImageWindow.open( dir + "/tall/frame_00000.tif" )[0], got = new Float32Array( 600*800 ), src = new Float32Array( 800*600 );
+         f.mainView.image.getSamples( got ); fx.image.mainView.image.getSamples( src );
+         var worst = 0;
+         for ( var y = 0; y < 600; ++y ) for ( var x = 0; x < 800; ++x )
+            worst = Math.max( worst, Math.abs( got[x*600 + ( 599 - y )] - src[y*800 + x] ) );
+         check( "a landscape image in a portrait preset is turned, whole, not cut (worst " + worst.toExponential( 1 ) + ")", worst <= 1/65535 + 1e-6, true );
+         f.forceClose();
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * One star, one sprite. A bright star's diffraction spikes cross faint
+    * stars that Gaia knows; each became a sprite of its own, took a piece of
+    * the spike and flew off at its own distance -- the bright star tore
+    * apart as it neared the camera (seen frame by frame on a real render).
+    * A star whose centre lies within a brighter moving star's reach is not
+    * a sprite; it moves with the bright one.
+    */
+   ( function()
+   {
+      function det( x, y, flux, area ) { return { x: x, y: y, nmax: 0, flux: flux, rect: Fly.detectionRect( x, y, area ) }; }
+      var bright = det( 50, 50, 120, 150 ), onSpike = det( 64, 50, 2, 5 ), apart = det( 90, 90, 3, 5 );
+      var P = function( x, y, G, d ) { return { source: { G: G }, d: d, x: x, y: y }; };
+      var halo = function( d ) { var r = d === bright ? 20 : 3; d.halo = { radius: r, pedestal: 0, feather: 2, outer: r + 2 }; return r + 2; };
+      var a = Fly.assignSprites( [ bright, onSpike, apart ], [ P( 50, 50, 9, 400 ), P( 64, 50, 15, 150 ), P( 90, 90, 14, 700 ) ], 120, 120, 3, [], halo );
+      var ids = a.sprites.map( function( s ) { return s.det; } );
+      check( "the star on the bright star's spike is not a sprite of its own", ids.indexOf( onSpike ), -1 );
+      check( "the bright star and a star well away both are", [ ids.indexOf( bright ) >= 0, ids.indexOf( apart ) >= 0 ], [ true, true ] );
+      check( "the spike star's pixels move with the bright star", a.owner[50*120 + 64], ids.indexOf( bright ) );
+      check( "and it is counted", a.absorbed, 1 );
+   } )();
+
+   /*
+    * Absorption follows the star's shape: its halo, and its spikes -- not a
+    * circle as long as its longest spike, which would carry off every faint
+    * star within 100 px of a bright one.
+    */
+   ( function()
+   {
+      function det( x, y, flux ) { return { x: x, y: y, nmax: 0, flux: flux, rect: Fly.detectionRect( x, y, 5 ) }; }
+      var b = det( 100, 100, 120 );
+      b.halo = { radius: 80, halo: 15, pedestal: 0, feather: 12, outer: 92, spikes: [ { angle: 0, reach: 80 } ] };
+      var onSpike = det( 150, 100, 2 ), offSpike = det( 100, 150, 2 );
+      check( "a star on a spike is within the bright star's reach", Fly.withinReach( b, onSpike ), true );
+      check( "a star as far out but off the spikes is not", Fly.withinReach( b, offSpike ), false );
+      check( "a star inside the halo is", Fly.withinReach( b, det( 110, 105, 2 ) ), true );
+   } )();
+
+   /*
+    * The camera flies into the middle of the picture -- the photographer's
+    * composition -- whatever the catalogue's centre for the target (IC 1396's
+    * is inside the Elephant's Trunk frame but far off its middle, and the
+    * flight veered left). The target still sets the distance.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = Sky.querySources, w = null;
+      try
+      {
+         Sky.querySources = function() { return [ { ra: 324.7, dec: 57.5, plx: 1, pmra: 0, pmdec: 0, G: 12 } ]; };
+         w = ImageWindow.open( synthFrame( synthDir( "fly-aim-centre" ) + "/f.xisf", { fwhm: 3, background: 0.05, noise: 0.002, seed: 3, stars: 50 } ) )[0];
+         withTanKeywords( w, 324.745 + 0.1, 57.514, 0.0005 );     // IC 1396's centre inside the frame, off its middle
+         var id = FlyThrough.identify( w, { distance: 900 } );
+         check( "a target inside the frame, off its middle: the camera still aims at the middle",
+                [ id.target && id.target.id, Fly.separation( id.aim, id.field.centre ) < 1e-6 ], [ "IC1396", true ] );
+      }
+      finally { Sky.querySources = saved; if ( w ) w.forceClose(); }
+   } )();
+
+   /*
+    * How much the nebula zooms: a share of the physically correct zoom
+    * D/(D - s). At its true distance the Elephant's Trunk grew 1.25x over the
+    * clip, which was far too much to watch; the stars keep their real motion.
+    */
+   check( "nebula motion 100% is the physical zoom", Math.abs( Fly.backdropZoom( 900, 180, 1 ) - 900/720 ) < 1e-12, true );
+   check( "40% is 40% of the growth", Math.abs( Fly.backdropZoom( 900, 180, 0.4 ) - ( 1 + 0.4*( 900/720 - 1 ) ) ) < 1e-12, true );
+   check( "0% holds the nebula still", Fly.backdropZoom( 900, 180, 0 ), 1 );
+   check( "a galaxy is still fixed", Fly.backdropZoom( Infinity, 180, 1 ), 1 );
+   check( "the default is 40%", Fly.BACKDROP_MOTION_DEFAULT, 0.4 );
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var fx = flyTestScene( synthDir( "fly-nebula-setting" ) ), dlg = null;
+      try
+      {
+         dlg = new FlyThrough.Dialog( fx.image );
+         check( "the dialog offers the nebula motion, at 40%", [ dlg.nebulaSpin.value, dlg.options().backdropMotion ], [ 40, 0.4 ] );
+      }
+      finally { if ( dlg ) dlg.release(); fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * The brightest star of a real field (G 5.6) was not detected at all --
+    * saturated and huge, the detector rejects it -- so it stayed still,
+    * while a faint Gaia star in its glow became a sprite and carried a
+    * chunk of it away. Bright Gaia stars with no detection get one, and a
+    * faint star in any brighter star's reach, moving or not, is no sprite.
+    */
+   ( function()
+   {
+      function det( x, y, flux, area ) { return { x: x, y: y, nmax: 0, flux: flux, rect: Fly.detectionRect( x, y, area || 5 ) }; }
+      var dets = [ det( 20, 20, 5 ) ];
+      var nb = [ { source: { G: 5.6 }, x: 60.4, y: 40.2 }, { source: { G: 14 }, x: 90, y: 90 }, { source: { G: 8 }, x: 20.5, y: 20.3 } ];
+      var added = Fly.addMissingBright( dets, nb, function( x, y ) { return { flux: 900, area: 400 }; } );
+      check( "a bright Gaia star with no detection gets one, at its Gaia position",
+             added.length == 2 && added[1].x == 60.4 && added[1].y == 40.2 && added[1].flux == 900, true );
+      check( "a faint one does not, nor one already detected", added.length, 2 );
+
+      var still = det( 50, 50, 300, 300 ), faint = det( 70, 50, 3 );     // in the glow, clear of the core: not a blend
+      var halo = function( d ) { var r = d === still ? 25 : 3; d.halo = { radius: r, halo: r, pedestal: 0, feather: 2, outer: r + 2 }; return r + 2; };
+      var P = function( x, y ) { return { source: { G: 15 }, d: 200, x: x, y: y }; };
+      var a = Fly.assignSprites( [ still, faint ], [ P( 70, 50 ) ], 120, 120, 3, [], halo );   // the bright one is not placed
+      check( "a faint star in a still bright star's glow is not a sprite", a.sprites.length, 0 );
+      check( "and the bright star's light stays whole", a.owner[50*120 + 70], -1 );
+   } )();
+
+   /*
+    * What a star leaves behind must look like the sky around it. Taking
+    * max(0, stars - background) removed only the upward noise and left a
+    * darker disc, and faint stars inside a bright star's glow left with it,
+    * leaving an emptier one (both seen on two different real images). The
+    * sprite carries a lightly smoothed profile, so the noise stays; faint
+    * stars in the glow stay too, the glow under them filled from its profile.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 400, c = 200, rnd = synthRandom( 17 ), win = new ImageWindow( N, N, 1, 32, true, false, Util.freeWindowId( "fly_leave" ) );
+      try
+      {
+         var buf = new Float32Array( N*N ), clean = new Float32Array( N*N );
+         for ( var y = 0; y < N; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var r2 = ( x - c )*( x - c ) + ( y - c )*( y - c ), f2 = ( x - c - 15 )*( x - c - 15 ) + ( y - c )*( y - c );
+            var u = Math.max( 1e-12, rnd() ), v = rnd(), n = 0.004*Math.sqrt( -2*Math.log( u ) )*Math.cos( 2*Math.PI*v );
+            clean[y*N + x] = 0.02 + 0.9*Math.pow( 1 + r2/36, -1.5 ) + 0.1*Math.exp( -f2/2 );    // a bright star's wide glow
+            buf[y*N + x] = Math.max( 0, clean[y*N + x] + n );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         var sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c } ], 3, [] );
+         var s = sp.sprites[0], R = sp.residual[0], inside = 0, outside = 0, ni = 0, no = 0;
+         for ( y = 0; y < N; ++y ) for ( x = 0; x < N; ++x )
+         {
+            var d = Math.hypot( x - c, y - c ), fd = Math.hypot( x - c - 15, y - c );
+            if ( fd < 4 ) continue;
+            if ( d > 6 && d < s.det.halo.halo ) { inside += R[y*N + x]; ++ni; }
+            else if ( d > s.radius + 4 && d < s.radius + 30 ) { outside += R[y*N + x]; ++no; }
+         }
+         var bias = inside/ni - outside/no;
+         check( "where the star was, the sky is as bright as around it (difference " + ( bias/0.004 ).toFixed( 2 ) + " sigma)", Math.abs( bias ) < 0.25*0.004, true );
+         var fi = c*N + c + 15;
+         check( "a faint star in the glow stays where it is (" + R[fi].toFixed( 3 ) + " of " + buf[fi].toFixed( 3 ) + ")", R[fi] - 0.02 > 0.04, true );
+         var rw = s.rect.x1 - s.rect.x0, at = function( x, y ) { return s.pixels[0][( y - s.rect.y0 )*rw + x - s.rect.x0]; };
+         check( "and the moving glow has no hole under it (" + at( c + 15, c ).toFixed( 4 ) + " vs " + at( c, c - 15 ).toFixed( 4 ) + " at the same radius)",
+                Math.abs( at( c + 15, c ) - at( c, c - 15 ) ) < 0.01, true );
+      }
+      finally { win.forceClose(); }
+   } )();
+
+   /* An image with an alpha channel (an RGBA TIFF export) works as RGB: alpha is not a colour. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = new ImageWindow( 32, 16, 4, 32, true, true, Util.freeWindowId( "fly_rgba" ) ), work = null;
+      try
+      {
+         w.mainView.beginProcess( UndoFlag_NoSwapFile ); w.mainView.image.fill( 0.3 ); w.mainView.endProcess();
+         work = Sky.workingCopy( w );
+         check( "an RGBA image's working copy is RGB", work.window.mainView.image.numberOfChannels, 3 );
+      }
+      finally { if ( work ) work.window.forceClose(); w.forceClose(); }
+   } )();
+
+   /*
+    * A linear (unstretched) master renders as a black video: its sky sits
+    * near 0.001-0.01, where a finished image's is ~0.05-0.25 (a real master
+    * rendered black). Such an image is stretched in the working copy, with
+    * Loom's own stretch, and the dialog says so.
+    */
+   check( "a sky at 0.004 is linear", Fly.looksLinear( 0.004 ), true );
+   check( "a sky at 0.08 is a finished image", Fly.looksLinear( 0.08 ), false );
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var lin = ImageWindow.open( synthFrame( synthDir( "fly-linear" ) + "/lin.xisf", { fwhm: 3, background: 0.002, noise: 0.0003, seed: 4, stars: 80, flux: 0.2 } ) )[0];
+      var fin = ImageWindow.open( synthFrame( synthDir( "fly-linear" ) + "/fin.xisf", { fwhm: 3, background: 0.08, noise: 0.004, seed: 4, stars: 80 } ) )[0], a = null, b = null;
+      try
+      {
+         a = Sky.workingCopy( lin ); b = Sky.workingCopy( fin );
+         var sa = Sky.stretchIfLinear( a.window ), sb = Sky.stretchIfLinear( b.window );
+         check( "a linear image is stretched (sky " + a.window.mainView.image.median().toFixed( 3 ) + ")", [ sa, a.window.mainView.image.median() > 0.1 ], [ true, true ] );
+         check( "a finished image is left as it is", [ sb, Math.abs( b.window.mainView.image.median() - fin.mainView.image.median() ) < 1e-6 ], [ false, true ] );
+      }
+      finally { [ a && a.window, b && b.window, lin, fin ].forEach( function( w ) { if ( w ) w.forceClose(); } ); }
+   } )();
+
+   /* ---- Deblending: splitting light between stars by model ------------- */
+   ( function()
+   {
+      function near( a, b, e ) { return Math.abs( a - b ) <= e; }
+      // an angular profile (1 degree bins) with spikes at 45 and 135 degrees (both ways) and noise
+      var rnd = synthRandom( 3 ), prof = [];
+      for ( var a = 0; a < 360; ++a )
+      {
+         var v = 0.002*( rnd() - 0.5 );
+         [ 45, 135, 225, 315 ].forEach( function( s ) { var d = Math.min( Math.abs( a - s ), 360 - Math.abs( a - s ) ); v += 0.05*Math.exp( -d*d/2 ); } );
+         prof.push( v );
+      }
+      var ang = Fly.spikeAngles( prof, 0.001 );
+      check( "spike directions are found where the profile peaks", ang, [ 45, 135, 225, 315 ] );
+      var flat = prof.map( function() { return 0.002*( rnd() - 0.5 ); } );
+      check( "an image without spikes has none", Fly.spikeAngles( flat, 0.001 ), [] );
+      // a neighbouring star on one side is not a spike: spikes are lines through the star
+      var oneSided = flat.map( function( v, a ) { var d = Math.min( Math.abs( a - 10 ), 360 - Math.abs( a - 10 ) ); return v + 0.05*Math.exp( -d*d/2 ); } );
+      check( "a peak with no opposite is a neighbour, not a spike", Fly.spikeAngles( oneSided, 0.001 ), [] );
+
+      // the split: data shared by model where stars are bright; the model itself where they fade into the noise
+      var bright = Fly.deblend( 0.6, 0.8, 1.0, 0.004 );         // Mi, Msum, L (light), sigma
+      check( "where stars are bright, a star takes its model's share of the data", near( bright, 0.6/0.8*1.0, 1e-9 ), true );
+      var faint = Fly.deblend( 0.001, 0.001, 0.0045, 0.004 );
+      check( "where a star has faded into the noise, it takes only its model (the noise stays)", near( faint, 0.001, 1e-9 ), true );
+      var shares = Fly.deblend( 0.3, 0.5, 0.7, 0.004 ) + Fly.deblend( 0.2, 0.5, 0.7, 0.004 );
+      check( "the shares of the stars at a pixel add up to its light", near( shares, 0.7, 1e-9 ), true );
+      check( "no model, no light", Fly.deblend( 0, 0, 0.5, 0.004 ), 0 );
+      // light far beyond what the models there predict is something no model knows (a brighter
+      // star's spike past its reach): a faint star took all of it and flew off with a bar of spike
+      check( "a star does not take light far beyond its model", Fly.deblend( 0.01, 0.01, 1.0, 0.004 ) <= 0.01*Fly.DEBLEND_CAP + 1e-12, true );
+   } )();
+
+   /*
+    * A star's profile stands on its LOCAL sky. Measured above a global sky,
+    * a small local offset in the stars layer kept faint stars' profiles
+    * from ever fading, and models grew to the cap (a real image: median
+    * reach 126 px). The profile ends where it stops falling, and that level
+    * is its sky.
+    */
+   ( function()
+   {
+      var raw = [];
+      for ( var r = 0; r < 150; ++r ) raw.push( 0.003 + 0.2*Math.exp( -r*r/8 ) );     // a faint star on a sky 0.003 above the global one
+      var p = Fly.localProfile( raw, 4, 0.0004 );
+      check( "the profile ends where it stops falling (" + p.rmax + ")", p.rmax < 15, true );
+      check( "and stands on that local sky", Math.abs( p.sky - 0.003 ) < 0.0005, true );
+      check( "so the model falls to zero at its edge", p.prof[p.rmax - 1] < 0.001, true );
+   } )();
+
+   /*
+    * Is it a star? A star is a local peak of the image. A second detection
+    * on a bright star's core, or a bead on its spike, has brighter pixels
+    * toward that star; given a model of its own it never moved and kept part
+    * of the moving star's light (a ghost core and spike, seen on a real image).
+    */
+   ( function()
+   {
+      var g = function( x, y, cx, cy, a, s ) { return a*Math.exp( -( ( x - cx )*( x - cx ) + ( y - cy )*( y - cy ) )/( 2*s*s ) ); };
+      var halo = function( x, y ) { return g( x, y, 50, 50, 1, 6 ); };
+      check( "a star's centre is a peak", Fly.localPeak( halo, 50, 50, 4 ), true );
+      check( "a point on its slope is not", Fly.localPeak( halo, 58, 50, 4 ), false );
+      var withFaint = function( x, y ) { return halo( x, y ) + g( x, y, 72, 50, 0.05, 1.5 ); };
+      check( "a faint star on the halo's edge is", Fly.localPeak( withFaint, 72, 50, 4 ), true );
+      var spike = function( x, y ) { return halo( x, y ) + ( x > 50 && Math.abs( y - 50 ) < 1 ? 0.3*Math.exp( -( x - 50 )/30 ) : 0 ); };
+      check( "a bead on a spike is not", Fly.localPeak( spike, 70, 50, 4 ), false );
+      // a real star on a steep glow: two FWHM toward the glow is brighter than its peak, one is not
+      var steep = function( x, y ) { var r2 = ( x - 50 )*( x - 50 ) + ( y - 50 )*( y - 50 ); return 0.9*Math.pow( 1 + r2/36, -1.5 ) + g( x, y, 65, 50, 0.1, 1 ); };
+      var onGlow = { x: 65, y: 50, flux: 0.6, rect: Fly.detectionRect( 65, 50, Math.PI*4 ) };
+      check( "a real star on a steep glow is not a fragment", Fly.isFragment( onGlow, [ { x: 50, y: 50, flux: 50, rect: Fly.detectionRect( 50, 50, Math.PI*36 ) }, onGlow ], steep, 3 ), false );
+      // a saturated core: flat at 1 out to 8 px, so every pixel there ties
+      var sat = function( x, y ) { return Math.min( 1, 3*halo( x, y ) ); };
+      var big = { x: 50, y: 50, flux: 100, rect: Fly.detectionRect( 50, 50, Math.PI*64 ) };
+      var frag = { x: 55, y: 50, flux: 20, rect: Fly.detectionRect( 55, 50, Math.PI*9 ) };
+      var real = { x: 72, y: 50, flux: 0.5, rect: Fly.detectionRect( 72, 50, Math.PI*4 ) };
+      check( "a detection inside a brighter star's flat core is a fragment", Fly.isFragment( frag, [ big, frag ], sat, 3 ), true );
+      check( "the bright star itself is not", Fly.isFragment( big, [ big, frag ], sat, 3 ), false );
+      check( "a real faint neighbour is not", Fly.isFragment( real, [ big, real ], withFaint, 3 ), false );
+      var onSlope = { x: 58, y: 50, flux: 5, rect: Fly.detectionRect( 58, 50, Math.PI*4 ) };
+      check( "a detection on the slope is a fragment", Fly.isFragment( onSlope, [ big, onSlope ], halo, 3 ), true );
+   } )();
+
+   /*
+    * An unresolved close pair: the detector sees one star between the two,
+    * and the second pass finds each one's peak in its core. Left as static
+    * sources they stayed behind as two dots where the star was (seen on a
+    * real image); inside a moving star's core they are part of that star.
+    */
+   ( function()
+   {
+      var model = { x: 100, y: 100, core: 6 }, sprites = [ { det: { model: model } } ];
+      var inCore = { x: 104.5, y: 100 }, outside = { x: 112, y: 100 };
+      var stay = Fly.attachToCores( sprites, [ inCore, outside ] );
+      check( "a missed source in a moving star's core goes with it", model.parts && model.parts[0] === inCore, true );
+      check( "one outside it stays", stay.length == 1 && stay[0] === outside, true );
+   } )();
+
+   /*
+    * Spike directions to a fraction of a degree. Read in whole degrees over
+    * a short band, a direction was up to half a degree off; followed 100 px
+    * out, the model lay beside the real spike and a thin line of it stayed
+    * behind (seen on a real image). Spikes here fall between whole degrees.
+    * A spike wider than the model's assumed width left its flanks behind the
+    * same way.
+    */
+   if ( IN_PIXINSIGHT ) [ [ 33.5, 0.7, "a spike between whole degrees" ], [ 30, 1.6, "a spike wider than the model's default" ] ].forEach( function( t )
+   {
+      var N = 320, c = 160, ang = t[0]*Math.PI/180, width = t[1], ca = Math.cos( ang ), sa = Math.sin( ang ), rnd = synthRandom( 31 );
+      var win = new ImageWindow( N, N, 1, 32, true, false, Util.freeWindowId( "fly_angle" ) );
+      try
+      {
+         var buf = new Float32Array( N*N );
+         for ( var y = 0; y < N; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var dx = x - c, dy = y - c, r2 = dx*dx + dy*dy, v = 0.02 + 0.9*Math.pow( 1 + r2/6, -2.5 );
+            [ [ ca, sa ], [ -sa, ca ] ].forEach( function( u )
+            {
+               var along = Math.abs( dx*u[0] + dy*u[1] ), lat = -dx*u[1] + dy*u[0];
+               if ( along > 6 && along < 140 ) v += 0.1*( 1 - along/140 )*Math.exp( -lat*lat/( 2*width*width ) );
+            } );
+            var p = Math.max( 1e-12, rnd() ), q = rnd();
+            buf[y*N + x] = Math.min( 1, Math.max( 0, v + 0.002*Math.sqrt( -2*Math.log( p ) )*Math.cos( 2*Math.PI*q ) ) );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         var sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c } ], 3, [] );
+         var R = sp.residual[0], worst = 0;
+         for ( var r = 60; r < 120; ++r )
+            for ( var l = -3; l <= 3; ++l )
+            {
+               var X = Math.round( c + r*ca - l*sa ), Y = Math.round( c + r*sa + l*ca );
+               worst = Math.max( worst, R[Y*N + X] - 0.02 );
+            }
+         check( t[2] + " is not left behind far out (" + ( worst/0.002 ).toFixed( 1 ) + " sigma)", worst < 4*0.002, true );
+      }
+      finally { win.forceClose(); }
+   } );
+
+   /* A spike's width from its lateral profile (samples every `step` px, centred), above its own baseline. */
+   ( function()
+   {
+      [ 0.7, 1.6, 2.5 ].forEach( function( sig )
+      {
+         var p = [];
+         for ( var l = -8; l <= 8 + 1e-9; l += 0.5 ) p.push( 0.3 + Math.exp( -l*l/( 2*sig*sig ) ) );
+         var got = Fly.lateralSigma( p, 0.5 );
+         check( "a spike " + sig + " px wide measures " + got.toFixed( 2 ), Math.abs( got - sig ) < 0.12*sig + 0.05, true );
+      } );
+      var flat = [];
+      for ( var l = -8; l <= 8 + 1e-9; l += 0.5 ) flat.push( 0.3 );
+      check( "no spike gives the default", Fly.lateralSigma( flat, 0.5 ), null );
+   } )();
+
+   /*
+    * A star on a brighter star's spike does not own a spike along it: the
+    * light there is the brighter star's. Measured as its own, that stretch
+    * of spike moved with the fainter star and tore off the bright one (seen
+    * in a real video).
+    */
+   ( function()
+   {
+      var model = function( x, y, spikes, rmax ) { return { x: x, y: y, rmax: rmax, spikeSigma: 1.4, support: 0, spikes: spikes.map( function( a ) { return { angle: a[0], start: 5, reach: a[1] }; } ) }; };
+      var bright = { flux: 100, model: model( 0, 0, [ [ 0, 120 ], [ Math.PI/2, 120 ] ], 40 ) };
+      var onSpike = { flux: 2, model: model( 50, 0.8, [ [ 0, 60 ], [ Math.PI, 60 ], [ Math.PI/2, 12 ] ], 8 ) };
+      var offSpike = { flux: 2, model: model( 50, 12, [ [ 0, 30 ] ], 8 ) };
+      Fly.dropBorrowedSpikes( [ onSpike, bright, offSpike ] );
+      check( "a star on a brighter spike loses its spikes along it", onSpike.model.spikes.map( function( s ) { return s.angle; } ).join(), String( Math.PI/2 ) );
+      check( "and its support shrinks to what is left (" + onSpike.model.support + ")", onSpike.model.support, 13 );
+      check( "the bright star keeps its own", bright.model.spikes.length, 2 );
+      check( "a star off the spike keeps its", offSpike.model.spikes.length, 1 );
+   } )();
+
+   /*
+    * A bright star's spikes run further than its halo: capped at the halo's
+    * 150 px, the rest was nobody's, and faint stars on it took it with them.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 640, c = 100, rnd = synthRandom( 41 ), win = new ImageWindow( N, 200, 1, 32, true, false, Util.freeWindowId( "fly_long" ) );
+      try
+      {
+         var buf = new Float32Array( N*200 );
+         for ( var y = 0; y < 200; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var dx = x - c, dy = y - c, r2 = dx*dx + dy*dy, v = 0.02 + 0.9*Math.pow( 1 + r2/6, -2.5 );
+            if ( Math.abs( dx ) > 6 ) v += 0.12*Math.max( 0, 1 - Math.abs( dx )/400 )*Math.exp( -dy*dy/( 2*1.2*1.2 ) );
+            if ( Math.abs( dy ) > 6 ) v += 0.12*Math.max( 0, 1 - Math.abs( dy )/400 )*Math.exp( -dx*dx/( 2*1.2*1.2 ) );
+            var p = Math.max( 1e-12, rnd() ), q = rnd();
+            buf[y*N + x] = Math.min( 1, Math.max( 0, v + 0.002*Math.sqrt( -2*Math.log( p ) )*Math.cos( 2*Math.PI*q ) ) );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         var sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c } ], 3, [] );
+         check( "the long-spiked star is a sprite", sp.sprites.length, 1 );
+         if ( !sp.sprites.length ) return;
+         var m = sp.sprites[0].det.model, reach = m.spikes.reduce( function( r, s ) { return Math.max( r, s.reach ); }, 0 );
+         check( "a long spike is followed past the halo's reach (" + reach + " of 400)", reach >= 300, true );
+      }
+      finally { win.forceClose(); }
+   } )();
+
+   /*
+    * Spikes are measured brightest star first, each fainter star's on the
+    * image with the brighter ones' spikes taken out. A faint moving star
+    * beside a bright star's spike measured that spike as its own, and flew
+    * off with a bar of it (seen in a real video).
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 240, c = 100, fx = 150, fy = 105, rnd = synthRandom( 43 ), win = new ImageWindow( N, N, 1, 32, true, false, Util.freeWindowId( "fly_borrow" ) );
+      try
+      {
+         var buf = new Float32Array( N*N );
+         for ( var y = 0; y < N; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var r2 = ( x - c )*( x - c ) + ( y - c )*( y - c ), v = 0.02 + 0.9*Math.pow( 1 + r2/6, -2.5 );
+            if ( r2 > 36 && r2 < 110*110 ) v += 0.1*( 1 - Math.sqrt( r2 )/110 )*( Math.exp( -( x - c )*( x - c )/4.5 ) + Math.exp( -( y - c )*( y - c )/4.5 ) );
+            var f2 = ( x - fx )*( x - fx ) + ( y - fy )*( y - fy );
+            v += 0.25*Math.pow( 1 + f2/3, -2 );
+            var p = Math.max( 1e-12, rnd() ), q = rnd();
+            buf[y*N + x] = Math.min( 1, Math.max( 0, v + 0.002*Math.sqrt( -2*Math.log( p ) )*Math.cos( 2*Math.PI*q ) ) );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         // the detections are given: StarDetector's own filters are not what is tested here
+         var detect = Sky.detections, sp;
+         Sky.detections = function() { return [ { index: 0, x: c, y: c, flux: 50, nmax: 0, rect: Fly.detectionRect( c, c, Math.PI*25 ) },
+                                                { index: 1, x: fx, y: fy, flux: 1, nmax: 0, rect: Fly.detectionRect( fx, fy, Math.PI*4 ) } ]; };
+         try { sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c }, { source: { G: 14, ra: 0, dec: 0 }, d: 50, x: fx, y: fy } ], 3, [] ); }
+         finally { Sky.detections = detect; }
+         var faint = sp.sprites.filter( function( s ) { return Math.abs( s.det.x - fx ) < 2; } )[0];
+         check( "the faint star beside the spike is a sprite (" + JSON.stringify( { n: sp.sprites.length, blended: sp.blended, unmatched: sp.unmatched, halo: sp.sprites[0] && sp.sprites[0].det.halo } ) + ")", !!faint, true );
+         if ( !faint ) return;
+         var along = faint.det.model.spikes.filter( function( s ) { var d = Math.abs( s.angle ) % Math.PI; return Math.min( d, Math.PI - d ) < 0.05; } );
+         check( "it has no spike along the bright star's (" + along.map( function( s ) { return s.reach; } ).join() + ")", along.length, 0 );
+      }
+      finally { win.forceClose(); }
+   } )();
+
+   /*
+    * Spikes are part of the PSF: every star's fall off the same way, scaled
+    * by the star. Each star's scale comes from its inner spike (a median, so
+    * a neighbour there does not count); the rest follows the image's
+    * falloff. Measured independently out to where it faded, a moderate
+    * star's spike ran as far as the brightest star's -- borrowing other
+    * stars' spikes and halos -- and flew off with them (seen in a real video).
+    */
+   ( function()
+   {
+      var rnd = synthRandom( 9 ), gauss = function() { var u = Math.max( 1e-12, rnd() ), v = rnd(); return Math.sqrt( -2*Math.log( u ) )*Math.cos( 2*Math.PI*v ); };
+      var T = [], sigma = 0.001;
+      for ( var r = 0; r < 400; ++r ) T.push( r < 5 ? 1 : 25/( r*r ) );          // the image's falloff (1 at r = 5)
+      var e = [], start = 10;
+      for ( var k = 0; k < 300; ++k )
+      {
+         var r = start + k;
+         e.push( 0.2*T[r] + ( k >= 80 && k < 150 ? 0.05 : 0 ) + 1.22*sigma*gauss() );   // a borrowed bar from 80 to 150
+      }
+      var f = Fly.fitSpike( e, T, start, sigma );
+      check( "a spike's scale comes from its inner part (" + f.scale.toFixed( 3 ) + " of 0.2)", Math.abs( f.scale - 0.2 ) < 0.02, true );
+      // 0.2*25/r^2 stays above the averaged threshold (3*1.22*sigma/sqrt(17)) out to r ~ 75, k ~ 65
+      check( "borrowed light further out does not lengthen it (" + f.reach + ")", f.reach >= 58 && f.reach <= 70, true );
+      check( "its amplitude follows the falloff", Math.abs( f.amp[20] - 0.2*T[30] ) < 0.02*T[30] + 1e-4, true );
+      var none = [];
+      for ( k = 0; k < 300; ++k ) none.push( 1.22*sigma*gauss() );
+      check( "noise is no spike", Fly.fitSpike( none, T, start, sigma ).reach, -1 );
+   } )();
+
+   /*
+    * The dialog opens without an image and the image is chosen in it -- a
+    * list of the open images, and Open... for a file -- rather than a file
+    * picker first. Choosing another image starts over.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-choose" ), fx = flyTestScene( dir ), other = null, dlg = null;
+      try
+      {
+         dlg = new FlyThrough.Dialog( null );
+         check( "the dialog opens with no image", dlg.imageWindow == null, true );
+         check( "with nothing to render yet", [ dlg.draftButton.enabled, dlg.renderButton.enabled ], [ false, false ] );
+         check( "and no Analyse button: choosing an image analyses it", dlg.analyseButton === undefined, true );
+         check( "it has a list of the open images and an Open button", !!dlg.imageList && !!dlg.openButton, true );
+         dlg.setImage( fx.image );
+         check( "choosing an image enables it", [ dlg.draftButton.enabled, dlg.renderButton.enabled ], [ true, true ] );
+         dlg.orientationCombo.currentItem = 1;
+         dlg.orientationCombo.onItemSelected( 1 );
+         check( "Vertical reaches the render options and the preset labels", [ dlg.options().orientation, dlg.presetChecks.youtube_1080.text.indexOf( "1080×1920" ) >= 0 ], [ "vertical", true ] );
+         dlg.orientationCombo.currentItem = 0;
+         dlg.orientationCombo.onItemSelected( 0 );
+         check( "and names it", dlg.imageLabel.text.indexOf( fx.image.mainView.id ) >= 0, true );
+         // changing the orientation re-drafts, so the preview shows the new frame
+         var redrafted = 0, realDraft = dlg.draft;
+         dlg.draft = function() { ++redrafted; };
+         dlg.hasDraft = true;
+         dlg.orientationCombo.currentItem = 1; dlg.orientationCombo.onItemSelected( 1 );
+         check( "changing the orientation re-drafts the preview", redrafted, 1 );
+         dlg.orientationCombo.currentItem = 0; dlg.orientationCombo.onItemSelected( 0 );
+         dlg.draft = realDraft; dlg.hasDraft = false;
+         // the star tool is remembered
+         var savedTool = Settings.read( FlyThrough.TOOL_SETTING, DataType_String );
+         try
+         {
+            if ( dlg.tools.length > 1 )
+            {
+               dlg.toolCombo.currentItem = 1; dlg.toolCombo.onItemSelected( 1 );
+               var again = new FlyThrough.Dialog( null );
+               try { check( "the star tool is remembered", again.toolCombo.currentItem, 1 ); }
+               finally { again.release(); }
+            }
+            else check( "the star tool setting is written", ( dlg.toolCombo.onItemSelected( 0 ), Settings.read( FlyThrough.TOOL_SETTING, DataType_String ) ), dlg.tools[0] );
+         }
+         finally { if ( savedTool != null ) Settings.write( FlyThrough.TOOL_SETTING, DataType_String, savedTool ); else Settings.remove( FlyThrough.TOOL_SETTING ); }
+         var still = dlg.player.frames[0];
+         check( "and shows it in the preview until there is a draft", dlg.player.frames.length == 1 && still.width <= FlyThrough.STILL_LONG && still.width >= fx.image.mainView.image.width/Math.ceil( fx.image.mainView.image.width/FlyThrough.STILL_LONG ) - 1, true );
+         dlg.id = { stale: true };
+         other = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_other" ) );
+         dlg.setImage( other );
+         check( "choosing another image starts over", [ dlg.imageWindow === other, dlg.id, dlg.work ], [ true, null, null ] );
+         check( "and asks for its solve hints (it has no solution)", dlg.needsHints, true );
+      }
+      finally
+      {
+         if ( dlg ) dlg.release();
+         if ( other ) other.forceClose();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+      var src = File.readTextFile( LOOM_DIR + "/FlyThrough.js" );
+      var main = src.substring( src.indexOf( "function main()" ) );
+      check( "main opens the dialog, not a file picker", main.indexOf( "OpenFileDialog" ), -1 );
+   } )();
+
+   /*
+    * Choosing an image gets it ready by itself: analysed (solved, target,
+    * distance) and its stars extracted, so the next step is Draft or
+    * Render. A nebula whose distance is not known stops after the analysis
+    * and asks for it.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-auto" ), fx = flyTestScene( dir ), dlg = null;
+      try
+      {
+         dlg = new FlyThrough.Dialog( null );
+         dlg.tools = dlg.tools.length ? dlg.tools : [ "StarNet2" ];
+         var calls = [];
+         dlg.analyse = function() { calls.push( "analyse" ); this.id = {}; this.typeCombo.currentItem = 1; };   // a galaxy
+         dlg.prepare = function() { calls.push( "prepare" ); return {}; };
+         dlg.makeDraft = function() { calls.push( "draft" ); };
+         dlg.chooseImage( fx.image );
+         check( "choosing an image schedules getting it ready", dlg.autoPending, true );
+         check( "and outputs next to the image by default", File.fullPath( dlg.folderEdit.text ), File.fullPath( File.extractDrive( fx.image.filePath ) + File.extractDirectory( fx.image.filePath ) ) );
+         var note = dlg.autoPrepare();
+         check( "it analyses, extracts the stars, then plays a draft", calls, [ "analyse", "prepare", "draft" ] );
+         check( "and says it is ready (" + note + ")", /ready/i.test( note ), true );
+         calls = [];
+         dlg.draft = function() { calls.push( "draft on play" ); };
+         dlg.playButton.onClick();
+         check( "Play with no draft yet makes one", calls, [ "draft on play" ] );
+         calls = [];
+         calls = [];
+         dlg.analyse = function() { calls.push( "analyse" ); this.id = {}; this.typeCombo.currentItem = 0; this.distanceEdit.text = ""; };
+         note = dlg.autoPrepare();
+         check( "a nebula without a distance stops after the analysis", calls, [ "analyse" ] );
+         check( "and asks for it (" + note + ")", /distance/i.test( note ), true );
+         // an unsolved image with nothing to solve from waits for its hints, without an error
+         var bare = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_bare" ) );
+         var savedFocal = Settings.read( FlyThrough.FOCAL_SETTING, DataType_String ), savedPixel = Settings.read( FlyThrough.PIXEL_SETTING, DataType_String );
+         try
+         {
+            calls = [];
+            dlg.chooseImage( bare );
+            dlg.raEdit.text = dlg.decEdit.text = dlg.objectEdit.text = "";
+            note = dlg.autoPrepare();
+            check( "an image with nothing to solve from is not analysed yet", calls, [] );
+            check( "the status asks for the hints (" + note + ")", /object/i.test( note ) && /focal/i.test( note ), true );
+            dlg.autoPending = false;
+            dlg.objectEdit.text = "Elephant Trunk"; dlg.lookUpObject();
+            check( "the Object box finds a name and fills the centre (" + dlg.objectMatch.text + ")", [ /IC1396A/.test( dlg.objectMatch.text ), dlg.raEdit.text, dlg.decEdit.text ], [ true, "324.0000", "57.5000" ] );
+            dlg.focalEdit.text = "400"; dlg.pixelEdit.text = "3.76";
+            dlg.hintsEdited();
+            check( "complete hints start it by themselves", dlg.autoPending, true );
+            dlg.chooseImage( bare );
+            check( "the focal length and pixel size are remembered", [ dlg.focalEdit.text, dlg.pixelEdit.text ], [ "400", "3.76" ] );
+         }
+         finally
+         {
+            bare.forceClose();
+            // the user's own remembered rig is theirs: put it back
+            if ( savedFocal != null ) Settings.write( FlyThrough.FOCAL_SETTING, DataType_String, savedFocal ); else Settings.remove( FlyThrough.FOCAL_SETTING );
+            if ( savedPixel != null ) Settings.write( FlyThrough.PIXEL_SETTING, DataType_String, savedPixel ); else Settings.remove( FlyThrough.PIXEL_SETTING );
+         }
+      }
+      finally
+      {
+         if ( dlg ) dlg.release();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
+   /*
+    * The Object box finds what a person types: catalogue ids however they
+    * are spaced, Messier numbers, common names -- the catalogue's own and a
+    * table of popular ones it lacks -- with typos forgiven.
+    */
+   ( function()
+   {
+      var csv = "id,alpha,delta,magnitude,diameter,axisRatio,posAngle,Common name,PGC,PGC2,Messier\n" +
+                "NGC7000,314.695833,44.330000,,120.00,,,North America Nebula,,,\n" +
+                "IC5070,312.750000,44.366667,,80.00,,,Pelican Nebula,,,\n" +
+                "IC1396,324.745000,57.514000,3.50,170.00,,,,,,\n" +
+                "NGC5907,228.973696,56.328850,11.40,11.22,7.96,156,,PGC54470,,\n" +
+                "NGC224,10.684708,41.268750,4.36,177.83,3.09,35,Andromeda Galaxy,PGC2557,,M31\n";
+      var entries = Fly.parseNgcIc( csv );
+      var top = function( q ) { var r = Fly.findObject( q, entries ); return r.length ? r[0].id : null; };
+      check( "an id however it is spaced", [ top( "NGC 5907" ), top( "ngc5907" ), top( " ic 1396 " ) ], [ "NGC5907", "NGC5907", "IC1396" ] );
+      check( "a Messier number", [ top( "M31" ), top( "m 31" ), top( "Messier 31" ) ], [ "NGC224", "NGC224", "NGC224" ] );
+      check( "the catalogue's common names", [ top( "North America" ), top( "pelican nebula" ), top( "andromeda" ) ], [ "NGC7000", "IC5070", "NGC224" ] );
+      check( "popular names it lacks", [ top( "Elephant Trunk" ), top( "elephant's trunk nebula" ), top( "Splinter galaxy" ) ], [ "IC1396A", "IC1396A", "NGC5907" ] );
+      check( "with typos forgiven", [ top( "elefant trunk" ), top( "north amerika" ), top( "andromida" ) ], [ "IC1396A", "NGC7000", "NGC224" ] );
+      var trunk = Fly.findObject( "Elephant Trunk", entries )[0];
+      check( "a named part of a larger object has its own position", Fly.separation( trunk, { ra: 324.0, dec: 57.5 } ) < 0.2, true );
+      check( "and says what it is", /elephant/i.test( trunk.name ), true );
+      check( "nonsense finds nothing", Fly.findObject( "qwertyuiop", entries ).length, 0 );
+   } )();
+
+   /* Vertical turns the widescreen presets portrait (their folders apart); social and square stay as they are. */
+   ( function()
+   {
+      var v = Fly.presetSpec( "youtube_1080", "vertical" ), h = Fly.presetSpec( "youtube_1080", "horizontal" );
+      check( "vertical 1080p is 1080x1920", [ v.w, v.h ], [ 1080, 1920 ] );
+      check( "in a folder of its own", v.id != h.id && /vertical/.test( v.id ), true );
+      check( "horizontal is the default", [ Fly.presetSpec( "youtube_4k" ).w, Fly.presetSpec( "youtube_4k" ).h, Fly.presetSpec( "youtube_4k" ).id ], [ 3840, 2160, "youtube_4k" ] );
+      check( "the exhibition loop turns too, and still loops", [ Fly.presetSpec( "exhibition", "vertical" ).w, Fly.presetSpec( "exhibition", "vertical" ).pingPong ], [ 2160, true ] );
+      check( "social presets keep their shape", [ Fly.presetSpec( "social_vertical", "horizontal" ).w, Fly.presetSpec( "social_square", "vertical" ).w ], [ 1080, 1080 ] );
+   } )();
+
+   /*
+    * A crossfade loop: the clip plays forward, and over its first F frames
+    * fades from the end of a flight F frames longer into its start, so the
+    * last frame runs on into the first -- no reversal, no jump.
+    */
+   ( function()
+   {
+      var n = 100, F = 20, L = n + F, T = function( j ) { return j/( L - 1 ); };
+      var near = function( a, b, tol ) { return Math.abs( a - b ) <= tol; };
+      var f0 = Fly.loopFrame( 0, n, F ), fl = Fly.loopFrame( n - 1, n, F ), f10 = Fly.loopFrame( 10, n, F ), fF = Fly.loopFrame( F, n, F );
+      check( "the first frame is the flight's next step after the last", [ f0.alpha, near( f0.b, T( n ), 1e-12 ), near( fl.a, T( n - 1 ), 1e-12 ), fl.alpha ], [ 0, true, true, 1 ] );
+      check( "halfway through the fade it is half and half", [ f10.alpha, near( f10.a, T( 10 ), 1e-12 ), near( f10.b, T( 10 + n ), 1e-12 ) ], [ 0.5, true, true ] );
+      check( "after the fade it is the flight alone", [ fF.alpha, fF.b ], [ 1, null ] );
+      check( "the fade is 2 s, or a quarter of a short clip", [ Fly.crossfadeFrames( 20, 30 ), Fly.crossfadeFrames( 4, 30 ) ], [ 60, 30 ] );
+      var cf = Fly.presetSpec( "exhibition", "horizontal", "crossfade" ), pp = Fly.presetSpec( "exhibition" );
+      check( "the exhibition loop can crossfade instead of going back and forth", [ cf.crossfade, cf.pingPong, pp.pingPong, !!pp.crossfade ], [ true, false, true, false ] );
+      check( "a crossfade loop is as long as the clip", Fly.frameCount( 20, 30, cf.pingPong ), 600 );
+      check( "the flight time between frames", [ Fly.frameStep( 11, 0, false ), Fly.frameStep( 10, 0, true ), Fly.frameStep( 100, 21, false ) ], [ 0.1, 0.2, 1/120 ] );
+      check( "a preset keeps its own name for its settings whatever its folder", Fly.presetSpec( "exhibition", "vertical" ).preset, "exhibition" );
+   } )();
+
+   /* A crossfade-loop frame is the two frames mixed (Render.blend); outside the fade it is the flight's own frame. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var near = function( p, q, tol ) { return Math.abs( p - q ) <= tol; };
+      var a = new Image( 4, 2, 3 ), b = new Image( 4, 2, 3 );
+      try
+      {
+         a.fill( 0.8 ); b.fill( 0.2 );
+         Render.blend( a, b, 0.25 );
+         check( "a blend mixes alpha of the first with the rest of the second", near( a.sample( 1, 1, 2 ), 0.25*0.8 + 0.75*0.2, 1e-6 ), true );
+      }
+      finally { a.free(); b.free(); }
+      var dir = synthDir( "fly-xfade" ), fx = flyTestScene( dir );
+      try
+      {
+         var spec = { id: "x", preset: "x", w: 160, h: 90, pingPong: false, crossfade: true }, o = { travel: 150, easing: "linear", growth: 0.15, brightening: true, duration: 1, fps: 10,
+                    output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) };
+         var ps = Render.sceneFor( fx.scene, spec.w, spec.h ), crop = Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, spec.w, spec.h );
+         var n = 10, F = 3, first = FlyThrough.loopImage( ps, 0, n, F, o, spec.w, spec.h, crop ), end = Render.frame( ps, Fly.loopFrame( 0, n, F ).b, o, spec.w, spec.h, crop );
+         var late = FlyThrough.loopImage( ps, 5, n, F, o, spec.w, spec.h, crop ), own = Render.frame( ps, Fly.loopFrame( 5, n, F ).a, o, spec.w, spec.h, crop );
+         var diff = function( p, q ) { var m = 0; for ( var y = 0; y < p.height; y += 7 ) for ( var x = 0; x < p.width; x += 7 ) m = Math.max( m, Math.abs( p.sample( x, y, 0 ) - q.sample( x, y, 0 ) ) ); return m; };
+         check( "the loop's first frame is the flight past its end", diff( first, end ) < 1e-6, true );
+         check( "after the fade a frame is the flight's own", diff( late, own ) < 1e-6, true );
+         [ first, end, late, own ].forEach( function( i ) { i.free(); } );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * Stars up close. A sprite magnified whole looked like a soft blob: a
+    * star is a point, and what grows as it nears is its glow and spikes.
+    * The core stays at its size (brighter); only light beyond it is
+    * stretched outward (Fly.radialSource). Motion blur spreads a star over
+    * the path it covers while the shutter is open (Fly.shutterSteps).
+    * Twinkle -- not physical, space has no air -- is a slow per-star wobble
+    * that is exactly 1 at the first frame (Fly.twinkle).
+    */
+   ( function()
+   {
+      check( "inside the core a sprite is not magnified", Fly.radialSource( 3, 5, 2 ), 3 );
+      check( "beyond it, light is stretched outward", Fly.radialSource( 25, 5, 2 ), 15 );
+      check( "at growth 1 nothing moves", Fly.radialSource( 25, 5, 1 ), 25 );
+      check( "a still star is drawn once", Fly.shutterSteps( 0.2 ), 1 );
+      check( "a fast one along its path, a step per ~0.75 px", Fly.shutterSteps( 6 ), 8 );
+      check( "at most 12 steps", Fly.shutterSteps( 100 ), 12 );
+      var w = [], seed = 17;
+      for ( var k = 0; k <= 300; ++k ) w.push( Fly.twinkle( seed, k/30, 0.03, 0 ) );
+      check( "twinkle is exactly 1 at the first frame", w[0], 1 );
+      var lo = Math.min.apply( null, w ), hi = Math.max.apply( null, w );
+      check( "and wobbles by a few percent (" + lo.toFixed( 3 ) + ".." + hi.toFixed( 3 ) + ")", lo > 0.9 && hi < 1.1 && hi - lo > 0.02, true );
+      var jump = 0;
+      for ( k = 1; k < w.length; ++k ) jump = Math.max( jump, Math.abs( w[k] - w[k - 1] ) );
+      check( "slowly: never more than 1% between frames at 30 fps (" + jump.toFixed( 4 ) + ")", jump < 0.01, true );
+      check( "each star its own", Fly.twinkle( 1, 2.5, 0.03, 0 ) != Fly.twinkle( 2, 2.5, 0.03, 0 ), true );
+      check( "the colours shimmer a little apart", Fly.twinkle( 1, 2.5, 0.03, 0 ) != Fly.twinkle( 1, 2.5, 0.03, 2 ), true );
+      check( "and 0 is physical", Fly.twinkle( 1, 2.5, 0, 0 ), 1 );
+   } )();
+
+   /* Drawing a near star: the core keeps its size, light beyond it is stretched outward. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var R = 20, rw = 2*R + 1, patch = new Float32Array( rw*rw );
+      for ( var y = 0; y < rw; ++y ) for ( var x = 0; x < rw; ++x )
+      {
+         var r2 = ( x - R )*( x - R ) + ( y - R )*( y - R );
+         patch[y*rw + x] = Math.exp( -r2/( 2*1.5*1.5 ) ) + 0.05*Math.exp( -Math.sqrt( r2 )/6 );    // a core and a glow
+      }
+      var sp = { rect: { x0: 0, y0: 0, x1: rw, y1: rw }, det: { x: R, y: R } }, W = 161, cam = { x: 0, y: 0, fx: 1, fy: 1 };
+      var drawn = function( g ) { var acc = new Float32Array( W*W ); Render.drawSprite( acc, W, W, patch, sp, 80, 80, g, 1, cam, 1, 4 ); return acc; };
+      var one = drawn( 1 ), three = drawn( 3 );
+      var halfWidth = function( acc ) { var peak = acc[80*W + 80], x = 80; while ( acc[80*W + x] > peak/2 ) ++x; return x - 80; };
+      check( "grown 3x, the core keeps its width (" + halfWidth( one ) + " vs " + halfWidth( three ) + ")", halfWidth( three ), halfWidth( one ) );
+      var src = Render.patchSample( patch, rw, rw, R + Fly.radialSource( 16, 4, 3 ), R );
+      check( "and light 16 px out comes from the stretched radius", Math.abs( three[80*W + 96] - src ) < 1e-4, true );
+   } )();
+
+   /* Motion blur spreads a fast star along its path and keeps its light; frame 0 stays the image. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-blur" ), fx = flyTestScene( dir );
+      try
+      {
+         var o = { travel: 400, easing: "linear", growth: 0.15, brightening: false, duration: 2, fps: 10, frameDt: 1/19 };
+         var W = 320, H = 180, crop = Fly.presetCrop( fx.scene.w, fx.scene.h, fx.scene.tp.x, fx.scene.tp.y, W, H );
+         var still = Render.frame( fx.scene, 0.8, Object.assign( {}, o, { motionBlur: false } ), W, H, crop );
+         var blur = Render.frame( fx.scene, 0.8, Object.assign( {}, o, { motionBlur: true } ), W, H, crop );
+         var sum = function( img ) { var t = 0; for ( var y = 0; y < H; ++y ) for ( var x = 0; x < W; ++x ) t += img.sample( x, y, 0 ); return t; };
+         var diff = 0;
+         for ( var y = 0; y < H; y += 3 ) for ( var x = 0; x < W; x += 3 ) diff = Math.max( diff, Math.abs( still.sample( x, y, 0 ) - blur.sample( x, y, 0 ) ) );
+         check( "motion blur changes a fast frame", diff > 1e-3, true );
+         check( "and keeps its light (" + ( sum( blur )/sum( still ) ).toFixed( 3 ) + ")", Math.abs( sum( blur )/sum( still ) - 1 ) < 0.02, true );
+         still.free(); blur.free();
+         var f0 = Render.frame( fx.scene, 0, Object.assign( {}, o, { motionBlur: true, twinkle: 0.05, bloom: 1 } ), W, H, crop );
+         var p0 = Render.frame( fx.scene, 0, Object.assign( {}, o, { motionBlur: false, twinkle: 0 } ), W, H, crop );
+         var d0 = 0;
+         for ( y = 0; y < H; y += 2 ) for ( x = 0; x < W; x += 2 ) d0 = Math.max( d0, Math.abs( f0.sample( x, y, 0 ) - p0.sample( x, y, 0 ) ) );
+         check( "with blur, twinkle and bloom, frame 0 is untouched (" + d0.toExponential( 1 ) + ")", d0 < 1e-6, true );
+         f0.free(); p0.free();
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /*
+    * Nothing in front of the backdrop spreads out slower than it. A distant
+    * star barely moves by parallax; with the backdrop zooming by K under it,
+    * it lagged, as if it were behind the galaxy (seen in a real video). Its
+    * spread from the target is at least K, and its size too.
+    */
+   ( function()
+   {
+      var tp = { x: 100, y: 100 };
+      var far = Fly.screenPosition( { x: 150, y: 100 }, { x: 150, y: 100 }, tp, 1.2 );
+      check( "a star with no parallax spreads with the backdrop", [ far.x, far.y ], [ 160, 100 ] );
+      var near = Fly.screenPosition( { x: 200, y: 100 }, { x: 150, y: 100 }, tp, 1.2 );
+      check( "a near star that spreads faster keeps its own motion", [ near.x, near.y ], [ 200, 100 ] );
+      var still = Fly.screenPosition( { x: 150, y: 100 }, { x: 150, y: 100 }, tp, 1 );
+      check( "with a still backdrop nothing changes", [ still.x, still.y ], [ 150, 100 ] );
+      var centre = Fly.screenPosition( { x: 100, y: 100 }, { x: 100, y: 100 }, tp, 1.5 );
+      check( "the target itself stays put", [ centre.x, centre.y ], [ 100, 100 ] );
+   } )();
+
+   /* The draft is small and quick: a quarter of the video's frame rate, Fly.DRAFT_LONG px on its long side. */
+   ( function()
+   {
+      var p = Fly.draftPlan( 20, 30, Fly.DRAFT_LONG, 16/9 );
+      check( "a 20 s, 30 fps draft is 150 frames at 7.5 fps", [ p.frames, p.fps ], [ 150, 7.5 ] );
+      check( "a 60 fps video drafts at 15", Fly.draftPlan( 10, 60, Fly.DRAFT_LONG, 16/9 ).fps, 15 );
+      check( "at 480 px on its long side", [ Fly.DRAFT_LONG, p.width ], [ 480, 480 ] );
+   } )();
+
+   /*
+    * Shrunk far down (a draft is ~1/8 of the working image), a sprite was
+    * averaged from 8x8 samples per output pixel, and a draft frame took
+    * seconds of sprite drawing (measured 17 s at the real size). It is drawn
+    * from a pre-shrunk copy (a mip level) instead, a sample or two a pixel,
+    * with the same light and look.
+    */
+   ( function()
+   {
+      var R = 60, rw = 2*R + 1, patch = new Float32Array( rw*rw );
+      for ( var y = 0; y < rw; ++y ) for ( var x = 0; x < rw; ++x )
+      {
+         var r2 = ( x - R )*( x - R ) + ( y - R )*( y - R );
+         patch[y*rw + x] = Math.exp( -r2/( 2*3*3 ) ) + 0.05*Math.exp( -Math.sqrt( r2 )/15 );
+      }
+      var sp = { rect: { x0: 0, y0: 0, x1: rw, y1: rw }, det: { x: R, y: R } }, W = 64, cam = { x: 0, y: 0, fx: 8, fy: 8 };
+      var draw = function( mip ) { var acc = new Float32Array( W*W ); Render.drawSprite( acc, W, W, patch, sp, 250, 250, 1.2, 1, cam, 0.8, 8, { mip: mip } ); return acc; };
+      var a = draw( false ), b = draw( true ), sa = 0, sb = 0, worst = 0, peak = 0;
+      for ( var i = 0; i < a.length; ++i ) { sa += a[i]; sb += b[i]; worst = Math.max( worst, Math.abs( a[i] - b[i] ) ); peak = Math.max( peak, a[i] ); }
+      check( "a mip-drawn sprite keeps its light (" + ( sb/sa ).toFixed( 3 ) + ")", Math.abs( sb/sa - 1 ) < 0.03, true );
+      // a little softer at the sharpest pixel (19% measured): only shrinks of 4x and more (drafts) use mips
+      check( "and its look (worst " + ( worst/peak ).toFixed( 3 ) + " of the peak)", worst/peak < 0.22, true );
+      check( "mip levels stop one halving short of an output pixel", [ Render.mipLevel( 8, 1 ), Render.mipLevel( 3, 1 ), Render.mipLevel( 8, 2 ) ], [ 2, 0, 1 ] );
+   } )();
+
+   /*
+    * A logo, placed and spaced by itself for any frame: its long side a
+    * fifth of the frame's short side, a 4% title-safe margin, in one of
+    * seven places.
+    */
+   ( function()
+   {
+      var r = Fly.logoRect( 1920, 1080, 400, 200, "bottom-right" );
+      check( "sized to a fifth of the short side", [ r.w, r.h ], [ 216, 108 ] );
+      check( "in the bottom right, a 4% margin in", [ r.x, r.y ], [ 1920 - 43 - 216, 1080 - 43 - 108 ] );
+      var c = Fly.logoRect( 1920, 1080, 400, 200, "center" );
+      check( "centred", [ c.x, c.y ], [ ( 1920 - 216 )/2, ( 1080 - 108 )/2 ] );
+      var tm = Fly.logoRect( 1080, 1920, 100, 300, "top-mid" );
+      check( "a tall logo in a vertical frame, top middle", [ tm.h, tm.w, tm.x, tm.y ], [ 216, 72, ( 1080 - 72 )/2, 43 ] );
+      check( "the seven places", Fly.LOGO_PLACES.length, 7 );
+      check( "off is nowhere", Fly.logoRect( 1920, 1080, 400, 200, "off" ), null );
+   } )();
+
+   /*
+    * Music under the video: looped if shorter, cut to the video, faded in
+    * and out (2 s, a quarter of a short clip) unless that is turned off.
+    */
+   ( function()
+   {
+      var a = Fly.ffmpegArgs( "/f", 30, "/out/v", "h264", "high", null, { path: "/m/song.mp3", fade: true, duration: 20 } ), s = a.join( " " );
+      check( "the music is a second input, looped", /-stream_loop -1 -i \/m\/song\.mp3/.test( s ), true );
+      check( "video from the frames, audio from the music", /-map 0:v -map 1:a/.test( s ), true );
+      check( "faded in and out", s.indexOf( "afade=t=in:st=0:d=2,afade=t=out:st=18:d=2" ) >= 0, true );
+      check( "AAC in an MP4, cut to the video", /-c:a aac/.test( s ) && /-shortest/.test( s ), true );
+      check( "the output is still last", a[a.length - 1], "/out/v.mp4" );
+      var w = Fly.ffmpegArgs( "/f", 30, "/out/v", "vp9", "high", null, { path: "/m/song.mp3", fade: false, duration: 4 } ).join( " " );
+      check( "Opus in a WebM, no fade when it is off", /-c:a libopus/.test( w ) && w.indexOf( "afade" ) < 0, true );
+      check( "a short clip fades over a quarter of it", Fly.audioFade( 4 ), 1 );
+      check( "no music, no audio", Fly.ffmpegArgs( "/f", 30, "/out/v", "h264", "high", null ).join( " " ).indexOf( "-map" ), -1 );
+   } )();
+
+   /* The logo is composited into every frame, its transparency kept, and nowhere else. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var logo = new Image( 40, 20, 4, ColorSpace_RGB, 32, SampleType_Real );     // RGB + alpha
+      var dir = synthDir( "fly-logo" ), fx = flyTestScene( dir );
+      try
+      {
+         logo.fill( 1 );
+         for ( var y = 0; y < 20; ++y ) for ( var x = 0; x < 5; ++x ) logo.setSample( 0, x, y, 3 );   // a transparent left edge
+         var W = 320, H = 180, layer = Render.logoLayer( logo, W, H, "bottom-right" ), r = Fly.logoRect( W, H, 40, 20, "bottom-right" );
+         check( "the layer sits where Fly.logoRect puts it", [ layer.x, layer.y, layer.w, layer.h ], [ r.x, r.y, r.w, r.h ] );
+         var crop = Fly.presetCrop( fx.scene.w, fx.scene.h, fx.scene.tp.x, fx.scene.tp.y, W, H ), o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 2 };
+         var plain = Render.frame( fx.scene, 0.5, o, W, H, crop ), marked = Render.frame( fx.scene, 0.5, Object.assign( {}, o, { logo: layer } ), W, H, crop );
+         var cx = Math.round( r.x + 0.75*r.w ), cy = Math.round( r.y + r.h/2 ), ex = Math.round( r.x + 1 );
+         check( "where the logo is opaque it shows", marked.sample( cx, cy, 0 ) > 0.99, true );
+         check( "where it is transparent the frame does", Math.abs( marked.sample( ex, cy, 0 ) - plain.sample( ex, cy, 0 ) ) < 1e-6, true );
+         check( "and outside it nothing changes", Math.abs( marked.sample( 10, 10, 0 ) - plain.sample( 10, 10, 0 ) ) < 1e-9, true );
+         plain.free(); marked.free();
+      }
+      finally { logo.free(); fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* A render with a logo draws it into its frames; with music, the ffmpeg command carries it, faded. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-brand" ), fx = flyTestScene( dir ), logo = new Image( 30, 30, 3, ColorSpace_RGB, 32, SampleType_Real );
+      try
+      {
+         logo.fill( 1 );
+         var spec = { id: "brand", w: 160, h: 90, pingPong: false };
+         var opts = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10, video: false,
+                      logoImage: logo, logoPlace: "top-left", music: { path: "/music/song.m4a", fade: true } };
+         var res = FlyThrough.renderFinal( fx.scene, [ spec ], opts, dir, {} );
+         check( "the music is in the ffmpeg command, faded", res.commands[0].indexOf( "/music/song.m4a" ) >= 0 && res.commands[0].indexOf( "afade" ) >= 0, true );
+         var w = ImageWindow.open( dir + "/brand/frame_00002.tif" )[0], r = Fly.logoRect( 160, 90, 30, 30, "top-left" );
+         check( "and the logo is in the frames", w.mainView.image.sample( Math.round( r.x + r.w/2 ), Math.round( r.y + r.h/2 ), 0 ) > 0.98, true );
+         w.forceClose();
+      }
+      finally { logo.free(); fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+      var savedPlace = Settings.read( FlyThrough.LOGO_PLACE_SETTING, DataType_String ), savedOptions = Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String );
+      Settings.remove( FlyThrough.LOGO_PLACE_SETTING ); Settings.remove( FlyThrough.OPTIONS_SETTING );   // not the user's own choices
+      var dlg = new FlyThrough.Dialog( null );
+      try
+      {
+         var o = dlg.options();
+         check( "by default: no logo, music fades", [ o.logoPlace, o.music.fade ], [ "off", true ] );
+         dlg.logoPlaceCombo.currentItem = Fly.LOGO_PLACES.indexOf( "bottom-right" ) + 1;
+         check( "a logo place can be chosen", dlg.options().logoPlace, "bottom-right" );
+      }
+      finally
+      {
+         dlg.release();
+         [ [ FlyThrough.LOGO_PLACE_SETTING, savedPlace ], [ FlyThrough.OPTIONS_SETTING, savedOptions ] ].forEach( function( s ) { if ( s[1] != null ) Settings.write( s[0], DataType_String, s[1] ); else Settings.remove( s[0] ); } );
+      }
+   } )();
+
+   /*
+    * Spikes come in opposite pairs of equal strength (the support vanes). Fitted
+    * one by one, a spike whose inner stretch was masked (a neighbour beside
+    * it, a dark lane) dropped out and the star showed three (seen in a real
+    * video). A pair takes the stronger side's fit for both.
+    */
+   ( function()
+   {
+      var rnd = synthRandom( 13 ), gauss = function() { var u = Math.max( 1e-12, rnd() ), v = rnd(); return Math.sqrt( -2*Math.log( u ) )*Math.cos( 2*Math.PI*v ); };
+      var T = [], sigma = 0.001, start = 10, good = [], masked = [], none = [], none2 = [];
+      for ( var r = 0; r < 400; ++r ) T.push( r < 5 ? 1 : 25/( r*r ) );
+      for ( var k = 0; k < Fly.SPIKE_FIT; ++k )
+      {
+         good.push( 0.2*T[start + k] + 1.22*sigma*gauss() );
+         masked.push( -0.01 + 1.22*sigma*gauss() );            // its surroundings read brighter than the spike
+         none.push( 1.22*sigma*gauss() ); none2.push( 1.22*sigma*gauss() );
+      }
+      var pair = Fly.fitSpikePair( good, masked, T, start, sigma ), alone = Fly.fitSpike( good, T, start, sigma );
+      check( "a pair takes the stronger side's fit", Math.abs( pair.scale - alone.scale ) < 1e-12 && pair.reach == alone.reach, true );
+      check( "noise on both sides is still no spike", Fly.fitSpikePair( none, none2, T, start, sigma ).reach, -1 );
+   } )();
+
+   /*
+    * Bloom: a near star's light past white used to clip to a flat, square
+    * core. That excess now spreads into a tight glow (a round core) and a
+    * wide faint one, whitening as a sensor does. Only light past white
+    * blooms, so the first frame -- the image, nothing past white -- is
+    * untouched.
+    */
+   ( function()
+   {
+      var w = 61, h = 61, one = new Float32Array( w*h );
+      for ( var i = 0; i < one.length; ++i ) one[i] = 7;
+      var b = Render.boxBlur( one.slice(), w, h, 3 );
+      check( "a blur keeps a flat field flat", Math.abs( b[30*w + 30] - 7 ) < 1e-4 && Math.abs( b[0] - 7 ) < 1e-4, true );
+      var T = [ new Float32Array( w*h ), new Float32Array( w*h ), new Float32Array( w*h ) ];
+      for ( var c = 0; c < 3; ++c ) { T[c][30*w + 30] = c == 0 ? 3 : 1.5; T[c][10*w + 10] = 0.9; }     // an overexposed reddish core; a bright one within white
+      var before = T.map( function( a ) { return a.slice(); } );
+      Render.bloom( T, w, h, { amount: 1, seconds: 2 } );
+      check( "light past white spreads around the core", T[0][30*w + 33] > before[0][30*w + 33] + 0.01, true );
+      check( "and whitens it: the weak channels gain too", T[2][30*w + 32] > 0.01, true );
+      check( "a star within white does not bloom", Math.abs( T[0][10*w + 12] - before[0][10*w + 12] ) < 1e-9, true );
+      var still = [ new Float32Array( w*h ) ];
+      still[0][30*w + 30] = 0.95;
+      var s0 = still[0].slice();
+      Render.bloom( still, w, h, { amount: 1, seconds: 0 } );
+      check( "nothing past white, nothing changes", Math.abs( still[0][30*w + 31] - s0[30*w + 31] ) < 1e-12, true );
+      var off = before.map( function( a ) { return a.slice(); } );
+      Render.bloom( off, w, h, { amount: 0, seconds: 2 } );
+      check( "and 0 turns it off", off[0][30*w + 33], before[0][30*w + 33] );
+      check( "the wide glow breathes a little over time", Render.bloomSigmas( 1080, 0 )[1] != Render.bloomSigmas( 1080, 1.3 )[1], true );
+   } )();
+
+   /*
+    * Past white a core whitens (its channels drawn toward its brightest,
+    * as a saturating sensor does), and very bright stars carry a very wide,
+    * faint glare.
+    */
+   ( function()
+   {
+      var w = 201, h = 201, T = [ new Float32Array( w*h ), new Float32Array( w*h ), new Float32Array( w*h ) ];
+      T[0][100*w + 100] = 40; T[1][100*w + 100] = 12; T[2][100*w + 100] = 6;    // a very bright reddish core
+      Render.bloom( T, w, h, { amount: 1, seconds: 2 } );
+      check( "an overexposed core whitens toward its brightest channel", T[2][100*w + 100] > 20, true );
+      check( "and a very bright star carries a wide glare", T[1][100*w + 120] > 1e-4, true );
+      var sg = Render.bloomSigmas( 1000, 0 );
+      check( "the blur radius gives the glow's width (three boxes: sigma^2 = r(r + 1))", Render.boxRadius( 10 ), 10 );
+   } )();
+
+   /* Close stars pass sooner: fully there up to 6x nearer, gone by 14x, so no star grows past what it can bear. */
+   check( "close stars fade from 6x nearer to 14x", [ Fly.opacity( 6, true ), Fly.opacity( 14, true ), Fly.opacity( 10, true ) > 0 && Fly.opacity( 10, true ) < 1 ], [ 1, 0, true ] );
+
+   /* Up close a star is drawn from its model -- smooth, no noise or processing marks -- cross-faded from its photograph. */
+   check( "photo far away, model up close", [ Fly.modelWeight( 1 ), Fly.modelWeight( 2 ), Fly.modelWeight( 4 ), Fly.modelWeight( 3 ) > 0 && Fly.modelWeight( 3 ) < 1 ], [ 0, 0, 1, true ] );
+
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 200, c = 100, rnd = synthRandom( 29 ), win = new ImageWindow( N, N, 1, 32, true, false, Util.freeWindowId( "fly_model" ) );
+      try
+      {
+         var buf = new Float32Array( N*N );
+         for ( var y = 0; y < N; ++y ) for ( var x = 0; x < N; ++x )
+         {
+            var r2 = ( x - c )*( x - c ) + ( y - c )*( y - c ), u = Math.max( 1e-12, rnd() ), v = rnd();
+            buf[y*N + x] = Math.max( 0, 0.02 + 0.9*Math.pow( 1 + r2/6, -2.5 ) + 0.004*Math.sqrt( -2*Math.log( u ) )*Math.cos( 2*Math.PI*v ) );
+         }
+         win.mainView.beginProcess( UndoFlag_NoSwapFile ); win.mainView.image.setSamples( buf ); win.mainView.endProcess();
+         var sp = Sky.sprites( win.mainView.image, [ { source: { G: 9, ra: 0, dec: 0 }, d: 100, x: c, y: c } ], 3, [] ).sprites[0];
+         check( "a sprite carries its model, the same size", !!sp.modelCore && sp.modelCore[0].length == sp.pixels[0].length && sp.modelSpikes[0].length == sp.pixels[0].length, true );
+         var rw = sp.rect.x1 - sp.rect.x0, at = function( a, dx, dy ) { return a[( c + dy - sp.rect.y0 )*rw + c + dx - sp.rect.x0]; };
+         check( "its model matches the star's core (" + at( sp.modelCore[0], 0, 0 ).toFixed( 3 ) + " vs " + at( sp.pixels[0], 0, 0 ).toFixed( 3 ) + ")",
+                Math.abs( at( sp.modelCore[0], 0, 0 ) - at( sp.pixels[0], 0, 0 ) ) < 0.15, true );
+         var d = 0, m = 0;
+         for ( var k = 2; k < 7; ++k ) { d += Math.abs( at( sp.pixels[0], k, 0 ) - at( sp.pixels[0], k + 1, 0 ) ); m += Math.abs( at( sp.modelCore[0], k, 0 ) - at( sp.modelCore[0], k + 1, 0 ) ); }
+         check( "and is smoother than the photograph in the wings (" + m.toFixed( 4 ) + " vs " + d.toFixed( 4 ) + ")", m < d, true );
+      }
+      finally { win.forceClose(); }
+   } )();
+
+   /*
+    * The logo shows in the preview as soon as it is chosen -- on the still
+    * of the image, before any draft -- with its transparency kept. Choosing
+    * a file with the place still Off puts it bottom right.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-logo-preview" ), fx = flyTestScene( dir ), dlg = null, path = dir + "/logo.tif";
+      var savedLogo = Settings.read( FlyThrough.LOGO_SETTING, DataType_String ), savedPlace = Settings.read( FlyThrough.LOGO_PLACE_SETTING, DataType_String );
+      var savedOptions = Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String );
+      Settings.remove( FlyThrough.OPTIONS_SETTING );          // the user's saved opacity is not this test's
+      var logo = new Image( 40, 20, 4, ColorSpace_RGB, 32, SampleType_Real );         // white, its left half transparent
+      try
+      {
+         logo.fill( 1 );
+         for ( var y = 0; y < 20; ++y ) for ( var x = 0; x < 20; ++x ) logo.setSample( 0, x, y, 3 );
+         var f = new FileFormatInstance( new FileFormat( ".tif", false, true ) );
+         f.create( path, "" ); f.writeImage( logo ); f.close();
+         dlg = new FlyThrough.Dialog( null );
+         dlg.setImage( fx.image );
+         var plain = dlg.player.frames[0], bw = plain.width, bh = plain.height;
+         dlg.logoPlaceCombo.currentItem = 0;
+         dlg.useLogo( path );
+         check( "a logo chosen with the place Off goes bottom right", dlg.options().logoPlace, "bottom-right" );
+         var shown = dlg.player.frames[0], r = Fly.logoRect( bw, bh, 40, 20, "bottom-right" );
+         var px = function( b, x, y ) { return b.pixel( Math.round( x ), Math.round( y ) ) & 0xffffff; };
+         check( "the preview shows it at once, opaque part white", px( shown, r.x + 0.75*r.w, r.y + r.h/2 ), 0xffffff );
+         check( "and its transparent part shows the image", px( shown, r.x + 0.25*r.w, r.y + r.h/2 ), px( plain, r.x + 0.25*r.w, r.y + r.h/2 ) );
+      }
+      finally
+      {
+         if ( dlg ) dlg.release();
+         logo.free();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+         [ [ FlyThrough.LOGO_SETTING, savedLogo ], [ FlyThrough.LOGO_PLACE_SETTING, savedPlace ], [ FlyThrough.OPTIONS_SETTING, savedOptions ] ].forEach( function( s ) { if ( s[1] != null ) Settings.write( s[0], DataType_String, s[1] ); else Settings.remove( s[0] ); } );
+      }
+   } )();
+
+   /*
+    * The dialog's options come back next time; the object typed for an
+    * image file is remembered for that file, so its solve starts by itself;
+    * the logo has an opacity. The user's own saved choices are put back.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      // every setting this test can write is the user's own: all of them are put back (the focal length once was not,
+      // and the user's solve then ran at 400 mm)
+      var keys = [ FlyThrough.OPTIONS_SETTING, FlyThrough.OBJECTS_SETTING, FlyThrough.LOGO_SETTING, FlyThrough.LOGO_PLACE_SETTING,
+                   FlyThrough.FOCAL_SETTING, FlyThrough.PIXEL_SETTING ];
+      var saved = keys.map( function( k ) { return Settings.read( k, DataType_String ); } );
+      var dir = synthDir( "fly-persist" ), bare = null, a = null, b = null;
+      try
+      {
+         keys.forEach( function( k ) { Settings.remove( k ); } );
+         a = new FlyThrough.Dialog( null );
+         a.durationSpin.value = 37; a.orientationCombo.currentItem = 1; a.loopCombo.currentItem = 1; a.twinkleSpin.value = 7;
+         a.bloomSpin.value = 150; a.blurCheck.checked = false; a.presetChecks.social_square.checked = true; a.logoOpacity.value = 60;
+         a.musicEdit.text = "/music/x.mp3"; a.fadeCheck.checked = false;
+         a.saveOptions(); a.release(); a = null;
+         b = new FlyThrough.Dialog( null );
+         check( "the options come back next time",
+                [ b.durationSpin.value, b.orientationCombo.currentItem, b.loopCombo.currentItem, b.twinkleSpin.value, b.bloomSpin.value, b.blurCheck.checked,
+                  b.presetChecks.social_square.checked, b.logoOpacity.value, b.musicEdit.text, b.fadeCheck.checked ],
+                [ 37, 1, 1, 7, 150, false, true, 60, "/music/x.mp3", false ] );
+         check( "and the opacity reaches the render", b.options().logoOpacity, 0.6 );
+         // the object typed for a file is remembered for it
+         var path = synthFrame( dir + "/unsolved.xisf", { stars: 20, fwhm: 3, background: 0.05, noise: 0.002, seed: 3 } );
+         bare = ImageWindow.open( path )[0];
+         b.setImage( bare );
+         b.objectEdit.text = "North America"; b.lookUpObject(); b.focalEdit.text = "400"; b.pixelEdit.text = "3.76";
+         b.autoPending = false; b.hintsEdited(); b.release(); b = null;
+         a = new FlyThrough.Dialog( null );
+         a.setImage( bare );
+         check( "the object typed for a file comes back with it", [ a.objectEdit.text, a.raEdit.text != "" ], [ "North America", true ] );
+         check( "with its focal length and pixel size", [ a.focalEdit.text, a.pixelEdit.text ], [ "400", "3.76" ] );
+         // an image never saved to a file is remembered by its name
+         a.release(); a = null;
+         var unsaved = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_unsaved" ) );
+         try
+         {
+            b = new FlyThrough.Dialog( null );
+            b.setImage( unsaved );
+            b.objectEdit.text = "Pelican"; b.lookUpObject(); b.focalEdit.text = "805"; b.pixelEdit.text = "4.1";
+            b.autoPending = false; b.hintsEdited(); b.release(); b = null;
+            Settings.write( FlyThrough.FOCAL_SETTING, DataType_String, "123" );          // another rig used since
+            a = new FlyThrough.Dialog( null );
+            a.setImage( unsaved );
+            check( "an unsaved image's hints come back by its name", [ a.objectEdit.text, a.focalEdit.text, a.pixelEdit.text ], [ "Pelican", "805", "4.1" ] );
+         }
+         finally { unsaved.forceClose(); }
+      }
+      finally
+      {
+         [ a, b ].forEach( function( d ) { if ( d ) d.release(); } );
+         if ( bare ) bare.forceClose();
+         keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } );
+      }
+   } )();
+
+   /* The logo's opacity scales its own transparency. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var logo = new Image( 10, 10, 3, ColorSpace_RGB, 32, SampleType_Real );
+      try
+      {
+         logo.fill( 1 );
+         var L = Render.logoLayer( logo, 100, 100, "center", 3, 0.5 );
+         check( "a half-opaque logo is half there", [ L.a[5*L.w + 5], L.p[0][5*L.w + 5] ], [ 0.5, 0.5 ] );
+      }
+      finally { logo.free(); }
+   } )();
+
+   /*
+    * A star partly hidden -- going out of the frame, or behind a nearer
+    * star -- casts spikes and glow in proportion to what is still seen of
+    * its core: shorter and fainter, gone with it.
+    */
+   ( function()
+   {
+      var near = function( a, b ) { return Math.abs( a - b ) < 0.02; };
+      check( "a core wholly in the frame is wholly seen", Fly.discVisible( 50, 50, 5, 100, 100 ), 1 );
+      check( "a core on the frame's edge is half seen", near( Fly.discVisible( 0, 50, 5, 100, 100 ), 0.5 ), true );
+      check( "on a corner, a quarter", near( Fly.discVisible( 100, 100, 5, 100, 100 ), 0.25 ), true );
+      check( "out of the frame, none", Fly.discVisible( -10, 50, 5, 100, 100 ), 0 );
+      check( "a core clear of a nearer star is not covered", Fly.coverFraction( 5, 5, 11 ), 0 );
+      check( "one inside a bigger nearer star is wholly covered", Fly.coverFraction( 3, 10, 4 ), 1 );
+      check( "two equal cores half apart overlap by the lens area", near( Fly.coverFraction( 5, 5, 5 ), 0.391 ), true );
+      check( "spikes shorten with what is seen", [ Fly.radialSource( 25, 5, 2, 1 ), Fly.radialSource( 25, 5, 2, 0.5 ) ], [ 15, 25 ] );
+   } )();
+
+   /* Drawing a half-hidden star: beyond its core the light comes from further in, at half strength. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var R = 20, rw = 2*R + 1, patch = new Float32Array( rw*rw );
+      for ( var y = 0; y < rw; ++y ) for ( var x = 0; x < rw; ++x )
+      {
+         var r2 = ( x - R )*( x - R ) + ( y - R )*( y - R );
+         patch[y*rw + x] = Math.exp( -r2/( 2*1.5*1.5 ) ) + 0.05*Math.exp( -Math.sqrt( r2 )/6 );
+      }
+      var sp = { rect: { x0: 0, y0: 0, x1: rw, y1: rw }, det: { x: R, y: R } }, W = 161, cam = { x: 0, y: 0, fx: 1, fy: 1 }, acc = new Float32Array( W*W );
+      Render.drawSprite( acc, W, W, patch, sp, 80, 80, 3, 1, cam, 1, 4, { seen: 0.5 } );
+      var want = 0.5*Render.patchSample( patch, rw, rw, R + Fly.radialSource( 16, 4, 3, 0.5 ), R );
+      check( "a half-seen star's glow is shorter and half as bright", Math.abs( acc[80*W + 96] - want ) < 1e-4, true );
+      var core = new Float32Array( W*W );
+      Render.drawSprite( core, W, W, patch, sp, 80, 80, 3, 1, cam, 1, 4 );
+      check( "its core is as it was", Math.abs( acc[80*W + 80] - core[80*W + 80] ) < 1e-6, true );
+   } )();
+
+   /*
+    * A saturated star is often a flat square in the photograph (clipped,
+    * then processed). Boosted as it nears, that square became what one saw
+    * (a real frame, 1.8x nearer). The core turns to the star's round model
+    * sooner than the rest (Fly.coreModelWeight), so it comes out round.
+    */
+   check( "the core turns to the model sooner than the rest", [ Fly.coreModelWeight( 1 ), Fly.coreModelWeight( 2 ), Fly.modelWeight( 2 ) ], [ 0, 1, 0 ] );
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var R = 30, rw = 2*R + 1, photo = new Float32Array( rw*rw ), core = new Float32Array( rw*rw ), spikes = new Float32Array( rw*rw );
+      for ( var y = 0; y < rw; ++y ) for ( var x = 0; x < rw; ++x )
+      {
+         var dx = x - R, dy = y - R;
+         photo[y*rw + x] = ( Math.abs( dx ) <= 5 && Math.abs( dy ) <= 5 ) ? 0.95 : 0.95*Math.exp( -( Math.max( Math.abs( dx ), Math.abs( dy ) ) - 5 )/2 );   // a square plateau
+         core[y*rw + x] = 0.95*Math.min( 1, Math.exp( -( Math.hypot( dx, dy ) - 5 )/2 ) );                                                      // its round model
+      }
+      var sp = { rect: { x0: 0, y0: 0, x1: rw, y1: rw }, det: { x: R, y: R }, pixels: [ photo ], modelCore: [ core ], modelSpikes: [ spikes ] };
+      var W = 121, acc = new Float32Array( W*W ), cam = { x: 0, y: 0, fx: 1, fy: 1 };
+      var q = { e: {}, j: 0, sp: sp, m: { ratio: 2 }, g: 1.15, kOuter: 3, kCore: 4, rc: 8, cx: 60, cy: 60, seen: 1 };
+      Render.drawPlaced( null, [ acc ], q, 0, { motionBlur: false }, W, W, cam );
+      var reach = function( ux, uy ) { var k = 0; while ( acc[Math.round( 60 + k*uy )*W + Math.round( 60 + k*ux )] > 1 ) ++k; return k; };
+      var diag = reach( Math.SQRT1_2, Math.SQRT1_2 ), side = reach( 1, 0 );
+      check( "a square photographed core comes out round (" + diag + " diagonally, " + side + " across)", Math.abs( diag - side ) <= 1, true );
+   } )();
+
+   /* Star saturation: the stars' colour, more or less, their brightness kept; 100% changes nothing. */
+   ( function()
+   {
+      var T = function() { return [ new Float32Array( [ 0.6 ] ), new Float32Array( [ 0.3 ] ), new Float32Array( [ 0.3 ] ) ]; };
+      var a = T(); Render.saturateStars( a, 1, 1 );
+      check( "100% changes nothing", [ a[0][0], a[1][0], a[2][0] ], [ 0.6000000238418579, 0.30000001192092896, 0.30000001192092896 ] );
+      var b = T(); Render.saturateStars( b, 1, 2 );
+      check( "200% doubles the colour, brightness kept", [ Math.abs( b[0][0] - 0.8 ) < 1e-6, Math.abs( b[1][0] - 0.2 ) < 1e-6, Math.abs( ( b[0][0] + b[1][0] + b[2][0] )/3 - 0.4 ) < 1e-6 ], [ true, true, true ] );
+      var c = T(); Render.saturateStars( c, 1, 0 );
+      check( "0% is grey", Math.abs( c[0][0] - c[2][0] ) < 1e-6, true );
+   } )();
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String ), d = null;
+      try
+      {
+         Settings.remove( FlyThrough.OPTIONS_SETTING );
+         d = new FlyThrough.Dialog( null );
+         check( "star saturation defaults to 100%", d.options().starSaturation, 1 );
+         d.saturationSlider.value = 140;
+         check( "and reaches the render", d.options().starSaturation, 1.4 );
+      }
+      finally { if ( d ) d.release(); if ( saved != null ) Settings.write( FlyThrough.OPTIONS_SETTING, DataType_String, saved ); else Settings.remove( FlyThrough.OPTIONS_SETTING ); }
+   } )();
+
+   /* The logo can fade in after N seconds (over one second); 0 shows it from the start. */
+   check( "no delay: there from the start", [ Fly.logoFade( 0, 0 ), Fly.logoFade( 5, 0 ) ], [ 1, 1 ] );
+   check( "a delay of 3 s: hidden until 3 s, in by 4 s", [ Fly.logoFade( 2.9, 3 ), Fly.logoFade( 4, 3 ), Fly.logoFade( 3.5, 3 ) > 0 && Fly.logoFade( 3.5, 3 ) < 1 ], [ 0, 1, true ] );
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String ), d = null;
+      try
+      {
+         Settings.remove( FlyThrough.OPTIONS_SETTING );
+         d = new FlyThrough.Dialog( null );
+         check( "the logo delay defaults to 0", d.options().logoDelay, 0 );
+         d.logoDelaySpin.value = 4;
+         check( "and reaches the render", d.options().logoDelay, 4 );
+      }
+      finally { if ( d ) d.release(); if ( saved != null ) Settings.write( FlyThrough.OPTIONS_SETTING, DataType_String, saved ); else Settings.remove( FlyThrough.OPTIONS_SETTING ); }
+   } )();
+
+   /* The information panel: how many stars were detected, how many move, how many stay in the background. */
+   check( "the star counts, as the panel shows them", Fly.describeStars( { detected: 5231, placed: 1288, backdrop: 313, blended: 20 } ),
+          "Stars: 5231 detected · 1288 moving · 313 in the background · 20 blended (stay still)" );
+   check( "no blends, no mention", Fly.describeStars( { detected: 900, placed: 168, backdrop: 73, blended: 0 } ), "Stars: 900 detected · 168 moving · 73 in the background" );
+
+   /*
+    * A solve is only believed at a scale the rig can give: its own, or half
+    * or a third of it (drizzled). A wider solve of the same image once put
+    * the catalogue on the wrong stars (1288 moving stars fell to 189).
+    */
+   check( "the rig's scale, drizzled 2x or 3x, is plausible", [ Fly.plausibleScale( 2.5, 2.506 ), Fly.plausibleScale( 1.253, 2.506 ), Fly.plausibleScale( 0.84, 2.506 ) ], [ true, true, true ] );
+   check( "a scale the rig cannot give is not", [ Fly.plausibleScale( 1.65, 2.506 ), Fly.plausibleScale( 3.4, 2.506 ) ], [ false, false ] );
+
+   /*
+    * The cheap core blend (the photograph once, a core-sized correction, the
+    * model's glow only up close) must draw exactly what the five layers it
+    * replaced drew; a real frame showed a shield-shaped core where it did not.
+    */
+   ( function()
+   {
+      var R = 30, rw = 2*R + 1, n = rw*rw, photo = new Float32Array( n ), core = new Float32Array( n ), spikes = new Float32Array( n );
+      for ( var y = 0; y < rw; ++y ) for ( var x = 0; x < rw; ++x )
+      {
+         var dx = x - R + 0.3, dy = y - R - 0.2, i = y*rw + x;
+         photo[i] = ( Math.abs( dx ) <= 5 && Math.abs( dy ) <= 5 ) ? 0.95 : 0.95*Math.exp( -( Math.max( Math.abs( dx ), Math.abs( dy ) ) - 5 )/3 );
+         core[i] = 0.95*Math.min( 1, Math.exp( -( Math.hypot( dx, dy ) - 5 )/3 ) );
+         spikes[i] = ( Math.abs( dx - dy ) < 1 && Math.hypot( dx, dy ) > 6 ) ? 0.1 : 0;
+      }
+      var det = { x: R - 0.3, y: R + 0.2 }, rect = { x0: 0, y0: 0, x1: rw, y1: rw }, rc = 8, W = 121, cam = { x: 0, y: 0, fx: 1.28, fy: 1.28 };
+      [ 1.2, 1.8, 3 ].forEach( function( ratio )
+      {
+         var sp = { rect: rect, det: det, pixels: [ photo ], modelCore: [ core ], modelSpikes: [ spikes ] };
+         var q = { e: {}, j: 0, sp: sp, m: { ratio: ratio }, g: 1.3, kOuter: 2, kCore: 3.4, rc: rc, cx: 70, cy: 70, seen: 0.8 };
+         var cheap = new Float32Array( W*W );
+         Render.drawPlaced( null, [ cheap ], q, 0, { motionBlur: false }, W, W, cam );
+         // the five layers, explicitly
+         var wc = Fly.coreModelWeight( ratio ), wo = Fly.modelWeight( ratio ), ref = new Float32Array( W*W );
+         var share = function( x, y ) { return 1 - Fly.smoothstep( rc, rc + 3, Math.hypot( x - det.x, y - det.y ) ); };
+         var pc = new Float32Array( n ), po = new Float32Array( n ), mc = new Float32Array( n ), mo = new Float32Array( n );
+         for ( y = 0; y < rw; ++y ) for ( x = 0; x < rw; ++x ) { var k = share( x, y ), j = y*rw + x; pc[j] = k*photo[j]; po[j] = ( 1 - k )*photo[j]; mc[j] = k*core[j]; mo[j] = ( 1 - k )*core[j]; }
+         [ [ pc, 1 - wc, q.kCore ], [ mc, wc, q.kCore ], [ po, 1 - wo, q.kCore ], [ mo, wo, q.kCore ], [ spikes, wo, q.kOuter ] ].forEach( function( l )
+         {
+            if ( l[1] != 0 ) Render.drawSprite( ref, W, W, l[0], { rect: rect, det: det }, 70, 70, q.g, l[2]*l[1], cam, q.kOuter*l[1], rc, { seen: q.seen } );
+         } );
+         var worst = 0;
+         for ( var i2 = 0; i2 < W*W; ++i2 ) worst = Math.max( worst, Math.abs( cheap[i2] - ref[i2] ) );
+         check( "at " + ratio + "x nearer the cheap blend draws the five layers (worst " + worst.toExponential( 1 ) + ")", worst < 1e-4, true );
+      } );
+   } )();
+
+   /*
+    * Turning a scene (a vertical image into a horizontal frame) turns every
+    * patch a sprite carries. The model patches were left as they were, so a
+    * close star's round core sat rotated against its photograph -- a
+    * shield-shaped core (seen in a real render); cached core parts from
+    * before the turn must not come along either.
+    */
+   ( function()
+   {
+      var rw = 5, rh = 3, a = new Float32Array( rw*rh );
+      for ( var i = 0; i < a.length; ++i ) a[i] = i + 1;
+      var sp = { rect: { x0: 10, y0: 20, x1: 15, y1: 23 }, det: { x: 12, y: 21 }, source: {}, pixels: [ a ], modelCore: [ a.slice() ], modelSpikes: [ a.slice() ], _split: [ { stale: true } ] };
+      var sc = { w: 100, h: 60, nc: 1, S: [ new Float32Array( 6000 ) ], R: [ new Float32Array( 6000 ) ], sprites: [ { s: sp, p0: { x: 12, y: 21 } } ],
+                 project: function() { return null; }, tp: { x: 50, y: 30 } };
+      var t = Render.rotateScene( sc ).sprites[0].s;
+      check( "the model patches turn with the photograph", [ Array.from( t.modelCore[0] ).join(), Array.from( t.modelSpikes[0] ).join() ], [ Array.from( t.pixels[0] ).join(), Array.from( t.pixels[0] ).join() ] );
+      check( "and cached core parts from before the turn do not come along", t._split, undefined );
+   } )();
+
+   /*
+    * Frames are kept when only the encode changes: a render's frames carry
+    * the signature of what made them, and the video format, quality, music
+    * and ffmpeg are not part of it.
+    */
+   ( function()
+   {
+      var o = { travel: 184, easing: "smoothstep", growth: 0.15, bloom: 1, twinkle: 0.03, duration: 20, fps: 30, format: "h264", quality: "high",
+                music: { path: "/m/a.mp3", fade: true }, video: true, ffmpeg: "/usr/bin/ffmpeg", dir: "/out", presets: [ "youtube_1080" ] };
+      var spec = { id: "youtube_1080", w: 1920, h: 1080, pingPong: false }, key = "image.tif|StarXTerminator|922";
+      var base = Fly.frameSignature( o, spec, key );
+      var same = function( change ) { return Fly.frameSignature( Object.assign( {}, o, change ), spec, key ) == base; };
+      check( "a new format, quality or music keeps the frames", [ same( { format: "hevc" } ), same( { quality: "standard" } ), same( { music: { path: "/m/b.mp3", fade: false } } ), same( { video: false } ) ], [ true, true, true, true ] );
+      check( "a new flight, look or length does not", [ same( { travel: 200 } ), same( { bloom: 1.5 } ), same( { duration: 10 } ), same( { fps: 24 } ) ], [ false, false, false, false ] );
+      check( "nor does another image or star tool", Fly.frameSignature( o, spec, "other.tif|StarNet2|922" ) == base, false );
+      check( "nor another frame size", Fly.frameSignature( o, { id: "youtube_4k", w: 3840, h: 2160, pingPong: false }, key ) == base, false );
+   } )();
+
+   /* Rendering again with only the video format changed reuses the frames; changing the flight renders them again. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-reuse" ), fx = flyTestScene( dir );
+      try
+      {
+         var spec = { id: "reuse", w: 160, h: 90, pingPong: false };
+         var o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10, video: false, format: "h264", sceneKey: "test|tool|900" };
+         var first = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, {} );
+         var t0 = ( new FileInfo( dir + "/reuse/frame_00002.tif" ) ).lastModified.getTime();
+         var again = FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { format: "hevc", quality: "standard" } ), dir, {} );
+         check( "a new format reuses the frames", [ first.written, again.written, again.reused ], [ 5, 0, 5 ] );
+         check( "untouched", ( new FileInfo( dir + "/reuse/frame_00002.tif" ) ).lastModified.getTime(), t0 );
+         check( "and still gives the ffmpeg command", again.commands.length, 1 );
+         var changed = FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { growth: 0.3 } ), dir, {} );
+         check( "a new flight renders them again", [ changed.written, changed.reused ], [ 5, 0 ] );
+         File.writeTextFile( dir + "/reuse/frames.json", "damaged" );
+         check( "and a damaged record means rendering again", FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { growth: 0.3 } ), dir, {} ).written, 5 );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* A failed solve says what was tried -- focal length, pixel sizes, centre -- and the solver's reason, so a wrong value shows. */
+   ( function()
+   {
+      var m = Fly.solveFailure( { ra: 324, dec: 57.5, focal: 400, pixel: 3.76 }, [ "Initial field alignment failed." ] );
+      check( "it names the focal length, pixel sizes and centre", [ /400 mm/.test( m ), /3\.76/.test( m ), /1\.88/.test( m ), /1\.25/.test( m ), /324\.0000/.test( m ) ], [ true, true, true, true, true ] );
+      check( "and the solver's reason", /Initial field alignment failed/.test( m ), true );
+   } )();
+
+   /* fly-tests-end */
 }
 
 function main()

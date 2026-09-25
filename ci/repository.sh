@@ -66,7 +66,7 @@ mkdir -p "$stage/src/scripts/Loom"
 # out: it carries its own #feature-id, so shipping it would put
 # "LoomSelfTest" in the Script menu of everyone who subscribes.
 cp -R script/lib "$stage/src/scripts/Loom/lib"
-cp script/Loom.js script/FrameSelector.js "$stage/src/scripts/Loom/"
+cp script/Loom.js script/FrameSelector.js script/FlyThrough.js "$stage/src/scripts/Loom/"
 cp README.md LICENSE "$stage/src/scripts/Loom/"
 printf '%s\n' "$version" > "$stage/src/scripts/Loom/RELEASE"
 

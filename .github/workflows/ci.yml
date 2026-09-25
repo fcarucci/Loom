@@ -113,6 +113,8 @@ jobs:
           unzip -q "$zip" -d /tmp/xri
           test -f /tmp/xri/src/scripts/Loom/Loom.js \
             || { echo "missing src/scripts/Loom/Loom.js"; exit 1; }
+          test -f /tmp/xri/src/scripts/Loom/FlyThrough.js \
+            || { echo "missing src/scripts/Loom/FlyThrough.js"; exit 1; }
           test -f /tmp/xri/src/scripts/Loom/lib/Util.js \
             || { echo "missing src/scripts/Loom/lib/Util.js"; exit 1; }
           test ! -e /tmp/xri/src/scripts/Loom/selftest.js \

@@ -161,7 +161,7 @@ function load( file )
 }
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
-               "lib/Frames.js",
+               "lib/Frames.js", "lib/Fly.js", "lib/Sky.js", "lib/Render.js",
                "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
 
 let loaded = 0;
@@ -191,7 +191,7 @@ global.console = Object.assign( Object.create( console ), global.console_pjsr );
  * Compiled with new Function, never run: FrameSelector.js and Loom.js end
  * by opening their dialogs.
  */
-for ( const entry of [ "FrameSelector.js", "Loom.js", "selftest.js" ] )
+for ( const entry of [ "FrameSelector.js", "FlyThrough.js", "Loom.js", "selftest.js" ] )
 {
    try { new Function( load( entry ).src ); }
    catch ( e )

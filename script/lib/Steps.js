@@ -3158,7 +3158,7 @@ Steps.deriveStarsByUnscreen = function( originalWindow, starlessWindow )
  * Runs the chosen tool for its starless result, in place on `window`.
  * Returns nothing; the caller derives the stars frame.
  */
-Steps.removeStars = function( window, tool, label )
+Steps.removeStars = function( window, tool, label, linear )
 {
    var view = window.mainView;
 
@@ -3167,7 +3167,9 @@ Steps.removeStars = function( window, tool, label )
       var P = new StarNet2;
       // Loom's composites are LINEAR at this point -- nothing has been
       // stretched -- and StarNet2 has to be told so or it mangles them.
-      P.linear = true;
+      // Fly-Through's input is stretched and passes false; omitted means
+      // linear, so every existing call is unchanged.
+      P.linear = ( linear !== false );
       // no star mask: the stars frame is derived by unscreen instead
       P.mask = false;
       if ( !P.executeOn( view ) )

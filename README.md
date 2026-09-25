@@ -641,6 +641,75 @@ preview. An override wins over the formula, survives a change of `k`, is counted
 separately so a summary never hides it, and is recorded in the deletion log.
 Overrides last for the session only.
 
+## Fly-Through
+
+A third script — **Batch Processing > Loom Fly-Through** — that turns a finished
+image into a push-in video: the camera moves towards the target, and the
+photo's own stars pass by at their real distances.
+
+**Nothing is invented.** Every moving star is a patch of your image, cut out
+with its halo. Its distance comes from its **Gaia DR3 parallax**, and its motion
+is exact 3-D geometry, not a zoom. A nearer star moves faster, grows slightly
+and brightens by the inverse-square law. Stars without a reliable parallax, and
+blends, stay in the backdrop.
+
+**The backdrop is the starless image.** For a nebula it grows at the rate its
+own distance sets. That distance comes from the **ionising cluster**: stars that
+share one proper motion and parallax. On IC 1396 that is Trumpler 37, measured
+at 922 pc against a published ~925 pc. A galaxy is effectively at infinity and
+stays fixed. The target and its type come from PixInsight's NGC/IC table. You
+can change the type, and type the distance whenever no cluster is found.
+
+**Input**: a FITS, XISF or TIFF file, or the active view. A solved image is used
+as is. For an unsolved one (typically a TIFF), give the centre (or an NGC/IC
+name), the focal length and the pixel size, and it is solved first. Gaia comes
+from the database you configured for SPFC/SPCC, and stars are removed with
+whichever of StarXTerminator, StarNet2 or SyQon Starless you have, found the
+same way as in Loom.
+
+**Output**: 16-bit TIFF frames per preset — Social 1080×1920 and 1080×1080,
+YouTube 3840×2160 or 1920×1080, and an Exhibition 3840×2160 ping-pong loop —
+plus a video when ffmpeg is installed (`brew install ffmpeg` on macOS,
+`winget install Gyan.FFmpeg` on Windows). ffmpeg is found automatically;
+Browse overrides it. Formats are offered only if that ffmpeg can encode them:
+MP4 H.264, MP4 H.265/HEVC (tagged for Apple players), MOV ProRes 422 HQ and
+WebM VP9. Without ffmpeg, the frames are still written and the exact command is
+printed.
+
+**Colour**: every frame is converted from your image's own ICC profile (Loom's
+plates are ProPhoto) to Rec.709. The conversion reads the profile itself, so it
+does not matter which profiles the machine has installed.
+
+**HDR**: choose SDR or HDR. In HDR, star light that SDR would clip at white is
+kept, and rolled off towards a peak you set (default 1000 nits). An approaching
+star glows brighter than the nebula instead of flattening into a white disc.
+Social and YouTube default to **HLG**, which also looks right on SDR screens.
+Exhibition defaults to **PQ (HDR10)**, for a display you control, with the
+mastering metadata measured from the frames. HDR uses HEVC 10-bit (default),
+VP9 10-bit or ProRes; H.264 is SDR only.
+
+**Draft first**: Draft renders a 480 px preview, kept under 400 MB whatever the
+duration, and plays it in the dialog. The preview is always SDR. Render then
+writes the full frames; Cancel finishes the current frame and keeps what is
+written.
+
+**Render time** on an Apple Silicon Mac, per 3840×2160 frame from an 8 MP
+image with about 1,700 moving stars: 1.2 s (SDR), 1.4 s (PQ), 1.7 s (HLG). A
+20-second clip at 30 fps is about 12 minutes per 4K preset.
+
+**Known limits**
+- Star distances use Gaia's typical parallax error for each magnitude, not
+  each star's own, so a few stars will sit at the wrong depth.
+- The cluster finder has been checked against one field, IC 1396. Its
+  distance is always shown, with member count and range, and you can edit it.
+- PixInsight's star detector gives no star outlines, so a star's area stands in
+  for its footprint. Doubles are recognised from Gaia and left in the backdrop.
+- A moving star leaves under 5% of its light behind, measured on synthetic
+  stars with realistic wide wings. That remainder zooms with the backdrop, as
+  the faintest of glows.
+- Windows is covered by tests that simulate Windows, and has not yet been run
+  by hand.
+
 ## Requirements
 
 **PixInsight 1.9.5 or later**, checked at startup: Loom refuses to run on an
@@ -648,8 +717,9 @@ older core rather than failing later on a symbol that is not there. 1.9.5 is
 required for the astrometric solution verifier and for recursive surface
 splines, both of which Loom uses on every solve.
 
-Developed and run on macOS. It is written to run on Windows as well, but it has
-never been run on one — treat that as untested rather than as supported.
+Developed and run on macOS. It also runs on Windows: a full Windows run
+(PixInsight 1.9.5) found the missing colour profiles, the `_1` plate names and
+the channel-combination warnings fixed in 0.1.11–0.1.13.
 
 The camera is read from the `INSTRUME` keyword, not assumed.
 `Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the

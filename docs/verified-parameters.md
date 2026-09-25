@@ -1070,3 +1070,33 @@ for its slot. The ranges are anchored on one live measurement — eccentricity
 its own value and exclude its neighbours'. Stars and PSF SNR are only 2.5x
 apart on this rig, so the boundary between them is necessarily narrow; that is
 deliberate, because those two are the pair a swap most needs to be caught on.
+
+## Fly-Through render time (2026-09-23)
+
+Measured by the suite's benchmark on this Mac (Apple Silicon): an 8 MP
+generated backdrop (3464 × 2309) with 1725 halo-sized sprites, rendered at
+3840 × 2160 RGB with Catmull-Rom backdrop resampling: **934 ms per frame**,
+**1182 ms** with the per-frame colour conversion (decode and encode through
+65,536-step interpolated tables; with `Math.pow` per sample it was 1483 ms).
+HDR on the same scene: **1386 ms** (PQ) and **1696 ms** (HLG, whose inverse
+OOTF costs a `pow` per pixel) per 4K frame.
+
+HDR verified with Homebrew ffmpeg 9.0.2 (2026-09-23): HEVC HLG and PQ clips
+probe as `yuv420p10le`, `bt2020nc`, `arib-std-b67` / `smpte2084`, `bt2020`;
+the PQ clip carries "Mastering display metadata" and "Content light level
+metadata" frame side data. Anchors: PQ(203 nits) = 0.5807; HLG puts SDR
+white (203 of 1000 nits, inverse OOTF gamma 1.2) at 0.7499.
+Sprite extraction (detection, halo measurement, ownership) took 379 ms.
+A 20 s clip at 30 fps is 600 frames, about 12 minutes per 4K preset
+before TIFF writing.
+
+PixInsight 1.9's global `StarDetector` returns `{pos, flux, size}` only:
+no `rect`, no `nmax` (probed 2026-09-23), and it merges a pair 3 px apart.
+Fly-Through derives footprints from the area and judges blends from Gaia.
+
+PixInsight exposes no ICC profile on an open window (`ImageWindow` has no
+profile property; probed 2026-09-23); Fly-Through reads it from the image's
+file, or from a temporary save. An untagged image is saved with PixInsight's
+DEFAULT profile, a user setting (ProPhoto/ROMM on the maintainer's machine),
+so that is the profile its colours are read in. ROMM's tone curve is a
+parametric type 3 (gamma 1.8 with a linear segment below 0.001953).
