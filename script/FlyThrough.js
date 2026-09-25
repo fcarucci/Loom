@@ -264,10 +264,10 @@ FlyThrough.identify = function( window, choices, progress )
    {
       if ( !choices.hints )
          return { needsSolve: true };
-      stage( "Solving the image (it has no astrometric solution)", 0, 0 );
+      stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
       var solvedPixel = Sky.solveWithHints( window, choices.hints, stage );
    }
-   stage( "Finding the target", 1, 4 );
+   stage( "Finding what the image shows (NGC/IC catalogue)", 1, 4 );
    var proj = Sky.projector( window ), field = Sky.field( window );
    var ngc = Sky.readNgcIc(), pick = ngc ? Fly.pickTarget( ngc, field.centre, field.radiusDeg ) : { best: null, runnerUp: null };
    var target = choices.target || pick.best;
@@ -277,7 +277,7 @@ FlyThrough.identify = function( window, choices, progress )
    // catalogued centre, off the middle of a frame, sent the flight sideways)
    var id = { proj: proj, field: field, pick: pick, target: target, type: type, D: null, distanceSource: null, cluster: null,
               aim: field.centre,
-              sources: ( stage( "Querying Gaia", 2, 4 ), Sky.requireSources( field.centre, field.radiusDeg ) ),
+              sources: ( stage( "Looking up the stars and their distances in Gaia", 2, 4 ), Sky.requireSources( field.centre, field.radiusDeg ) ),
               solvedPixel: ( typeof solvedPixel == "number" ) ? solvedPixel : null };
    if ( type == "galaxy" )
    {
@@ -291,7 +291,7 @@ FlyThrough.identify = function( window, choices, progress )
    }
    else if ( target )
    {
-      stage( "Finding the ionising cluster", 3, 4 );
+      stage( "Finding the nebula's distance from its star cluster", 3, 4 );
       FlyThrough.clusterDistance( id, target );
    }
    return id;
@@ -338,7 +338,7 @@ FlyThrough.build = function( window, id, choices, progress )
 {
    var stage = ( progress && progress.stage ) ? progress.stage : function() {};
    var stretched = Sky.stretchIfLinear( window );
-   stage( "Removing stars (" + choices.tool + ")", 0, 0 );
+   stage( "Removing the stars with " + choices.tool + " (the longest step)", 0, 0 );
    var split = Sky.splitStars( window, choices.tool );
    try
    {
@@ -351,7 +351,7 @@ FlyThrough.build = function( window, id, choices, progress )
          if ( q && q.x >= 0 && q.y >= 0 && q.x < W && q.y < H ) neighbours.push( { source: s, x: q.x, y: q.y } );
       } );
       var sp = Sky.sprites( split.stars.mainView.image, placed, choices.fwhm, neighbours, stage );
-      stage( "Preparing the scene", 0, 0 );
+      stage( "Putting the scene together", 0, 0 );
       var scene = Render.scene( { starless: split.starless.mainView.image, stars: split.stars.mainView.image,
                                   sprites: sp.sprites, residual: sp.residual, project: id.proj,
                                   target: id.aim || id.target || id.field.centre, D: id.D,
@@ -793,6 +793,10 @@ FlyThrough.removeTree = function( dir )
    try { File.removeDirectory( dir ); } catch ( e ) {}
 };
 
+/* A cancelled job ends by throwing this (FlyThrough.cancel), which the dialog shows as "Cancelled", not as an error. */
+FlyThrough.cancel = function() { var e = new Error( "Cancelled." ); e.loomCancel = true; return e; };
+FlyThrough.isCancel = function( e ) { return !!( e && e.loomCancel ); };
+
 FlyThrough.TOOL_SETTING = "Loom/flyStarTool";   // the star removal tool last chosen
 FlyThrough.FOCAL_SETTING = "Loom/flyFocal";   // the last focal length used (mm)
 FlyThrough.PIXEL_SETTING = "Loom/flyPixel";   // the last pixel size used (um)
@@ -812,6 +816,9 @@ FlyThrough.Dialog = class extends Dialog
       this.cancelRequested = false;
       this.drafting = false;          // the job running is a draft
       this.redraftPending = false;    // a change made during a draft left it stale (redraft)
+      this.analysisDepth = 0;         // > 0 while the image is analysed and its stars extracted (analysing)
+      this.extracting = null;         // the star tool whose extraction is running
+      this.toolSwitch = null;         // the tool chosen while it ran: its result is discarded, and extracted again with this one
       this.ffmpeg = Render.findFfmpeg();
       this.encoders = this.ffmpeg ? Render.ffmpegEncoders( this.ffmpeg ) : "";
       this.windowTitle = "Loom Fly-Through";
@@ -963,12 +970,33 @@ FlyThrough.Dialog = class extends Dialog
       this.requireTool();
       if ( this.hintsMissing() )
          return "No astrometric solution and nothing in the header to solve from: fill in Object (or RA/Dec), focal length and pixel size, and it starts by itself.";
-      this.analyse();
-      var galaxy = ( this.typeCombo.currentItem == 1 ), D = this.number( this.distanceEdit );
-      if ( !galaxy && !( D > 0 ) )
-         return "Analysed. Type the nebula's distance in parsecs, then Draft or Render.";
-      var o = this.prepare();
-      this.makeDraft( o, progress || this.progressFor() );
+      var self = this, o = null;
+      // the dialog stays usable meanwhile (analysing): what is changed is read when it ends
+      var note = this.analysing( function()
+      {
+         self.analyse();
+         var galaxy = ( self.typeCombo.currentItem == 1 ), D = self.number( self.distanceEdit );
+         if ( !galaxy && !( D > 0 ) )
+            return "Analysed. Type the nebula's distance in parsecs, then Draft or Render.";
+         o = self.prepare();
+         return null;
+      } );
+      this.redraftPending = false;          // the options were read after every change made so far
+      if ( note ) return note;
+      // the first draft, again while a change made during it left it stale (as draft() does)
+      this.drafting = true;
+      try
+      {
+         for ( ;; )
+         {
+            this.makeDraft( o, progress || this.progressFor() );
+            if ( !this.redraftPending ) break;
+            this.redraftPending = false;
+            this.cancelRequested = false;
+            o = this.prepare();
+         }
+      }
+      finally { this.drafting = false; }
       return "Ready: the draft is playing; press Render for the video.";
    }
 
@@ -1076,7 +1104,7 @@ FlyThrough.Dialog = class extends Dialog
       this.tools.forEach( function( t ) { self.toolCombo.addItem( t ); } );
       var lastTool = this.tools.indexOf( Settings.read( FlyThrough.TOOL_SETTING, DataType_String ) || "" );
       if ( lastTool >= 0 ) this.toolCombo.currentItem = lastTool;
-      this.toolCombo.onItemSelected = function( i ) { if ( self.tools[i] ) Settings.write( FlyThrough.TOOL_SETTING, DataType_String, self.tools[i] ); };
+      this.toolCombo.onItemSelected = function( i ) { if ( self.tools[i] ) Settings.write( FlyThrough.TOOL_SETTING, DataType_String, self.tools[i] ); self.toolChanged(); };
       this.starsLabel = new Label( this );
       this.starsLabel.text = "";
       this.starsLabel.toolTip = "<p>Detected: stars found in the image. Moving: those with a Gaia distance near enough to move. " +
@@ -1206,7 +1234,7 @@ FlyThrough.Dialog = class extends Dialog
          var d = new OpenFileDialog;
          d.caption = "Loom Fly-Through: Logo";
          d.filters = [ [ "Images", "*.png *.tif *.tiff *.xisf *.jpg *.jpeg" ] ];
-         if ( d.execute() ) self.guarded( function() { self.useLogo( d.fileName ); } );
+         if ( d.execute() ) self.safely( function() { self.useLogo( d.fileName ); } );   // mid-job too: redraft() keeps it for when the job ends
       };
       this.logoPlaceCombo = new ComboBox( this );
       [ "Off", "Center", "Top left", "Top middle", "Top right", "Bottom left", "Bottom middle", "Bottom right" ].forEach( function( t ) { self.logoPlaceCombo.addItem( t ); } );
@@ -1357,7 +1385,7 @@ FlyThrough.Dialog = class extends Dialog
       this.renderButton.text = "Render";
       this.renderButton.onClick = function()
       {
-         if ( self.busy ) { self.cancelRequested = true; self.redraftPending = false; return; }   // a cancel is not followed by a redraft
+         if ( self.busy ) { self.requestCancel(); return; }
          self.guarded( function() { self.renderAll(); } );
       };
       this.closeButton = new PushButton( this );
@@ -1385,7 +1413,7 @@ FlyThrough.Dialog = class extends Dialog
     */
    closing()
    {
-      if ( this.busy ) { this.cancelRequested = true; this.redraftPending = false; }
+      if ( this.busy ) this.requestCancel();
       try { this.saveOptions(); }
       catch ( e ) { Util.warn( "fly", "the options were not saved: " + ( e.message || e ) ); }
       return true;
@@ -1408,16 +1436,149 @@ FlyThrough.Dialog = class extends Dialog
       this.adjustToContents();
    }
 
-   /* Errors become a message, not a script failure. */
+   /* Errors become a message, not a script failure; nothing starts while a job runs. */
    guarded( fn )
    {
       if ( this.busy ) return;
+      this.safely( fn );
+   }
+
+   /* Errors become a message, not a script failure; a cancelled job just says so. */
+   safely( fn )
+   {
       try { fn(); }
       catch ( e )
       {
+         if ( FlyThrough.isCancel( e ) ) { this.cancelled(); return; }
          this.status.text = "";
          ( new MessageBox( String( e.message || e ), "Loom Fly-Through", StdIcon_Error, StdButton_Ok ) ).execute();
       }
+   }
+
+   /* The job was cancelled: said on the bar and the status line. */
+   cancelled()
+   {
+      this.bar.set( 1, "Cancelled" );
+      this.status.text = "Cancelled.";
+   }
+
+   /* Cancel (the Render button mid-job, or closing): a running star extraction is asked to stop too, and no redraft follows. */
+   requestCancel()
+   {
+      this.cancelRequested = true;
+      this.redraftPending = false;
+      if ( this.extracting ) this.abortExtraction();
+   }
+
+   /* Stops at this point when the job was cancelled. */
+   stopIfCancelled()
+   {
+      if ( this.cancelRequested ) throw FlyThrough.cancel();
+   }
+
+   /*
+    * Asks the running star removal to stop. PixInsight lets events through
+    * while a process runs, but console.abort() does not stop it early: the
+    * call runs to its end, then throws "Process aborted" (measured with
+    * StarXTerminator). The request is cleared (clearAbort) once it returns.
+    */
+   abortExtraction()
+   {
+      this.abortAsked = true;
+      try { console.abort(); } catch ( e ) { Util.warn( "fly", "could not ask the star tool to stop: " + e ); }
+   }
+
+   /*
+    * The stop request cleared: it stays pending after the call it stopped
+    * returns, and every process run after it would throw "Process aborted"
+    * too. console.abortRequested is read-only; resetStatus() clears it
+    * (measured on PixInsight 1.9).
+    */
+   clearAbort()
+   {
+      if ( !this.abortAsked ) return;
+      this.abortAsked = false;
+      try { console.resetStatus(); } catch ( e ) { Util.warn( "fly", "could not clear the stop request: " + e ); }
+   }
+
+   /*
+    * The star tool was changed. During its extraction the one running is
+    * stopped (abortExtraction), its result discarded, and the stars
+    * extracted again with the new tool as soon as it returns (ensureBuilt);
+    * otherwise the new tool is used by the next Draft or Render.
+    */
+   toolChanged()
+   {
+      if ( !this.extracting ) return;
+      this.toolSwitch = this.tools[this.toolCombo.currentItem];
+      this.abortExtraction();
+      this.bar.set( null, this.switchingText() );
+   }
+
+   switchingText()
+   {
+      return "Switching to " + this.toolSwitch + " after the current star removal stops\u2026";
+   }
+
+   /*
+    * Runs fn -- the image's analysis and star extraction -- with the dialog
+    * usable: every option stays editable (a change is read when the analysis
+    * ends, or redrafts), while what depends on the analysis is greyed out
+    * (Draft, Play, the star counts, the image choice) and Render is Cancel.
+    * Nested calls run inside the outer one. Controls come back however it
+    * ends; a cancel ends it here.
+    */
+   analysing( fn )
+   {
+      if ( this.analysisDepth > 0 ) return fn();
+      var wasBusy = this.busy;
+      if ( !wasBusy ) this.cancelRequested = false;
+      this.busy = true;
+      this.analysisDepth = 1;
+      this.refreshJobControls();
+      try
+      {
+         var r = fn();
+         this.stopIfCancelled();
+         return r;
+      }
+      finally
+      {
+         this.analysisDepth = 0;
+         this.busy = wasBusy;
+         this.refreshJobControls();
+      }
+   }
+
+   /* What a running job leaves usable (see analysing and run). */
+   refreshJobControls()
+   {
+      var inAnalysis = this.analysisDepth > 0, has = ( this.imageWindow != null );
+      this.draftButton.enabled = has && !this.busy;
+      this.renderButton.text = this.busy ? "Cancel" : "Render";
+      this.renderButton.enabled = has || this.busy;
+      this.playButton.enabled = !inAnalysis;
+      this.starsLabel.enabled = !inAnalysis;
+      this.imageList.enabled = this.openButton.enabled = !inAnalysis;   // another image cannot be taken until this one's analysis ends
+      // the bar's pulse keeps moving while a PixInsight process runs (it lets timers through)
+      if ( inAnalysis && !this.pulseTimer )
+      {
+         var self = this;
+         this.pulseTimer = new Timer;
+         this.pulseTimer.interval = 0.25;
+         this.pulseTimer.periodic = true;
+         this.pulseTimer.onTimeout = function() { if ( self.bar ) self.bar.update(); };
+         this.pulseTimer.start();
+      }
+      else if ( !inAnalysis && this.pulseTimer ) this.stopPulse();
+   }
+
+   stopPulse()
+   {
+      if ( !this.pulseTimer ) return;
+      this.pulseTimer.stop();
+      this.pulseTimer.onTimeout = null;
+      this.pulseTimer = null;
    }
 
    number( edit ) { var v = parseFloat( edit.text ); return isFinite( v ) ? v : null; }
@@ -1477,6 +1638,12 @@ FlyThrough.Dialog = class extends Dialog
 
    analyse()
    {
+      var self = this;
+      this.analysing( function() { self.analyseImage(); } );
+   }
+
+   analyseImage()
+   {
       this.requireTool();
       var choices = this.choices(), progress = this.progressFor();
       this.status.text = "Analysing\u2026";
@@ -1484,11 +1651,12 @@ FlyThrough.Dialog = class extends Dialog
       {
          // the image's solved working copy from the cache, else resampled (and solved below)
          this.cacheDirPath = FlyThrough.cacheDir( FlyThrough.cacheRoot(), this.imageWindow );
+         progress.stage( "Opening the image's working copy", 0, 0 );
          this.work = FlyThrough.loadWork( this.cacheDirPath );
          this.workCached = ( this.work != null );
          if ( !this.work )
          {
-            progress.stage( "Resampling to the working size", 0, 0 );
+            progress.stage( "Making a smaller working copy of the image", 0, 0 );
             this.work = Sky.workingCopy( this.imageWindow );
          }
          var wi = this.work.window.mainView.image;
@@ -1509,8 +1677,9 @@ FlyThrough.Dialog = class extends Dialog
       this.hints.visible = ( Sky.projector( this.work.window ) == null );
       this.id = id;
       this.targetLabel.text = FlyThrough.describeTarget( id );
-      this.typeCombo.currentItem = ( id.type == "galaxy" ) ? 1 : 0;
-      if ( id.D != null && isFinite( id.D ) ) this.distanceEdit.text = String( Math.round( id.D ) );
+      // a type or distance set while it was analysed is the user's: kept
+      if ( !this.typeTouched ) this.typeCombo.currentItem = ( id.type == "galaxy" ) ? 1 : 0;
+      if ( id.D != null && isFinite( id.D ) && !this.distanceTouched ) this.distanceEdit.text = String( Math.round( id.D ) );
       this.distanceNote.text = FlyThrough.describeDistance( id );
       this.status.text = id.sources.length + " Gaia stars in the field" + ( id.sources.origin ? " (" + ( id.sources.origin == "online" ? "Gaia DR3 online" : "Gaia " + id.sources.origin ) + ")" : "" ) + ".";
    }
@@ -1522,12 +1691,27 @@ FlyThrough.Dialog = class extends Dialog
     */
    prepare()
    {
+      var self = this;
+      return this.analysing( function() { return self.prepareScene(); } );
+   }
+
+   prepareScene()
+   {
       this.requireTool();
       if ( this.id == null ) this.analyse();
-      var galaxy = ( this.typeCombo.currentItem == 1 ), typed = this.number( this.distanceEdit );
-      var D = galaxy ? Infinity : ( typed > 0 ? typed : null );
-      if ( D == null )
-         throw new Error( "Type the nebula's distance in parsecs first." );
+      var self = this;
+      function distance()
+      {
+         var galaxy = ( self.typeCombo.currentItem == 1 ), typed = self.number( self.distanceEdit );
+         var D = galaxy ? Infinity : ( typed > 0 ? typed : null );
+         if ( D == null )
+            throw new Error( "Type the nebula's distance in parsecs first." );
+         return D;
+      }
+      distance();
+      this.ensureBuilt();
+      // read after the build: a type or distance changed while it ran is the one that counts
+      var D = distance(), galaxy = ( D === Infinity );
       this.id.type = galaxy ? "galaxy" : "nebula";
       this.id.D = D;
       if ( !galaxy && !( this.id.cluster && Math.round( this.id.cluster.distance ) == Math.round( D ) ) )
@@ -1538,7 +1722,6 @@ FlyThrough.Dialog = class extends Dialog
       var cap = Fly.clampTravel( want, this.id.type, D );
       this.travelEdit.text = String( Math.round( cap.travel ) );
       this.travelNote.text = cap.clamped ? "capped at 0.9 \u00d7 the distance" : "";
-      this.ensureBuilt();
       this.built.scene.D = D;
       return Object.assign( this.options(), { travel: cap.travel } );
    }
@@ -1550,24 +1733,48 @@ FlyThrough.Dialog = class extends Dialog
       if ( this.built && this.builtTool == o.tool )
          return;
       this.releaseBuilt();
-      this.status.text = "Removing stars and cutting sprites\u2026";
-      processEvents();
-      // the stars extracted with this tool before, else extracted now and kept
-      this.built = FlyThrough.loadBuilt( this.cacheDirPath, o.tool, this.work.window, this.imageWindow );
-      if ( !this.built )
+      for ( ;; )
       {
-         this.built = FlyThrough.build( this.work.window, this.id, { tool: o.tool, colourFrom: this.imageWindow }, this.progressFor() );
-         try { FlyThrough.saveBuilt( this.cacheDirPath, o.tool, this.built ); }
-         catch ( e ) { console.warningln( "Loom Fly-Through: the stars could not be cached: " + e ); }
+         this.stopIfCancelled();
+         o = this.options();
+         this.status.text = "Removing stars and cutting sprites\u2026";
+         processEvents();
+         // the stars extracted with this tool before, else extracted now and kept
+         var built = FlyThrough.loadBuilt( this.cacheDirPath, o.tool, this.work.window, this.imageWindow );
+         if ( built ) break;
+         built = this.extract( o.tool );
+         if ( built ) break;                   // null: the tool was changed while it ran, so again with the new one
       }
+      this.built = built;
       this.bar.set( 1, "Scene ready" );
       this.builtTool = o.tool;
       this.starsLabel.text = Fly.describeStars( this.built.counts );
+      this.bar.set( null, "Timing a frame for the render estimate" );
       this.msPerMp = FlyThrough.measureSpeed( this.built.scene, o );
       this.status.text = this.built.counts.placed + " stars placed, " + this.built.counts.blended + " blended, " +
                          this.built.counts.backdrop + " in the backdrop. " + this.built.colourNote +
                          ( this.built.counts.placed < 50 ? " Few stars could be placed (under 50): the depth will be subtle." : "" );
       this.refreshEstimate();
+   }
+
+   /*
+    * The stars extracted with `tool` (FlyThrough.build), and cached. Null
+    * when the tool was changed while it ran (toolChanged): that result is
+    * discarded. A cancel ends the job once the call returns.
+    */
+   extract( tool )
+   {
+      var built = null, failure = null;
+      this.extracting = tool;
+      this.toolSwitch = null;
+      try { built = FlyThrough.build( this.work.window, this.id, { tool: tool, colourFrom: this.imageWindow }, this.progressFor() ); }
+      catch ( e ) { failure = e; }             // "Process aborted", when it was asked to stop
+      finally { this.extracting = null; this.clearAbort(); }
+      if ( this.toolSwitch ) { this.toolSwitch = null; return null; }
+      if ( failure ) { this.stopIfCancelled(); throw failure; }
+      try { FlyThrough.saveBuilt( this.cacheDirPath, tool, built ); }
+      catch ( e ) { console.warningln( "Loom Fly-Through: the stars could not be cached: " + e ); }
+      return built;
    }
 
    /*
@@ -1579,6 +1786,7 @@ FlyThrough.Dialog = class extends Dialog
       var self = this, current = null, since = Date.now();
       function stage( name, done, total, kept )
       {
+         if ( self.toolSwitch ) { self.bar.set( null, self.switchingText() ); return; }   // what happens next, until it does
          if ( name != current ) { current = name; since = Date.now(); }
          self.bar.set( Fly.progressFraction( done, total ), Fly.progressText( name, done, total, Date.now() - since, kept ) );
       }
@@ -1738,7 +1946,8 @@ FlyThrough.Dialog = class extends Dialog
    logoChanged()
    {
       if ( this.hasDraft ) { this.redraft(); return; }
-      if ( this.imageWindow && this.player ) this.player.setFrames( [ this.stillWithLogo( this.imageWindow ) ], 30, false );
+      if ( this.busy ) this.redraft();          // the analysis's draft, about to be made or being made, is drawn again
+      if ( this.imageWindow && this.player && !this.drafting ) this.player.setFrames( [ this.stillWithLogo( this.imageWindow ) ], 30, false );
    }
 
    /* The preview's still of the image, the logo drawn over it (its transparency kept). */
@@ -1767,7 +1976,7 @@ FlyThrough.Dialog = class extends Dialog
    redraft()
    {
       var self = this;
-      if ( !this.hasDraft ) return;
+      if ( !this.hasDraft && !this.analysisDepth && !this.drafting ) return;   // nothing drafted, nor about to be
       if ( this.busy )
       {
          this.redraftPending = true;
@@ -1830,21 +2039,23 @@ FlyThrough.Dialog = class extends Dialog
    /* Runs a long job with the Render button as Cancel. */
    run( job )
    {
-      var self = this;
       this.busy = true;
       this.cancelRequested = false;
-      this.renderButton.text = "Cancel";
-      this.draftButton.enabled = false;
+      this.refreshJobControls();
       try
       {
          this.status.text = job( this.progressFor() );
          this.bar.set( 1, this.cancelRequested ? "Cancelled" : "Done" );
       }
+      catch ( e )
+      {
+         if ( !FlyThrough.isCancel( e ) ) throw e;
+         this.cancelled();
+      }
       finally
       {
          this.busy = false;
-         this.renderButton.text = "Render";
-         this.draftButton.enabled = true;
+         this.refreshJobControls();
       }
    }
 
@@ -1872,6 +2083,7 @@ FlyThrough.Dialog = class extends Dialog
          if ( this.logoOpacity ) this.logoOpacity.onValueUpdated = null;
          if ( this.saturationSlider ) this.saturationSlider.onValueUpdated = null;
          if ( this.autoTimer ) { this.autoTimer.stop(); this.autoTimer.onTimeout = null; this.autoTimer = null; }
+         this.stopPulse();
          if ( this.scrubber ) this.scrubber.onValueUpdated = null;
          [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
          this.onClose = null;

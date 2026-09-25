@@ -10366,6 +10366,127 @@ function runFlyTestsClean()
       finally { img.free(); }
    } )();
 
+   /*
+    * A tester: "As soon as I load a file, it starts running, even before I
+    * can select/modify the settings." The analysis starting by itself is
+    * wanted; the dialog feeling frozen through it is not. PixInsight lets
+    * events through while a process runs (a Timer fired 50 times during a
+    * 13 s StarXTerminator), so while the image is analysed the options stay
+    * editable and what is changed then is honoured; only what depends on the
+    * analysis still running (Draft, Play, the star counts) is greyed out, and
+    * Render is a working Cancel. A star tool changed during the star removal
+    * aborts it (console.abort(): the call throws "Process aborted" when it
+    * returns) and starts it again with the new tool; the solve and catalogue
+    * are not redone. The stubbed extraction below plays the user's part.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-analysis-live" ), fx = flyTestScene( dir ), dlg = null;
+      var saved = { query: Sky.querySources, split: Sky.splitStars, identify: FlyThrough.identify, loadBuilt: FlyThrough.loadBuilt,
+                    saveBuilt: FlyThrough.saveBuilt, tool: Settings.read( FlyThrough.TOOL_SETTING, DataType_String ) };
+      function copies() { return { starless: Sky.copyWindow( fx.windows[1], "fly_starless" ), stars: Sky.copyWindow( fx.windows[2], "fly_stars" ) }; }
+      function shape() { var b = dlg.player.frames[0]; return b ? ( b.width > b.height ? "horizontal" : "vertical" ) : "none"; }
+      function jobControls() { return [ dlg.draftButton.enabled, dlg.playButton.enabled, dlg.starsLabel.enabled, dlg.renderButton.text, dlg.renderButton.enabled, dlg.busy ]; }
+      function fresh()
+      {
+         if ( dlg ) dlg.release();
+         dlg = new FlyThrough.Dialog( null );
+         dlg.tools = [ "ToolA", "ToolB" ];
+         dlg.toolCombo.clear();
+         dlg.tools.forEach( function( t ) { dlg.toolCombo.addItem( t ); } );
+         dlg.toolCombo.currentItem = 0;
+         dlg.setImage( fx.image );
+         dlg.distanceEdit.text = "700"; dlg.distanceEdit.onEditCompleted();
+         dlg.durationSpin.value = 2;
+         dlg.orientationCombo.currentItem = 0;
+      }
+      function autoRun() { dlg.run( function( progress ) { return dlg.autoPrepare( progress ); } ); }
+      var READY = [ true, true, true, "Render", true, false ];
+      try
+      {
+         Sky.querySources = function() { return fx.sources; };
+         FlyThrough.loadBuilt = function() { return null; };        // every extraction below runs
+         FlyThrough.saveBuilt = function() {};
+         var identified = 0;
+         FlyThrough.identify = function() { ++identified; return saved.identify.apply( FlyThrough, arguments ); };
+
+         // the user, while ToolA's star removal runs: a look option, the distance, the orientation, then the tool
+         fresh();
+         var tools = [], seen = null;
+         Sky.splitStars = function( window, tool )
+         {
+            tools.push( tool );
+            if ( tools.length == 1 )
+            {
+               seen = { job: jobControls(), bar: dlg.bar.text,
+                        editable: [ dlg.toolCombo, dlg.orientationCombo, dlg.loopCombo, dlg.twinkleSpin, dlg.saturationSlider, dlg.durationSpin,
+                                    dlg.dynamicCombo, dlg.qualityCombo, dlg.logoButton, dlg.musicButton, dlg.folderEdit, dlg.distanceEdit ]
+                                  .map( function( c ) { return c.enabled; } ) };
+               dlg.twinkleSpin.value = 7;
+               dlg.distanceEdit.text = "800"; dlg.distanceEdit.onEditCompleted();
+               dlg.orientationCombo.currentItem = 1; dlg.orientationCombo.onItemSelected( 1 );
+               dlg.toolCombo.currentItem = 1; dlg.toolCombo.onItemSelected( 1 );
+               seen.switching = dlg.bar.text;
+               for ( var k = 0; k < 5; ++k ) processEvents();
+               if ( console.abortRequested ) throw new Error( "Process aborted" );   // as a real process does, when it returns
+            }
+            return copies();
+         };
+         // and during the draft that follows, the orientation back to horizontal
+         var realProgress = dlg.progressFor, back = false;
+         dlg.progressFor = function()
+         {
+            var p = realProgress.call( dlg ), on = p.onFrame;
+            p.onFrame = function()
+            {
+               on.apply( p, arguments );
+               if ( !back && dlg.orientationCombo.currentItem == 1 ) { back = true; dlg.orientationCombo.currentItem = 0; dlg.orientationCombo.onItemSelected( 0 ); }
+            };
+            return p;
+         };
+         autoRun();
+         check( "during the analysis Draft, Play and the star counts are greyed out, Render is a working Cancel", seen.job, [ false, false, false, "Cancel", true, true ] );
+         check( "and every other option stays editable", seen.editable, seen.editable.map( function() { return true; } ) );
+         check( "the progress bar names the step in plain words (" + seen.bar + ")", /^Removing the stars with ToolA/.test( seen.bar ), true );
+         check( "a tool changed mid-extraction says what happens (" + seen.switching + ")", /^Switching to ToolB after the current star removal stops/.test( seen.switching ), true );
+         check( "the star removal starts again with the new tool", tools, [ "ToolA", "ToolB" ] );
+         check( "and the stars the dialog uses are the new tool's", dlg.builtTool, "ToolB" );
+         check( "the solve and catalogue ran once", identified, 1 );
+         check( "the abort is cleared, so later work is not aborted", console.abortRequested, false );
+         check( "a distance typed mid-analysis reaches the scene", dlg.built.scene.D, 800 );
+         check( "a look option changed mid-analysis is kept", dlg.options().twinkle, 0.07 );
+         check( "an orientation changed during the first draft is drafted", [ back, shape() ], [ true, "horizontal" ] );
+         check( "the controls are back when it ends", jobControls(), READY );
+
+         // the star tool fails: the controls come back
+         fresh();
+         Sky.splitStars = function() { throw new Error( "the star tool failed" ); };
+         var err = null;
+         try { autoRun(); } catch ( e ) { err = String( e.message || e ); }
+         check( "an analysis that fails reports it", err, "the star tool failed" );
+         check( "and gives the controls back", jobControls(), READY );
+
+         // Cancel during the star removal: no draft, the controls come back
+         fresh();
+         Sky.splitStars = function() { dlg.renderButton.onClick(); processEvents(); if ( console.abortRequested ) throw new Error( "Process aborted" ); return copies(); };
+         err = null;
+         try { autoRun(); } catch ( e ) { err = String( e.message || e ); }
+         check( "Cancel during the analysis is not an error", err, null );
+         check( "it stops before the draft, and says so (" + dlg.status.text + ")", [ dlg.hasDraft, /Cancelled/.test( dlg.status.text ) ], [ false, true ] );
+         check( "and gives the controls back", jobControls(), READY );
+         check( "with no abort left pending", console.abortRequested, false );
+      }
+      finally
+      {
+         Sky.querySources = saved.query; Sky.splitStars = saved.split; FlyThrough.identify = saved.identify;
+         FlyThrough.loadBuilt = saved.loadBuilt; FlyThrough.saveBuilt = saved.saveBuilt;
+         if ( console.abortRequested ) console.resetStatus();
+         if ( saved.tool != null ) Settings.write( FlyThrough.TOOL_SETTING, DataType_String, saved.tool ); else Settings.remove( FlyThrough.TOOL_SETTING );
+         if ( dlg ) dlg.release();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
    /* fly-tests-end */
 }
 
