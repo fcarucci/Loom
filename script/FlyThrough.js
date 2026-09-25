@@ -270,6 +270,34 @@ FlyThrough.encodeProgress = function( progress, frames )
    };
 };
 
+/*
+ * The rendered frames kept for reuse and resume (Fly.frameSignature,
+ * FlyThrough.framesReady), cleared: in dir's preset folders (every preset,
+ * both orientations) Loom's own frames, half-written frames and records go,
+ * and a folder left empty goes too; nothing else is touched -- other files,
+ * other folders, the videos. countOnly: count, delete nothing. Returns
+ * { frames (finished frames), folders (preset folders holding Loom's files) }.
+ */
+FlyThrough.clearFrames = function( dir, countOnly )
+{
+   var names = [], frames = 0, folders = 0;
+   FlyThrough.PRESET_ORDER.forEach( function( id ) { names.push( id, id + "_vertical" ); } );
+   names.forEach( function( n )
+   {
+      var f = dir + "/" + n;
+      if ( !File.directoryExists( f ) ) return;
+      var ours = Steps.directoryEntries( f ).filter( function( e ) { return Fly.isFrameFile( e ) || FlyThrough.isPartialFrame( e ) || e == FlyThrough.FRAMES_RECORD; } );
+      if ( !ours.length ) return;
+      ++folders;
+      frames += ours.filter( Fly.isFrameFile ).length;
+      if ( countOnly ) return;
+      ours.forEach( function( e ) { FlyThrough.removeQuietly( f + "/" + e ); } );
+      if ( Steps.directoryEntries( f ).length == 0 )
+         try { File.removeDirectory( f ); } catch ( e ) { Util.warn( "fly", "could not remove " + f + ": " + e ); }
+   } );
+   return { frames: frames, folders: folders };
+};
+
 FlyThrough.removeQuietly = function( path )
 {
    try { if ( File.exists( path ) ) File.remove( path ); } catch ( e ) {}
@@ -1382,8 +1410,13 @@ FlyThrough.Dialog = class extends Dialog
       this.qualityCombo = new ComboBox( this );
       this.qualityCombo.addItem( "High" );
       this.qualityCombo.addItem( "Standard" );
+      this.clearFramesButton = new PushButton( this );
+      this.clearFramesButton.text = "Clear rendered frames\u2026";
+      this.clearFramesButton.toolTip = "<p>Deletes the frames kept in the output folder's preset folders, so the next render " +
+                                       "draws every frame afresh instead of reusing or resuming them. The videos are kept.</p>";
+      this.clearFramesButton.onClick = function() { self.guarded( function() { self.clearRenderedFrames(); } ); };
       this.video = this.group( "Video", [ this.row( [ this.ffmpegLabel, "stretch", this.ffmpegButton ] ),
-         this.row( [ this.videoCheck, this.label( "Format:" ), this.formatCombo, this.label( "Quality:" ), this.qualityCombo, "stretch" ] ) ] );
+         this.row( [ this.videoCheck, this.label( "Format:" ), this.formatCombo, this.label( "Quality:" ), this.qualityCombo, "stretch", this.clearFramesButton ] ) ] );
    }
 
    browseFfmpeg()
@@ -1600,6 +1633,21 @@ FlyThrough.Dialog = class extends Dialog
       }
    }
 
+   /* Clear rendered frames: in the output folder, after saying how many (FlyThrough.clearFrames). */
+   clearRenderedFrames()
+   {
+      var dir = this.folderEdit.text.trim();
+      if ( !dir || !File.directoryExists( dir ) ) { this.status.text = "Choose an output folder first."; return; }
+      var n = FlyThrough.clearFrames( dir, true );
+      if ( n.folders == 0 ) { this.status.text = "No rendered frames to clear in " + dir + "."; return; }
+      var ask = new MessageBox( "Delete " + n.frames + " rendered frame" + ( n.frames == 1 ? "" : "s" ) + " in " + n.folders + " preset folder" +
+                                ( n.folders == 1 ? "" : "s" ) + " of " + dir + "?<br/><br/>The next render draws them afresh. The videos are kept.",
+                                "Loom Fly-Through", StdIcon_Question, StdButton_Yes, StdButton_No );
+      if ( ask.execute() != StdButton_Yes ) return;
+      var res = FlyThrough.clearFrames( dir );
+      this.status.text = "Cleared " + res.frames + " rendered frame" + ( res.frames == 1 ? "" : "s" ) + "; the next render draws every frame afresh.";
+   }
+
    /* What a running job leaves usable (see analysing and run). */
    refreshJobControls()
    {
@@ -1607,6 +1655,7 @@ FlyThrough.Dialog = class extends Dialog
       this.draftButton.enabled = has && !this.busy;
       this.renderButton.text = this.busy ? "Cancel" : "Render";
       this.renderButton.enabled = has || this.busy;
+      if ( this.clearFramesButton ) this.clearFramesButton.enabled = !this.busy;   // not while frames are being written
       this.playButton.enabled = !inAnalysis;
       this.starsLabel.enabled = !inAnalysis;
       this.imageList.enabled = this.openButton.enabled = !inAnalysis;   // another image cannot be taken until this one's analysis ends

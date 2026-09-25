@@ -21,6 +21,7 @@ section of this file.
 - A crossfade loop's dissolve and its music's loop blend now take 1 s (they took 2 s).
 - A looping video's music blends at the end, like the video's dissolve, instead of at the beginning: the video's music starts 1 s into the song, and the song's first second fades in over the last.
 - A video is named after its object, preset and colour encoding, for example `NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ.mp4`.
+- **Clear rendered frames…** in the Video section deletes the frames kept for reuse and resume, so the next render draws every frame afresh. It says how many it would delete and asks first, and only touches Loom's own frame files: the videos and anything else stay.
 
 **The dialog while an image is analysed.**
 - The dialog stays usable. Draft, Play, the star counts and the image choice are greyed out; every other option can be changed, and the changes are kept.

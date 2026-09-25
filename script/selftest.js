@@ -10823,6 +10823,30 @@ function runFlyTestsClean()
    check( "no time before the first second", [ Fly.progressText( "Solving", 0, 0, 0 ), Fly.progressText( "Solving", 0, 0, 400 ) ], [ "Solving", "Solving" ] );
    check( "then the time", [ Fly.progressText( "Solving", 0, 0, 1000 ), Fly.progressText( "Solving", 0, 0, 65000 ) ], [ "Solving — 1 s", "Solving — 1 min 5 s" ] );
 
+   /*
+    * Clear rendered frames: in the output folder's preset folders, Loom's own
+    * frames, half-written frames and records go -- nothing else -- and a
+    * folder left empty goes too. The next render starts afresh.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-clear-frames" ), put = function( p ) { File.writeTextFile( dir + "/" + p, "x" ); };
+      [ "youtube_1080", "youtube_1080_vertical", "social_square", "holiday" ].forEach( function( f ) { File.createDirectory( dir + "/" + f, true ); } );
+      [ "youtube_1080/frame_00000.tif", "youtube_1080/frame_00001.tif", "youtube_1080/frame_00002.tif" + FlyThrough.PARTIAL_SUFFIX, "youtube_1080/frames.json",
+        "youtube_1080_vertical/frame_00000.tif", "youtube_1080_vertical/frames.json", "youtube_1080_vertical/notes.txt",
+        "social_square/frames.json", "holiday/frame_00000.tif", "NGC7023_youtube_1080_SDR.mp4" ].forEach( put );
+      check( "it counts what it would delete", FlyThrough.clearFrames( dir, true ), { frames: 3, folders: 3 } );
+      check( "nothing is deleted when only counting", File.exists( dir + "/youtube_1080/frame_00000.tif" ), true );
+      var res = FlyThrough.clearFrames( dir );
+      check( "it deletes the frames and the records of the preset folders", [ res.frames, File.exists( dir + "/youtube_1080/frame_00001.tif" ), File.exists( dir + "/youtube_1080_vertical/frames.json" ) ], [ 3, false, false ] );
+      check( "the half-written frame too, and a folder left empty", [ File.exists( dir + "/youtube_1080/frame_00002.tif" + FlyThrough.PARTIAL_SUFFIX ), File.directoryExists( dir + "/youtube_1080" ), File.directoryExists( dir + "/social_square" ) ], [ false, false, false ] );
+      check( "but nothing it did not make: other files, other folders, the videos",
+             [ File.exists( dir + "/youtube_1080_vertical/notes.txt" ), File.exists( dir + "/holiday/frame_00000.tif" ), File.exists( dir + "/NGC7023_youtube_1080_SDR.mp4" ) ], [ true, true, true ] );
+      var dlg = new FlyThrough.Dialog( null );
+      try { check( "the Video section has the button", dlg.clearFramesButton.text, "Clear rendered frames…" ); }
+      finally { dlg.release(); }
+   } )();
+
    /* fly-tests-end */
 }
 
