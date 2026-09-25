@@ -7652,7 +7652,7 @@ function runFlyTestsClean()
                       brightening: true, duration: 1, fps: 10, video: true, ffmpeg: "/nonexistent/ffmpeg", format: "h264",
                       quality: "high" }, dir, { cancelAfter: 3 } );
          check( "cancel keeps the frames written", [ cut.written, cut.cancelled ], [ 3, true ] );
-         check( "and makes no video", File.exists( dir + "/youtube_1080.mp4" ), false );
+         check( "and makes no video", [ File.exists( dir + "/youtube_1080.mp4" ), File.exists( dir + "/" + Fly.videoName( null, "youtube_1080", "sdr" ) + ".mp4" ) ], [ false, false ] );
       }
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
@@ -7712,13 +7712,13 @@ function runFlyTestsClean()
                          video: true, ffmpeg: ff, format: f.id, quality: "standard" };
             var res = FlyThrough.renderFinal( fx.scene, [ { id: "clip_" + f.id, w: 320, h: 180, pingPong: false } ], opts, dir, {} );
             check( "a " + f.label + " video is made" + ( res.failed.length ? ": " + String( res.failed[0].output ).slice( -300 ) : "" ),
-                   res.videos.length == 1 && File.exists( dir + "/clip_" + f.id + "." + f.ext ), true );
+                   res.videos.length == 1 && File.exists( dir + "/" + Fly.videoName( null, "clip_" + f.id, "sdr" ) + "." + f.ext ), true );
             var probe = File.extractDirectory( ff ) + "/ffprobe" + ( Util.isWindows() ? ".exe" : "" );
             if ( File.exists( probe ) )
                check( "the " + f.label + " video is tagged Rec.709",
                       String( Render.runProcess( probe, [ "-v", "error", "-show_entries",
                          "stream=color_space,color_transfer,color_primaries", "-of", "csv=p=0",
-                         dir + "/clip_" + f.id + "." + f.ext ], 10000 ).output ).trim(), "bt709,bt709,bt709" );
+                         dir + "/" + Fly.videoName( null, "clip_" + f.id, "sdr" ) + "." + f.ext ], 10000 ).output ).trim(), "bt709,bt709,bt709" );
          } );
       }
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
@@ -9628,6 +9628,7 @@ function runFlyTestsClean()
       var base = Fly.frameSignature( o, spec, key );
       var same = function( change ) { return Fly.frameSignature( Object.assign( {}, o, change ), spec, key ) == base; };
       check( "a new format, quality or music keeps the frames", [ same( { format: "hevc" } ), same( { quality: "standard" } ), same( { music: { path: "/m/b.mp3", fade: false } } ), same( { video: false } ) ], [ true, true, true, true ] );
+      check( "so does the object the video is named after", same( { objectName: "NGC7023 Iris Nebula" } ), true );
       check( "a new flight, look or length does not", [ same( { travel: 200 } ), same( { bloom: 1.5 } ), same( { duration: 10 } ), same( { fps: 24 } ) ], [ false, false, false, false ] );
       check( "nor does another image or star tool", Fly.frameSignature( o, spec, "other.tif|StarNet2|922" ) == base, false );
       check( "nor another frame size", Fly.frameSignature( o, { id: "youtube_4k", w: 3840, h: 2160, pingPong: false }, key ) == base, false );
@@ -10780,6 +10781,26 @@ function runFlyTestsClean()
          img.free();
       }
       finally { if ( dlg ) dlg.release(); fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* A video is named after its object, its preset and how its colour is encoded: NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ. */
+   check( "the object, the preset and the encoding in the video's name",
+          [ Fly.videoName( "NGC7023 Iris Nebula", "youtube_1080_vertical", "pq" ), Fly.videoName( "IC1396A", "social_square", "hlg" ), Fly.videoName( "M31", "youtube_4k", "sdr" ) ],
+          [ "NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ", "IC1396A_social_square_HDR-HLG", "M31_youtube_4k_SDR" ] );
+   check( "no object, just the preset and encoding; nothing a file name can't hold",
+          [ Fly.videoName( "", "youtube_1080", "sdr" ), Fly.videoName( null, "youtube_1080", "pq" ), Fly.videoName( "Elephant's Trunk: a/b", "youtube_1080", "sdr" ) ],
+          [ "youtube_1080_SDR", "youtube_1080_HDR-PQ", "Elephants_Trunk_a_b_youtube_1080_SDR" ] );
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-video-name" ), fx = flyTestScene( dir );
+      try
+      {
+         var spec = { id: "youtube_1080", w: 96, h: 54, pingPong: false };
+         var o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.3, fps: 10, video: false, format: "h264", sceneKey: "n|t|900", objectName: "NGC7023 Iris Nebula" };
+         var res = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, {} );
+         check( "the rendered video is written under that name, beside the frames' folder", res.commands[0].indexOf( dir + "/NGC7023_Iris_Nebula_youtube_1080_SDR.mp4" ) >= 0, true );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
    /* fly-tests-end */

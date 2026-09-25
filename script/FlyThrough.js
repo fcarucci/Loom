@@ -83,7 +83,8 @@ FlyThrough.renderFinal = function( scene, presets, opts, dir, progress )
          FlyThrough.renderFrames( job, folder, res, progress, total, cancelled, resume );
       }
       if ( !res.cancelled )
-         FlyThrough.finishPreset( folder, folder, job.po, res, progress, job.n );
+         // the video beside its frames' folder, named after the object, preset and encoding (Fly.videoName)
+         FlyThrough.finishPreset( folder, dir + "/" + Fly.videoName( opts.objectName, job.p.id, job.po.transfer ), job.po, res, progress, job.n );
    }
    return res;
 };
@@ -2051,6 +2052,9 @@ FlyThrough.Dialog = class extends Dialog
       var path = this.imageWindow.filePath, when = "";
       try { if ( path && File.exists( path ) ) when = String( ( new FileInfo( path ) ).lastModified.getTime() ); } catch ( e ) {}
       o.sceneKey = [ path || this.imageWindow.mainView.id, when, o.tool, this.built.scene.D ].join( "|" );
+      // the object the video is named after: the target found (its id and common name), else what was typed
+      var t = this.id && this.id.target;
+      o.objectName = t ? t.id + ( t.name ? " " + t.name : "" ) : this.objectEdit.text.trim();
       this.saveOptions();
       // the preview shows the frames as they finish (progressFor's onImage); the draft comes back after
       var draft = { frames: this.player.frames, fps: this.player.fps, pingPong: this.player.pingPong };

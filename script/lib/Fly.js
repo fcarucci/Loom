@@ -1016,6 +1016,20 @@ Fly.ffmpegArgs = function( framesDir, fps, outBase, formatId, quality, hdr, audi
       .concat( tags ).concat( [ outBase + "." + f.ext ] );
 };
 
+/*
+ * A rendered video's file name, without extension: its object, its preset
+ * and how its colour is encoded -- NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ;
+ * just the preset and encoding when there is no object. Only letters,
+ * digits, "-" and "_" (any other run of characters becomes one "_").
+ */
+Fly.VIDEO_ENCODING_TAGS = { sdr: "SDR", pq: "HDR-PQ", hlg: "HDR-HLG" };
+Fly.videoName = function( object, presetId, transfer )
+{
+   var clean = function( t ) { return String( t || "" ).replace( /['\u2019]/g, "" ).replace( /[^A-Za-z0-9-]+/g, "_" ).replace( /^_+|_+$/g, "" ); };
+   return [ clean( object ), presetId, Fly.VIDEO_ENCODING_TAGS[transfer] || String( transfer || "SDR" ).toUpperCase() ]
+      .filter( function( x ) { return x; } ).join( "_" );
+};
+
 Fly.AUDIO_FADE = 2;        // s: the music's fade in and out, at most a quarter of the clip
 Fly.AUDIO_LOOP_FADE = 1;   // s: a looping video's music crossfading end into beginning, as quick as the video's (CROSSFADE_SECONDS)
 
@@ -1226,7 +1240,7 @@ Fly.frameStep = function( n, F, pingPong )
  */
 Fly.RENDERER_VERSION = 6;
 
-Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output" ];   // options that change only the encode
+Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output", "objectName" ];   // options that change only the encode
 
 /*
  * What a preset's frames were made from, as a string: every option but the
