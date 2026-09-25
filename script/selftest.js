@@ -10249,6 +10249,57 @@ function runFlyTestsClean()
       check( "a distance changed after turning reaches the turned scene", [ turned !== sc, Render.sceneFor( sc, 9, 16 ).D ], [ true, 700 ] );
    } )();
 
+   /*
+    * Orientation switched back while a draft is being made (user report:
+    * "if I switch back to horizontal, it remains vertical; you have to close
+    * the app"). The draft lets the dialog's events through between frames,
+    * and a change made then was dropped because the dialog was busy: the
+    * vertical draft finished and stayed on screen under "Horizontal", and
+    * choosing Horizontal again fired nothing. The change must be drafted.
+    */
+   if ( IN_PIXINSIGHT && Steps.availableStarTools().length > 0 ) ( function()
+   {
+      var dir = synthDir( "fly-orientation-back" ), fx = flyTestScene( dir ), saved = Sky.querySources, dlg = null;
+      try
+      {
+         Sky.querySources = function() { return fx.sources; };
+         dlg = new FlyThrough.Dialog( fx.image );
+         dlg.analyse();
+         dlg.distanceEdit.text = "700"; dlg.distanceEdit.onEditCompleted();
+         dlg.durationSpin.value = 2;
+         function shape() { var b = dlg.player.frames[0]; return b ? ( b.width > b.height ? "horizontal" : "vertical" ) : "none"; }
+         dlg.draft();
+         check( "the first draft is horizontal", shape(), "horizontal" );
+         dlg.cacheDirPath = null;          // every draft below is rendered, none taken from the cache
+         // the user chooses Horizontal again while the vertical draft is being made (the draft's frames let events through)
+         var realProgress = dlg.progressFor, switched = false;
+         dlg.progressFor = function()
+         {
+            var p = realProgress.call( dlg ), on = p.onFrame;
+            p.onFrame = function()
+            {
+               on.apply( p, arguments );
+               if ( !switched && dlg.orientationCombo.currentItem == 1 )
+               {
+                  switched = true;
+                  dlg.orientationCombo.currentItem = 0; dlg.orientationCombo.onItemSelected( 0 );
+               }
+            };
+            return p;
+         };
+         dlg.orientationCombo.currentItem = 1; dlg.orientationCombo.onItemSelected( 1 );
+         check( "switched back to horizontal while the vertical draft was made", [ switched, dlg.orientationCombo.currentItem ], [ true, 0 ] );
+         check( "the draft on screen is horizontal again, not the vertical one", shape(), "horizontal" );
+         check( "and the dialog is ready for the next change", dlg.busy, false );
+      }
+      finally
+      {
+         Sky.querySources = saved;
+         if ( dlg ) dlg.release();
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
    /* fly-tests-end */
 }
 

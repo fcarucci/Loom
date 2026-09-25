@@ -810,6 +810,8 @@ FlyThrough.Dialog = class extends Dialog
       this.builtTool = null;
       this.busy = false;
       this.cancelRequested = false;
+      this.drafting = false;          // the job running is a draft
+      this.redraftPending = false;    // a change made during a draft left it stale (redraft)
       this.ffmpeg = Render.findFfmpeg();
       this.encoders = this.ffmpeg ? Render.ffmpegEncoders( this.ffmpeg ) : "";
       this.windowTitle = "Loom Fly-Through";
@@ -1355,7 +1357,7 @@ FlyThrough.Dialog = class extends Dialog
       this.renderButton.text = "Render";
       this.renderButton.onClick = function()
       {
-         if ( self.busy ) { self.cancelRequested = true; return; }
+         if ( self.busy ) { self.cancelRequested = true; self.redraftPending = false; return; }   // a cancel is not followed by a redraft
          self.guarded( function() { self.renderAll(); } );
       };
       this.closeButton = new PushButton( this );
@@ -1583,10 +1585,19 @@ FlyThrough.Dialog = class extends Dialog
       this.estimateLabel.text = "Estimated render: about " + Math.max( 1, Math.round( ms/60000 ) ) + " min";
    }
 
+   /* Drafts the options on screen; again while a change made during the draft (redraft) left it stale. */
    draft()
    {
-      var self = this, o = this.prepare();
-      this.run( function( progress ) { return self.makeDraft( o, progress ); } );
+      var self = this;
+      do
+      {
+         this.redraftPending = false;
+         var o = this.prepare();
+         this.drafting = true;
+         try { this.run( function( progress ) { return self.makeDraft( o, progress ); } ); }
+         finally { this.drafting = false; }
+      }
+      while ( this.redraftPending );
    }
 
    /* A file for `edit`, remembered under `setting` when given. */
@@ -1731,11 +1742,24 @@ FlyThrough.Dialog = class extends Dialog
       return bmp;
    }
 
-   /* A setting that changes the frame changed: the draft on screen is stale, so draft again. */
+   /*
+    * A setting that changes the frame changed: the draft on screen is stale,
+    * so draft again. A change made while the dialog is busy (a draft lets
+    * events through between its frames) is kept for when the job ends, and
+    * a draft it makes stale stops now. It used to be dropped: switching back
+    * to Horizontal during the vertical draft left that draft on screen.
+    */
    redraft()
    {
       var self = this;
-      if ( this.hasDraft && !this.busy ) this.guarded( function() { self.draft(); } );
+      if ( !this.hasDraft ) return;
+      if ( this.busy )
+      {
+         this.redraftPending = true;
+         if ( this.drafting ) this.cancelRequested = true;
+         return;
+      }
+      this.guarded( function() { self.draft(); } );
    }
 
    /* Renders the draft for options o and plays it; the preview's still makes way for it. */
