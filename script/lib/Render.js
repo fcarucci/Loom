@@ -559,47 +559,41 @@ Render.saturateStars = function( T, n, sat )
 };
 
 /*
- * The stars layer into the HDR headroom (Fly.starHeadroom): each pixel's
- * channels by one factor from its brightest channel, so its hue is kept.
- * `peak` is one number or a per-pixel map (1 where no star claims more).
- * In PixInsight's own image operations (C++, every core; w, the frame's
- * width, lets it split the work by rows); Render.starsToHeadroomJs outside it.
+ * The stars layer into the HDR headroom: every channel multiplied by the
+ * factor map (Render.headroomMap: a smooth bump on each bright star, 1
+ * elsewhere), so each star's hue is kept; `factor` may be one number. In
+ * PixInsight's own image operations (w, the frame's width, lets them split
+ * the work by rows); Render.starsToHeadroomJs outside PixInsight.
  */
-Render.starsToHeadroom = function( T, n, peak, w )
+Render.starsToHeadroom = function( T, n, factor, w )
 {
-   if ( typeof Image == "undefined" || typeof ImageOp_Max == "undefined" ) return Render.starsToHeadroomJs( T, n, peak );
+   if ( typeof Image == "undefined" || typeof ImageOp_Mul == "undefined" ) return Render.starsToHeadroomJs( T, n, factor );
    var cw = ( w > 0 && n % w == 0 ) ? w : n, rect = new Rect( 0, 0, cw, n/cw ), made = [], c;
-   function image( from ) { var i = from ? new Image( from ) : new Image( cw, n/cw, 1, ColorSpace_Gray, 32, SampleType_Real ); made.push( i ); return i; }
+   function image() { var i = new Image( cw, n/cw, 1, ColorSpace_Gray, 32, SampleType_Real ); made.push( i ); return i; }
    try
    {
-      var L = T.map( function( t ) { var i = image(); i.setSamples( t, rect, 0 ); return i; } );
-      // t = where the brightest channel sits between the knee and white; f = 1 + (peak - 1) t^2
-      var f = image( L[0] );
-      for ( c = 1; c < L.length; ++c ) f.apply( L[c], ImageOp_Max );
-      f.truncate( -Render.EXCESS_MAX, 1 );
-      f.apply( Fly.HEADROOM_KNEE, ImageOp_Sub ); f.apply( 1 - Fly.HEADROOM_KNEE, ImageOp_Div ); f.truncate( 0, 1 );
-      f.apply( image( f ), ImageOp_Mul );
-      if ( typeof peak == "number" ) f.apply( peak - 1, ImageOp_Mul );
-      else { var g = image(); g.setSamples( peak, rect, 0 ); g.apply( 1, ImageOp_Sub ); g.truncate( 0, Render.EXCESS_MAX ); f.apply( g, ImageOp_Mul ); }
-      f.apply( 1, ImageOp_Add );
-      for ( c = 0; c < L.length; ++c ) { L[c].apply( f, ImageOp_Mul ); L[c].getSamples( T[c], rect, 0 ); }
+      var f = null;
+      if ( typeof factor != "number" ) { f = image(); f.setSamples( factor, rect, 0 ); }
+      for ( c = 0; c < T.length; ++c )
+      {
+         var L = image();
+         L.setSamples( T[c], rect, 0 );
+         L.apply( f || factor, ImageOp_Mul );
+         L.getSamples( T[c], rect, 0 );
+      }
    }
    finally { made.forEach( function( i ) { i.free(); } ); }
 };
 
 /* Render.starsToHeadroom as a per-pixel loop: the reference, and outside PixInsight. */
-Render.starsToHeadroomJs = function( T, n, peak )
+Render.starsToHeadroomJs = function( T, n, factor )
 {
-   var map = ( typeof peak == "number" ) ? null : peak;
+   var map = ( typeof factor == "number" ) ? null : factor;
    for ( var i = 0; i < n; ++i )
    {
-      var pk = map ? map[i] : peak;
-      if ( !( pk > 1 ) ) continue;
-      var top = 0, c;
-      for ( c = 0; c < T.length; ++c ) top = Math.max( top, T[c][i] );
-      if ( top <= Fly.HEADROOM_KNEE ) continue;
-      var f = Fly.starHeadroom( Math.min( 1, top ), pk );
-      for ( c = 0; c < T.length; ++c ) T[c][i] *= f;
+      var f = map ? map[i] : factor;
+      if ( f == 1 ) continue;
+      for ( var c = 0; c < T.length; ++c ) T[c][i] *= f;
    }
 };
 
@@ -894,12 +888,16 @@ Render.headroomMap = function( sc, placed, opts, outW, outH, cam )
    var stars = sc.catalogue || sc.sprites.map( function( e ) { return { x: e.p0 ? e.p0.x : 0, y: e.p0 ? e.p0.y : 0, G: e.s.source && e.s.source.G }; } );
    if ( sc.gBright == null ) sc.gBright = stars.reduce( function( m, s ) { return ( s.G < m ) ? s.G : m; }, Infinity );
    var map = new Float32Array( outW*outH ).fill( 1 ), peak = ( opts.peak || Fly.HDR_PEAK_DEFAULT )/Fly.HDR_REFERENCE_WHITE, K = opts.K || 1;
+   // a star's bump (Fly.headroomBump): sigma HEADROOM_SIGMA of its reach r, painted out to 3 sigma, the larger where two meet
    function paint( x, y, r, gain )
    {
-      var u = ( x - cam.x + 0.5 )/cam.fx - 0.5, v = ( y - cam.y + 0.5 )/cam.fy - 0.5, ro = r/cam.fx;
+      var u = ( x - cam.x + 0.5 )/cam.fx - 0.5, v = ( y - cam.y + 0.5 )/cam.fy - 0.5, sigma = Math.max( 0.5, Fly.HEADROOM_SIGMA*r/cam.fx ), ro = 3*sigma;
       for ( var yy = Math.max( 0, Math.floor( v - ro ) ); yy <= Math.min( outH - 1, Math.ceil( v + ro ) ); ++yy )
          for ( var xx = Math.max( 0, Math.floor( u - ro ) ); xx <= Math.min( outW - 1, Math.ceil( u + ro ) ); ++xx )
-            if ( ( xx - u )*( xx - u ) + ( yy - v )*( yy - v ) <= ro*ro && gain > map[yy*outW + xx] ) map[yy*outW + xx] = gain;
+         {
+            var f = Fly.headroomBump( Math.sqrt( ( xx - u )*( xx - u ) + ( yy - v )*( yy - v ) ), sigma, gain ), i = yy*outW + xx;
+            if ( f > map[i] ) map[i] = f;
+         }
    }
    // a star's reach grows with its brightness; only pixels above the knee are changed, so it can be generous
    var reach = function( gain ) { return Fly.HEADROOM_RADIUS*( 1 + 3*( gain - 1 )/Math.max( 1e-6, peak - 1 ) ); };

@@ -9936,28 +9936,36 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * Stars into the HDR headroom: in an HDR video the stars layer above a
-    * knee is expanded smoothly past SDR white, so the brightest cores reach
-    * the chosen peak, each star's hue kept; the nebula is untouched.
+    * Stars into the HDR headroom: each bright star's light is lifted past SDR
+    * white by a smooth bump centred on it -- its magnitude's gain at the
+    * centre, fading to nothing -- so a core the photograph clipped flat
+    * becomes a bright point with a glow, not a flat disc with a hard edge
+    * (the Iris's HD 200775 was a "moon": a knee on the pixel value lifted
+    * the whole clipped plateau and cut its edge).
     */
    ( function()
    {
-      var peak = 4;
-      check( "below the knee, unchanged", Fly.starHeadroom( 0.5, peak ), 1 );
-      check( "white reaches the peak", Math.abs( Fly.starHeadroom( 1, peak )*1 - peak ) < 1e-9, true );
-      var prev = 0, mono = true;
-      for ( var v = 0; v <= 1.0001; v += 0.01 ) { var o = v*Fly.starHeadroom( v, peak ); if ( o < prev - 1e-12 ) mono = false; prev = o; }
-      check( "and it never turns back", mono, true );
+      check( "the bump: the gain at the centre, part of it a sigma out, none far away",
+             [ Fly.headroomBump( 0, 2, 4 ), +Fly.headroomBump( 2, 2, 4 ).toFixed( 6 ), +Fly.headroomBump( 20, 2, 4 ).toFixed( 6 ) ], [ 4, +( 1 + 3*Math.exp( -0.5 ) ).toFixed( 6 ), 1 ] );
       var T = [ new Float32Array( [ 0.95, 0.3 ] ), new Float32Array( [ 0.76, 0.2 ] ), new Float32Array( [ 0.57, 0.1 ] ) ];
-      Render.starsToHeadroom( T, 2, peak );
+      Render.starsToHeadroom( T, 2, new Float32Array( [ 4, 1 ] ) );
       check( "a bright star goes past white, keeping its hue", [ T[0][0] > 1, Math.abs( T[1][0]/T[0][0] - 0.8 ) < 1e-6, Math.abs( T[2][0]/T[0][0] - 0.6 ) < 1e-6 ], [ true, true, true ] );
-      check( "a faint one is left as it was", [ T[0][1], T[1][1], T[2][1] ].map( function( x ) { return +x.toFixed( 6 ); } ), [ 0.3, 0.2, 0.1 ] );
-      // each star's peak from its magnitude: the brightest reaches the chosen peak, 5 magnitudes fainter none
+      check( "where no star claims more, it is left as it was", [ T[0][1], T[1][1], T[2][1] ].map( function( x ) { return +x.toFixed( 6 ); } ), [ 0.3, 0.2, 0.1 ] );
       check( "by magnitude: the brightest star gets the peak, 2.5 mag fainter half the way, 5 fainter none",
              [ Fly.magnitudeGain( 5, 5, 4 ), Fly.magnitudeGain( 7.5, 5, 4 ), Fly.magnitudeGain( 10, 5, 4 ), Fly.magnitudeGain( 12, 5, 4 ) ], [ 4, 2.5, 1, 1 ] );
-      var M = [ new Float32Array( [ 0.95, 0.95 ] ) ];
-      Render.starsToHeadroom( M, 2, new Float32Array( [ 4, 1 ] ) );
-      check( "a per-pixel peak: only where a bright star is", [ M[0][0] > 1, Math.abs( M[0][1] - 0.95 ) < 1e-6 ], [ true, true ] );
+
+      // a core clipped flat (0.94 out to 12 px, then falling) comes out peaked and smooth
+      var W = 101, c0 = 50, n = W*W, flat = new Float32Array( n );
+      for ( var y = 0; y < W; ++y ) for ( var x = 0; x < W; ++x ) { var r = Math.hypot( x - c0, y - c0 ); flat[y*W + x] = r <= 12 ? 0.94 : 0.94*Math.exp( -( r - 12 )/6 ); }
+      var sc = { tp: { x: c0, y: c0 }, sprites: [], catalogue: [ { x: c0, y: c0, G: 7.2, ra: 1, dec: 2 } ] };
+      var map = Render.headroomMap( sc, [], { peak: 1000, K: 1 }, W, W, { x: 0, y: 0, fx: 1, fy: 1 } ), L = [ flat.slice() ];
+      Render.starsToHeadroom( L, n, map, W );
+      var row = []; for ( var d = 0; d <= 30; ++d ) row.push( L[0][c0*W + c0 + d] );
+      var falling = row.every( function( v, i ) { return i == 0 || v < row[i - 1]; } ), worst = 0;
+      for ( d = 1; d < row.length; ++d ) worst = Math.max( worst, ( row[d - 1]/row[d] )/( flat[c0*W + c0 + d - 1]/flat[c0*W + c0 + d] ) );
+      check( "a clipped flat core comes out peaked: brightest at the centre, falling all the way out", falling, true );
+      check( "with no edge of its own: it steepens the photograph's falloff by at most 10% a pixel (" + worst.toFixed( 3 ) + "x)", worst < 1.1, true );
+      check( "and its centre reaches the chosen peak", Math.abs( row[0] - 0.94*1000/Fly.HDR_REFERENCE_WHITE ) < 1e-3, true );
    } )();
 
    /* In an HDR frame, "Stars into HDR headroom" lifts bright stars past SDR white; the backdrop is untouched. */
@@ -9969,11 +9977,15 @@ function runFlyTestsClean()
          var W = 240, H = 135, crop = Fly.presetCrop( fx.scene.w, fx.scene.h, fx.scene.tp.x, fx.scene.tp.y, W, H );
          var base = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 2, peak: 1000 };
          var frame = function( on ) { return Render.frame( fx.scene, 0.5, Object.assign( {}, base, { starHdr: on, output: Fly.outputTransform( Fly.SRGB_COLOUR, "pq" ) } ), W, H, crop ); };
-         var off = frame( false ), on = frame( true ), maxOff = 0, maxOn = 0, sky = 0;
+         var realMap = Render.headroomMap, map = null;
+         Render.headroomMap = function() { map = realMap.apply( this, arguments ); return map; };
+         var off = frame( false ), on;
+         try { on = frame( true ); } finally { Render.headroomMap = realMap; }
+         var maxOff = 0, maxOn = 0, sky = 0, skyPixels = 0;
          for ( var y = 0; y < H; ++y ) for ( var x = 0; x < W; ++x ) { maxOff = Math.max( maxOff, off.sample( x, y, 0 ) ); maxOn = Math.max( maxOn, on.sample( x, y, 0 ) ); }
-         for ( y = 0; y < H; y += 4 ) for ( x = 0; x < W; x += 4 ) if ( off.sample( x, y, 0 ) < 0.3 ) sky = Math.max( sky, Math.abs( on.sample( x, y, 0 ) - off.sample( x, y, 0 ) ) );
+         for ( y = 0; y < H; ++y ) for ( x = 0; x < W; ++x ) if ( map[y*W + x] == 1 ) { ++skyPixels; sky = Math.max( sky, Math.abs( on.sample( x, y, 0 ) - off.sample( x, y, 0 ) ) ); }
          check( "bright stars reach higher in the HDR signal (" + maxOff.toFixed( 3 ) + " -> " + maxOn.toFixed( 3 ) + ")", maxOn > maxOff + 0.02, true );
-         check( "the dark sky is untouched (" + sky.toExponential( 1 ) + ")", sky < 1e-6, true );
+         check( "where no star claims headroom nothing changes (" + skyPixels + " px, " + sky.toExponential( 1 ) + ")", skyPixels > 0 && sky < 1e-6, true );
          off.free(); on.free();
       }
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }

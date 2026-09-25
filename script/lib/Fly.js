@@ -124,20 +124,21 @@ Fly.coverFraction = function( r1, r2, d )
    return ( a1 + a2 - k )/( Math.PI*r1*r1 );
 };
 
-Fly.HEADROOM_KNEE = 0.7;       // star light above this (of SDR white) is expanded into the HDR headroom
 Fly.HDR_MAG_RANGE = 5;         // magnitudes from the brightest star to one that gets no headroom (100x in flux)
 Fly.HEADROOM_RADIUS = 6;       // px (scene): the area a faint star's gain covers; the brightest cover 4x
+Fly.HEADROOM_SIGMA = 0.5;      // a star's bump: its sigma, of that area's radius
 Fly.HDR_REFERENCE_WHITE = 203; // nits: SDR white in an HDR video (ITU-R BT.2408)
 
 /*
- * The factor a star value v (0..1 of SDR white) is multiplied by to reach
- * into the HDR headroom: 1 below the knee, `peak` at white, smooth (its
- * slope continuous at the knee) and never turning back.
+ * The factor a star's light is multiplied by, r from its centre, to reach
+ * into the HDR headroom: `gain` at the centre, falling smoothly (a Gaussian
+ * of `sigma`) to 1. Shaped by the distance, not by the pixel's value: a
+ * core the photograph clipped flat would otherwise be lifted whole -- a
+ * flat disc with a hard edge where the value crossed a knee.
  */
-Fly.starHeadroom = function( v, peak )
+Fly.headroomBump = function( r, sigma, gain )
 {
-   var t = Math.max( 0, Math.min( 1, ( v - Fly.HEADROOM_KNEE )/( 1 - Fly.HEADROOM_KNEE ) ) );
-   return 1 + ( peak - 1 )*t*t;
+   return 1 + ( gain - 1 )*Math.exp( -r*r/( 2*sigma*sigma ) );
 };
 
 /* A star's HDR peak from its magnitude G: `peak` for the brightest (gBright), 1 by HDR_MAG_RANGE fainter, linear in magnitude (log in flux). */
