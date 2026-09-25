@@ -10067,6 +10067,64 @@ function runFlyTestsClean()
       finally { Gaia = RealGaia; Sky.fetchText = savedFetch; }
    } )();
 
+   /*
+    * Bloom's blurs run in PixInsight's own convolution (Render.blur3): the
+    * three box passes as one separable kernel -- the same light, several
+    * times faster -- matching Render.boxBlur away from the frame's edges.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = 200, h = 160, src = new Float32Array( w*h );
+      for ( var i = 0; i < 30; ++i ) src[( 30 + ( i*37 ) % 100 )*w + 40 + ( i*53 ) % 120] = 1 + i/10;
+      [ 2, 7 ].forEach( function( r )
+      {
+         var box = Render.boxBlur( src.slice(), w, h, r ), nat = Render.blur3( src.slice(), w, h, r ), m = 3*r, worst = 0, peak = 0;
+         for ( var y = m; y < h - m; ++y ) for ( var x = m; x < w - m; ++x ) { worst = Math.max( worst, Math.abs( box[y*w + x] - nat[y*w + x] ) ); peak = Math.max( peak, box[y*w + x] ); }
+         check( "radius " + r + ": the native blur is the box blur inside the frame (" + ( worst/peak ).toExponential( 1 ) + " of the peak)", worst < 1e-5*peak, true );
+      } );
+      check( "radius below 1 leaves it as it is", Render.blur3( src.slice(), w, h, 0.5 )[30*w + 40], src[30*w + 40] );
+   } )();
+
+   /*
+    * A render stopped part way -- cancelled, or PixInsight closed -- picks
+    * up where it left off: the frames already written with the same options
+    * are kept and only the rest are rendered. A frame caught half-written is
+    * never taken for a finished one.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-resume" ), fx = flyTestScene( dir );
+      try
+      {
+         var spec = { id: "resume", w: 160, h: 90, pingPong: false };
+         var o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.8, fps: 10, video: false, format: "h264", sceneKey: "test|tool|900" };
+         var stopped = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { cancelAfter: 3 } );
+         check( "stopped after 3 of 8", [ stopped.cancelled, stopped.written ], [ true, 3 ] );
+         var t0 = ( new FileInfo( dir + "/resume/frame_00001.tif" ) ).lastModified.getTime();
+         File.writeTextFile( dir + "/resume/frame_00005.tif" + FlyThrough.PARTIAL_SUFFIX, "half a frame" );
+         var seen = [];
+         var again = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { onFrame: function( k, n, id, base ) { seen.push( [ k, base ] ); } } );
+         check( "started again, it renders only the other 5", [ again.cancelled, again.written, again.reused ], [ false, 5, 3 ] );
+         check( "the kept frames are untouched", ( new FileInfo( dir + "/resume/frame_00001.tif" ) ).lastModified.getTime(), t0 );
+         check( "all 8 are there and nothing half-written is left",
+                [ Steps.directoryEntries( dir + "/resume" ).filter( Fly.isFrameFile ).length,
+                  Steps.directoryEntries( dir + "/resume" ).filter( function( n ) { return n.indexOf( FlyThrough.PARTIAL_SUFFIX ) >= 0; } ).length ], [ 8, 0 ] );
+         check( "progress counts the kept frames as done, and says how many were kept", seen[0], [ 4, 3 ] );
+         var changed = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { cancelAfter: 2 } );
+         FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { growth: 0.3 } ), dir, { cancelAfter: 1 } );
+         var other = FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { growth: 0.3 } ), dir, {} );
+         check( "frames from other options are not resumed", [ changed.written, other.reused, other.written ], [ 0, 1, 7 ] );
+      }
+      finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* The time left counts only the frames rendered this time, not the ones kept from before. */
+   ( function()
+   {
+      check( "exactly: 30 s for 1 new frame, 4 to go", Fly.progressText( "Rendering", 6, 10, 30000, 5 ), "Rendering — 6 of 10 (60%) — about 2 min left" );
+      check( "without kept frames as before", Fly.progressText( "Rendering", 6, 10, 30000 ), "Rendering — 6 of 10 (60%) — less than a minute left" );
+   } )();
+
    /* fly-tests-end */
 }
 

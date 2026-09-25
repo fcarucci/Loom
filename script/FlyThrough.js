@@ -29,13 +29,17 @@ function FlyThrough() {}
 /*
  * A preset folder ready for a new clip: created, and emptied of OUR frame
  * files only -- a stale frame from a longer earlier render would otherwise
- * be picked up by ffmpeg's frame pattern.
+ * be picked up by ffmpeg's frame pattern. With keepFrames (a render being
+ * resumed) only frames caught half-written go.
  */
-FlyThrough.prepareFolder = function( folder )
+FlyThrough.prepareFolder = function( folder, keepFrames )
 {
    if ( !File.directoryExists( folder ) )
       File.createDirectory( folder, true );
-   Steps.directoryEntries( folder ).filter( Fly.isFrameFile ).forEach( function( name )
+   Steps.directoryEntries( folder ).filter( function( name )
+   {
+      return FlyThrough.isPartialFrame( name ) || ( !keepFrames && Fly.isFrameFile( name ) );
+   } ).forEach( function( name )
    {
       try { File.remove( folder + "/" + name ); }
       catch ( e ) { Util.warn( "fly", "could not remove " + folder + "/" + name + ": " + e ); }
@@ -70,10 +74,12 @@ FlyThrough.renderFinal = function( scene, presets, opts, dir, progress )
       if ( FlyThrough.framesReady( folder, signature, job.n ) ) res.reused += job.n;
       else
       {
-         FlyThrough.prepareFolder( folder );
-         FlyThrough.removeQuietly( folder + "/" + FlyThrough.FRAMES_RECORD );
-         FlyThrough.renderFrames( job, folder, res, progress, total, cancelled );
-         if ( !res.cancelled ) File.writeTextFile( folder + "/" + FlyThrough.FRAMES_RECORD, signature );
+         // a render stopped part way with the same options is resumed: its frames are kept
+         var resume = FlyThrough.recordMatches( folder, signature );
+         FlyThrough.prepareFolder( folder, resume );
+         // the record goes first, so the frames written from here on can be resumed too
+         File.writeTextFile( folder + "/" + FlyThrough.FRAMES_RECORD, signature );
+         FlyThrough.renderFrames( job, folder, res, progress, total, cancelled, resume );
       }
       if ( !res.cancelled )
          FlyThrough.finishPreset( folder, folder, job.po, res, progress, job.n );
@@ -83,12 +89,26 @@ FlyThrough.renderFinal = function( scene, presets, opts, dir, progress )
 
 FlyThrough.FRAMES_RECORD = "frames.json";   // what a preset folder's frames were made from (Fly.frameSignature)
 
+FlyThrough.PARTIAL_SUFFIX = ".part";   // a frame being written; renamed when complete
+
+FlyThrough.isPartialFrame = function( name )
+{
+   return name.length > FlyThrough.PARTIAL_SUFFIX.length && name.slice( -FlyThrough.PARTIAL_SUFFIX.length ) == FlyThrough.PARTIAL_SUFFIX &&
+          Fly.isFrameFile( name.slice( 0, -FlyThrough.PARTIAL_SUFFIX.length ) );
+};
+
+/* Were a preset folder's frames made with `signature` (Fly.frameSignature)? */
+FlyThrough.recordMatches = function( folder, signature )
+{
+   var record = folder + "/" + FlyThrough.FRAMES_RECORD;
+   try { return File.exists( record ) && File.readTextFile( record ) == signature; }
+   catch ( e ) { return false; }
+};
+
 /* Are a preset folder's frames the ones `signature` makes, all n of them? */
 FlyThrough.framesReady = function( folder, signature, n )
 {
-   var record = folder + "/" + FlyThrough.FRAMES_RECORD;
-   try { if ( !File.exists( record ) || File.readTextFile( record ) != signature ) return false; }
-   catch ( e ) { return false; }
+   if ( !FlyThrough.recordMatches( folder, signature ) ) return false;
    for ( var i = 0; i < n; ++i ) if ( !File.exists( Fly.framePath( folder, i ) ) ) return false;
    return true;
 };
@@ -103,19 +123,28 @@ FlyThrough.presetJob = function( scene, p, opts )
    return { p: p, n: n, F: F, ps: ps, po: po, crop: Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, p.w, p.h ) };
 };
 
-/* A preset's frames into `folder`, counting into res and stopping when cancelled(). */
-FlyThrough.renderFrames = function( job, folder, res, progress, total, cancelled )
+/*
+ * A preset's frames into `folder`, counting into res and stopping when
+ * cancelled(). Resuming, the frames already there are kept (res.reused).
+ * Each frame is written under a .part name and renamed when complete, so
+ * one caught half-written by a crash is never taken for a finished one.
+ * progress.onFrame( done, total, preset, kept ): kept of the done were there before.
+ */
+FlyThrough.renderFrames = function( job, folder, res, progress, total, cancelled, resume )
 {
    var p = job.p, icc = job.po.transfer == "sdr" ? Render.srgbIcc() : null;
    for ( var i = 0; i < job.n; ++i )
    {
+      var path = Fly.framePath( folder, i );
+      if ( resume && File.exists( path ) ) { ++res.reused; continue; }
       if ( cancelled() ) { res.cancelled = true; return; }
       var img = p.crossfade ? FlyThrough.loopImage( job.ps, i, job.n, job.F, job.po, p.w, p.h, job.crop )
                             : Render.frame( job.ps, Fly.timeAt( i, job.n, p.pingPong ), job.po, p.w, p.h, job.crop );
-      try { Render.writeTiff( img, Fly.framePath( folder, i ), icc ); }
+      try { Render.writeTiff( img, path + FlyThrough.PARTIAL_SUFFIX, icc ); }
       finally { img.free(); }
+      File.move( path + FlyThrough.PARTIAL_SUFFIX, path );
       ++res.written;
-      if ( progress.onFrame ) progress.onFrame( res.written, total, p.id );
+      if ( progress.onFrame ) progress.onFrame( res.written + res.reused, total, p.id, res.reused );
       CoreApplication.processEvents();
    }
 };
@@ -1530,15 +1559,15 @@ FlyThrough.Dialog = class extends Dialog
    progressFor()
    {
       var self = this, current = null, since = Date.now();
-      function stage( name, done, total )
+      function stage( name, done, total, kept )
       {
          if ( name != current ) { current = name; since = Date.now(); }
-         self.bar.set( Fly.progressFraction( done, total ), Fly.progressText( name, done, total, Date.now() - since ) );
+         self.bar.set( Fly.progressFraction( done, total ), Fly.progressText( name, done, total, Date.now() - since, kept ) );
       }
       return {
          stage: stage,
          isCancelled: function() { return self.cancelRequested; },
-         onFrame: function( k, n, id ) { stage( id ? "Rendering " + ( FlyThrough.PRESET_LABELS[id] || id ) : "Drafting", k, n ); },
+         onFrame: function( k, n, id, kept ) { stage( id ? "Rendering " + ( FlyThrough.PRESET_LABELS[id] || id ) : "Drafting", k, n, kept ); },
          onEncode: function( k, n ) { stage( "Encoding the video", k, n ); }
       };
    }

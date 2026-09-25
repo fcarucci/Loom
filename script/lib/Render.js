@@ -161,6 +161,16 @@ Render.halve = function( p )
  */
 Render.drawSprite = function( acc, outW, outH, patch, sp, cx, cy, g, k, cam, kOuter, rc, how )
 {
+   Render.drawSprites( [ acc ], outW, outH, [ patch ], sp, cx, cy, g, [ k ], cam, [ kOuter ], rc, how );
+};
+
+/*
+ * Render.drawSprite for several channels at once -- accs, patches, ks and
+ * kOuters one per channel, the same sprite geometry -- so where each
+ * sample lands is worked out once, not once per channel.
+ */
+Render.drawSprites = function( accs, outW, outH, patches, sp, cx, cy, g, ks, cam, kOuters, rc, how )
+{
    var seen = ( how && how.seen != null ) ? how.seen : 1, spike = how && how.spike;
    var radial = !spike && ( rc > 0 && ( g != 1 || seen < 1 ) ), r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
    // spikes stretch along their length only (how.spike = { length, angles }): shorter for what is hidden
@@ -175,21 +185,42 @@ Render.drawSprite = function( acc, outW, outH, patch, sp, cx, cy, g, k, cam, kOu
    var gs = ( radial || spike ) ? 1 : g;      // the core, and a spike's width, are sampled at their own scale
    // shrunk far down, sample a pre-shrunk copy (a mip level), not n x n points of the full one
    var L = ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs ), f2 = 1 << L;
-   var ctx = { mp: L ? Render.mipOf( patch, rw, rh, L ) : { d: patch, w: rw, h: rh }, f2: f2, ox: sp.det.x - r.x0, oy: sp.det.y - r.y0,
-               cx: cx, cy: cy, g: g, k: k, kO: ( ( kOuter != null ) ? kOuter : k )*seen, rc: rc, seen: seen, radial: radial, cam: cam,
+   var ctx = { mps: patches.map( function( p ) { return L ? Render.mipOf( p, rw, rh, L ) : { d: p, w: rw, h: rh }; } ), f2: f2, ox: sp.det.x - r.x0, oy: sp.det.y - r.y0,
+               cx: cx, cy: cy, g: g, rc: rc, seen: seen, radial: radial, cam: cam,
+               ks: ks.map( function( k ) { return spike ? k*seen : k; } ),
+               kOs: ks.map( function( k, i ) { return spike ? k*seen : ( ( kOuters[i] != null ) ? kOuters[i] : k )*seen; } ),
                nx: Math.max( 1, Math.ceil( cam.fx/( gs*f2 ) ) ), ny: Math.max( 1, Math.ceil( cam.fy/( gs*f2 ) ) ),
                axes: spike ? spike.angles.map( function( a ) { return [ Math.cos( a ), Math.sin( a ) ]; } ) : null, stretch: stretch };
-   if ( spike ) ctx.k = ctx.kO = k*seen;
+   // most of a sprite's box is dark (the glow is a disc, the spikes are lines): only the
+   // output pixels whose samples can reach some channel's light are sampled (Render.reachTest)
+   var darks = [], nc = patches.length, ch, all = false;
+   for ( ch = 0; ch < nc; ++ch )
+   {
+      var t = Render.reachTest( ctx, patches[ch], rw, rh );
+      if ( t === null ) { all = true; break; }
+      if ( t !== true ) darks.push( t );
+   }
+   if ( !all && !darks.length ) return;                  // every channel dark
+   var sums = new Float64Array( nc );
    for ( var v = b.v0; v <= b.v1; ++v )
+   {
+      var dy = cam.y + ( v + 0.5 )*cam.fy - 0.5 - cy;
       for ( var u = b.u0; u <= b.u1; ++u )
       {
-         var sum = Render.spritePixel( ctx, u, v );
-         if ( sum != 0 ) acc[v*outW + u] += sum;
+         if ( !all )
+         {
+            var dx = cam.x + ( u + 0.5 )*cam.fx - 0.5 - cx, lit = false;
+            for ( var j = 0; j < darks.length && !lit; ++j ) lit = !darks[j]( dx, dy );
+            if ( !lit ) continue;
+         }
+         Render.spritePixels( ctx, u, v, sums );
+         for ( ch = 0; ch < nc; ++ch ) if ( sums[ch] != 0 ) accs[ch][v*outW + u] += sums[ch];
       }
+   }
 };
 
-/* A spike patch read at offset (dx, dy): along the nearest spike axis, beyond the core, stretched by c.stretch; across it, as it is. */
-Render.spikeSample = function( c, dx, dy )
+/* Where a spike sample at offset (dx, dy) reads its patch: along the nearest spike axis, beyond the core, shrunk by c.stretch; across it, as it is. Null when no axis points its way. */
+Render.spikeSource = function( c, dx, dy )
 {
    var best = null, bestLat = Infinity;
    for ( var i = 0; i < c.axes.length; ++i )
@@ -197,10 +228,81 @@ Render.spikeSample = function( c, dx, dy )
       var a = c.axes[i], along = dx*a[0] + dy*a[1], lat = -dx*a[1] + dy*a[0];
       if ( along > 0 && Math.abs( lat ) < bestLat ) { bestLat = Math.abs( lat ); best = [ a, along, lat ]; }
    }
-   if ( !best ) return 0;
+   if ( !best ) return null;
    var ax = best[0], al = best[1] <= c.rc ? best[1] : c.rc + ( best[1] - c.rc )/c.stretch, lt = best[2];
-   var sx = al*ax[0] - lt*ax[1], sy = al*ax[1] + lt*ax[0];
-   return Render.patchSample( c.mp.d, c.mp.w, c.mp.h, ( c.ox + sx + 0.5 )/c.f2 - 0.5, ( c.oy + sy + 0.5 )/c.f2 - 0.5 );
+   return { x: al*ax[0] - lt*ax[1], y: al*ax[1] + lt*ax[0] };
+};
+
+/*
+ * How far a patch's light reaches from the star's centre (ox, oy), in
+ * patch pixels: r, its farthest lit pixel, and with spike axes lat, the
+ * farthest any lit pixel lies from the nearest spike ray. -1 when it is all
+ * dark. Cached on the patch (a patch is only ever drawn for its own star).
+ */
+Render.patchReach = function( patch, rw, rh, ox, oy, axes )
+{
+   var key = axes ? "_reachSpikes" : "_reach";
+   if ( patch[key] ) return patch[key];
+   var r = -1, lat = -1;
+   for ( var y = 0; y < rh; ++y )
+      for ( var x = 0; x < rw; ++x )
+      {
+         if ( patch[y*rw + x] == 0 ) continue;
+         var dx = x - ox, dy = y - oy;
+         r = Math.max( r, Math.sqrt( dx*dx + dy*dy ) );
+         if ( axes ) lat = Math.max( lat, Render.rayDistance( axes, dx, dy ) );
+      }
+   return ( patch[key] = { r: r, lat: lat } );
+};
+
+/* The distance from (dx, dy) to the nearest of the rays from the centre along `axes` ([cos, sin] each). */
+Render.rayDistance = function( axes, dx, dy )
+{
+   var best = Infinity;
+   for ( var i = 0; i < axes.length; ++i )
+   {
+      var al = dx*axes[i][0] + dy*axes[i][1];
+      best = Math.min( best, al > 0 ? Math.abs( -dx*axes[i][1] + dy*axes[i][0] ) : Math.sqrt( dx*dx + dy*dy ) );
+   }
+   return best;
+};
+
+/*
+ * For a sprite draw (Render.drawSprite's ctx): true when the patch is all
+ * dark, else a test of an output pixel -- its centre's offset (dx, dy)
+ * from the star, camera pixels -- that is true only when none of its
+ * samples can read a lit patch pixel, or null when every pixel must be
+ * sampled. Conservative by margins: a sample reads patch pixels within
+ * 2 mip pixels of where it lands, and a pixel's samples lie within half
+ * its diagonal (h) of its centre.
+ */
+Render.reachTest = function( c, patch, rw, rh )
+{
+   var reach = Render.patchReach( patch, rw, rh, c.ox, c.oy, c.axes );
+   if ( reach.r < 0 ) return true;
+   var h = 0.5*Math.sqrt( c.cam.fx*c.cam.fx + c.cam.fy*c.cam.fy ), near = 2*c.f2 + 1, R = reach.r + near;
+   if ( !c.axes )
+   {
+      // the glow: a sample lands radialSource(ro) (or ro/g) from the centre, which grows with ro
+      var s = c.radial ? Math.max( 0.05, c.seen ) : 1;
+      var rMax = !c.radial ? R*c.g : ( R <= c.rc ? R : c.rc + ( R - c.rc )*c.g*s );
+      return function( dx, dy ) { return Math.sqrt( dx*dx + dy*dy ) - h > rMax; };
+   }
+   // a spike: a sample on axis a lands at (along', lat), along' = along beyond the core / stretch;
+   // across a pixel it moves by up to h times the stretch's inverse along, h across
+   var slack = h*( 1 + Math.max( 1, 1/c.stretch ) ), L = reach.lat + near + slack, Rs = R + slack, ax = c.axes;
+   return function( dx, dy )
+   {
+      for ( var i = 0; i < ax.length; ++i )
+      {
+         var al = dx*ax[i][0] + dy*ax[i][1];
+         if ( al <= -h ) continue;                       // no sample of this pixel is read along this axis
+         var lt = -dx*ax[i][1] + dy*ax[i][0], a2 = al <= c.rc ? al : c.rc + ( al - c.rc )/c.stretch;
+         if ( Math.sqrt( a2*a2 + lt*lt ) <= Rs && Render.rayDistance( ax, a2*ax[i][0] - lt*ax[i][1], a2*ax[i][1] + lt*ax[i][0] ) <= L )
+            return false;
+      }
+      return true;
+   };
 };
 
 /* The output pixels a sprite (centred at cx, cy, grown by g) can touch. */
@@ -214,34 +316,49 @@ Render.spriteBounds = function( sp, cx, cy, g, cam, outW, outH )
 };
 
 /*
- * One output pixel of a sprite: the mean of nx x ny samples over it, each
- * read where Fly.radialSource puts it (the core at its own size, the glow
- * stretched) and weighted from the core's gain k to the glow's kO.
+ * One output pixel of a sprite, in every channel (into sums): the mean of
+ * nx x ny samples over it, each read where Fly.radialSource puts it (the
+ * core at its own size, the glow stretched) and weighted from the core's
+ * gain k to the glow's kO -- or, for a spike, along its axis
+ * (Render.spikeSource).
  */
-Render.spritePixel = function( c, u, v )
+Render.spritePixels = function( c, u, v, sums )
 {
-   var sum = 0, cam = c.cam;
+   var cam = c.cam, nc = c.mps.length, ch, mp;
+   for ( ch = 0; ch < nc; ++ch ) sums[ch] = 0;
    for ( var sy = 0; sy < c.ny; ++sy )
    {
       var dy = cam.y + ( v + ( sy + 0.5 )/c.ny )*cam.fy - 0.5 - c.cy;
       for ( var sx = 0; sx < c.nx; ++sx )
       {
-         var dx = cam.x + ( u + ( sx + 0.5 )/c.nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, w = c.k;
+         var dx = cam.x + ( u + ( sx + 0.5 )/c.nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, sm = -1;
          if ( c.axes )
          {
-            sum += w*Render.spikeSample( c, dx, dy );
+            var at = Render.spikeSource( c, dx, dy );
+            if ( !at ) continue;
+            for ( ch = 0; ch < nc; ++ch )
+            {
+               mp = c.mps[ch];
+               sums[ch] += c.ks[ch]*Render.patchSample( mp.d, mp.w, mp.h, ( c.ox + at.x + 0.5 )/c.f2 - 0.5, ( c.oy + at.y + 0.5 )/c.f2 - 0.5 );
+            }
             continue;
          }
          if ( c.radial )
          {
             var ro = Math.sqrt( dx*dx + dy*dy );
             f = ro > 0 ? Fly.radialSource( ro, c.rc, c.g, c.seen )/ro : 1;
-            w = c.k + ( c.kO - c.k )*Fly.smoothstep( 0, c.rc, ro );   // core to glow smoothly: no edge at rc
+            sm = Fly.smoothstep( 0, c.rc, ro );   // core to glow smoothly: no edge at rc
          }
-         sum += w*Render.patchSample( c.mp.d, c.mp.w, c.mp.h, ( c.ox + dx*f + 0.5 )/c.f2 - 0.5, ( c.oy + dy*f + 0.5 )/c.f2 - 0.5 );
+         var px = ( c.ox + dx*f + 0.5 )/c.f2 - 0.5, py = ( c.oy + dy*f + 0.5 )/c.f2 - 0.5;
+         for ( ch = 0; ch < nc; ++ch )
+         {
+            mp = c.mps[ch];
+            var w = sm < 0 ? c.ks[ch] : c.ks[ch] + ( c.kOs[ch] - c.ks[ch] )*sm;
+            sums[ch] += w*Render.patchSample( mp.d, mp.w, mp.h, px, py );
+         }
       }
    }
-   return sum/( c.nx*c.ny );
+   for ( ch = 0; ch < nc; ++ch ) sums[ch] /= c.nx*c.ny;
 };
 
 /* ---------------------------------------------------------------------------
@@ -352,25 +469,69 @@ Render.addLogo = function( L, out, excess, outW, fade )
 Render.boxBlur = function( a, w, h, r )
 {
    if ( !( r >= 1 ) ) return a;
-   var tmp = new Float32Array( Math.max( w, h ) ), line = new Float32Array( Math.max( w, h ) );
-   function pass( n, get, set )
+   // written out rather than through per-pixel get/set closures: the same sums, several times faster
+   var n = Math.max( w, h ), tmp = new Float32Array( n ), line = new Float32Array( n ), span = 2*r + 1;
+   function pass( len, base, step )
    {
-      for ( var i = 0; i < n; ++i ) line[i] = get( i );
-      var s = 0, k;
-      for ( k = -r; k <= r; ++k ) s += line[Math.min( n - 1, Math.max( 0, k ) )];
-      for ( i = 0; i < n; ++i )
+      var i, k, s = 0, last = len - 1;
+      for ( i = 0; i < len; ++i ) line[i] = a[base + i*step];
+      for ( k = -r; k <= r; ++k ) s += line[k < 0 ? 0 : ( k > last ? last : k )];
+      for ( i = 0; i < len; ++i )
       {
-         tmp[i] = s/( 2*r + 1 );
-         s += line[Math.min( n - 1, i + r + 1 )] - line[Math.max( 0, i - r )];
+         tmp[i] = s/span;
+         var hi = i + r + 1, lo = i - r;
+         s += line[hi > last ? last : hi] - line[lo < 0 ? 0 : lo];
       }
-      for ( i = 0; i < n; ++i ) set( i, tmp[i] );
+      for ( i = 0; i < len; ++i ) a[base + i*step] = tmp[i];
    }
    for ( var rep = 0; rep < 3; ++rep )
    {
-      for ( var y = 0; y < h; ++y ) pass( w, function( i ) { return a[y*w + i]; }, function( i, v ) { a[y*w + i] = v; } );
-      for ( var x = 0; x < w; ++x ) pass( h, function( i ) { return a[i*w + x]; }, function( i, v ) { a[i*w + x] = v; } );
+      for ( var y = 0; y < h; ++y ) pass( w, y*w, 1 );
+      for ( var x = 0; x < w; ++x ) pass( h, x, w );
    }
    return a;
+};
+
+/*
+ * Render.boxBlur's three passes as one kernel -- a box of 2r + 1 convolved
+ * with itself three times -- run by PixInsight's own separable convolution
+ * (C++, every core): the same result away from the frame's edges, several
+ * times faster. Near an edge PixInsight treats the outside its own way,
+ * where boxBlur repeated the edge pixel on each pass. Falls back to
+ * boxBlur outside PixInsight (the Node suite).
+ */
+Render.blur3 = function( a, w, h, r )
+{
+   if ( !( r >= 1 ) ) return a;
+   if ( typeof Image == "undefined" || typeof Vector == "undefined" ) return Render.boxBlur( a, w, h, r );
+   var img = new Image( w, h, 1, ColorSpace_Gray, 32, SampleType_Real ), rect = new Rect( 0, 0, w, h );
+   try
+   {
+      img.setSamples( a, rect, 0 );
+      var k = Render.box3Kernel( r );
+      img.convolveSeparable( k, k );
+      img.getSamples( a, rect, 0 );
+   }
+   finally { img.free(); }
+   return a;
+};
+
+/* A box of 2r + 1 convolved with itself three times, as a Vector; cached by r. */
+Render.box3Kernel = function( r )
+{
+   var cache = Render.box3Cache || ( Render.box3Cache = {} );
+   if ( cache[r] ) return cache[r];
+   var box = [], c = [ 1 ], i, j, k;
+   for ( k = 0; k < 2*r + 1; ++k ) box.push( 1/( 2*r + 1 ) );
+   for ( var pass = 0; pass < 3; ++pass )
+   {
+      var o = []; for ( k = 0; k < c.length + box.length - 1; ++k ) o.push( 0 );
+      for ( i = 0; i < c.length; ++i ) for ( j = 0; j < box.length; ++j ) o[i + j] += c[i]*box[j];
+      c = o;
+   }
+   var v = new Vector( c.length );
+   for ( k = 0; k < c.length; ++k ) v.at( k, c[k] );
+   return ( cache[r] = v );
 };
 
 Render.BLOOM_TIGHT = 0.005;    // the round-core glow's sigma, of the frame's short side (0.0035 left a hard edge)
@@ -465,10 +626,10 @@ Render.bloom = function( T, w, h, opts )
    if ( !E ) return;
    var sg = Render.bloomSigmas( Math.min( w, h ), opts.seconds ), G = Render.BLOOM_GAINS, white = new Float32Array( n );
    for ( c = 0; c < E.length; ++c ) for ( i = 0; i < n; ++i ) white[i] += E[c][i]/E.length;
-   var tightW = Render.boxBlur( white.slice(), w, h, Render.boxRadius( sg[0] ) ), glare = Render.boxBlur( white, w, h, Render.boxRadius( sg[2] ) );
+   var tightW = Render.blur3( white.slice(), w, h, Render.boxRadius( sg[0] ) ), glare = Render.blur3( white, w, h, Render.boxRadius( sg[2] ) );
    for ( c = 0; c < T.length; ++c )
    {
-      var tight = Render.boxBlur( E[c].slice(), w, h, Render.boxRadius( sg[0] ) ), wide = Render.boxBlur( E[c], w, h, Render.boxRadius( sg[1] ) );
+      var tight = Render.blur3( E[c].slice(), w, h, Render.boxRadius( sg[0] ) ), wide = Render.blur3( E[c], w, h, Render.boxRadius( sg[1] ) );
       for ( i = 0; i < n; ++i ) T[c][i] += amount*( G[0]*tight[i] + G[1]*wide[i] + G[2]*tightW[i] + G[3]*glare[i] );
    }
 };
@@ -743,30 +904,35 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
    // -- its core sooner (Fly.coreModelWeight): a saturated core is often a flat square in the photograph,
    // and boosted the square is what one sees; its spikes take only the glow's boost
    var wo = sp.modelCore ? Fly.modelWeight( q.m.ratio ) : 0, wc = sp.modelCore ? Fly.coreModelWeight( q.m.ratio ) : 0;
-   for ( var c = 0; c < T.length; ++c )
+   // the same sum, cheaply: the photograph once at full size; a core-sized correction swapping its
+   // core for the model's; the model's glow and spikes at full size only for stars really near
+   // its spikes are drawn on their own, from the model, growing along their length only (Fly.spikeLength);
+   // the photograph minus them is the glow -- at the start the two add up to the photograph.
+   // All channels are drawn together (Render.drawSprites); each has its own twinkle.
+   var nc = T.length, tw = [], glow = [], spikes = [], parts = [], c;
+   for ( c = 0; c < nc; ++c )
    {
-      var tw = Fly.twinkle( q.j + 1, seconds, opts.twinkle, c ), cc = Math.min( c, sp.pixels.length - 1 );
-      // the same sum, cheaply: the photograph once at full size; a core-sized correction swapping its
-      // core for the model's; the model's glow and spikes at full size only for stars really near
-      // its spikes are drawn on their own, from the model, growing along their length only (Fly.spikeLength);
-      // the photograph minus them is the glow -- at the start the two add up to the photograph
-      var spikes = sp.spikeAngles && sp.modelSpikes ? sp.modelSpikes[cc] : null;
-      var glow = spikes ? Render.glowPatch( sp, cc ) : sp.pixels[cc];
-      var parts = ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow ) : null;
-      var draws = [ [ glow, sp, 1 - wo, q.kCore ] ];
-      if ( parts ) draws.push( [ parts.photoCore, parts.coreSprite, wo - wc, q.kCore ], [ parts.modelCore, parts.coreSprite, wc, q.kCore ] );
-      if ( parts && wo > 0 ) draws.push( [ parts.modelOuter, sp, wo, q.kCore ] );
-      draws.forEach( function( pw )
-      {
-         if ( !pw[0] || pw[2] == 0 ) return;
-         var s1 = tw*pw[2]/path.length;
-         path.forEach( function( p ) { Render.drawSprite( T[c], outW, outH, pw[0], pw[1], p.x, p.y, q.g, pw[3]*s1, cam, q.kOuter*s1, q.rc, { seen: q.seen } ); } );
-      } );
-      if ( spikes )
-      {
-         var sk = q.alpha*tw/path.length, how = { seen: q.seen, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
-         path.forEach( function( p ) { Render.drawSprite( T[c], outW, outH, spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
-      }
+      var cc = Math.min( c, sp.pixels.length - 1 );
+      tw.push( Fly.twinkle( q.j + 1, seconds, opts.twinkle, c ) );
+      spikes.push( sp.spikeAngles && sp.modelSpikes ? sp.modelSpikes[cc] : null );
+      glow.push( spikes[c] ? Render.glowPatch( sp, cc ) : sp.pixels[cc] );
+      parts.push( ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow[c] ) : null );
+   }
+   var pick = function( key ) { return parts.map( function( p ) { return p[key]; } ); };
+   var draws = [ [ glow, sp, 1 - wo ] ];
+   if ( parts[0] ) draws.push( [ pick( "photoCore" ), parts[0].coreSprite, wo - wc ], [ pick( "modelCore" ), parts[0].coreSprite, wc ] );
+   if ( parts[0] && wo > 0 ) draws.push( [ pick( "modelOuter" ), sp, wo ] );
+   draws.forEach( function( pw )
+   {
+      if ( pw[2] == 0 ) return;
+      var s1 = tw.map( function( t ) { return t*pw[2]/path.length; } );
+      var ks = s1.map( function( x ) { return q.kCore*x; } ), kOs = s1.map( function( x ) { return q.kOuter*x; } );
+      path.forEach( function( p ) { Render.drawSprites( T, outW, outH, pw[0], pw[1], p.x, p.y, q.g, ks, cam, kOs, q.rc, { seen: q.seen } ); } );
+   } );
+   if ( spikes[0] )
+   {
+      var sk = tw.map( function( t ) { return q.alpha*t/path.length; } ), how = { seen: q.seen, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
+      path.forEach( function( p ) { Render.drawSprites( T, outW, outH, spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
    }
 };
 

@@ -1567,15 +1567,18 @@ Fly.formatElapsed = function( ms )
  * The bar's text: a stage with a count gets the count, the percentage and
  * the time left (extrapolated from the time so far); a stage with no count
  * -- a star removal tool that reports nothing -- gets the time so far.
+ * `kept` of the done ones were already there, so they do not set the pace.
  */
-Fly.progressText = function( stage, done, total, elapsedMs )
+Fly.progressText = function( stage, done, total, elapsedMs, kept )
 {
    if ( !( total > 0 ) )
       return stage + " — " + Fly.formatElapsed( elapsedMs );
    var t = stage + " — " + done + " of " + total + " (" + Math.round( 100*done/total ) + "%)";
-   if ( done > 0 && done < total )
+   // `kept` of the done were there before (a resumed render): the pace is the rest's
+   var fresh = done - ( kept || 0 );
+   if ( fresh > 0 && done < total )
    {
-      var left = elapsedMs/done*( total - done );
+      var left = elapsedMs/fresh*( total - done );
       t += " — " + ( left < 60000 ? "less than a minute left" : "about " + Math.round( left/60000 ) + " min left" );
    }
    return t;
