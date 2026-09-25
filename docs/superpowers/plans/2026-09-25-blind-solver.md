@@ -108,7 +108,7 @@ function runSolveTests()
       check( "toPlane: north is +eta", Solve.toPlane( c, 315.4, 68.2 )[1] > 0, true );
       check( "toPlane: the far side is null", Solve.toPlane( c, 135.4, -68.1 ), null );
       var w = Solve.fromPlane( { ra: 359.9, dec: 0 }, 0.3, 0 );
-      check( "fromPlane wraps RA into [0,360)", near( w.ra, 0.2, 1e-6 ), true );
+      check( "fromPlane wraps RA into [0,360)", near( w.ra, 0.2, 1e-4 ), true );   // atan: 0.3 on the plane is 0.29999 degrees
    } )();
 
    /* ---- quad codes --------------------------------------------------- */
@@ -129,7 +129,7 @@ function runSolveTests()
       check( "quadCode: order maps back to the same stars", shuffled[r.order[0]].join() + shuffled[r.order[2]].join(), pts[q.order[0]].join() + pts[q.order[2]].join() );
       var m = Solve.quadCode( moved( function( x, y ) { return [ x, -y ]; } ) );
       check( "quadCode: a mirror image has a different code", same( q, m ), false );
-      check( "quadCode: a star outside the AB circle is no quad", Solve.quadCode( [ [ 0, 0 ], [ 10, 0 ], [ 5, 4.9 ], [ 5, -5.2 ] ] ), null );
+      check( "quadCode: a star outside the AB circle is no quad", Solve.quadCode( [ [ 0, 0 ], [ 10, 0 ], [ 5, 4.9 ], [ 9.5, 3 ] ] ), null );
    } )();
 }
 ```
@@ -370,7 +370,7 @@ git commit -m "Solve: similarity fit"
       var tiles = Solve.skyTiles( 2 ), probe = synthSky( 11, 300, 0, -90, 360, 180 ), covered = true;
       probe.forEach( function( p ) { if ( !tiles.some( function( t ) { return Fly.separation( t, p ) <= 2; } ) ) covered = false; } );
       check( "skyTiles cover the sky", covered, true );
-      check( "skyTiles: a few thousand at 2 degrees", tiles.length > 2000 && tiles.length < 5000, true );
+      check( "skyTiles: a few thousand at 2 degrees", tiles.length > 3000 && tiles.length < 7000, true );
 
       var quads = Solve.bandQuads( kept, Solve.BANDS[0], 2 );
       check( "bandQuads makes quads", quads.length > 100, true );
@@ -491,7 +491,7 @@ Solve.skyTiles = function( radius )
    var step = radius*Math.SQRT2, rows = Math.ceil( 180/step ), out = [];
    for ( var r = 0; r < rows; ++r )
    {
-      var dec = -90 + ( r + 0.5 )*180/rows, edge = Math.min( 90, Math.abs( dec ) + 90/rows );
+      var dec = -90 + ( r + 0.5 )*180/rows, edge = Math.max( 0, Math.abs( dec ) - 90/rows );   // the row's edge nearest the equator, where it is widest
       var n = Math.max( 1, Math.ceil( 360*Math.cos( edge*Fly.RAD )/step ) );
       for ( var c = 0; c < n; ++c ) out.push( { ra: ( c + 0.5 )*360/n, dec: dec } );
    }
