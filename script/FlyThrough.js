@@ -166,7 +166,7 @@ FlyThrough.renderFrameRange = function( job, folder, res, progress, total, cance
       try
       {
          Render.writeTiff( img, path + FlyThrough.PARTIAL_SUFFIX, icc );
-         if ( progress.onImage ) progress.onImage( img, p.id );          // the frame just finished, for the preview
+         if ( progress.onImage ) progress.onImage( img, p.id, job.po.transfer );   // the frame just finished, for the preview
       }
       finally { img.free(); }
       File.move( path + FlyThrough.PARTIAL_SUFFIX, path );
@@ -480,6 +480,7 @@ FlyThrough.Player = class extends Control
    setFrames( bitmaps, fps, pingPong )
    {
       this.pause();
+      this.badge = "";                       // a label belongs to the frames it was set with
       this.frames = bitmaps || [];
       this.fps = fps || 30;
       this.pingPong = !!pingPong;
@@ -531,6 +532,13 @@ FlyThrough.Player = class extends Control
       this.arm();
    }
 
+   /* A label in the preview's bottom-right corner ("" for none), e.g. "HDR Preview". */
+   setBadge( text )
+   {
+      this.badge = text || "";
+      this.update();
+   }
+
    paintFrame()
    {
       var g = new Graphics( this );
@@ -543,9 +551,23 @@ FlyThrough.Player = class extends Control
             var k = Math.min( this.width/b.width, this.height/b.height ), w = b.width*k, h = b.height*k;
             var x = ( this.width - w )/2, y = ( this.height - h )/2;
             g.drawScaledBitmap( new Rect( x, y, x + w, y + h ), b );
+            if ( this.badge ) this.paintBadge( g, x + w, y + h );
          }
       }
       finally { g.end(); }
+   }
+
+   /* The badge: white on a dark rounded box, inset from the frame's bottom-right corner (right, bottom). */
+   paintBadge( g, right, bottom )
+   {
+      var f = this.font, pad = 6, tw = f.width( this.badge ), th = f.height, m = 10;
+      var r = new Rect( right - m - tw - 2*pad, bottom - m - th - pad, right - m, bottom - m );
+      g.antialiasing = true;
+      g.pen = new Pen( 0x60ffffff );
+      g.brush = new Brush( 0xb0000000 );
+      g.drawRoundedRect( r, 6, 6 );
+      g.pen = new Pen( 0xffffffff );
+      g.drawText( r.x0 + pad, r.y0 + pad/2 + f.ascent, this.badge );
    }
 
    release()
@@ -1826,7 +1848,14 @@ FlyThrough.Dialog = class extends Dialog
          isCancelled: function() { return self.cancelRequested; },
          onFrame: function( k, n, id, kept ) { stage( id ? "Rendering " + ( FlyThrough.PRESET_LABELS[id] || id ) : "Drafting", k, n, kept ); },
          // a render's finished frames in the preview, at most every PREVIEW_EVERY ms (turning a full frame into a bitmap costs)
-         onImage: function( img ) { if ( Date.now() - shown >= FlyThrough.PREVIEW_EVERY ) { shown = Date.now(); self.player.setFrames( [ img.render() ], 1, false ); } },
+         onImage: function( img, id, transfer )
+         {
+            if ( Date.now() - shown < FlyThrough.PREVIEW_EVERY ) return;
+            shown = Date.now();
+            self.player.setFrames( [ img.render() ], 1, false );
+            // an HDR frame's PQ/HLG signal on an SDR screen looks flat: say what it is
+            self.player.setBadge( ( transfer == "pq" || transfer == "hlg" ) ? "HDR Preview" : "" );
+         },
          onEncode: function( k, n ) { stage( "Encoding the video", k, n ); }
       };
    }

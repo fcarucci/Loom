@@ -10769,8 +10769,8 @@ function runFlyTestsClean()
       {
          var spec = { id: "prev", w: 96, h: 54, pingPong: false }, seen = [];
          var o = { travel: 150, easing: "smoothstep", growth: 0.15, brightening: true, duration: 0.5, fps: 10, video: false, format: "h264", sceneKey: "prev|t|900" };
-         FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { onImage: function( img, id ) { seen.push( [ img.width, img.height, id ] ); } } );
-         check( "every finished frame is handed to the preview", [ seen.length, seen[0] ], [ 5, [ 96, 54, "prev" ] ] );
+         FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { onImage: function( img, id, transfer ) { seen.push( [ img.width, img.height, id, transfer ] ); } } );
+         check( "every finished frame is handed to the preview, with its encoding", [ seen.length, seen[0] ], [ 5, [ 96, 54, "prev", "sdr" ] ] );
          dlg = new FlyThrough.Dialog( null );
          var img = new Image( 96, 54, 3, ColorSpace_RGB, 32, SampleType_Real ); img.fill( 0.5 );
          var p = dlg.progressFor();
@@ -10778,6 +10778,13 @@ function runFlyTestsClean()
          check( "the dialog shows it in the preview", [ dlg.player.frames.length, dlg.player.frames[0] && dlg.player.frames[0].width ], [ 1, 96 ] );
          var first = dlg.player.frames[0]; p.onImage( img, "prev" );
          check( "but not more than 4 times a second", dlg.player.frames[0] === first, true );
+         check( "an SDR frame carries no badge", dlg.player.badge || "", "" );
+         var q = dlg.progressFor(); q.onImage( img, "prev", "pq" );
+         check( "an HDR frame is labelled HDR Preview in the corner", dlg.player.badge, "HDR Preview" );
+         var r = dlg.progressFor(); r.onImage( img, "prev", "hlg" );
+         check( "HLG too", dlg.player.badge, "HDR Preview" );
+         dlg.player.setFrames( [ img.render() ], 10, false );
+         check( "and the draft coming back clears it", dlg.player.badge, "" );
          img.free();
       }
       finally { if ( dlg ) dlg.release(); fx.windows.forEach( function( w ) { w.forceClose(); } ); }
