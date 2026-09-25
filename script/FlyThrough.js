@@ -1362,7 +1362,7 @@ FlyThrough.Dialog = class extends Dialog
       };
       this.closeButton = new PushButton( this );
       this.closeButton.text = "Close";
-      this.closeButton.onClick = function() { if ( !self.busy ) self.cancel(); };
+      this.closeButton.onClick = function() { if ( !self.busy && self.closing() ) self.cancel(); };
       this.bar = new FlyThrough.ProgressBar( this );
       this.buttons = new VerticalSizer;
       this.buttons.spacing = 6;
@@ -1372,8 +1372,23 @@ FlyThrough.Dialog = class extends Dialog
       this.progressBox.spacing = 4;
       this.progressBox.add( this.bar );
       this.progressBox.add( this.status );
-      // closing the window mid-render cancels it rather than leaving it running unseen
-      this.onClose = function() { if ( self.busy ) self.cancelRequested = true; self.saveOptions(); };
+      // the window's own close (title bar, Escape) goes the way the Close button does
+      this.onClose = function() { return self.closing(); };
+   }
+
+   /*
+    * What closing does, from the Close button or the window's own close:
+    * save the options and, mid-job, cancel the job rather than leave it
+    * running unseen. Returns true, always: PJSR keeps the window open when
+    * onClose returns anything else, undefined included (a Windows tester's
+    * title-bar "x" did nothing), and a failed save must not keep it open.
+    */
+   closing()
+   {
+      if ( this.busy ) { this.cancelRequested = true; this.redraftPending = false; }
+      try { this.saveOptions(); }
+      catch ( e ) { Util.warn( "fly", "the options were not saved: " + ( e.message || e ) ); }
+      return true;
    }
 
    layOut()

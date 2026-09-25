@@ -1104,7 +1104,8 @@ Render.writeTiff = function( image, path, icc )
       if ( File.exists( path ) )
          File.remove( path );
       var f = new FileFormatInstance( new FileFormat( ".tif", false, true ) );
-      if ( !f.create( path, "" ) )
+      // quiet: the TIFF module otherwise logs "ICC profile embedded: ..." for every frame (the file is the same)
+      if ( !f.create( path, "verbosity 0" ) )
          throw new Error( "Could not create " + path );
       try
       {

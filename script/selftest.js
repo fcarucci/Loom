@@ -10300,6 +10300,72 @@ function runFlyTestsClean()
       }
    } )();
 
+   /*
+    * A Windows tester: the title-bar "x" did nothing, the Close button worked.
+    * PJSR vetoes a close whose onClose returns anything but true -- undefined
+    * included, whatever the docs say (measured on slot 2: an onClose returning
+    * nothing ignored eleven clicks, one returning true closed on the first).
+    * The window's own close and the Close button take the same path: save the
+    * options, then close.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String ), d = null;
+      function savedTwinkle() { var o = JSON.parse( Settings.read( FlyThrough.OPTIONS_SETTING, DataType_String ) || "{}" ); return o.twinkle; }
+      try
+      {
+         Settings.remove( FlyThrough.OPTIONS_SETTING );
+         d = new FlyThrough.Dialog( null );
+         d.twinkleSpin.value = 3;
+         check( "the window's own close lets the dialog close", d.onClose(), true );
+         check( "and saves the options", savedTwinkle(), 3 );
+         // the Close button goes the same way (cancel() is native: it cannot be stubbed, and on a dialog never executed it does nothing)
+         var closings = 0, closing = d.closing;
+         d.closing = function() { ++closings; return closing.apply( d, arguments ); };
+         d.twinkleSpin.value = 7;
+         d.closeButton.onClick();
+         check( "the Close button takes the same path as the window's close", closings, 1 );
+         check( "and saves the options too", savedTwinkle(), 7 );
+         d.busy = true;
+         check( "closing the window mid-job still closes it", d.onClose(), true );
+         check( "and cancels the job rather than leave it running unseen", d.cancelRequested, true );
+         d.busy = false;
+         d.saveOptions = function() { throw new Error( "no settings" ); };
+         check( "an options save that fails does not keep the window open", d.onClose(), true );
+      }
+      finally { if ( d ) d.release(); if ( saved != null ) Settings.write( FlyThrough.OPTIONS_SETTING, DataType_String, saved ); else Settings.remove( FlyThrough.OPTIONS_SETTING ); }
+   } )();
+
+   /*
+    * A Windows tester with a logo saw "ICC profile embedded: 'sRGB
+    * IEC61966-2.1', 3144 bytes." in the console for every frame. The TIFF
+    * module is told to be quiet ("verbosity 0"); the file it writes is the
+    * same, byte for byte, profile included.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-frame-quiet" ), img = new Image( 16, 9, 3, ColorSpace_RGB, 16, SampleType_Integer );
+      img.fill( 0.5 );
+      try
+      {
+         var icc = Render.srgbIcc(), text = "";
+         console.beginLog();
+         try { Render.writeTiff( img, dir + "/quiet.tif", icc ); }
+         finally { console.flush(); text = console.endLog().toString(); }
+         check( "writing a frame logs no ICC line", /ICC profile embedded/.test( text ), false );
+         // the same frame written the old way, with the module's default verbosity
+         var f = new FileFormatInstance( new FileFormat( ".tif", false, true ) );
+         if ( File.exists( dir + "/loud.tif" ) ) File.remove( dir + "/loud.tif" );
+         f.create( dir + "/loud.tif", "" );
+         f.iccProfile = icc;
+         f.writeImage( img ); f.close();
+         var a = File.readFile( dir + "/quiet.tif" ), b = File.readFile( dir + "/loud.tif" ), same = a.length == b.length && a.length > 3000;
+         for ( var i = 0; same && i < a.length; ++i ) if ( a.at( i ) != b.at( i ) ) same = false;
+         check( "and the file is the same, byte for byte, sRGB profile included", same, true );
+      }
+      finally { img.free(); }
+   } )();
+
    /* fly-tests-end */
 }
 
