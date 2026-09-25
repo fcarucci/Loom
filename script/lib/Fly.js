@@ -124,6 +124,43 @@ Fly.coverFraction = function( r1, r2, d )
    return ( a1 + a2 - k )/( Math.PI*r1*r1 );
 };
 
+Fly.HEADROOM_KNEE = 0.7;       // star light above this (of SDR white) is expanded into the HDR headroom
+Fly.HDR_MAG_RANGE = 5;         // magnitudes from the brightest star to one that gets no headroom (100x in flux)
+Fly.HEADROOM_RADIUS = 6;       // px (scene): the area a faint star's gain covers; the brightest cover 4x
+Fly.HDR_REFERENCE_WHITE = 203; // nits: SDR white in an HDR video (ITU-R BT.2408)
+
+/*
+ * The factor a star value v (0..1 of SDR white) is multiplied by to reach
+ * into the HDR headroom: 1 below the knee, `peak` at white, smooth (its
+ * slope continuous at the knee) and never turning back.
+ */
+Fly.starHeadroom = function( v, peak )
+{
+   var t = Math.max( 0, Math.min( 1, ( v - Fly.HEADROOM_KNEE )/( 1 - Fly.HEADROOM_KNEE ) ) );
+   return 1 + ( peak - 1 )*t*t;
+};
+
+/* A star's HDR peak from its magnitude G: `peak` for the brightest (gBright), 1 by HDR_MAG_RANGE fainter, linear in magnitude (log in flux). */
+Fly.magnitudeGain = function( G, gBright, peak )
+{
+   var w = Math.max( 0, Math.min( 1, ( gBright + Fly.HDR_MAG_RANGE - G )/Fly.HDR_MAG_RANGE ) );
+   return 1 + ( peak - 1 )*w;
+};
+
+Fly.SPIKE_LENGTH_MAX = 4;   // the longest a star's spikes are drawn, as a multiple of their measured length
+
+/*
+ * How long a star's spikes are drawn, as a multiple of their measured
+ * length. A spike falling as 1/r^2, L times longer, shows what an
+ * L^2-times brighter one shows: so the square root of the brightening --
+ * the light ratio when brightening -- at most SPIKE_LENGTH_MAX, and never
+ * less than the glow's growth g. Their width does not change.
+ */
+Fly.spikeLength = function( ratio, brightening, g )
+{
+   return Math.max( g, Math.min( Fly.SPIKE_LENGTH_MAX, brightening ? ratio : 1 ) );
+};
+
 Fly.SHUTTER = 0.5;   // of a frame's interval: a 180-degree shutter
 
 /* Steps a star is drawn at along the path it covers while the shutter is open (px). */
@@ -235,6 +272,28 @@ Fly.usableParallax = function( s )
       return null;
    var p = s.plx + Fly.PARALLAX_ZERO_POINT;
    return ( p > 0 && p >= 5*Fly.parallaxSigma( s.G ) ) ? p : null;
+};
+
+Fly.ILLUMINATOR_MAX_G = 10;      // a star must be at least this bright to light a nebula
+Fly.ILLUMINATOR_MIN_RADIUS = 0.1; // degrees: the smallest area searched about the target
+
+/*
+ * The distance of the star that lights a nebula with no ionising cluster
+ * (a reflection nebula such as NGC 7023): the brightest star within the
+ * nebula (its catalogued radius, at least ILLUMINATOR_MIN_RADIUS) with a
+ * reliable parallax and bright enough (G < ILLUMINATOR_MAX_G). Returns
+ * { distance (pc), G, source } or null.
+ */
+Fly.illuminatorDistance = function( sources, target )
+{
+   var r = Math.max( Fly.ILLUMINATOR_MIN_RADIUS, ( target.diameter > 0 ? target.diameter/120 : 0 ) ), best = null;
+   ( sources || [] ).forEach( function( s )
+   {
+      if ( !( s.G < Fly.ILLUMINATOR_MAX_G ) || Fly.separation( s, target ) > r ) return;
+      var p = Fly.usableParallax( s );
+      if ( p != null && ( !best || s.G < best.G ) ) best = { distance: 1000/p, G: s.G, source: s };
+   } );
+   return best;
 };
 
 Fly.CLUSTER_MIN_MEMBERS = 30;
@@ -983,6 +1042,52 @@ Fly.describeStars = function( c )
           ( c.blended > 0 ? " \u00b7 " + c.blended + " blended (stay still)" : "" );
 };
 
+Fly.FILE_NAME_SCORE = 0.85;   // a file name's words must match an object this well (file names carry other words)
+
+/*
+ * The object an image's file name names, or null: its words (extension,
+ * folders and separators dropped), in runs of three, two and one, through
+ * Fly.findObject; the best match at or above FILE_NAME_SCORE.
+ */
+Fly.objectFromFileName = function( path, entries )
+{
+   var base = String( path || "" ).replace( /^.*[\/\\]/, "" ).replace( /\.[^.]*$/, "" );
+   var words = base.split( /[^A-Za-z0-9']+/ ).filter( function( w ) { return w.length; } ), best = null;
+   for ( var k = Math.min( 3, words.length ); k >= 1; --k )
+      for ( var i = 0; i + k <= words.length; ++i )
+      {
+         var hit = Fly.findObject( words.slice( i, i + k ).join( " " ), entries )[0];
+         if ( hit && hit.score >= Fly.FILE_NAME_SCORE && ( !best || hit.score > best.score ) ) best = hit;
+      }
+   return best;
+};
+
+Fly.CACHE_FORMAT = 3;   // bump when what the cache holds changes shape
+
+/* An 8-hex-digit FNV-1a hash of a string: a folder-safe name. */
+Fly.hashKey = function( text )
+{
+   var h = 0x811c9dc5, s = String( text );
+   for ( var i = 0; i < s.length; ++i ) { h ^= s.charCodeAt( i ); h = Math.imul( h, 0x01000193 ) >>> 0; }
+   return ( "0000000" + h.toString( 16 ) ).slice( -8 );
+};
+
+/*
+ * An image's cache key: its file (path, size, time) or, never saved, its
+ * view's name; its size; the Loom version and the cache's format -- so a
+ * file saved again, or a new Loom, starts afresh. No pixels are read.
+ */
+Fly.imageCacheKey = function( path, bytes, mtime, w, h, nc, version, viewId )
+{
+   return Fly.hashKey( [ path ? path + "|" + bytes + "|" + mtime : "view:" + viewId, w, h, nc, version, Fly.CACHE_FORMAT ].join( "|" ) );
+};
+
+/* The cached images to delete (names) so only the `keep` most recently used remain; entries are { name, used }. */
+Fly.cacheToPrune = function( entries, keep )
+{
+   return entries.slice().sort( function( a, b ) { return b.used - a.used; } ).slice( keep ).map( function( e ) { return e.name; } );
+};
+
 Fly.LOGO_PLACES = [ "center", "top-left", "top-mid", "top-right", "bottom-left", "bottom-mid", "bottom-right" ];
 Fly.LOGO_SIZE = 0.2;      // the logo's long side, of the frame's short side
 Fly.LOGO_MARGIN = 0.04;   // its margin from the edges (title-safe), of the short side
@@ -1050,14 +1155,17 @@ Fly.commandLine = function( program, args, platform )
 
 /* A preset key (or a {id, w, h, pingPong} spec, for the suite) as a spec. */
 /*
- * A preset's frame. Vertical turns the widescreen ones portrait, in a
- * folder of their own; the social presets keep their shape either way.
+ * A preset's frame and loop. Vertical turns the widescreen ones portrait,
+ * in a folder of their own; the social presets keep their shape either
+ * way. `loop` (none, pingpong, crossfade) applies to any preset.
  */
 Fly.presetSpec = function( p, orientation, loop )
 {
    if ( typeof p != "string" )
       return p;
-   var size = Fly.PRESETS[p], turn = ( orientation == "vertical" && !/^social_/.test( p ) && size[0] > size[1] ), loops = ( p == "exhibition" );
+   // the loop is every preset's choice (none, pingpong, crossfade); the Exhibition always loops
+   var size = Fly.PRESETS[p], turn = ( orientation == "vertical" && !/^social_/.test( p ) && size[0] > size[1] );
+   var loops = ( p == "exhibition" ) || ( loop == "pingpong" || loop == "crossfade" );
    return { id: turn ? p + "_vertical" : p, preset: p, w: size[turn ? 1 : 0], h: size[turn ? 0 : 1],
             pingPong: loops && loop != "crossfade", crossfade: loops && loop == "crossfade" };
 };

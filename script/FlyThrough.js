@@ -267,7 +267,7 @@ FlyThrough.identify = function( window, choices, progress )
    return id;
 };
 
-/* The nebula's distance from its ionising cluster, when one is found. */
+/* The nebula's distance from its ionising cluster when one is found, else from the bright star that lights it. */
 FlyThrough.clusterDistance = function( id, target )
 {
    var r = ( target.diameter > 0 ? target.diameter/120 : id.field.radiusDeg );
@@ -282,6 +282,15 @@ FlyThrough.clusterDistance = function( id, target )
       }
    }
    catch ( e ) { Util.warn( "fly", "cluster search failed: " + e ); }
+   if ( id.D != null ) return;
+   // no ionising cluster (a reflection nebula): the bright star that lights it
+   var star = Fly.illuminatorDistance( id.sources, target );
+   if ( star )
+   {
+      id.illuminator = star;
+      id.D = star.distance;
+      id.distanceSource = "star";
+   }
 };
 
 /*
@@ -309,7 +318,8 @@ FlyThrough.build = function( window, id, choices, progress )
       stage( "Preparing the scene", 0, 0 );
       var scene = Render.scene( { starless: split.starless.mainView.image, stars: split.stars.mainView.image,
                                   sprites: sp.sprites, residual: sp.residual, project: id.proj,
-                                  target: id.aim || id.target || id.field.centre, D: id.D } );
+                                  target: id.aim || id.target || id.field.centre, D: id.D,
+                                  catalogue: neighbours.map( function( n ) { return { x: n.x, y: n.y, G: n.source.G, ra: n.source.ra, dec: n.source.dec }; } ) } );
       var col = Sky.colourOf( choices.colourFrom || window );   // the original's profile, not the working copy's
       // the scene holds its own copies of the pixels: the split windows (up
       // to ~1.4 GB for a 60 MP RGB image) are not needed any more
@@ -586,6 +596,7 @@ FlyThrough.describeDistance = function( id )
    {
    case "cluster": return "from its cluster: " + id.cluster.members + " stars, " +
                           Math.round( id.cluster.lo ) + "–" + Math.round( id.cluster.hi ) + " pc";
+   case "star":    return "from its brightest star (G " + id.illuminator.G.toFixed( 1 ) + "), which lights it";
    case "galaxy":  return "galaxy: fixed backdrop";
    case "typed":   return "typed";
    }
@@ -601,10 +612,151 @@ FlyThrough.still = function( window )
    return img.render( n > 1 ? -n : 1 );
 };
 
+FlyThrough.LOOPS = [ [ "none", "None" ], [ "pingpong", "Back and forth" ], [ "crossfade", "Crossfade" ] ];   // the Loop choices
 FlyThrough.OPTIONS_SETTING = "Loom/flyOptions";   // the dialog's options, JSON, restored next time
 FlyThrough.OBJECTS_SETTING = "Loom/flyObjects";   // each image's solve hints, JSON by file (or name, unsaved)
 FlyThrough.LOGO_SETTING = "Loom/flyLogo";         // the logo file last chosen
 FlyThrough.LOGO_PLACE_SETTING = "Loom/flyLogoPlace";
+/* ---------------------------------------------------------------------------
+ * The per-image cache, in the system's temp folder: an image's solved
+ * working copy, its star scene per star tool, and its drafts, so choosing
+ * it again skips the resample, solve, star removal and deblending.
+ * ------------------------------------------------------------------------ */
+
+FlyThrough.CACHE_KEEP = 3;   // images kept; the least recently used go first
+
+FlyThrough.cacheRoot = function()
+{
+   return File.systemTempDirectory + "/LoomFlyThrough";
+};
+
+/* An image's cache folder under root (Fly.imageCacheKey: its file or view name, its size, the Loom version), made if missing. */
+FlyThrough.cacheDir = function( root, window )
+{
+   var path = window.filePath, bytes = 0, mtime = 0, img = window.mainView.image;
+   try { if ( path && File.exists( path ) ) { var fi = new FileInfo( path ); bytes = fi.size; mtime = fi.lastModified.getTime(); } } catch ( e ) {}
+   var dir = root + "/" + Fly.imageCacheKey( path, bytes, mtime, img.width, img.height, img.numberOfChannels, Util.LOOM_VERSION, window.mainView.id );
+   if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+   return dir;
+};
+
+/* The solved working copy, as XISF (which keeps the astrometric solution), its scale and whether it had a solution. */
+FlyThrough.saveWork = function( dir, work )
+{
+   work.window.saveAs( dir + "/work.xisf", false, false, false, false );
+   var keywords = work.window.keywords.map( function( k ) { return [ k.name, k.value, k.comment ]; } );
+   File.writeTextFile( dir + "/work.json", JSON.stringify( { scale: work.scale, solved: work.window.hasAstrometricSolution, keywords: keywords } ) );
+};
+
+FlyThrough.loadWork = function( dir )
+{
+   try
+   {
+      if ( !File.exists( dir + "/work.xisf" ) || !File.exists( dir + "/work.json" ) ) return null;
+      var w = ImageWindow.open( dir + "/work.xisf" );
+      if ( !w.length ) return null;
+      var meta = JSON.parse( File.readTextFile( dir + "/work.json" ) );
+      // a copy saved with WCS keywords only is reopened with a solution PixInsight builds from them,
+      // which reads them flipped against Loom (measured): it comes back as it was saved, keywords only
+      if ( !meta.solved && w[0].hasAstrometricSolution )
+      {
+         w[0].clearAstrometricSolution();            // which takes the WCS keywords with it: they are put back
+         w[0].keywords = ( meta.keywords || [] ).map( function( k ) { return new FITSKeyword( k[0], k[1], k[2] ); } );
+      }
+      return { window: w[0], scale: meta.scale };
+   }
+   catch ( e ) { return null; }
+};
+
+FlyThrough.starsName = function( tool ) { return "stars-" + Fly.hashKey( tool ); };
+
+/* The star scene built with `tool` (Render.packScene), its counts and notes. */
+FlyThrough.saveBuilt = function( dir, tool, built )
+{
+   var packed = Render.packScene( built.scene ), base = dir + "/" + FlyThrough.starsName( tool );
+   Sky.writeArrays( base + ".bin", packed.arrays );
+   File.writeTextFile( base + ".json", JSON.stringify( { tool: tool, scene: packed.meta, lengths: packed.arrays.map( function( a ) { return a.length; } ),
+                                                         counts: built.counts, colourNote: built.colourNote, stretched: built.stretched } ) );
+};
+
+/* The star scene built with `tool`, its projection from the solved working copy and its colour from the image; null when none. */
+FlyThrough.loadBuilt = function( dir, tool, workWindow, colourFrom )
+{
+   var base = dir + "/" + FlyThrough.starsName( tool );
+   try
+   {
+      if ( !File.exists( base + ".json" ) || !File.exists( base + ".bin" ) ) return null;
+      var meta = JSON.parse( File.readTextFile( base + ".json" ) ), project = Sky.projector( workWindow );
+      if ( meta.tool != tool || !project ) return null;          // stars it cannot place are no use
+      var scene = Render.unpackScene( meta.scene, Sky.readArrays( base + ".bin", meta.lengths ), project );
+      return { scene: scene, windows: [], colour: Sky.colourOf( colourFrom ).colour, colourNote: meta.colourNote, stretched: meta.stretched, counts: meta.counts };
+   }
+   catch ( e ) { return null; }
+};
+
+/* A draft, for the options signature `sig` (Fly.frameSignature), as PNG frames. */
+FlyThrough.saveDraft = function( dir, sig, d )
+{
+   var folder = dir + "/draft-" + Fly.hashKey( sig );
+   if ( !File.directoryExists( folder ) ) File.createDirectory( folder, true );
+   d.bitmaps.forEach( function( b, i ) { b.save( folder + "/" + i + ".png" ); } );
+   File.writeTextFile( folder + "/draft.json", JSON.stringify( { sig: sig, fps: d.fps, pingPong: d.pingPong, n: d.bitmaps.length } ) );
+};
+
+FlyThrough.loadDraft = function( dir, sig )
+{
+   var folder = dir + "/draft-" + Fly.hashKey( sig );
+   try
+   {
+      if ( !File.exists( folder + "/draft.json" ) ) return null;
+      var meta = JSON.parse( File.readTextFile( folder + "/draft.json" ) );
+      if ( meta.sig != sig ) return null;
+      var bitmaps = [];
+      for ( var i = 0; i < meta.n; ++i ) bitmaps.push( new Bitmap( folder + "/" + i + ".png" ) );
+      return { bitmaps: bitmaps, fps: meta.fps, pingPong: meta.pingPong };
+   }
+   catch ( e ) { return null; }
+};
+
+/* Marks an image's cache folder as used (at time t, now by default). */
+FlyThrough.touch = function( dir, t )
+{
+   try { File.writeTextFile( dir + "/used", String( t != null ? t : Date.now() ) ); } catch ( e ) {}
+};
+
+/* Keeps the `keep` most recently used images' folders under root and deletes the rest (Fly.cacheToPrune). */
+FlyThrough.prune = function( root, keep )
+{
+   if ( !File.directoryExists( root ) ) return;
+   var entries = [], find = new FileFind;
+   if ( find.begin( root + "/*" ) )
+      do
+      {
+         if ( !find.isDirectory || find.name == "." || find.name == ".." ) continue;
+         var used = 0;
+         try { used = parseFloat( File.readTextFile( root + "/" + find.name + "/used" ) ) || 0; } catch ( e ) {}
+         entries.push( { name: find.name, used: used } );
+      }
+      while ( find.next() );
+   Fly.cacheToPrune( entries, keep ).forEach( function( name ) { FlyThrough.removeTree( root + "/" + name ); } );
+};
+
+/* A folder and everything in it. */
+FlyThrough.removeTree = function( dir )
+{
+   var find = new FileFind, subs = [], files = [];
+   if ( find.begin( dir + "/*" ) )
+      do
+      {
+         if ( find.name == "." || find.name == ".." ) continue;
+         ( find.isDirectory ? subs : files ).push( dir + "/" + find.name );
+      }
+      while ( find.next() );
+   files.forEach( function( f ) { try { File.remove( f ); } catch ( e ) {} } );
+   subs.forEach( FlyThrough.removeTree );
+   try { File.removeDirectory( dir ); } catch ( e ) {}
+};
+
 FlyThrough.TOOL_SETTING = "Loom/flyStarTool";   // the star removal tool last chosen
 FlyThrough.FOCAL_SETTING = "Loom/flyFocal";   // the last focal length used (mm)
 FlyThrough.PIXEL_SETTING = "Loom/flyPixel";   // the last pixel size used (um)
@@ -804,6 +956,8 @@ FlyThrough.Dialog = class extends Dialog
       this.builtTool = null;
       this.typeTouched = this.distanceTouched = this.travelTouched = false;
       this.hasDraft = false;
+      this.cacheDirPath = null;
+      this.workCached = false;
       if ( this.starsLabel ) this.starsLabel.text = "";
    }
 
@@ -818,7 +972,10 @@ FlyThrough.Dialog = class extends Dialog
       this.pixelEdit.text = has ? String( Sky.keywordNumber( this.imageWindow, "XPIXSZ" ) || Settings.read( FlyThrough.PIXEL_SETTING, DataType_String ) || "" ) : "";
       if ( path ) this.folderEdit.text = File.extractDrive( path ) + File.extractDirectory( path );
       this.needsHints = has && ( Sky.projector( this.imageWindow ) == null );
+      // an image's hints start empty -- never the last image's -- then come from its memory or its name
+      this.objectEdit.text = this.raEdit.text = this.decEdit.text = this.objectMatch.text = "";
       if ( this.needsHints ) this.recallObject();
+      if ( this.needsHints && !this.objectEdit.text.trim() ) this.objectFromName();
       this.hints.visible = this.needsHints;
       if ( this.targetLabel ) this.targetLabel.text = "";
       [ "draftButton", "renderButton" ].forEach( function( k ) { if ( this[k] ) this[k].enabled = has; }, this );
@@ -961,10 +1118,10 @@ FlyThrough.Dialog = class extends Dialog
       this.orientationCombo.toolTip = "<p>Vertical turns the YouTube and Exhibition presets portrait (1080\u00d71920, 2160\u00d73840); the social ones keep their shape.</p>";
       this.orientationCombo.onItemSelected = function() { self.refreshPresetLabels(); self.refreshFormats(); self.refreshEstimate(); self.redraft(); };
       this.loopCombo = new ComboBox( this );
-      this.loopCombo.addItem( "Back and forth" );
-      this.loopCombo.addItem( "Crossfade" );
-      this.loopCombo.toolTip = "<p>How the Exhibition loop returns to its start: flying back out, or fading from the end into the start over " +
-         Fly.CROSSFADE_SECONDS + " s (a quarter of a short clip) so it only ever moves forward.</p>";
+      FlyThrough.LOOPS.forEach( function( l ) { self.loopCombo.addItem( l[1] ); } );
+      this.loopCombo.toolTip = "<p>Make the video loop, for any preset: fly back out to the start, or crossfade from the end into the start over " +
+         Fly.CROSSFADE_SECONDS + " s (a quarter of a short clip) so it only ever moves forward. Music loops with it. " +
+         "The Exhibition preset always loops (back and forth when None).</p>";
       this.loopCombo.onItemSelected = function() { self.refreshEstimate(); };
       var rows = [ this.row( [ this.label( "Duration (s):" ), this.durationSpin, this.label( "fps:" ), this.fpsCombo,
                                this.label( "Orientation:" ), this.orientationCombo, "stretch" ] ),
@@ -996,7 +1153,12 @@ FlyThrough.Dialog = class extends Dialog
       this.peakSpin.value = Fly.HDR_PEAK_DEFAULT;
       this.peakSpin.toolTip = "<p>Peak brightness for PQ, in nits. HLG is relative to a 1000-nit display.</p>";
       this.dynamicCombo.toolTip = "<p>SDR, or HDR (HLG or PQ per preset). The draft preview is SDR; judge HDR in the video.</p>";
-      rows.push( this.row( [ this.label( "Dynamic range:" ), this.dynamicCombo, this.label( "Peak (nits):" ), this.peakSpin, "stretch" ] ) );
+      this.starHdrCheck = new CheckBox( this );
+      this.starHdrCheck.text = "Stars into HDR headroom";
+      this.starHdrCheck.checked = true;
+      this.starHdrCheck.toolTip = "<p>In HDR, the bright stars reach past SDR white towards the peak, each by its Gaia magnitude " +
+         "(the brightest to the peak, 5 magnitudes fainter not at all); the nebula or galaxy keeps its tone.</p>";
+      rows.push( this.row( [ this.label( "Dynamic range:" ), this.dynamicCombo, this.label( "Peak (nits):" ), this.peakSpin, this.starHdrCheck, "stretch" ] ) );
       this.logoEdit = this.edit( Settings.read( FlyThrough.LOGO_SETTING, DataType_String ) || "", 0 );
       this.logoEdit.toolTip = "<p>A logo drawn on every frame (PNG transparency is kept), sized and spaced for each preset.</p>";
       this.logoButton = new PushButton( this );
@@ -1063,6 +1225,7 @@ FlyThrough.Dialog = class extends Dialog
    {
       var hdr = ( this.dynamicCombo.currentItem == 1 ), self = this;
       this.peakSpin.enabled = hdr;
+      if ( this.starHdrCheck ) this.starHdrCheck.enabled = hdr;
       FlyThrough.PRESET_ORDER.forEach( function( id ) { self.transferCombos[id].visible = hdr; } );
    }
 
@@ -1216,13 +1379,14 @@ FlyThrough.Dialog = class extends Dialog
                backdropMotion: this.nebulaSpin.value/100,
                twinkle: this.twinkleSpin.value/100, motionBlur: this.blurCheck.checked, bloom: this.bloomSpin.value/100,
                starSaturation: this.saturationSlider.value/100,
+               starHdr: this.starHdrCheck.checked,
                logoOpacity: this.logoOpacity.value/100, logoDelay: this.logoDelaySpin.value,
                logoPath: this.logoEdit.text.trim(), logoPlace: this.logoPlaceCombo.currentItem > 0 ? Fly.LOGO_PLACES[this.logoPlaceCombo.currentItem - 1] : "off",
                music: { path: this.musicEdit.text.trim(), fade: this.fadeCheck.checked },
                duration: this.durationSpin.value, fps: FlyThrough.FPS[this.fpsCombo.currentItem],
                presets: this.checkedPresets(), dir: this.folderEdit.text.trim(),
                orientation: this.orientationCombo.currentItem == 1 ? "vertical" : "horizontal",
-               loop: this.loopCombo.currentItem == 1 ? "crossfade" : "pingpong",
+               loop: FlyThrough.LOOPS[this.loopCombo.currentItem][0],
                dynamic: this.dynamicCombo.currentItem == 1 ? "hdr" : "sdr", peak: this.peakSpin.value, hdrTransfer: transfer,
                video: this.videoCheck.checked && this.ffmpeg != null, ffmpeg: this.ffmpeg,
                format: this.formatIds[this.formatCombo.currentItem] || null,
@@ -1265,14 +1429,29 @@ FlyThrough.Dialog = class extends Dialog
       this.status.text = "Analysing\u2026";
       if ( !this.work )
       {
-         progress.stage( "Resampling to the working size", 0, 0 );
-         this.work = Sky.workingCopy( this.imageWindow );
+         // the image's solved working copy from the cache, else resampled (and solved below)
+         this.cacheDirPath = FlyThrough.cacheDir( FlyThrough.cacheRoot(), this.imageWindow );
+         this.work = FlyThrough.loadWork( this.cacheDirPath );
+         this.workCached = ( this.work != null );
+         if ( !this.work )
+         {
+            progress.stage( "Resampling to the working size", 0, 0 );
+            this.work = Sky.workingCopy( this.imageWindow );
+         }
          var wi = this.work.window.mainView.image;
-         this.imageLabel.text = "Image: " + this.imageWindow.mainView.id + " \u2014 working at " + wi.width + "\u00d7" + wi.height;
+         this.imageLabel.text = "Image: " + this.imageWindow.mainView.id + " \u2014 working at " + wi.width + "\u00d7" + wi.height +
+                                ( this.workCached ? " (solved before)" : "" );
       }
       if ( choices.hints )
          choices.hints.pixel /= this.work.scale;         // the working copy's pixels are larger
       var id = FlyThrough.identify( this.work.window, choices, progress );
+      if ( !this.workCached && Sky.projector( this.work.window ) )
+      {
+         FlyThrough.saveWork( this.cacheDirPath, this.work );          // solved: kept for next time
+         this.workCached = true;
+      }
+      FlyThrough.touch( this.cacheDirPath );
+      FlyThrough.prune( FlyThrough.cacheRoot(), FlyThrough.CACHE_KEEP );
       this.bar.set( 1, "Analysed" );
       this.hints.visible = ( Sky.projector( this.work.window ) == null );
       this.id = id;
@@ -1320,7 +1499,14 @@ FlyThrough.Dialog = class extends Dialog
       this.releaseBuilt();
       this.status.text = "Removing stars and cutting sprites\u2026";
       processEvents();
-      this.built = FlyThrough.build( this.work.window, this.id, { tool: o.tool, colourFrom: this.imageWindow }, this.progressFor() );
+      // the stars extracted with this tool before, else extracted now and kept
+      this.built = FlyThrough.loadBuilt( this.cacheDirPath, o.tool, this.work.window, this.imageWindow );
+      if ( !this.built )
+      {
+         this.built = FlyThrough.build( this.work.window, this.id, { tool: o.tool, colourFrom: this.imageWindow }, this.progressFor() );
+         try { FlyThrough.saveBuilt( this.cacheDirPath, o.tool, this.built ); }
+         catch ( e ) { console.warningln( "Loom Fly-Through: the stars could not be cached: " + e ); }
+      }
       this.bar.set( 1, "Scene ready" );
       this.builtTool = o.tool;
       this.starsLabel.text = Fly.describeStars( this.built.counts );
@@ -1388,8 +1574,8 @@ FlyThrough.Dialog = class extends Dialog
       var self = this, list = [
          [ "starSaturation", this.saturationSlider, "value" ], [ "easing", this.easingCombo, "currentItem" ], [ "growth", this.growthEdit, "text" ], [ "nebula", this.nebulaSpin, "value" ],
          [ "brighten", this.brightCheck, "checked" ], [ "twinkle", this.twinkleSpin, "value" ], [ "bloom", this.bloomSpin, "value" ],
-         [ "blur", this.blurCheck, "checked" ], [ "duration", this.durationSpin, "value" ], [ "fps", this.fpsCombo, "currentItem" ],
-         [ "orientation", this.orientationCombo, "currentItem" ], [ "loop", this.loopCombo, "currentItem" ],
+         [ "blur", this.blurCheck, "checked" ], [ "starHdr", this.starHdrCheck, "checked" ], [ "duration", this.durationSpin, "value" ], [ "fps", this.fpsCombo, "currentItem" ],
+         [ "orientation", this.orientationCombo, "currentItem" ], [ "loopMode", this.loopCombo, "currentItem" ],
          [ "dynamic", this.dynamicCombo, "currentItem" ], [ "peak", this.peakSpin, "value" ], [ "logoOpacity", this.logoOpacity, "value" ], [ "logoDelay", this.logoDelaySpin, "value" ],
          [ "music", this.musicEdit, "text" ], [ "fade", this.fadeCheck, "checked" ], [ "video", this.videoCheck, "checked" ],
          [ "quality", this.qualityCombo, "currentItem" ] ];
@@ -1428,6 +1614,18 @@ FlyThrough.Dialog = class extends Dialog
    objectCache()
    {
       try { return JSON.parse( Settings.read( FlyThrough.OBJECTS_SETTING, DataType_String ) || "{}" ) || {}; } catch ( e ) { return {}; }
+   }
+
+   /* The object the image's file (or view) name names, into the hints: a start, which the user can change. */
+   objectFromName()
+   {
+      if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
+      var hit = Fly.objectFromFileName( this.imageWindow.filePath || this.imageWindow.mainView.id, this.ngcIc || [] );
+      if ( !hit ) return;
+      this.objectEdit.text = hit.name || hit.id;
+      this.raEdit.text = hit.ra.toFixed( 4 );
+      this.decEdit.text = hit.dec.toFixed( 4 );
+      this.objectMatch.text = hit.id + ( hit.name ? " \u00b7 " + hit.name : "" ) + " (from the file name)";
    }
 
    /* The key an image's hints are remembered under: its file, or its name when it was never saved (for the session). */
@@ -1507,9 +1705,18 @@ FlyThrough.Dialog = class extends Dialog
    /* Renders the draft for options o and plays it; the preview's still makes way for it. */
    makeDraft( o, progress )
    {
-      o.logoImage = FlyThrough.readLogo( o );
-      try { var d = FlyThrough.renderDraft( this.built.scene, o, Fly.presetSpec( o.presets[0] || "youtube_1080", o.orientation, o.loop ), progress ); }
-      finally { if ( o.logoImage ) o.logoImage.free(); }
+      // the draft made from the same options before, else rendered and kept
+      var spec = Fly.presetSpec( o.presets[0] || "youtube_1080", o.orientation, o.loop );
+      var sig = Fly.frameSignature( o, spec, [ o.tool, this.built.scene.D ].join( "|" ) );
+      var d = this.cacheDirPath ? FlyThrough.loadDraft( this.cacheDirPath, sig ) : null;
+      if ( !d )
+      {
+         o.logoImage = FlyThrough.readLogo( o );
+         try { d = FlyThrough.renderDraft( this.built.scene, o, spec, progress ); }
+         finally { if ( o.logoImage ) o.logoImage.free(); }
+         if ( this.cacheDirPath && !( progress && progress.isCancelled && progress.isCancelled() ) )
+            try { FlyThrough.saveDraft( this.cacheDirPath, sig, d ); } catch ( e ) { console.warningln( "Loom Fly-Through: the draft could not be cached: " + e ); }
+      }
       this.player.setFrames( d.bitmaps, d.fps, d.pingPong );
       this.hasDraft = true;
       this.scrubber.maxValue = Math.max( 0, d.bitmaps.length - 1 );

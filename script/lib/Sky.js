@@ -710,7 +710,8 @@ Sky.deblendSprite = function( env, s, sums, residual )
          mask[o] = 1;
       }
    return { source: s.placed.source, d: s.placed.d, placed: s.placed, det: s.det, rect: r, radius: R,
-            centre: { x: s.det.x, y: s.det.y }, mask: mask, pixels: pixels, modelCore: core, modelSpikes: spikes };
+            centre: { x: s.det.x, y: s.det.y }, mask: mask, pixels: pixels, modelCore: core, modelSpikes: spikes,
+            spikeAngles: m.spikes.map( function( k ) { return k.angle; } ) };
 };
 
 /*
@@ -791,6 +792,29 @@ Sky.solveWithHints = function( window, hints, stage )
    }
    // what was tried, so a wrong focal length or pixel size shows (the solver's own message did not say)
    throw new Error( Fly.solveFailure( hints, reasons ) );
+};
+
+/*
+ * Float32Arrays to one binary file and back (the lengths are kept by the
+ * caller). A File object's write(typedArray) and read(ByteArray) --
+ * File.writeFile with a typed array crashes PixInsight 1.9.5 (probed).
+ */
+Sky.writeArrays = function( path, arrays )
+{
+   var dir = File.extractDrive( path ) + File.extractDirectory( path );
+   if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+   var f = new File;
+   f.createForWriting( path );
+   try { arrays.forEach( function( a ) { if ( a.length ) f.write( a ); } ); }
+   finally { f.close(); }
+};
+
+Sky.readArrays = function( path, lengths )
+{
+   var f = new File;
+   f.openForReading( path );
+   try { return lengths.map( function( n ) { return n ? f.read( DataType_ByteArray, 4*n ).toFloat32Array() : new Float32Array( 0 ); } ); }
+   finally { f.close(); }
 };
 
 /* The solved image's scale (arcsec/px), across its width. */

@@ -646,6 +646,9 @@ A third script — **Script → Loom → Fly-Through** — that turns a finished
 into a push-in video: the camera moves towards the target, and the photo's own
 stars pass by at their real distances.
 
+**See it**: [a fly-through into the Elephant's Trunk (IC 1396A), made with
+Loom](https://www.youtube.com/shorts/1aVtptmTbuY).
+
 **The flight is measured, not guessed.** Each star's distance comes from its
 **Gaia DR3 parallax**, and its motion is exact 3-D geometry, not a zoom: a
 nearer star moves faster, grows and brightens by the inverse-square law. Stars
@@ -735,10 +738,12 @@ about 18 minutes; star extraction takes a few minutes more.
 
 ## Requirements
 
-**PixInsight 1.9.5 or later**, checked at startup: Loom refuses to run on an
-older core rather than failing later on a symbol that is not there. 1.9.5 is
-required for the astrometric solution verifier and for recursive surface
-splines, both of which Loom uses on every solve.
+**PixInsight 1.9.4 or later**, checked at startup: Loom refuses to run on an
+older core rather than failing later on a symbol that is not there. On 1.9.5
+and later, every solve is verified (AstrometricResiduals) and uses recursive
+surface splines; both are new in 1.9.5, so on 1.9.4 solves are not verified
+and the splines setting does nothing. The test suite is built and run both
+ways, but Loom has not yet been run by hand on a real 1.9.4.
 
 Developed and run on macOS. It also runs on Windows: a full Windows run
 (PixInsight 1.9.5) found the missing colour profiles, the `_1` plate names and

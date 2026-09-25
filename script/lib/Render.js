@@ -161,27 +161,46 @@ Render.halve = function( p )
  */
 Render.drawSprite = function( acc, outW, outH, patch, sp, cx, cy, g, k, cam, kOuter, rc, how )
 {
-   var seen = ( how && how.seen != null ) ? how.seen : 1;
-   var radial = ( rc > 0 && ( g != 1 || seen < 1 ) ), r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
-   var b = Render.spriteBounds( sp, cx, cy, g, cam, outW, outH );
+   var seen = ( how && how.seen != null ) ? how.seen : 1, spike = how && how.spike;
+   var radial = !spike && ( rc > 0 && ( g != 1 || seen < 1 ) ), r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
+   // spikes stretch along their length only (how.spike = { length, angles }): shorter for what is hidden
+   var stretch = spike ? spike.length*Math.max( 0.05, seen ) : 1;
+   var b = Render.spriteBounds( sp, cx, cy, Math.max( g, stretch ), cam, outW, outH );
    /*
     * When a sprite pixel is smaller than an output pixel, the output pixel
     * averages n x n samples over its footprint, so a small, moving star
     * keeps its light instead of being hit or missed (measured: one point
     * sample lost 14% at 1/3 scale). n = 1 at 1:1 and when zooming in.
     */
-   var gs = radial ? 1 : g;      // the core is sampled at its own scale
+   var gs = ( radial || spike ) ? 1 : g;      // the core, and a spike's width, are sampled at their own scale
    // shrunk far down, sample a pre-shrunk copy (a mip level), not n x n points of the full one
    var L = ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs ), f2 = 1 << L;
    var ctx = { mp: L ? Render.mipOf( patch, rw, rh, L ) : { d: patch, w: rw, h: rh }, f2: f2, ox: sp.det.x - r.x0, oy: sp.det.y - r.y0,
                cx: cx, cy: cy, g: g, k: k, kO: ( ( kOuter != null ) ? kOuter : k )*seen, rc: rc, seen: seen, radial: radial, cam: cam,
-               nx: Math.max( 1, Math.ceil( cam.fx/( gs*f2 ) ) ), ny: Math.max( 1, Math.ceil( cam.fy/( gs*f2 ) ) ) };
+               nx: Math.max( 1, Math.ceil( cam.fx/( gs*f2 ) ) ), ny: Math.max( 1, Math.ceil( cam.fy/( gs*f2 ) ) ),
+               axes: spike ? spike.angles.map( function( a ) { return [ Math.cos( a ), Math.sin( a ) ]; } ) : null, stretch: stretch };
+   if ( spike ) ctx.k = ctx.kO = k*seen;
    for ( var v = b.v0; v <= b.v1; ++v )
       for ( var u = b.u0; u <= b.u1; ++u )
       {
          var sum = Render.spritePixel( ctx, u, v );
          if ( sum != 0 ) acc[v*outW + u] += sum;
       }
+};
+
+/* A spike patch read at offset (dx, dy): along the nearest spike axis, beyond the core, stretched by c.stretch; across it, as it is. */
+Render.spikeSample = function( c, dx, dy )
+{
+   var best = null, bestLat = Infinity;
+   for ( var i = 0; i < c.axes.length; ++i )
+   {
+      var a = c.axes[i], along = dx*a[0] + dy*a[1], lat = -dx*a[1] + dy*a[0];
+      if ( along > 0 && Math.abs( lat ) < bestLat ) { bestLat = Math.abs( lat ); best = [ a, along, lat ]; }
+   }
+   if ( !best ) return 0;
+   var ax = best[0], al = best[1] <= c.rc ? best[1] : c.rc + ( best[1] - c.rc )/c.stretch, lt = best[2];
+   var sx = al*ax[0] - lt*ax[1], sy = al*ax[1] + lt*ax[0];
+   return Render.patchSample( c.mp.d, c.mp.w, c.mp.h, ( c.ox + sx + 0.5 )/c.f2 - 0.5, ( c.oy + sy + 0.5 )/c.f2 - 0.5 );
 };
 
 /* The output pixels a sprite (centred at cx, cy, grown by g) can touch. */
@@ -208,6 +227,11 @@ Render.spritePixel = function( c, u, v )
       for ( var sx = 0; sx < c.nx; ++sx )
       {
          var dx = cam.x + ( u + ( sx + 0.5 )/c.nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, w = c.k;
+         if ( c.axes )
+         {
+            sum += w*Render.spikeSample( c, dx, dy );
+            continue;
+         }
          if ( c.radial )
          {
             var ro = Math.sqrt( dx*dx + dy*dy );
@@ -249,7 +273,7 @@ Render.scene = function( a )
    return { w: a.starless.width, h: a.starless.height, nc: a.starless.numberOfChannels,
             S: Render.channels( a.starless ), R: a.residual || Render.channels( a.stars, a.residualMask ),
             sprites: a.sprites.map( function( s ) { return { s: s, p0: a.project( s.source.ra, s.source.dec ) }; } ),
-            project: a.project, target: a.target, tp: tp, D: a.D };
+            project: a.project, target: a.target, tp: tp, D: a.D, catalogue: a.catalogue || null };
 };
 
 /*
@@ -365,6 +389,26 @@ Render.saturateStars = function( T, n, sat )
    }
 };
 
+/*
+ * The stars layer into the HDR headroom (Fly.starHeadroom): each pixel's
+ * channels by one factor from its brightest channel, so its hue is kept.
+ * `peak` is one number or a per-pixel map (1 where no star claims more).
+ */
+Render.starsToHeadroom = function( T, n, peak )
+{
+   var map = ( typeof peak == "number" ) ? null : peak;
+   for ( var i = 0; i < n; ++i )
+   {
+      var pk = map ? map[i] : peak;
+      if ( !( pk > 1 ) ) continue;
+      var top = 0, c;
+      for ( c = 0; c < T.length; ++c ) top = Math.max( top, T[c][i] );
+      if ( top <= Fly.HEADROOM_KNEE ) continue;
+      var f = Fly.starHeadroom( Math.min( 1, top ), pk );
+      for ( c = 0; c < T.length; ++c ) T[c][i] *= f;
+   }
+};
+
 /* The box radius whose three passes blur like a Gaussian of sigma s (sigma^2 = r(r + 1)). */
 Render.boxRadius = function( s )
 {
@@ -429,6 +473,43 @@ Render.bloom = function( T, w, h, opts )
    }
 };
 
+/*
+ * A scene as plain data plus Float32Arrays, for the per-image cache: every
+ * typed array (starless, residual, each sprite's pixels, model and mask)
+ * goes into `arrays` and is replaced in `meta` by its index; the
+ * projection is left out (it is rebuilt from the solved working copy).
+ */
+Render.packScene = function( sc )
+{
+   var arrays = [];
+   var put = function( a ) { arrays.push( a instanceof Float32Array ? a : Float32Array.from( a ) ); return arrays.length - 1; };
+   var putAll = function( list ) { return list ? list.map( put ) : null; };
+   var sprites = sc.sprites.map( function( e )
+   {
+      var s = e.s, meta = {};
+      Object.keys( s ).forEach( function( k ) { if ( [ "pixels", "modelCore", "modelSpikes", "mask", "_split", "_glow" ].indexOf( k ) < 0 ) meta[k] = s[k]; } );
+      return { s: meta, p0: e.p0, pixels: putAll( s.pixels ), modelCore: putAll( s.modelCore ), modelSpikes: putAll( s.modelSpikes ), mask: s.mask ? put( s.mask ) : null };
+   } );
+   return { meta: { w: sc.w, h: sc.h, nc: sc.nc, target: sc.target, tp: sc.tp, D: sc.D, S: putAll( sc.S ), R: putAll( sc.R ), sprites: sprites,
+                    catalogue: sc.catalogue || null }, arrays: arrays };
+};
+
+/* A packed scene (Render.packScene) back, with its projection. */
+Render.unpackScene = function( meta, arrays, project )
+{
+   var get = function( i ) { return arrays[i]; }, getAll = function( list ) { return list ? list.map( get ) : undefined; };
+   var sprites = meta.sprites.map( function( e )
+   {
+      var s = Object.assign( {}, e.s, { pixels: getAll( e.pixels ) } );
+      if ( e.modelCore ) s.modelCore = getAll( e.modelCore );
+      if ( e.modelSpikes ) s.modelSpikes = getAll( e.modelSpikes );
+      if ( e.mask != null ) s.mask = Uint8Array.from( arrays[e.mask] );
+      return { s: s, p0: e.p0 };
+   } );
+   return { w: meta.w, h: meta.h, nc: meta.nc, target: meta.target, tp: meta.tp, D: meta.D, S: getAll( meta.S ), R: getAll( meta.R ),
+            sprites: sprites, project: project, catalogue: meta.catalogue || null };
+};
+
 /* a = alpha*a + (1 - alpha)*b, per channel (same size); a crossfade loop's frames. */
 Render.blend = function( a, b, alpha )
 {
@@ -464,10 +545,13 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
       S.push( Render.resample( sc.S[c], sc.w, sc.h, ax, ay ) );
       T.push( Render.resample( sc.R[c], sc.w, sc.h, ax, ay ) );
    }
-   Render.addSprites( sc, T, s, Object.assign( {}, opts, { t: t, K: K } ), outW, outH, cam );
+   var placed = Render.addSprites( sc, T, s, Object.assign( {}, opts, { t: t, K: K } ), outW, outH, cam );
    Render.saturateStars( T, outW*outH, opts.starSaturation != null ? opts.starSaturation : 1 );
    // light past white blooms (none in the image itself, so frame 0 is untouched)
    Render.bloom( T, outW, outH, { amount: opts.bloom != null ? opts.bloom : 0, seconds: t*( opts.duration || 0 ) } );
+   // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
+   var hdrOut = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
+   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, opts, outW, outH, cam ) );
    var img = new Image( outW, outH, sc.nc, sc.nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
    var n = outW*outH, out = [], excess = [];
    var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
@@ -519,7 +603,48 @@ Render.addSprites = function( sc, T, s, opts, outW, outH, cam )
    // eased in over the clip's first tenth, so frame 0 stays the image
    Render.seenShares( placed, outW, outH, cam, Fly.smoothstep( 0, 0.1, opts.t || 0 ) );
    placed.forEach( function( q ) { Render.drawPlaced( sc, T, q, s, opts, outW, outH, cam ); } );
+   return placed;
 };
+
+/*
+ * Each output pixel's HDR peak (Fly.magnitudeGain): every catalogued star
+ * in the frame -- moving where it is drawn, still where the backdrop
+ * carries it -- paints its magnitude's gain around it; elsewhere 1. The
+ * peak is the chosen one over SDR white (HDR_REFERENCE_WHITE).
+ */
+Render.headroomMap = function( sc, placed, opts, outW, outH, cam )
+{
+   var stars = sc.catalogue || sc.sprites.map( function( e ) { return { x: e.p0 ? e.p0.x : 0, y: e.p0 ? e.p0.y : 0, G: e.s.source && e.s.source.G }; } );
+   if ( sc.gBright == null ) sc.gBright = stars.reduce( function( m, s ) { return ( s.G < m ) ? s.G : m; }, Infinity );
+   var map = new Float32Array( outW*outH ).fill( 1 ), peak = ( opts.peak || Fly.HDR_PEAK_DEFAULT )/Fly.HDR_REFERENCE_WHITE, K = opts.K || 1;
+   function paint( x, y, r, gain )
+   {
+      var u = ( x - cam.x + 0.5 )/cam.fx - 0.5, v = ( y - cam.y + 0.5 )/cam.fy - 0.5, ro = r/cam.fx;
+      for ( var yy = Math.max( 0, Math.floor( v - ro ) ); yy <= Math.min( outH - 1, Math.ceil( v + ro ) ); ++yy )
+         for ( var xx = Math.max( 0, Math.floor( u - ro ) ); xx <= Math.min( outW - 1, Math.ceil( u + ro ) ); ++xx )
+            if ( ( xx - u )*( xx - u ) + ( yy - v )*( yy - v ) <= ro*ro && gain > map[yy*outW + xx] ) map[yy*outW + xx] = gain;
+   }
+   // a star's reach grows with its brightness; only pixels above the knee are changed, so it can be generous
+   var reach = function( gain ) { return Fly.HEADROOM_RADIUS*( 1 + 3*( gain - 1 )/Math.max( 1e-6, peak - 1 ) ); };
+   var moving = {};
+   placed.forEach( function( q )
+   {
+      var s = q.sp.source || {}, gain = isFinite( s.G ) ? Fly.magnitudeGain( s.G, sc.gBright, peak ) : 1;
+      moving[Render.starKey( s )] = true;
+      if ( gain > 1 ) paint( q.cx, q.cy, Math.max( reach( gain ), q.rc*Math.max( 1, q.g ) + 2 ), gain );
+   } );
+   // every other catalogued star, where the zooming backdrop carries it
+   stars.forEach( function( st )
+   {
+      if ( !isFinite( st.G ) || moving[Render.starKey( st )] ) return;
+      var gain = Fly.magnitudeGain( st.G, sc.gBright, peak );
+      if ( gain > 1 ) paint( sc.tp.x + ( st.x - sc.tp.x )*K, sc.tp.y + ( st.y - sc.tp.y )*K, reach( gain )*K, gain );
+   } );
+   return map;
+};
+
+/* A catalogue star's identity across the scene's copies (its position on the sky). */
+Render.starKey = function( s ) { return ( s.ra != null ) ? s.ra.toFixed( 6 ) + "," + s.dec.toFixed( 6 ) : ""; };
 
 /*
  * Where and how a sprite is drawn this frame, or null when it is not: its
@@ -540,7 +665,8 @@ Render.placeSprite = function( sc, e, j, s, opts )
    var K = opts.K || 1, g = Math.max( K, Fly.growth( m.ratio, opts.growth ) );
    var kOuter = ( opts.brightening ? m.ratio*m.ratio : 1 )/( g*g )*alpha;
    var at = Fly.screenPosition( { x: sp.det.x + p.x - e.p0.x, y: sp.det.y + p.y - e.p0.y }, sp.det, sc.tp, K );
-   return { e: e, j: j, sp: sp, m: m, g: g, kOuter: kOuter, kCore: kOuter*g*g, rc: Render.coreRadius( sp ), cx: at.x, cy: at.y, seen: 1 };
+   return { e: e, j: j, sp: sp, m: m, g: g, kOuter: kOuter, kCore: kOuter*g*g, rc: Render.coreRadius( sp ), cx: at.x, cy: at.y, seen: 1,
+            alpha: alpha, spikeLength: Fly.spikeLength( m.ratio, opts.brightening, g ) };
 };
 
 /* What is seen of each placed star's core: inside the frame, not behind a nearer star; `ease` 0 leaves all seen. */
@@ -572,11 +698,11 @@ Render.seenShares = function( placed, outW, outH, cam, ease )
  * coreSprite) and the model beyond the core. The core and the rest turn to
  * the model at different distances.
  */
-Render.splitPatches = function( sp, c, rc )
+Render.splitPatches = function( sp, c, rc, photo )
 {
    var cache = sp._split || ( sp._split = [] );
    if ( cache[c] ) return cache[c];
-   var r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0, P = sp.pixels[c], M = sp.modelCore[c];
+   var r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0, P = photo || sp.pixels[c], M = sp.modelCore[c];
    // the core parts are cut to the core's own box (rc + 3 px), so drawing them costs little
    var R = Math.ceil( rc ) + 4, cr = { x0: Math.max( r.x0, Math.floor( sp.det.x ) - R ), y0: Math.max( r.y0, Math.floor( sp.det.y ) - R ),
                                           x1: Math.min( r.x1, Math.floor( sp.det.x ) + R + 1 ), y1: Math.min( r.y1, Math.floor( sp.det.y ) + R + 1 ) };
@@ -596,6 +722,19 @@ Render.splitPatches = function( sp, c, rc )
    return ( cache[c] = out );
 };
 
+/* A sprite's photograph minus its spikes (its glow), cached on the sprite. */
+Render.glowPatch = function( sp, c )
+{
+   var cache = sp._glow || ( sp._glow = [] );
+   if ( !cache[c] )
+   {
+      var P = sp.pixels[c], S = sp.modelSpikes[c], g = new Float32Array( P.length );
+      for ( var i = 0; i < P.length; ++i ) g[i] = P[i] - S[i];
+      cache[c] = g;
+   }
+   return cache[c];
+};
+
 /* One placed star, along its shutter path, in each channel: its photograph turning to its model up close, twinkling. */
 Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
 {
@@ -609,16 +748,25 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
       var tw = Fly.twinkle( q.j + 1, seconds, opts.twinkle, c ), cc = Math.min( c, sp.pixels.length - 1 );
       // the same sum, cheaply: the photograph once at full size; a core-sized correction swapping its
       // core for the model's; the model's glow and spikes at full size only for stars really near
-      var parts = ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc ) : null;
-      var draws = [ [ sp.pixels[cc], sp, 1 - wo, q.kCore ] ];
+      // its spikes are drawn on their own, from the model, growing along their length only (Fly.spikeLength);
+      // the photograph minus them is the glow -- at the start the two add up to the photograph
+      var spikes = sp.spikeAngles && sp.modelSpikes ? sp.modelSpikes[cc] : null;
+      var glow = spikes ? Render.glowPatch( sp, cc ) : sp.pixels[cc];
+      var parts = ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow ) : null;
+      var draws = [ [ glow, sp, 1 - wo, q.kCore ] ];
       if ( parts ) draws.push( [ parts.photoCore, parts.coreSprite, wo - wc, q.kCore ], [ parts.modelCore, parts.coreSprite, wc, q.kCore ] );
-      if ( parts && wo > 0 ) draws.push( [ parts.modelOuter, sp, wo, q.kCore ], [ sp.modelSpikes[cc], sp, wo, q.kOuter ] );
+      if ( parts && wo > 0 ) draws.push( [ parts.modelOuter, sp, wo, q.kCore ] );
       draws.forEach( function( pw )
       {
          if ( !pw[0] || pw[2] == 0 ) return;
          var s1 = tw*pw[2]/path.length;
          path.forEach( function( p ) { Render.drawSprite( T[c], outW, outH, pw[0], pw[1], p.x, p.y, q.g, pw[3]*s1, cam, q.kOuter*s1, q.rc, { seen: q.seen } ); } );
       } );
+      if ( spikes )
+      {
+         var sk = q.alpha*tw/path.length, how = { seen: q.seen, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
+         path.forEach( function( p ) { Render.drawSprite( T[c], outW, outH, spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
+      }
    }
 };
 
@@ -831,6 +979,8 @@ Render.rotateScene = function( sc )
       // every patch it carries turns with it (a model left as it was sat rotated against the photograph)
       [ "modelCore", "modelSpikes" ].forEach( function( k ) { if ( s[k] ) turned[k] = s[k].map( function( b ) { return turn( b, rw, rh ); } ); } );
       delete turned._split;                     // core parts cut before the turn are not this sprite's
+      delete turned._glow;
+      if ( s.spikeAngles ) turned.spikeAngles = s.spikeAngles.map( function( a ) { return a + Math.PI/2; } );   // (x, y) -> (h - 1 - y, x) turns directions by 90 degrees
       if ( s.mask ) turned.mask = Uint8Array.from( turn( Float32Array.from( s.mask ), rw, rh ) );
       return { s: turned, p0: pt( e.p0 ) };
    } );
@@ -840,6 +990,7 @@ Render.rotateScene = function( sc )
       S: sc.S.map( function( b ) { return turn( b, w, h ); } ),
       R: sc.R.map( function( b ) { return turn( b, w, h ); } ),
       sprites: sprites, tp: pt( sc.tp ),
+      catalogue: sc.catalogue ? sc.catalogue.map( function( c ) { return Object.assign( {}, c, pt( c ) ); } ) : null,
       project: function( ra, dec ) { return pt( project( ra, dec ) ); } } );
 };
 
