@@ -790,7 +790,8 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    Render.bloom( T, outW, outH, { amount: opts.bloom != null ? opts.bloom : 0, seconds: t*( opts.duration || 0 ) } );
    // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
    var hdrOut = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
-   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, opts, outW, outH, cam ), outW );
+   // the map with the frame's backdrop zoom, so a catalogue star's bump follows the star the backdrop carries
+   if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, outW*outH, Render.headroomMap( sc, placed, Object.assign( {}, opts, { K: K } ), outW, outH, cam ), outW );
    var img = new Image( outW, outH, sc.nc, sc.nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
    var n = outW*outH, out = [], excess = [];
    var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );

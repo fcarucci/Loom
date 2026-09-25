@@ -10215,6 +10215,27 @@ function runFlyTestsClean()
       check( "and with one peak for every pixel", one[1].every( function( v, i ) { return Math.abs( v - ref[1][i] ) < 1e-6*Math.max( 1, v ); } ), true );
    } )();
 
+   /*
+    * The HDR headroom map is painted with the frame's backdrop zoom: a
+    * catalogue star's bump follows the star as the backdrop carries it.
+    * (Render.frame used to hand headroomMap the caller's options, which carry
+    * no K: the bumps stayed where the stars were at frame 0.)
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-headroom-k" ), fx = flyTestScene( dir, 12 ), real = Render.headroomMap, seen = null;
+      Render.headroomMap = function( sc, placed, opts ) { seen = opts.K; return real.apply( this, arguments ); };
+      try
+      {
+         var W = 240, H = 135, crop = Fly.presetCrop( fx.scene.w, fx.scene.h, fx.scene.tp.x, fx.scene.tp.y, W, H );
+         var o = { travel: 300, easing: "linear", growth: 0.15, brightening: true, duration: 2, peak: 1000, starHdr: true, output: Fly.outputTransform( Fly.SRGB_COLOUR, "pq" ) };
+         Render.frame( fx.scene, 0.9, o, W, H, crop ).free();
+         var K = Fly.backdropZoom( fx.scene.D, o.travel*Fly.ease( 0.9, o.easing ), Fly.BACKDROP_MOTION_DEFAULT );
+         check( "the headroom map gets the frame's backdrop zoom (" + ( seen && seen.toFixed( 4 ) ) + ")", seen != null && Math.abs( seen - K ) < 1e-9 && K > 1.01, true );
+      }
+      finally { Render.headroomMap = real; fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
    /* fly-tests-end */
 }
 

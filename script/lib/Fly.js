@@ -1188,8 +1188,9 @@ Fly.frameStep = function( n, F, pingPong )
  * bumped whenever the same options make different frames, so frames kept
  * from an older renderer are rendered again, not reused or resumed.
  * 2: HDR headroom as a bump on each star; crossfade loops dissolve at the end.
+ * 3: the headroom bumps follow the backdrop's zoom.
  */
-Fly.RENDERER_VERSION = 2;
+Fly.RENDERER_VERSION = 3;
 
 Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output" ];   // options that change only the encode
 
