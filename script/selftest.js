@@ -6962,9 +6962,14 @@ function runFlyTests()
    var fetch = typeof Sky == "undefined" ? null : Sky.fetchText;
    if ( fetch ) Sky.fetchText = function() { return null; };
    if ( typeof Sky != "undefined" && Sky.resetGaia ) Sky.resetGaia();
+   // and its own image cache: the dialogs under test cache (and prune to FlyThrough.CACHE_KEEP) images, and
+   // sharing the user's evicted their cached solves on every run
+   var cacheRoot = ( typeof FlyThrough != "undefined" && IN_PIXINSIGHT ) ? FlyThrough.cacheRoot : null;
+   if ( cacheRoot ) { var own = synthDir( "fly-cache" ); FlyThrough.cacheRoot = function() { return own; }; }
    try { runFlyTestsClean(); }
    finally
    {
+      if ( cacheRoot ) FlyThrough.cacheRoot = cacheRoot;
       if ( fetch ) Sky.fetchText = fetch;
       if ( typeof Sky != "undefined" && Sky.resetGaia ) Sky.resetGaia();
       keys.forEach( function( k, i ) { if ( saved[i] != null ) Settings.write( k, DataType_String, saved[i] ); else Settings.remove( k ); } );
@@ -6974,6 +6979,8 @@ function runFlyTests()
 function runFlyTestsClean()
 {
    check( "Fly loads", typeof Fly, "object" );
+   /* The suite keeps its own image cache: its dialogs must never evict (the cache keeps 3 images) the user's cached solves. */
+   if ( IN_PIXINSIGHT ) check( "the suite's image cache is its own, not the user's", FlyThrough.cacheRoot() != File.systemTempDirectory + "/LoomFlyThrough", true );
    check( "Sky loads", typeof Sky, "object" );
    check( "Render loads", typeof Render, "object" );
 
