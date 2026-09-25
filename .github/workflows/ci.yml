@@ -140,19 +140,18 @@ jobs:
             || { echo "no <platform> element in the manifest"; exit 1; }
           echo "repository layout OK"
 
+      # The release's notes are its section of CHANGELOG.md; a tag without
+      # one fails here, before anything is published.
+      - name: Write the release notes
+        if: github.ref_type == 'tag'
+        run: sh ci/release-notes.sh "${{ steps.version.outputs.version }}" > dist/release-notes.md
+
       - name: Publish the release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
-          generate_release_notes: true
-          body: |
-            Install: unzip into your PixInsight scripts folder, so that you
-            have `<scripts>/Loom`, then **Script → Feature Scripts → Add**
-            and point it at that folder.
-
-            The archive carries a `RELEASE` marker, which is what lets Loom
-            recognise the install as its own and update it in place.
+          body_path: dist/release-notes.md
 
   # The update repository, served over HTTPS so PixInsight can subscribe to
   # it: https://fcarucci.github.io/Loom/updates.xri
