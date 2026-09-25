@@ -9978,6 +9978,29 @@ function runFlyTestsClean()
       check( "and empty sky none", at( 190, 10 ), 1 );
    } )();
 
+   /*
+    * Gaia is asked for full DR3 first -- every star's parallax -- then
+    * DR3/SP (only stars with spectra: the Iris's lighting star HD 200775 is
+    * not in it), then DR2: the first release that is installed answers.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var RealGaia = Gaia, asked = [];
+      var fake = function( installed ) { return function() { this.sources = []; this.executeGlobal = function() { asked.push( this.dataRelease ); if ( installed.indexOf( this.dataRelease ) < 0 ) return false; this.sources = [ [ 1, 2, 3, 0, 0, 7, 7, 7 ] ]; return true; }; }; };
+      try
+      {
+         Gaia = fake( [ Sky.GAIA_DR3, Sky.GAIA_DR3SP ] );
+         Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "full DR3 is asked first", asked, [ Sky.GAIA_DR3 ] );
+         asked = []; Gaia = fake( [ Sky.GAIA_DR3SP ] );
+         var s = Sky.querySources( { ra: 1, dec: 2 }, 0.1 );
+         check( "then DR3/SP when DR3 is not installed", [ asked, s.length ], [ [ Sky.GAIA_DR3, Sky.GAIA_DR3SP ], 1 ] );
+         asked = []; Gaia = fake( [] );
+         check( "nothing installed, nothing found", [ Sky.querySources( { ra: 1, dec: 2 }, 0.1 ).length, asked.length ], [ 0, Sky.GAIA_RELEASES.length ] );
+      }
+      finally { Gaia = RealGaia; }
+   } )();
+
    /* fly-tests-end */
 }
 

@@ -15,26 +15,44 @@ Sky.readNgcIc = function()
 };
 
 /*
- * The configured Gaia database, as PixInsight's own scripts use it: no
- * databaseFilePaths, so the one set up for SPFC/SPCC answers. Replaceable,
- * so the suite can inject a source list.
+ * Gaia's data releases as the Gaia process numbers them (its menu order,
+ * probed 2026-09-24: on a machine with only DR3/SP installed, 3 answers
+ * and 1 and 2 do not). The default resolved to DR3/SP, which holds only
+ * stars with published spectra -- the Iris's lighting star HD 200775 is
+ * not in it -- so full DR3 is asked first, then DR3/SP, then DR2.
+ */
+Sky.GAIA_DR2 = 0;
+Sky.GAIA_EDR3 = 1;
+Sky.GAIA_DR3 = 2;
+Sky.GAIA_DR3SP = 3;
+Sky.GAIA_RELEASES = [ Sky.GAIA_DR3, Sky.GAIA_DR3SP, Sky.GAIA_DR2 ];
+
+/*
+ * The Gaia stars around `centre`, from the first release installed in the
+ * order Sky.GAIA_RELEASES (the databases configured in Process > Gaia).
+ * Replaceable, so the suite can inject a source list.
  */
 Sky.querySources = function( centre, radiusDeg )
 {
-   var G = new Gaia;
-   G.command = "search";
-   G.centerRA = centre.ra;
-   G.centerDec = centre.dec;
-   G.radius = radiusDeg;
-   G.magnitudeHigh = 17.6;
-   G.generateTextOutput = false;
-   G.verbosity = 0;
-   if ( !G.executeGlobal() )
-      return [];
-   return G.sources.map( function( s )
+   for ( var k = 0; k < Sky.GAIA_RELEASES.length; ++k )
    {
-      return { ra: s[0], dec: s[1], plx: s[2], pmra: s[3], pmdec: s[4], G: s[5], BP: s[6], RP: s[7] };
-   } );
+      var G = new Gaia;
+      G.command = "search";
+      G.dataRelease = Sky.GAIA_RELEASES[k];
+      G.centerRA = centre.ra;
+      G.centerDec = centre.dec;
+      G.radius = radiusDeg;
+      G.magnitudeHigh = 17.6;
+      G.generateTextOutput = false;
+      G.verbosity = 0;
+      if ( !G.executeGlobal() )
+         continue;
+      return G.sources.map( function( s )
+      {
+         return { ra: s[0], dec: s[1], plx: s[2], pmra: s[3], pmdec: s[4], G: s[5], BP: s[6], RP: s[7] };
+      } );
+   }
+   return [];
 };
 
 Sky.requireSources = function( centre, radiusDeg )
