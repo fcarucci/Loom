@@ -1016,7 +1016,8 @@ Fly.ffmpegArgs = function( framesDir, fps, outBase, formatId, quality, hdr, audi
       .concat( tags ).concat( [ outBase + "." + f.ext ] );
 };
 
-Fly.AUDIO_FADE = 2;   // s: the music's fade in and out, at most a quarter of the clip
+Fly.AUDIO_FADE = 2;        // s: the music's fade in and out, at most a quarter of the clip
+Fly.AUDIO_LOOP_FADE = 1;   // s: a looping video's music crossfading end into beginning, as quick as the video's (CROSSFADE_SECONDS)
 
 Fly.audioFade = function( duration )
 {
@@ -1032,7 +1033,7 @@ Fly.audioFade = function( duration )
 Fly.audioArgs = function( audio, formatId )
 {
    var d = Fly.audioFade( audio.duration ), codec = formatId == "vp9" ? [ "-c:a", "libopus", "-b:a", "160k" ] : [ "-c:a", "aac", "-b:a", "192k" ];
-   if ( audio.loop ) return { input: [ "-stream_loop", "-1", "-i", audio.path ], output: Fly.loopAudio( audio.duration, d ).concat( codec ).concat( [ "-shortest" ] ) };
+   if ( audio.loop ) return { input: [ "-stream_loop", "-1", "-i", audio.path ], output: Fly.loopAudio( audio.duration, Math.min( Fly.AUDIO_LOOP_FADE, audio.duration/4 ) ).concat( codec ).concat( [ "-shortest" ] ) };
    var out = [ "-map", "0:v", "-map", "1:a" ];
    if ( audio.fade && d > 0 )
       out = out.concat( [ "-af", "afade=t=in:st=0:d=" + d + ",afade=t=out:st=" + ( audio.duration - d ) + ":d=" + d ] );
@@ -1221,8 +1222,9 @@ Fly.frameStep = function( n, F, pingPong )
  * 3: the headroom bumps follow the backdrop's zoom.
  * 4: a crossfade's pre-roll holds the clock (twinkle, bloom, logo) at 0.
  * 5: vertical High/Medium drafts could be drawn from the unturned shrunk scene.
+ * 6: the crossfade is 1 s.
  */
-Fly.RENDERER_VERSION = 5;
+Fly.RENDERER_VERSION = 6;
 
 Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output" ];   // options that change only the encode
 
@@ -1238,7 +1240,7 @@ Fly.frameSignature = function( opts, spec, sceneKey )
    return JSON.stringify( { opts: keep, spec: { w: spec.w, h: spec.h, pingPong: !!spec.pingPong, crossfade: !!spec.crossfade }, scene: sceneKey, renderer: Fly.RENDERER_VERSION } );
 };
 
-Fly.CROSSFADE_SECONDS = 2;   // a crossfade loop's fade, at most a quarter of the clip
+Fly.CROSSFADE_SECONDS = 1;   // a crossfade loop's fade, at most a quarter of the clip (was 2: slow)
 
 Fly.crossfadeFrames = function( duration, fps )
 {
