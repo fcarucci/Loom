@@ -8955,23 +8955,28 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * A crossfade loop: the clip plays forward, and over its first F frames
-    * fades from the end of a flight F frames longer into its start, so the
-    * last frame runs on into the first -- no reversal, no jump.
+    * A crossfade loop starts clean and dissolves at its end: frame 0 is the
+    * flight's start (the photograph), the flight reaches its end on the last
+    * frame, and over the last F frames it dissolves into the moments just
+    * before the start -- so the last frame runs on into frame 0 at the same
+    * step, with nothing blended at the beginning.
     */
    ( function()
    {
-      var n = 100, F = 20, L = n + F, T = function( j ) { return j/( L - 1 ); };
+      var n = 100, F = 20, step = 1/( n - 1 );
       var near = function( a, b, tol ) { return Math.abs( a - b ) <= tol; };
-      var f0 = Fly.loopFrame( 0, n, F ), fl = Fly.loopFrame( n - 1, n, F ), f10 = Fly.loopFrame( 10, n, F ), fF = Fly.loopFrame( F, n, F );
-      check( "the first frame is the flight's next step after the last", [ f0.alpha, near( f0.b, T( n ), 1e-12 ), near( fl.a, T( n - 1 ), 1e-12 ), fl.alpha ], [ 0, true, true, 1 ] );
-      check( "halfway through the fade it is half and half", [ f10.alpha, near( f10.a, T( 10 ), 1e-12 ), near( f10.b, T( 10 + n ), 1e-12 ) ], [ 0.5, true, true ] );
-      check( "after the fade it is the flight alone", [ fF.alpha, fF.b ], [ 1, null ] );
+      var f0 = Fly.loopFrame( 0, n, F ), fl = Fly.loopFrame( n - 1, n, F ), fs = Fly.loopFrame( n - F, n, F ), fb = Fly.loopFrame( n - F - 1, n, F );
+      check( "frame 0 is the start, alone", [ f0.a, f0.b, f0.alpha ], [ 0, null, 1 ] );
+      check( "before the fade it is the flight alone", [ fb.b, fb.alpha ], [ null, 1 ] );
+      check( "the fade begins with the flight nearly all", [ near( fs.alpha, F/( F + 1 ), 1e-12 ), near( fs.b, -F*step, 1e-12 ) ], [ true, true ] );
+      check( "the last frame: the flight's end, nearly all dissolved into the moment before the start",
+             [ near( fl.a, 1, 1e-12 ), near( fl.alpha, 1/( F + 1 ), 1e-12 ), near( fl.b, -step, 1e-12 ) ], [ true, true, true ] );
+      check( "and the next step from there is frame 0", near( fl.b + step, f0.a, 1e-12 ), true );
       check( "the fade is 2 s, or a quarter of a short clip", [ Fly.crossfadeFrames( 20, 30 ), Fly.crossfadeFrames( 4, 30 ) ], [ 60, 30 ] );
       var cf = Fly.presetSpec( "exhibition", "horizontal", "crossfade" ), pp = Fly.presetSpec( "exhibition" );
       check( "the exhibition loop can crossfade instead of going back and forth", [ cf.crossfade, cf.pingPong, pp.pingPong, !!pp.crossfade ], [ true, false, true, false ] );
       check( "a crossfade loop is as long as the clip", Fly.frameCount( 20, 30, cf.pingPong ), 600 );
-      check( "the flight time between frames", [ Fly.frameStep( 11, 0, false ), Fly.frameStep( 10, 0, true ), Fly.frameStep( 100, 21, false ) ], [ 0.1, 0.2, 1/120 ] );
+      check( "the flight time between frames (a crossfade's flight is its clip)", [ Fly.frameStep( 11, 0, false ), Fly.frameStep( 10, 0, true ), Fly.frameStep( 100, 21, false ) ], [ 0.1, 0.2, 1/99 ] );
       check( "a preset keeps its own name for its settings whatever its folder", Fly.presetSpec( "exhibition", "vertical" ).preset, "exhibition" );
    } )();
 
@@ -8993,11 +8998,11 @@ function runFlyTestsClean()
          var spec = { id: "x", preset: "x", w: 160, h: 90, pingPong: false, crossfade: true }, o = { travel: 150, easing: "linear", growth: 0.15, brightening: true, duration: 1, fps: 10,
                     output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) };
          var ps = Render.sceneFor( fx.scene, spec.w, spec.h ), crop = Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, spec.w, spec.h );
-         var n = 10, F = 3, first = FlyThrough.loopImage( ps, 0, n, F, o, spec.w, spec.h, crop ), end = Render.frame( ps, Fly.loopFrame( 0, n, F ).b, o, spec.w, spec.h, crop );
-         var late = FlyThrough.loopImage( ps, 5, n, F, o, spec.w, spec.h, crop ), own = Render.frame( ps, Fly.loopFrame( 5, n, F ).a, o, spec.w, spec.h, crop );
+         var n = 10, F = 3, first = FlyThrough.loopImage( ps, 0, n, F, o, spec.w, spec.h, crop ), end = Render.frame( ps, 0, o, spec.w, spec.h, crop );
+         var late = FlyThrough.loopImage( ps, n - 1, n, F, o, spec.w, spec.h, crop ), own = Render.frame( ps, 1, o, spec.w, spec.h, crop );
          var diff = function( p, q ) { var m = 0; for ( var y = 0; y < p.height; y += 7 ) for ( var x = 0; x < p.width; x += 7 ) m = Math.max( m, Math.abs( p.sample( x, y, 0 ) - q.sample( x, y, 0 ) ) ); return m; };
-         check( "the loop's first frame is the flight past its end", diff( first, end ) < 1e-6, true );
-         check( "after the fade a frame is the flight's own", diff( late, own ) < 1e-6, true );
+         check( "the loop's first frame is the start of the flight, unblended", diff( first, end ) < 1e-6, true );
+         check( "its last frame is blended: not the flight's end alone", diff( late, own ) > 1e-4, true );
          [ first, end, late, own ].forEach( function( i ) { i.free(); } );
       }
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
@@ -9625,6 +9630,7 @@ function runFlyTestsClean()
       check( "a new flight, look or length does not", [ same( { travel: 200 } ), same( { bloom: 1.5 } ), same( { duration: 10 } ), same( { fps: 24 } ) ], [ false, false, false, false ] );
       check( "nor does another image or star tool", Fly.frameSignature( o, spec, "other.tif|StarNet2|922" ) == base, false );
       check( "nor another frame size", Fly.frameSignature( o, { id: "youtube_4k", w: 3840, h: 2160, pingPong: false }, key ) == base, false );
+      check( "frames from an older renderer are not reused (its version is in the signature)", base.indexOf( '"renderer":' + Fly.RENDERER_VERSION ) >= 0, true );
    } )();
 
    /* Rendering again with only the video format changed reuses the frames; changing the flight renders them again. */

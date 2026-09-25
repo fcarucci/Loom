@@ -1179,9 +1179,17 @@ Fly.presetSpec = function( p, orientation, loop )
 /* The flight time between two frames (0..1): n frames, a crossfade's F more, or there and back. */
 Fly.frameStep = function( n, F, pingPong )
 {
-   var steps = pingPong ? n/2 : n + ( F || 0 ) - 1;
+   var steps = pingPong ? n/2 : n - 1;             // a crossfade's flight is its clip (Fly.loopFrame)
    return steps > 0 ? 1/steps : 0;
 };
+
+/*
+ * The renderer's version, in every frame signature (Fly.frameSignature):
+ * bumped whenever the same options make different frames, so frames kept
+ * from an older renderer are rendered again, not reused or resumed.
+ * 2: HDR headroom as a bump on each star; crossfade loops dissolve at the end.
+ */
+Fly.RENDERER_VERSION = 2;
 
 Fly.ENCODE_ONLY = [ "format", "quality", "music", "video", "ffmpeg", "dir", "presets", "logoImage", "output" ];   // options that change only the encode
 
@@ -1194,7 +1202,7 @@ Fly.frameSignature = function( opts, spec, sceneKey )
 {
    var keep = {};
    Object.keys( opts ).sort().forEach( function( k ) { if ( Fly.ENCODE_ONLY.indexOf( k ) < 0 ) keep[k] = opts[k]; } );
-   return JSON.stringify( { opts: keep, spec: { w: spec.w, h: spec.h, pingPong: !!spec.pingPong, crossfade: !!spec.crossfade }, scene: sceneKey } );
+   return JSON.stringify( { opts: keep, spec: { w: spec.w, h: spec.h, pingPong: !!spec.pingPong, crossfade: !!spec.crossfade }, scene: sceneKey, renderer: Fly.RENDERER_VERSION } );
 };
 
 Fly.CROSSFADE_SECONDS = 2;   // a crossfade loop's fade, at most a quarter of the clip
@@ -1205,15 +1213,20 @@ Fly.crossfadeFrames = function( duration, fps )
 };
 
 /*
- * Frame i of an n-frame crossfade loop fading over F frames: the flight is
- * n + F frames long; frame i shows it at time a, and during the first F
- * frames fades in from time b, F frames past the loop's end -- alpha*A +
- * (1 - alpha)*B -- so frame n - 1 runs on into frame 0.
+ * Frame i of an n-frame crossfade loop fading over F frames. It starts
+ * clean: frame i shows the flight at time a = i/(n - 1), frame 0 its start
+ * (the photograph) and frame n - 1 its end. Over the last F frames it
+ * dissolves -- alpha*A + (1 - alpha)*B -- into the moments just before the
+ * start, b = (i - n)/(n - 1) (smoothstep holds the camera at rest there;
+ * linear keeps its pace), so the last frame runs on into frame 0 at the
+ * same step. (It used to fade in over the first F frames, so the video
+ * opened on a blend.)
  */
 Fly.loopFrame = function( i, n, F )
 {
-   var L = n + F, T = function( j ) { return L > 1 ? j/( L - 1 ) : 0; };
-   return i < F ? { a: T( i ), b: T( i + n ), alpha: i/F } : { a: T( i ), b: null, alpha: 1 };
+   var step = n > 1 ? 1/( n - 1 ) : 0;
+   if ( i < n - F ) return { a: i*step, b: null, alpha: 1 };
+   return { a: i*step, b: ( i - n )*step, alpha: ( n - i )/( F + 1 ) };
 };
 
 /* Files this script writes into a preset folder, and nothing else. */
