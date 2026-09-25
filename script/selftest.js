@@ -10376,9 +10376,12 @@ function runFlyTestsClean()
     * editable and what is changed then is honoured; only what depends on the
     * analysis still running (Draft, Play, the star counts) is greyed out, and
     * Render is a working Cancel. A star tool changed during the star removal
-    * aborts it (console.abort(): the call throws "Process aborted" when it
-    * returns) and starts it again with the new tool; the solve and catalogue
-    * are not redone. The stubbed extraction below plays the user's part.
+    * starts it again with the new tool once the running call returns (its
+    * stars, valid for their tool, are kept in the cache); the solve and
+    * catalogue are not redone. Nothing asks PixInsight to abort: in its
+    * window that pops up "Do you want to abort the current process?", and it
+    * does not stop the tool early anyway. The stubbed extraction below plays
+    * the user's part.
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -10407,7 +10410,8 @@ function runFlyTestsClean()
       {
          Sky.querySources = function() { return fx.sources; };
          FlyThrough.loadBuilt = function() { return null; };        // every extraction below runs
-         FlyThrough.saveBuilt = function() {};
+         var cached = [];
+         FlyThrough.saveBuilt = function( dir, tool ) { cached.push( tool ); };
          var identified = 0;
          FlyThrough.identify = function() { ++identified; return saved.identify.apply( FlyThrough, arguments ); };
 
@@ -10429,7 +10433,7 @@ function runFlyTestsClean()
                dlg.toolCombo.currentItem = 1; dlg.toolCombo.onItemSelected( 1 );
                seen.switching = dlg.bar.text;
                for ( var k = 0; k < 5; ++k ) processEvents();
-               if ( console.abortRequested ) throw new Error( "Process aborted" );   // as a real process does, when it returns
+               seen.abort = console.abortRequested;
             }
             return copies();
          };
@@ -10453,7 +10457,8 @@ function runFlyTestsClean()
          check( "the star removal starts again with the new tool", tools, [ "ToolA", "ToolB" ] );
          check( "and the stars the dialog uses are the new tool's", dlg.builtTool, "ToolB" );
          check( "the solve and catalogue ran once", identified, 1 );
-         check( "the abort is cleared, so later work is not aborted", console.abortRequested, false );
+         check( "no abort is requested for the switch (PixInsight would ask the user)", [ seen.abort, console.abortRequested ], [ false, false ] );
+         check( "and both tools' stars are cached: switching back later is instant", cached, [ "ToolA", "ToolB" ] );
          check( "a distance typed mid-analysis reaches the scene", dlg.built.scene.D, 800 );
          check( "a look option changed mid-analysis is kept", dlg.options().twinkle, 0.07 );
          check( "an orientation changed during the first draft is drafted", [ back, shape() ], [ true, "horizontal" ] );
@@ -10469,13 +10474,14 @@ function runFlyTestsClean()
 
          // Cancel during the star removal: no draft, the controls come back
          fresh();
-         Sky.splitStars = function() { dlg.renderButton.onClick(); processEvents(); if ( console.abortRequested ) throw new Error( "Process aborted" ); return copies(); };
+         var cancelAbort = null;
+         Sky.splitStars = function() { dlg.renderButton.onClick(); processEvents(); cancelAbort = console.abortRequested; return copies(); };
          err = null;
          try { autoRun(); } catch ( e ) { err = String( e.message || e ); }
          check( "Cancel during the analysis is not an error", err, null );
          check( "it stops before the draft, and says so (" + dlg.status.text + ")", [ dlg.hasDraft, /Cancelled/.test( dlg.status.text ) ], [ false, true ] );
          check( "and gives the controls back", jobControls(), READY );
-         check( "with no abort left pending", console.abortRequested, false );
+         check( "and no abort was requested for it either", [ cancelAbort, console.abortRequested ], [ false, false ] );
       }
       finally
       {

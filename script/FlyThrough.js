@@ -1505,12 +1505,17 @@ FlyThrough.Dialog = class extends Dialog
       this.status.text = "Cancelled.";
    }
 
-   /* Cancel (the Render button mid-job, or closing): a running star extraction is asked to stop too, and no redraft follows. */
+   /*
+    * Cancel (the Render button mid-job, or closing): the job stops at its
+    * next step -- a running star removal once it returns -- and no redraft
+    * follows. Nothing asks PixInsight to abort: in its window that pops up
+    * "Do you want to abort the current process?", and it does not stop a
+    * star tool early anyway (measured: StarXTerminator ran to its end).
+    */
    requestCancel()
    {
       this.cancelRequested = true;
       this.redraftPending = false;
-      if ( this.extracting ) this.abortExtraction();
    }
 
    /* Stops at this point when the job was cancelled. */
@@ -1520,41 +1525,15 @@ FlyThrough.Dialog = class extends Dialog
    }
 
    /*
-    * Asks the running star removal to stop. PixInsight lets events through
-    * while a process runs, but console.abort() does not stop it early: the
-    * call runs to its end, then throws "Process aborted" (measured with
-    * StarXTerminator). The request is cleared (clearAbort) once it returns.
-    */
-   abortExtraction()
-   {
-      this.abortAsked = true;
-      try { console.abort(); } catch ( e ) { Util.warn( "fly", "could not ask the star tool to stop: " + e ); }
-   }
-
-   /*
-    * The stop request cleared: it stays pending after the call it stopped
-    * returns, and every process run after it would throw "Process aborted"
-    * too. console.abortRequested is read-only; resetStatus() clears it
-    * (measured on PixInsight 1.9).
-    */
-   clearAbort()
-   {
-      if ( !this.abortAsked ) return;
-      this.abortAsked = false;
-      try { console.resetStatus(); } catch ( e ) { Util.warn( "fly", "could not clear the stop request: " + e ); }
-   }
-
-   /*
-    * The star tool was changed. During its extraction the one running is
-    * stopped (abortExtraction), its result discarded, and the stars
-    * extracted again with the new tool as soon as it returns (ensureBuilt);
-    * otherwise the new tool is used by the next Draft or Render.
+    * The star tool was changed. During an extraction the stars are
+    * extracted again with the new tool as soon as the running one returns
+    * (ensureBuilt; its stars are cached for their tool); otherwise the new
+    * tool is used by the next Draft or Render.
     */
    toolChanged()
    {
       if ( !this.extracting ) return;
       this.toolSwitch = this.tools[this.toolCombo.currentItem];
-      this.abortExtraction();
       this.bar.set( null, this.switchingText() );
    }
 
@@ -1803,8 +1782,9 @@ FlyThrough.Dialog = class extends Dialog
 
    /*
     * The stars extracted with `tool` (FlyThrough.build), and cached. Null
-    * when the tool was changed while it ran (toolChanged): that result is
-    * discarded. A cancel ends the job once the call returns.
+    * when the tool was changed while it ran (toolChanged): its stars are
+    * still cached for their tool, but not used. A cancel ends the job once
+    * the call returns.
     */
    extract( tool )
    {
@@ -1812,12 +1792,13 @@ FlyThrough.Dialog = class extends Dialog
       this.extracting = tool;
       this.toolSwitch = null;
       try { built = FlyThrough.build( this.work.window, this.id, { tool: tool, colourFrom: this.imageWindow }, this.progressFor() ); }
-      catch ( e ) { failure = e; }             // "Process aborted", when it was asked to stop
-      finally { this.extracting = null; this.clearAbort(); }
-      if ( this.toolSwitch ) { this.toolSwitch = null; return null; }
-      if ( failure ) { this.stopIfCancelled(); throw failure; }
+      catch ( e ) { failure = e; }             // the tool failed, or the user aborted it from PixInsight's console
+      finally { this.extracting = null; }
+      if ( failure ) { this.toolSwitch = null; this.stopIfCancelled(); throw failure; }
       try { FlyThrough.saveBuilt( this.cacheDirPath, tool, built ); }
       catch ( e ) { console.warningln( "Loom Fly-Through: the stars could not be cached: " + e ); }
+      if ( this.toolSwitch ) { this.toolSwitch = null; ( built.windows || [] ).forEach( function( w ) { try { w.forceClose(); } catch ( e ) {} } ); return null; }
+      this.stopIfCancelled();
       return built;
    }
 
