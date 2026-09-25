@@ -9677,6 +9677,8 @@ function runFlyTestsClean()
          var m = /#feature-id\s+[^:\n]+:\s*([^\n]+)/.exec( File.readTextFile( LOOM_DIR + "/" + f ) );
          check( f + " is in the Loom folder (" + ( m && m[1].trim() ) + ")", !!m && /^Loom > /.test( m[1].trim() ), true );
       } );
+      var fly = /#feature-id\s+[^:\n]+:\s*([^\n]+)/.exec( File.readTextFile( LOOM_DIR + "/FlyThrough.js" ) );
+      check( "Fly-Through is listed by its full name", fly && fly[1].trim(), "Loom > Loom Fly-Through" );
    } )();
 
    /* The object is read from the image's file name when it can be: the words, in runs of one to three, through the Object box's search. */

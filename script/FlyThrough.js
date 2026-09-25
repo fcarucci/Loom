@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom Fly-Through : Loom > Fly-Through
+#feature-id    Loom Fly-Through : Loom > Loom Fly-Through
 #feature-info  Turns a finished astrophoto into a push-in video: the photo's \
                own stars move at their real Gaia distances.
 

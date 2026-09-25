@@ -73,7 +73,7 @@ Use one or the other, not both — two copies register the scripts twice.
    restarts.
 
 The three scripts then appear together under **Script → Loom**: **Loom**,
-**Frame Selector** and **Fly-Through**. If they do not, run **Script → Feature
+**Frame Selector** and **Loom Fly-Through**. If they do not, run **Script → Feature
 Scripts → Regenerate**, then **Done**.
 
 **Updating** is the same **Check for Updates**: a new Loom version is offered
@@ -642,7 +642,7 @@ Overrides last for the session only.
 
 ## Fly-Through
 
-A third script — **Script → Loom → Fly-Through** — that turns a finished image
+A third script — **Script → Loom → Loom Fly-Through** — that turns a finished image
 into a push-in video: the camera moves towards the target, and the photo's own
 stars pass by at their real distances.
 
