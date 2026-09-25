@@ -1206,7 +1206,7 @@ FlyThrough.Dialog = class extends Dialog
          this.row( [ this.label( "Travel (pc):" ), this.travelEdit, this.travelNote, this.label( "Easing:" ), this.easingCombo, "stretch" ] ),
          this.row( [ this.label( "Growth:" ), this.growthEdit, this.label( "Nebula motion (%):" ), this.nebulaSpin, this.brightCheck, "stretch" ] ),
          this.row( [ this.label( "Twinkle (%):" ), this.twinkleSpin, this.label( "Bloom (%):" ), this.bloomSpin, this.blurCheck, "stretch" ] ),
-         this.row( [ this.label( "Star colour:" ), this.saturationSlider, this.saturationLabel, this.label( "Star quality:" ), this.starQualityCombo, "stretch" ] ) ] );
+         this.row( [ this.label( "Star colour:" ), this.saturationSlider, this.saturationLabel, "stretch" ] ) ] );
    }
 
    buildOutput()
@@ -1234,7 +1234,7 @@ FlyThrough.Dialog = class extends Dialog
       this.loopCombo.onItemSelected = function() { self.refreshEstimate(); };
       var rows = [ this.row( [ this.label( "Duration (s):" ), this.durationSpin, this.label( "fps:" ), this.fpsCombo,
                                this.label( "Orientation:" ), this.orientationCombo, "stretch" ] ),
-                   this.row( [ this.label( "Loop:" ), this.loopCombo, "stretch" ] ) ];
+                   this.row( [ this.label( "Loop:" ), this.loopCombo, this.label( "Star quality:" ), this.starQualityCombo, "stretch" ] ) ];   // how the frames are drawn: with the other output choices
       var cells = [];
       FlyThrough.PRESET_ORDER.forEach( function( id )
       {
