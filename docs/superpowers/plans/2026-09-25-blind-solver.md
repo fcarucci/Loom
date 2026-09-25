@@ -30,6 +30,26 @@
 2. **Index size is about 100 MB, not "tens of MB".** Measured in Task 7, step 6; reported, not hidden.
 3. **The file-hint step (spec order, step 2)** reads XISF `Observation:Center:RA/Dec`, then the FITS keywords (`RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, `CRVAL1`/`CRVAL2` on an RA axis), then `OBJECT`/`Observation:Object:Name` through `Fly.findObject`, then folder names up to 3 levels up. The hints researcher found that the user's finished TIFF/PSB/PNG/JPG exports carry **no** centre (only masters and lights do), so on real finished images folder names and blind solving do the work. `Fly.findObject` also learns letter-suffixed ids ("IC 1396A" → IC1396): that's the user's own ASIAIR target name, and it resolved to nothing. *Deferred:* a candidate list of past solved centres, which the blind solver makes unnecessary.
 
+## Revision 1 (Codex round 1, 2026-09-25)
+
+Codex found no bug in the core maths: its code was run from this plan in node and passes all 75 of its tests in 2 s. What it found is that real-world behaviour isn't proven. Changes:
+- **Real-field gate (new Task 6b)** before any whole-sky work. A local index is built from Gaia around each of the three real images, and the blind solve must succeed on their real working copies. Constants are tuned there, from measurements. This covers findings 1, 7 and 8.
+- **Build benchmark (Task 5, step 6).** A synthetic whole-sky-sized catalogue goes through Keeper → makeIndex in node, with the time and peak heap recorded, before the PJSR build. `cellsNear` dedupes with an object, not `indexOf`. (Finding 3.)
+- **Catalogue failures versus empty sky (Task 7).**
+  - A failed query (an answer without `origin`) is retried 3 times.
+  - The build stops with the "no catalogue" message only when the first tiles all fail.
+  - An online answer that hits `Fly.GAIA_ONLINE_MAX_ROWS` is split into 4 sub-tiles.
+
+  (Finding 4.)
+- **Index identity (Task 7).** The header and the checkpoint carry the full build configuration (`version`, bands, `gMax`, M, Q, tile radius, tile count) as `config`. Load and resume both reject a mismatch; `origin` is recorded. (Finding 5.)
+- **Cancel (Task 8).** `Sky.solveWithHints` rethrows `loomCancel` errors instead of collecting them as a failed scale. (Finding 6.)
+- **Chance and spread (Task 6).** Matches must spread over at least 4 cells of a 3×3 grid on the image. The chance threshold is corrected for the number of hypotheses verified: accept when `log10Chance <= MAX_LOG10_CHANCE - log10(verified)`. (Finding 7.)
+- **Confirmation checks the position (Task 8).** After ImageSolver, the solved centre must lie within 10% of the field diagonal of the blind centre, and the solved scale within 3% of the blind scale. Otherwise that candidate is rejected. (Finding 2.)
+- **PixInsight synthetic test (Task 8).** It renders with one `setSamples` buffer and asserts StarDetector finds at least 100 stars before solving. The real ImageSolver hand-off is checked ad hoc on real images (Task 8, step 6), because CI has no Gaia database. (Finding 9.)
+- **Hint order (Task 9).** The header centre is read before names. A `CRVAL` without a full WCS is used only as a rough hint. (A full WCS is already an astrometric solution through `Sky.keywordWcs`.) (Finding 10.)
+- **Blind results aren't remembered as focal/pixel hints (Task 10).** The solved working copy is cached by `saveWork`, which is enough. (Finding 11.)
+- **Swarm.** Each agent works in its own worktree and branch. The orchestrator integrates them in dependency order, so nobody commits another agent's half-done `selftest.js` edits. (Finding 12.)
+
 ## Review Focus
 
 1. **A drizzled image** (2× finer than the camera) solves blind: blind never uses the rig's scale, and the scale in the hints to `solveWithHints` comes from the blind fit. The expected behaviour is a solve at the drizzled scale (Iris: 0.483″/px full size). Test: Task 6's synthetic solve at two scales a factor 2 apart.
@@ -436,7 +456,8 @@ Solve.cellsNear = function( ra, dec, radius, size )
       var c0 = Math.floor( ( ra - span )/360*n ), c1 = Math.floor( ( ra + span )/360*n );
       for ( var k = c0; k <= c1; ++k ) out.push( row*100000 + ( ( k % n ) + n ) % n );
    }
-   return out.filter( function( v, i, all ) { return all.indexOf( v ) == i; } );
+   var seen = {};
+   return out.filter( function( v ) { if ( seen[v] ) return false; seen[v] = true; return true; } );
 };
 
 /*
@@ -779,6 +800,24 @@ git add script/lib/Solve.js script/selftest.js
 git commit -m "Solve: index object and its arrays"
 ```
 
+- [ ] **Step 6: Benchmark a whole-sky-sized build in node (ad hoc, not committed)**
+
+Write `/tmp/agent-scratch/blind/bench.js`. It loads `script/lib/Fly.js` and `script/lib/Solve.js` the way `ci/run-tests.js` does (reuse its `load`, or `require("./ci/pjsr-shim.js")` and eval both files). It then streams a synthetic whole sky through `Solve.Keeper( Solve.BANDS.map( b => b.lo ), 5 )`:
+- 10M stars;
+- uniform on the sphere (dec = asin(2u−1));
+- G drawn so that N(<G) grows 10^(0.4 G), capped at 13;
+- a 5× denser band within ±10° of an arbitrary great circle, standing in for the galactic plane.
+
+After that it runs `Solve.makeIndex( keep.stars(), Solve.BANDS, 2 )`, then `Solve.indexArrays`.
+
+Record on the board and in the ledger:
+- time per phase;
+- `process.memoryUsage().heapUsed` peak (run with `node --max-old-space-size=8192`);
+- stars kept, and quads per band;
+- total array bytes.
+
+**Acceptance:** under 15 min in node, peak heap under 3 GB, arrays under 200 MB. PJSR's V8 is slower than node, so leave margin. If the benchmark fails, fix the hot spot and re-measure. Candidates: `bandQuads`' per-cell `near.concat`/sort (precompute per-cell sorted lists once), `Fly.separation` in the inner loop (compare unit vectors), and Keeper's string keys. Don't touch the band or cell constants; those are Task 6b's to set.
+
 ---
 
 ### Task 6: Matching and verification (`Solve.solve`)
@@ -852,6 +891,11 @@ git commit -m "Solve: index object and its arrays"
       check( "scrambled field: no confident match", Solve.solve( idx, elsewhere.dets, 3840, 2560, {} ).length, 0 );
       check( "log10Chance: 10 of 10 at p 0.01 is -20", Math.abs( Solve.log10Chance( 10, 10, 0.01 ) + 20 ) < 1e-9, true );
       check( "log10Chance: 0 of n is certain", Solve.log10Chance( 0, 50, 0.1 ), 0 );
+      var r12 = Solve.solve( idx, field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0.2, 3 ).dets, 3840, 2560, {} )[0];
+      check( "a solution's matches spread over the image", r12 && r12.spread >= Solve.MIN_SPREAD, true );
+      var corner = field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0, 3 );
+      corner.dets = corner.dets.filter( function( d ) { return d.x < 1280 && d.y < 850; } );   // one ninth of the image
+      check( "matches in one corner only: no solution", Solve.solve( idx, corner.dets, 3840, 2560, {} ).length, 0 );
       var ticks = 0;
       Solve.solve( idx, field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0.2, 3 ).dets, 3840, 2560, { tick: function() { ++ticks; } } );
       check( "solve ticks while it works", ticks > 0, true );
@@ -871,6 +915,7 @@ Solve.VERIFY_STARS = 300;       // brightest detections a hypothesis is checked 
 Solve.MIN_MATCHES = 8;
 Solve.MAX_LOG10_CHANCE = -10;   // accept when the matches happening by chance is below 1e-10
 Solve.MAX_VERIFY = 3000;
+Solve.MIN_SPREAD = 4;           // of the 3x3 image cells holding matches
 Solve.FIELD_MIN = 0.3;          // degrees, the image's long side
 Solve.FIELD_MAX = 25;
 
@@ -957,7 +1002,11 @@ Solve.verify = function( index, fit, centre, dets, W, H )
    var tight = pass( refit, r );
    var p0 = Math.min( 0.5, bright.length*Math.PI*r*r/( W*H ) );
    var best = tight.img.length >= 4 ? Solve.fitSimilarity( tight.img, tight.sky, fit.parity ) : refit;
-   return { matches: tight.img.length, of: tight.n, log10Chance: Solve.log10Chance( tight.img.length, tight.n, p0 ), fit: best, centre: centre };
+   // matches bunched in one corner (a nebula's knots, a bright star's halo) are no evidence of a field
+   var cells = {};
+   tight.img.forEach( function( p ) { cells[Math.min( 2, Math.floor( 3*p[0]/W ) ) + "," + Math.min( 2, Math.floor( 3*p[1]/H ) )] = true; } );
+   return { matches: tight.img.length, of: tight.n, spread: Object.keys( cells ).length,
+            log10Chance: Solve.log10Chance( tight.img.length, tight.n, p0 ), fit: best, centre: centre };
 };
 
 /*
@@ -990,7 +1039,7 @@ Solve.solve = function( index, dets, W, H, opts )
    var votes = {};
    hyps.forEach( function( h ) { votes[h.key] = ( votes[h.key] || 0 ) + 1; } );
    hyps.sort( function( a, b ) { return votes[b.key] - votes[a.key]; } );
-   var tried = {};
+   var tried = {}, verified = 0;
    for ( var i = 0; i < hyps.length && i < Solve.MAX_VERIFY && out.length < ( opts.maxResults || 3 ); ++i )
    {
       if ( i % 20 == 0 ) tick();
@@ -1001,11 +1050,13 @@ Solve.solve = function( index, dets, W, H, opts )
       var img = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ], [ W/2, H/2 ] ];
       var sky = img.map( function( p ) { var q = Solve.applySimilarity( h.fit, p[0], p[1] ), s = Solve.fromPlane( h.ref, q[0], q[1] ); return Solve.toPlane( h.centre, s.ra, s.dec ); } );
       var v = Solve.verify( index, Solve.fitSimilarity( img, sky, h.fit.parity ), h.centre, dets, W, H );
-      if ( v.matches < Solve.MIN_MATCHES || v.log10Chance > Solve.MAX_LOG10_CHANCE ) continue;
+      ++verified;
+      // many hypotheses are tried: the threshold tightens with their number (Bonferroni)
+      if ( v.matches < Solve.MIN_MATCHES || v.spread < Solve.MIN_SPREAD || v.log10Chance > Solve.MAX_LOG10_CHANCE - Math.log( verified )/Math.LN10 ) continue;
       var c = Solve.applySimilarity( v.fit, W/2, H/2 ), centre = Solve.fromPlane( h.centre, c[0], c[1] );
       if ( out.some( function( o ) { return Fly.separation( o, centre ) < 0.05; } ) ) continue;
       out.push( { ra: centre.ra, dec: centre.dec, scale: v.fit.scale*3600, rotation: Math.atan2( v.fit.b, v.fit.a )/Fly.RAD,
-                  parity: v.fit.parity, matches: v.matches, of: v.of, log10Chance: v.log10Chance } );
+                  parity: v.fit.parity, matches: v.matches, of: v.of, spread: v.spread, log10Chance: v.log10Chance } );
    }
    return out.sort( function( a, b ) { return a.log10Chance - b.log10Chance; } );
 };
@@ -1024,6 +1075,43 @@ Run: `node -e 'require("./ci/pjsr-shim.js")' ; time node ci/run-tests.js 2>&1 | 
 git add script/lib/Solve.js script/selftest.js
 git commit -m "Solve: matching and verification (Solve.solve)"
 ```
+
+---
+
+### Task 6b: Real-field gate (ad hoc in slot 2, never committed)
+
+**Why:** synthetic stars have a clean magnitude-to-flux relation. Real images have saturated cores, colour, blends and nebula knots. Before any whole-sky work, prove the algorithm on the three real images and tune the constants from measurements. (Codex round 1, findings 1, 7 and 8.)
+
+**Files:** scratch only: `/tmp/agent-scratch/blind/gate.js`, dispatched to slot 2 (`/tmp/agent-scratch/pi2.sh`), with the `test` claim held.
+
+- [ ] **Step 1: Local index per image.**
+  - **Images:**
+    - the Iris (RA 315.41, Dec +68.08);
+    - the Elephant's Trunk (IC 1396A, about RA 324.2, Dec +57.5);
+    - NGC 5907 (RA 228.97, Dec +56.33).
+
+    Find each image's finished TIFF under the user's Astro folder, where the hints researcher found them: Downloads and `2026/…/TIFFs`. Read them only.
+  - **Build:** for each one, query `Sky.querySources( centre, r, Solve.INDEX_G_MAX )` over `Solve.skyTiles( 2 )` tiles within 10° of the centre. Feed the results to a `Solve.Keeper`, then run `Solve.makeIndex`.
+- [ ] **Step 2: Blind solve the real working copy.**
+  - **Prepare:** open the image, make `Sky.workingCopy`, and on the copy only, delete its solution and keywords.
+  - **Solve:** run `Sky.detections`, then `Solve.solve( localIndex, dets, W, H, {} )`.
+  - **Record:**
+    - the number of detections;
+    - how many of the brightest 40 detections have a Gaia counterpart within 3 px under the known solution. For that, solve a separate copy with hints via `Sky.solveWithHints`, and project the index stars with `Sky.projector`.
+    - the image quads that hit any index quad, and the hits that are true (the right sky position);
+    - hypotheses, verifications, and the result versus the truth;
+    - time.
+- [ ] **Step 3: Tune until all three solve**, one change at a time, re-measuring each. The levers, in this order:
+  1. `Solve.IMAGE_QUAD_STARS` (40 → 60 → 80);
+  2. C/D choice: add the pairs (1st, 3rd) and (2nd, 3rd) brightest inside the circle, on both the image and the index side;
+  3. `Solve.STARS_PER_CELL` (5 → 8);
+  4. `Solve.QUADS_PER_CELL` (2 → 4);
+  5. image stars ranked by `flux` versus by peak (`nmax`), since saturated stars all share a peak;
+  6. `Solve.CODE_TOL` (0.01 → 0.015).
+
+  Each constant that changes lands as a commit on Solve.js. The commit message carries the measurement that justified it, and the node suite stays green.
+- [ ] **Step 4: Chance calibration.** Run each real image's detections against the *other two* images' local indexes, where there should be no match. Record the best `log10Chance` any hypothesis reaches. It must be at least 3 decades above the acceptance threshold; if it isn't, tighten `MAX_LOG10_CHANCE` or `MIN_SPREAD`.
+- [ ] **Step 5: Report to the orchestrator.** Give the numbers for steps 2–4 and the final constants. **This is a gate:** Task 7's real build (its step 6) doesn't start until all three images solve here.
 
 ---
 
@@ -1077,6 +1165,10 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          var loaded = Sky.loadSolverIndex( dir );
          check( "loadSolverIndex reads what was built", loaded && loaded.quads.length, idx.quads.length );
          check( "the index records its origin", JSON.parse( File.readTextFile( dir + "/index-v" + Solve.INDEX_VERSION + ".json" ) ).origin, "test" );
+         var savedM = Solve.STARS_PER_CELL;
+         Solve.STARS_PER_CELL = savedM + 1;
+         check( "an index built with other settings is not loaded", Sky.loadSolverIndex( dir ), null );
+         Solve.STARS_PER_CELL = savedM;
 
          // cancelled half way, then resumed: the tiles already read are not read again
          FlyThroughTestRemove( dir );
@@ -1096,7 +1188,7 @@ git commit -m "Solve: matching and verification (Solve.solve)"
          Sky.querySources = function() { ++calls; return []; };
          var msg = "";
          try { Sky.buildSolverIndex( quiet, { tiles: tiles, bands: bands } ); } catch ( e ) { msg = String( e.message ); }
-         check( "no catalogue: build fails fast with a clear message", calls <= 3 && /Process > Gaia/.test( msg ) && /internet/.test( msg ), true );
+         check( "no catalogue: build fails fast with a clear message", calls <= 9 && /Process > Gaia/.test( msg ) && /internet/.test( msg ), true );
       }
       finally { Sky.querySources = savedQuery; Sky.solverIndexDir = savedDir; Sky._solverIndex = null; }
    } )();
@@ -1144,12 +1236,13 @@ Sky.buildSolverIndex = function( progress, opts )
    var dir = opts.dir || Sky.solverIndexDir(), tiles = opts.tiles || Solve.skyTiles( Solve.TILE_RADIUS );
    var bands = opts.bands || Solve.BANDS, gMax = opts.gMax || Solve.INDEX_G_MAX, every = opts.checkpointEvery || 50;
    var sizes = bands.map( function( b ) { return b.lo; } ), part = Sky.indexName( dir, true );
+   var config = Sky.solverConfig( bands, gMax, tiles );
    if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
-   var keep = new Solve.Keeper( sizes, Solve.STARS_PER_CELL ), next = 0, origin = null, empty = 0;
+   var keep = new Solve.Keeper( sizes, Solve.STARS_PER_CELL ), next = 0, origin = null, failed = 0;
    if ( File.exists( part + ".json" ) )
    {
       var st = JSON.parse( File.readTextFile( part + ".json" ) );
-      if ( st.tiles == tiles.length )
+      if ( st.config == config )
       {
          keep = Solve.Keeper.fromArrays( sizes, Solve.STARS_PER_CELL, Sky.readArrays( part + ".bin", [ st.length ] )[0] );
          next = st.next; origin = st.origin;
@@ -1159,21 +1252,23 @@ Sky.buildSolverIndex = function( progress, opts )
    {
       var a = keep.toArrays();
       Sky.writeArrays( part + ".bin", [ a ] );
-      File.writeTextFile( part + ".json", JSON.stringify( { tiles: tiles.length, next: k, origin: origin, length: a.length } ) );
+      File.writeTextFile( part + ".json", JSON.stringify( { config: config, next: k, origin: origin, length: a.length } ) );
    }
    for ( var k = next; k < tiles.length; ++k )
    {
       if ( progress.isCancelled && progress.isCancelled() ) { checkpoint( k ); throw Sky.cancelled(); }
       progress.stage( "Building the star index for blind solving (once)", k, tiles.length );
-      var s = Sky.querySources( tiles[k], Solve.TILE_RADIUS*1.05, gMax );
-      if ( !s || s.length == 0 )
+      var s = Sky.catalogueTile( tiles[k], Solve.TILE_RADIUS*1.05, gMax );
+      if ( s == null )
       {
-         // G 13 within 2 degrees is never empty: this is no catalogue at all
-         if ( ++empty >= 3 && origin == null )
+         // no answer at all (not an empty sky): nothing read yet means no catalogue anywhere
+         if ( origin == null && ++failed >= 3 )
             throw new Error( "Blind solving needs a star catalogue: configure a Gaia DR3 database in Process > Gaia, or connect to the internet." );
+         if ( origin != null ) { checkpoint( k ); throw new Error( "The star catalogue stopped answering while building the blind-solve index (tile " + ( k + 1 ) + " of " + tiles.length + "). It resumes where it stopped next time." ); }
+         --k;   // retry the same tile (up to 3 failures in all before anything was read)
          continue;
       }
-      if ( origin == null ) origin = s.origin || "";
+      if ( origin == null ) origin = s.origin;
       s.forEach( function( t ) { keep.add( { ra: t.ra, dec: t.dec, G: t.G } ); } );
       if ( ( k + 1 ) % every == 0 ) checkpoint( k + 1 );
    }
@@ -1182,12 +1277,44 @@ Sky.buildSolverIndex = function( progress, opts )
    var name = Sky.indexName( dir, false );
    Sky.writeArrays( name + ".bin", io.arrays );
    // the header last: an index without one is never loaded
-   File.writeTextFile( name + ".json", JSON.stringify( Object.assign( io.header, { origin: origin, gMax: gMax, built: ( new Date ).toISOString() } ) ) );
+   File.writeTextFile( name + ".json", JSON.stringify( Object.assign( io.header, { config: config, origin: origin, gMax: gMax, built: ( new Date ).toISOString() } ) ) );
    [ part + ".json", part + ".bin" ].forEach( function( f ) { try { if ( File.exists( f ) ) File.remove( f ); } catch ( e ) {} } );
    return index;
 };
 
-/* The cached index, or null (missing, another version, or unreadable). */
+/* What an index is built from: a checkpoint or index made otherwise is not this one. */
+Sky.solverConfig = function( bands, gMax, tiles )
+{
+   return JSON.stringify( { v: Solve.INDEX_VERSION, bands: bands.map( function( b ) { return +b.lo.toFixed( 6 ); } ), gMax: gMax,
+                            M: Solve.STARS_PER_CELL, Q: Solve.QUADS_PER_CELL, tileRadius: Solve.TILE_RADIUS, tiles: tiles.length } );
+};
+
+/*
+ * One tile of the catalogue, or null when nothing answered. Sky.querySources
+ * marks a real answer with its origin; an answer without one is a failure
+ * (offline, refused), not an empty sky. An online answer cut at the row
+ * limit is read again as four smaller tiles.
+ */
+Sky.catalogueTile = function( centre, radius, gMax )
+{
+   var s = null;
+   for ( var attempt = 0; attempt < 3 && !( s && s.origin ); ++attempt ) s = Sky.querySources( centre, radius, gMax );
+   if ( !s || !s.origin ) return null;
+   if ( s.origin == "online" && s.length >= Fly.GAIA_ONLINE_MAX_ROWS && radius > 0.25 )
+   {
+      var out = [], r = radius/2, d = radius/2;
+      [ [ -1, -1 ], [ -1, 1 ], [ 1, -1 ], [ 1, 1 ] ].forEach( function( q )
+      {
+         var c = Solve.fromPlane( centre, q[0]*d, q[1]*d ), part = Sky.catalogueTile( c, r*1.5, gMax );
+         if ( part == null ) out = null; else if ( out ) out = out.concat( part );
+      } );
+      if ( out ) out.origin = "online";
+      return out;
+   }
+   return s;
+};
+
+/* The cached index, or null (missing, built otherwise, or unreadable). */
 Sky.loadSolverIndex = function( dir )
 {
    var name = Sky.indexName( dir || Sky.solverIndexDir(), false );
@@ -1196,6 +1323,9 @@ Sky.loadSolverIndex = function( dir )
       if ( !File.exists( name + ".json" ) || !File.exists( name + ".bin" ) ) return null;
       var header = JSON.parse( File.readTextFile( name + ".json" ) );
       if ( header.version != Solve.INDEX_VERSION ) return null;
+      // made with other settings (stars or quads per cell, bands, depth): not this index
+      var cfg = JSON.parse( header.config || "{}" );
+      if ( cfg.M != Solve.STARS_PER_CELL || cfg.Q != Solve.QUADS_PER_CELL || cfg.gMax != header.gMax ) return null;
       return Solve.indexFromArrays( header, Sky.readArrays( name + ".bin", header.lengths ) );
    }
    catch ( e ) { Util.warn( "fly", "solver index: " + e ); return null; }
@@ -1269,15 +1399,20 @@ PixInsight (`if ( IN_PIXINSIGHT )` in `runSolveTests`): render a synthetic star 
       sky.forEach( function( s ) { keep.add( s ); } );
       var savedIndex = Sky._solverIndex, savedSolve = Sky.solveWithHints, got = null;
       Sky._solverIndex = Solve.makeIndex( keep.stars(), bands, 2 );
+      var savedField = Sky.field, savedScale = Sky.solvedScale;
       Sky.solveWithHints = function( w, hints ) { got = hints; return hints.pixel; };
+      // "ImageSolver" here agrees with the hints it was given
+      Sky.field = function() { return { centre: { ra: got.ra, dec: got.dec }, radiusDeg: 1 }; };
+      Sky.solvedScale = function() { return 206.265*got.pixel/got.focal; };
       var W = 1920, H = 1280, scale = 1.5/W, centre = { ra: 66, dec: 16 };
       var win = new ImageWindow( W, H, 1, 32, true, false, "solve_synth" );
       try
       {
          var img = win.mainView.image, f = { a: scale, b: 0, tx: 0, ty: 0, parity: 0 };
          var c0 = Solve.applySimilarity( f, W/2, H/2 ); f.tx = -c0[0]; f.ty = -c0[1];
-         win.mainView.beginProcess( UndoFlag_NoSwapFile );
-         img.fill( 0.05 );
+         // one buffer, one setSamples: per-pixel setSample over thousands of stars is slow in PJSR
+         var buf = new Float32Array( W*H );
+         for ( var i = 0; i < buf.length; ++i ) buf[i] = 0.05;
          sky.forEach( function( t )
          {
             var p = Solve.toPlane( centre, t.ra, t.dec ); if ( !p ) return;
@@ -1285,9 +1420,12 @@ PixInsight (`if ( IN_PIXINSIGHT )` in `runSolveTests`): render a synthetic star 
             for ( var y = Math.floor( xy[1] ) - 4; y <= Math.floor( xy[1] ) + 4; ++y )
                for ( var x = Math.floor( xy[0] ) - 4; x <= Math.floor( xy[0] ) + 4; ++x )
                   if ( x >= 0 && y >= 0 && x < W && y < H )
-                     img.setSample( Math.min( 1, img.sample( x, y ) + amp*Math.exp( -( ( x - xy[0] )*( x - xy[0] ) + ( y - xy[1] )*( y - xy[1] ) )/( 2*1.5*1.5 ) ) ), x, y );
+                     buf[y*W + x] = Math.min( 1, buf[y*W + x] + amp*Math.exp( -( ( x - xy[0] )*( x - xy[0] ) + ( y - xy[1] )*( y - xy[1] ) )/( 2*1.5*1.5 ) ) );
          } );
+         win.mainView.beginProcess( UndoFlag_NoSwapFile );
+         img.setSamples( buf );
          win.mainView.endProcess();
+         check( "the synthetic image has stars to solve from", Sky.detections( img ).length >= 100, true );
          var quiet = { stage: function() {}, isCancelled: function() { return false; } };
          var r = Sky.solveBlind( win, quiet );
          check( "solveBlind hands ImageSolver the centre", got && Fly.separation( got, centre ) < 0.02, true );
@@ -1296,8 +1434,13 @@ PixInsight (`if ( IN_PIXINSIGHT )` in `runSolveTests`): render a synthetic star 
          var msg = "";
          try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
          check( "an unconfirmed blind match is not used", /could not confirm/.test( msg ), true );
+         Sky.solveWithHints = function( w, hints ) { got = hints; return hints.pixel; };
+         Sky.field = function() { return { centre: { ra: got.ra + 3, dec: got.dec }, radiusDeg: 1 }; };   // "solved" elsewhere
+         msg = "";
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "a confirmation somewhere else is not used", /not where the blind match/.test( msg ), true );
       }
-      finally { win.forceClose(); Sky._solverIndex = savedIndex; Sky.solveWithHints = savedSolve; }
+      finally { win.forceClose(); Sky._solverIndex = savedIndex; Sky.solveWithHints = savedSolve; Sky.field = savedField; Sky.solvedScale = savedScale; }
    } )();
 ```
 
@@ -1310,6 +1453,12 @@ Then run the PixInsight suite, with CLAIM and RELEASE around it.
 Expected: FAIL on `Sky.solveBlind is not a function`.
 
 - [ ] **Step 3: Implement**
+
+First, in the existing `Sky.solveWithHints`, a cancel must end the loop, not count as a failed scale. Change its catch to:
+```js
+      catch ( e ) { if ( e && e.loomCancel ) throw e; reasons.push( String( e.message || e ) ); }
+```
+Add the test `solveWithHints: a cancel is not retried at other scales`: stub `Sky.solveOnce` to throw `Sky.cancelled()` and count its calls; expect 1, and expect `loomCancel` on the error. Write the test first and watch it fail (3 calls).
 
 Solve.js:
 ```js
@@ -1349,7 +1498,15 @@ Sky.solveBlind = function( window, progress )
       var hints = Solve.hintsFrom( results[k] );
       Util.log( "fly", "blind: RA " + results[k].ra.toFixed( 4 ) + " Dec " + results[k].dec.toFixed( 4 ) + ", " + results[k].scale.toFixed( 3 ) +
                 "″/px, " + results[k].matches + "/" + results[k].of + " stars, chance 1e" + results[k].log10Chance.toFixed( 0 ) );
-      try { return { hints: hints, solvedPixel: Sky.solveWithHints( window, hints, progress.stage ), result: results[k] }; }
+      try
+      {
+         var solvedPixel = Sky.solveWithHints( window, hints, progress.stage );
+         // ImageSolver can settle on another field at the same scale: the solution must be where the blind match said
+         var got = Sky.field( window ).centre, diag = results[k].scale*Math.hypot( img.width, img.height )/3600;
+         if ( Fly.separation( got, results[k] ) > 0.1*diag || Math.abs( Sky.solvedScale( window )/results[k].scale - 1 ) > 0.03 )
+            throw new Error( "ImageSolver's solution (RA " + got.ra.toFixed( 3 ) + ", Dec " + got.dec.toFixed( 3 ) + ") is not where the blind match put the image" );
+         return { hints: hints, solvedPixel: solvedPixel, result: results[k] };
+      }
       catch ( e ) { if ( e && e.loomCancel ) throw e; reasons.push( String( e.message || e ) ); }
    }
    throw new Error( "Blind solving found " + results.length + " candidate position(s), but ImageSolver could not confirm any: " + reasons[0] );
@@ -1465,7 +1622,7 @@ Check that `Fly.parseAngle( "21 01 38.0", true )` returns degrees (315.408). If 
 
 In `FlyThrough.js`:
 - in `objectFromName()`, replace `Fly.objectFromFileName(` with `Fly.objectFromPath(`, and change the note to `" (from the file or folder name)"`;
-- in `fillFromImage()`, after the `objectFromName()` line, add:
+- in `fillFromImage()`, **before** the `if ( this.needsHints ) this.recallObject();` line (the header's own pointing outranks a name guessed from the file or folder; remembered hints are applied after and still win), add:
 ```js
       // the header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do)
       if ( this.needsHints && !this.raEdit.text.trim() )
@@ -1615,7 +1772,7 @@ Dialog:
       }
 ```
 - `analyseImage()`: blind hints must not be divided by `this.work.scale`. The existing `if ( choices.hints ) choices.hints.pixel /= this.work.scale;` already only touches `hints`, so leave it as it is.
-- After `identify`, when `id.blind` is set, fill the RA/Dec edits from it so they're remembered: `this.raEdit.text = id.blind.ra.toFixed( 4 ); this.decEdit.text = id.blind.dec.toFixed( 4 );`. Then call `this.rememberObject()`.
+- Blind results are **not** written into the hint fields or remembered with `rememberObject`: the focal and pixel fields may describe another rig, and the solved working copy is already cached by `saveWork`, which is what makes the next run fast.
 - `targetLabel`: `FlyThrough.describeTarget( id )` gets the suffix `" · solved blind"` when `id.blind` is set.
 
 - [ ] **Step 4: Run node and the PixInsight suite; both pass**
@@ -1688,13 +1845,15 @@ The user asked for a swarm implementation with several agents working together. 
 
 - **Job:** `loom-blind-solver`. Its goal: "Tasks 1–11 done, node suites and the PixInsight suite green, the Iris, the Elephant's Trunk and NGC 5907 blind-solve and are confirmed by ImageSolver".
 - **Agents:**
-  - **Core (Solve.js):** Tasks 1 → 2 → 3 → 4 → 5 → 6, in order. It owns `script/lib/Solve.js` and `runSolveTests`' pure part.
-  - **Sky:** Tasks 7 and 8. It starts Task 7's Sky code once Task 5 is committed (it needs `Solve.makeIndex`/`indexArrays`), and Task 8 once Task 6 is committed. It owns `Sky.js`'s solver section and Task 7 step 6 (the real index build: `CLAIM index-build`).
+  - **Core (Solve.js):** Tasks 1 → 2 → 3 → 4 → 5 → 6, in order, then Task 6b (the real-field gate: it needs slot 2 and the Sky helpers that already exist, nothing new from Sky). It owns `script/lib/Solve.js` and `runSolveTests`' pure part.
+  - **Sky:** Tasks 7 and 8. It starts Task 7's Sky code once Task 5 is merged (it needs `Solve.makeIndex`/`indexArrays`), and Task 8 once Task 6 is merged. It owns `Sky.js`'s solver section and Task 7 step 6 (the real index build: `CLAIM index-build`), which **waits for Task 6b to pass**.
   - **Dialog:** Task 9 at once (independent: Fly.js and FlyThrough.js hint code). Then Task 10 once Task 8 is committed. It owns `FlyThrough.js`, `Fly.js` and Task 10 step 6.
   - **Verifier:** checks every `DONE:` claim independently: re-runs the named tests and reads the diff against this plan. It's read-only.
   - **Judge:** holds the goal and records the verdict.
 - **Shared rules:**
-  - `script/selftest.js` is shared. Each agent edits only its own blocks and commits right after its tests pass, staging explicit paths. Rebase on conflicts; never force-push.
+  - **Every agent works in its own git worktree**, on its own branch off `feature/blind-solver`: `blind/core`, `blind/sky` and `blind/dialog`. Only the orchestrator merges into `feature/blind-solver`, in dependency order (core, then sky, then dialog), after the verifier's VERIFIED. That way nobody commits another agent's half-done `selftest.js` edits. An agent that needs an upstream task (Sky needs Task 5 and then Task 6) asks the orchestrator to merge it, then rebases its branch on `feature/blind-solver`.
+  - Interfaces are frozen as this plan's Interfaces blocks state them. A change is posted on the board `--to` the consumers before it's committed.
+  - Slot 2 is also used by the SyQon Studio agent. Hold the `mkdir /tmp/agent-scratch/pi-slot2.lock` lock while running PixInsight, in addition to the board's `CLAIM test`.
   - The PixInsight suite needs `CLAIM test`/`RELEASE test` on the board, and runs in slot 2 only. Never close slot 2.
   - Task 11 is done by the orchestrator after all the others.
 
