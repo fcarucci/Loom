@@ -25,6 +25,9 @@
 #include "lib/Psb.js"
 #include "lib/Steps.js"
 #include "lib/Pipeline.js"
+#include "lib/AsiairNames.js"
+#include "lib/Asiair.js"
+#include "lib/NightDialog.js"
 #include "lib/Frames.js"
 #endif
 
@@ -552,9 +555,21 @@ FrameSelector.measureGroup = function( group, before )
    return { metrics: metrics, unstable: unstable };
 };
 
-FrameSelector.scan = function( folder, progress )
+/*
+ * Scan an explicit list of frames.
+ *
+ * A night on an ASIAIR card is a FILTERED list of paths that may span
+ * Plan and Autorun, which a single folder cannot express. This is scan()'s
+ * body, with the enumeration lifted out; scan() now supplies the list.
+ *
+ * The whole contract is preserved: the `reading` and `measuring` progress
+ * callbacks, cancellation by a callback RETURNING FALSE, and the shape of
+ * a cancelled result. Ordinary folder scanning is this feature's
+ * most-used path and must not regress.
+ */
+FrameSelector.scanPaths = function( paths, progress )
 {
-   var cohort = FrameSelector.cohortFrom( FrameSelector.frameFilesIn( folder ),
+   var cohort = FrameSelector.cohortFrom( paths,
                                           progress ? progress.reading : null );
    if ( cohort.cancelled )
       return { channels: {}, unstable: [], cancelled: true };
@@ -581,6 +596,11 @@ FrameSelector.scan = function( folder, progress )
                             problems: Frames.comparability( group ).problems };
    }
    return { channels: channels, unstable: unstable, cancelled: false };
+};
+
+FrameSelector.scan = function( folder, progress )
+{
+   return FrameSelector.scanPaths( FrameSelector.frameFilesIn( folder ), progress );
 };
 
 /*
@@ -1275,7 +1295,16 @@ FrameSelector.emptyState = function( folder )
             destination: folder,
             preset: Frames.DEFAULT_PRESET,
             phase: Frames.PHASE.REVIEW, locked: false,
-            manifest: null, unstable: [] };
+            manifest: null, unstable: [],
+            /*
+             * Import mode, set only when the frames came off an ASIAIR
+             * card. cardRoot being non-null is what makes the mode true,
+             * and every guard reads it from here -- the review dialog
+             * extends the native Dialog and does not inherit from
+             * FrameSelector.prototype, so a flag hung there would be
+             * permanently undefined and would guard nothing.
+             */
+            cardRoot: null, candidateFlats: [] };
 };
 
 /* Moved to Frames so the node suite can drive them; kept as names here. */
@@ -1285,10 +1314,22 @@ FrameSelector.newChannel = function( key, entries, metrics, problems )
 };
 FrameSelector.recompute = function( ch ) { return Frames.recompute( ch ); };
 
-FrameSelector.buildState = function( folder, progress )
+/*
+ * State from an explicit list of frames -- a night off an ASIAIR card.
+ *
+ * Shares everything below with buildState; only the source of the frames
+ * differs. `label` is what the review calls the folder it is showing,
+ * since a night has no single directory.
+ */
+FrameSelector.buildStateFrom = function( paths, label, progress )
 {
-   var state = FrameSelector.emptyState( folder );
-   var scan = FrameSelector.scan( folder, progress );
+   return FrameSelector.stateFromScan(
+      FrameSelector.emptyState( label ),
+      FrameSelector.scanPaths( paths, progress ) );
+};
+
+FrameSelector.stateFromScan = function( state, scan )
+{
    state.cancelled = !!scan.cancelled;
    state.unstable = scan.unstable;
    var keys = Object.keys( scan.channels );
@@ -1301,6 +1342,179 @@ FrameSelector.buildState = function( folder, progress )
       state.order.push( keys[i] );
    }
    return state;
+};
+
+FrameSelector.buildState = function( folder, progress )
+{
+   return FrameSelector.stateFromScan( FrameSelector.emptyState( folder ),
+                                       FrameSelector.scan( folder, progress ) );
+};
+
+/*
+ * Approved lights as { path, filter } -- what the manifest needs.
+ *
+ * approvedPaths returns bare strings and the review's rows carry the
+ * channel rather than a filter field, so the two cannot be handed to
+ * AsiairNames.manifest directly.
+ */
+FrameSelector.approvedLightRecords = function( state )
+{
+   var out = [];
+   for ( var i = 0; i < state.order.length; ++i )
+   {
+      var key = state.order[i];
+      var ch = state.channels[key];
+      if ( !ch.settings.enabled )
+         continue;
+      for ( var r = 0; r < ch.rows.length; ++r )
+         if ( Frames.finalState( ch.rows[r].state, ch.rows[r].override ) !=
+              Frames.STATE.REJECTED )
+            out.push( { path: ch.rows[r].path, filter: key } );
+   }
+   return out;
+};
+
+/*
+ * Convert one frame by opening and saving it.
+ *
+ * NOT runOutputRoutine: that runs FrameSelector.MEASURE_ROUTINE first --
+ * routines 1 and 2 refuse with "No measurements have been made" until it
+ * has -- and measuring means star detection. A flat has no stars.
+ */
+FrameSelector.convertOne = function( src, dst )
+{
+   if ( !File.exists( src ) )
+      return { ok: false, reason: "source is gone" };
+
+   var win = null;
+   try
+   {
+      var ws = ImageWindow.open( src );
+      if ( ws.length == 0 )
+         return { ok: false, reason: "could not open" };
+      win = ws[0];
+      if ( !win.saveAs( dst, false, false, false, false ) )
+         return { ok: false, reason: "could not write" };
+      return { ok: true, reason: "" };
+   }
+   catch ( e ) { return { ok: false, reason: String( e ) }; }
+   finally { try { if ( win != null && !win.isNull ) win.forceClose(); } catch ( e2 ) {} }
+};
+
+/*
+ * Keywords an imported frame must still carry. Geometry alone proves
+ * nothing -- a wrong frame keeps the same dimensions.
+ */
+FrameSelector.REQUIRED_KEYWORDS = [ "FILTER", "EXPTIME", "DATE-OBS" ];
+
+/*
+ * Check what was written against what it came from.
+ *
+ * A file that fails is DELETED before the failure is reported: the export
+ * path refuses to write over an existing file unless overwrite is set, so
+ * leaving a bad one would block its own replacement forever.
+ *
+ * This cannot detect altered pixels. Converting to XISF re-encodes, so
+ * the copy cannot be hashed against the card; geometry plus keyword
+ * survival is the strongest check available under that choice.
+ */
+FrameSelector.verifyImported = function( src, dst )
+{
+   if ( !File.exists( dst ) )
+      return { ok: false, reason: "nothing was written" };
+
+   var problem = null;
+   try
+   {
+      var a = Pipeline.readImageInfo( src );
+      var b = Pipeline.readImageInfo( dst );
+      if ( a.width != b.width || a.height != b.height )
+         problem = "geometry changed";
+      else
+         for ( var i = 0; i < FrameSelector.REQUIRED_KEYWORDS.length; ++i )
+         {
+            var k = FrameSelector.REQUIRED_KEYWORDS[i];
+            if ( Util.keywordValue( a.keywords, k ) != null &&
+                 Util.keywordValue( b.keywords, k ) == null )
+            {
+               problem = k + " did not survive";
+               break;
+            }
+         }
+   }
+   catch ( e ) { problem = String( e ); }
+
+   if ( problem != null )
+   {
+      try { File.remove( dst ); } catch ( e2 ) {}
+      return { ok: false, reason: problem };
+   }
+   return { ok: true, reason: "" };
+};
+
+/*
+ * Write a whole manifest, verifying each file as it lands.
+ */
+FrameSelector.writeManifest = function( manifest, onProgress )
+{
+   var all = manifest.lights.concat( manifest.flats );
+   var written = 0, failed = [];
+   for ( var i = 0; i < all.length; ++i )
+   {
+      var dir = all[i].dst.substring( 0, all[i].dst.lastIndexOf( "/" ) );
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+
+      var made = FrameSelector.convertOne( all[i].src, all[i].dst );
+      var good = made.ok ? FrameSelector.verifyImported( all[i].src, all[i].dst ) : made;
+      if ( good.ok )
+         ++written;
+      else
+         failed.push( { src: all[i].src, reason: good.reason } );
+
+      if ( onProgress )
+         onProgress( i + 1, all.length );
+   }
+   return { written: written, failed: failed };
+};
+
+/*
+ * Is any output path on the card?
+ *
+ * A mandatory destination does not by itself protect it. Comparing the
+ * two chosen directories as strings passes /Volumes/ASIAIR/export, and
+ * passes a symlink pointing into the card -- so <dest>/Light and
+ * <dest>/Flat are checked too, not just <dest>, and each is RESOLVED
+ * first. Containment is compared on path components, so a sibling that
+ * merely shares a prefix is not mistaken for a child.
+ */
+FrameSelector.outputsAreSafe = function( destination, cardRoot )
+{
+   if ( destination == null || cardRoot == null )
+      return false;
+
+   var root = FrameSelector.resolved( cardRoot );
+   var out = [ destination, destination + "/Light", destination + "/Flat" ];
+   for ( var i = 0; i < out.length; ++i )
+      if ( AsiairNames.isInside( FrameSelector.resolved( out[i] ), root ) )
+         return false;
+   return true;
+};
+
+/*
+ * A path with symlinks followed, where it exists. A path that is not
+ * there yet resolves to itself -- the destination folders are created
+ * later, and a name that does not exist cannot be a link onto the card.
+ */
+FrameSelector.resolved = function( path )
+{
+   try
+   {
+      if ( File.exists( path ) || File.directoryExists( path ) )
+         return File.fullPath( path );
+   }
+   catch ( e ) {}
+   return path;
 };
 
 /* ------------------------------------------------------------------------
@@ -1978,7 +2192,26 @@ FrameSelector.Dialog = class extends Dialog
        * moves that sentence somewhere it is easy to miss.
        */
       this.applyButton.text = "Run";
-      this.applyButton.onClick = function() { self.commit(); };
+      this.applyButton.onClick = function()
+      {
+         /*
+          * WRAPPED. commit() resolves paths, builds a manifest, converts
+          * and verifies -- every one of those can throw, and an exception
+          * crossing back into Qt unwinds through a destructor into
+          * std::terminate and takes the application with it.
+          */
+         try { self.commit(); }
+         catch ( e )
+         {
+            try
+            {
+               ( new MessageBox( "The run failed:\n\n" + e,
+                                 "Loom Frame Selector", StdIcon_Error,
+                                 StdButton_Ok ) ).execute();
+            }
+            catch ( e2 ) {}
+         }
+      };
 
       this.closeButton = new PushButton( this );
       this.closeButton.text = "Close";
@@ -2448,6 +2681,125 @@ FrameSelector.Dialog = class extends Dialog
       return result;
    }
 
+   /* The frames came off a card, so nothing may be written back to it. */
+   importing()
+   {
+      return this.state.cardRoot != null;
+   }
+
+   /*
+    * Import: write the approved lights and this night's flats into the
+    * chosen destination. Nothing on the card is touched, ever.
+    */
+   commitImport()
+   {
+      var self = this;
+      var dest = self.state.destination;
+
+      if ( dest == null || dest == self.state.folder )
+      {
+         ( new MessageBox( "Choose a destination folder first.\n\n" +
+                           "Frames are never written back to the card.",
+                           "Loom Frame Selector", StdIcon_Information,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+      if ( !FrameSelector.outputsAreSafe( dest, self.state.cardRoot ) )
+      {
+         ( new MessageBox( "That destination is on the card.\n\n" +
+                           dest + "\n\nPick somewhere else.",
+                           "Loom Frame Selector", StdIcon_Error,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var lights = FrameSelector.approvedLightRecords( self.state );
+      if ( lights.length == 0 )
+      {
+         ( new MessageBox( "Every frame is rejected; there is nothing to import.",
+                           "Loom Frame Selector", StdIcon_Information,
+                           StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var matches = self.matchedFlats( lights );
+      var manifest = AsiairNames.manifest( lights, matches, dest );
+      if ( manifest.collisions.length > 0 )
+      {
+         ( new MessageBox(
+            "Two source frames would be written to one name, which would " +
+            "lose one of them:\n\n" + manifest.collisions[0].dst +
+            "\n\nNothing has been written.",
+            "Loom Frame Selector", StdIcon_Error, StdButton_Ok ) ).execute();
+         return null;
+      }
+
+      var summary = "Import " + manifest.lights.length + " light(s) and " +
+                    manifest.flats.length + " flat(s) into\n" + dest +
+                    "\n\nThe card is not modified.";
+      if ( ( new MessageBox( summary, "Loom Frame Selector", StdIcon_Question,
+                             StdButton_Yes, StdButton_No ) ).execute() != StdButton_Yes )
+         return null;
+
+      self.state.locked = true;
+      var result = null;
+      var progress = new FrameSelector.ScanWindow;
+      try
+      {
+         progress.show();
+         CoreApplication.processEvents();
+         result = FrameSelector.writeManifest( manifest, function( done, total ) {
+            try { progress.report( "Importing", done, total, "" ); } catch ( e ) {}
+         } );
+      }
+      finally
+      {
+         try { progress.hide(); } catch ( e ) {}
+         try { progress.release(); } catch ( e ) {}
+      }
+
+      ( new MessageBox(
+         result.failed.length == 0
+            ? "Imported " + result.written + " frame(s)."
+            : "Imported " + result.written + " frame(s); " +
+              result.failed.length + " failed:\n\n" +
+              result.failed[0].src + "\n" + result.failed[0].reason,
+         "Loom Frame Selector",
+         result.failed.length == 0 ? StdIcon_Information : StdIcon_Warning,
+         StdButton_Ok ) ).execute();
+
+      self.refresh();
+      return result;
+   }
+
+   /*
+    * Which candidate flats suit the surviving light filters.
+    *
+    * Headers are read here and not before: the filename filter is never
+    * used to select or reject a flat, because narrowing by a value the
+    * header can contradict drops flats that actually match and no later
+    * check gets them back.
+    */
+   matchedFlats( lights )
+   {
+      var wanted = [], seen = {};
+      for ( var i = 0; i < lights.length; ++i )
+         if ( !( lights[i].filter in seen ) )
+         {
+            seen[lights[i].filter] = true;
+            var e = FrameSelector.entryFor( lights[i].path );
+            wanted.push( { filter: e.filter, binning: e.binning,
+                           camera: null, rotation: null } );
+         }
+
+      var records = [];
+      var flats = this.state.candidateFlats || [];
+      for ( var f = 0; f < flats.length; ++f )
+         records.push( Asiair.describe( flats[f] ) );
+
+      return AsiairNames.matchFlats( wanted, records );
+   }
+
    commit()
    {
       var self = this;
@@ -2455,6 +2807,14 @@ FrameSelector.Dialog = class extends Dialog
                return null;
             // A limit typed but not yet confirmed is part of what Run acts on.
             self.commitPendingEdits();
+            /*
+             * Import mode FIRST, and gated on the mode rather than on a
+             * path comparison: the delete-in-place path below must be
+             * unreachable when the source is a card, and a mode flag
+             * cannot be defeated by a symlink.
+             */
+            if ( self.importing() )
+               return self.commitImport();
             if ( self.copyingOut() )
                return self.commitCopy();
             var committable = self.committableRows();
@@ -3495,8 +3855,111 @@ FrameSelector.ScanWindow = class extends Dialog
    }
 };
 
+/*
+ * Offer a card, if one is plugged in.
+ *
+ * Returns a state to review, or null to fall through to the ordinary
+ * folder chooser. Detection must never block startup: a card that is not
+ * there costs two directory tests per mounted volume and nothing else.
+ */
+FrameSelector.offerCard = function()
+{
+   var cards = [];
+   try { cards = Asiair.detect(); } catch ( e ) { cards = []; }
+   if ( cards.length == 0 )
+      return null;
+
+   var root = cards[0];
+   var answer = ( new MessageBox(
+      "An ASIAIR card is mounted at\n" + root + "\n\nImport a night from it?",
+      "Loom Frame Selector", StdIcon_Question,
+      StdButton_Yes, StdButton_No ) ).execute();
+   if ( answer != StdButton_Yes )
+      return null;
+
+   var scan = null;
+   var progress = new FrameSelector.ScanWindow;
+   try
+   {
+      progress.show();
+      CoreApplication.processEvents();
+      scan = Asiair.scanCard( root, function( n ) {
+         try { progress.report( "Reading card", n, 0, "" ); } catch ( e ) {}
+      } );
+   }
+   finally
+   {
+      try { progress.hide(); } catch ( e ) {}
+      try { progress.release(); } catch ( e ) {}
+   }
+
+   if ( scan == null || scan.removed )
+   {
+      ( new MessageBox( "The card went away while it was being read.",
+                        "Loom Frame Selector", StdIcon_Warning,
+                        StdButton_Ok ) ).execute();
+      return null;
+   }
+   if ( scan.lights.length == 0 )
+   {
+      ( new MessageBox( "No readable light frames on that card.",
+                        "Loom Frame Selector", StdIcon_Information,
+                        StdButton_Ok ) ).execute();
+      return null;
+   }
+
+   var survey = NightDialog.surveyOf( scan, AsiairNames.GAP_HOURS );
+   var picker = new NightDialog.Dialog( survey, root );
+   var chose = false;
+   try { chose = picker.execute(); }
+   finally { try { picker.release(); } catch ( e ) {} }
+   if ( !chose || picker.selectedNight == null )
+      return null;
+
+   var night = picker.selectedNight;
+   var paths = [];
+   for ( var i = 0; i < night.frames.length; ++i )
+      paths.push( night.frames[i].path );
+
+   var state = null;
+   var p2 = new FrameSelector.ScanWindow;
+   try
+   {
+      p2.show();
+      CoreApplication.processEvents();
+      state = FrameSelector.buildStateFrom(
+         paths, night.target + " " + night.date, p2.callbacks() );
+   }
+   finally
+   {
+      try { p2.hide(); } catch ( e ) {}
+      try { p2.release(); } catch ( e ) {}
+   }
+
+   if ( state == null || state.cancelled )
+      return null;
+
+   /*
+    * Import mode lives on the STATE, which the review dialog is handed.
+    * FrameSelector.Dialog extends the native Dialog and does NOT inherit
+    * from FrameSelector.prototype, so a flag put there would read as
+    * undefined and every guard depending on it would be no guard at all.
+    */
+   state.cardRoot = root;
+   state.candidateFlats = NightDialog.flatsForNight( survey, night );
+   return state;
+};
+
 FrameSelector.main = function()
 {
+   var fromCard = FrameSelector.offerCard();
+   if ( fromCard != null )
+   {
+      if ( fromCard.order.length > 0 )
+         ( new FrameSelector.Dialog( fromCard ) ).execute();
+      return;
+   }
+
    var gd = new GetDirectoryDialog;
    gd.caption = "Select a folder of subframes";
    if ( !gd.execute() )

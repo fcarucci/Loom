@@ -44,8 +44,24 @@ Object.assign( global.File, {
    readTextFile:      p => fs.readFileSync( p, "utf8" ),
    writeTextFile:     ( p, t ) => fs.writeFileSync( p, t ),
    remove:            p => fs.unlinkSync( p ),
+   // PJSR's File.removeDirectory removes an EMPTY directory and fails
+   // otherwise, which is exactly fs.rmdirSync. No recursion is added: a
+   // shim that deleted more than the real one would be a lie that only
+   // showed up as data loss.
+   removeDirectory:   p => fs.rmdirSync( p ),
    move:              ( a, b ) => fs.renameSync( a, b ),
-   createDirectory:   ( p ) => fs.mkdirSync( p, { recursive: true } ),
+   /*
+    * PJSR THROWS if the directory already exists -- "Unable to create
+    * directory: File exists" -- while fs.mkdirSync with recursive:true
+    * returns quietly. The generous version passed a suite that then
+    * aborted on the first assertion inside PixInsight, which is precisely
+    * the failure this file exists to prevent. So it throws here too.
+    */
+   createDirectory: ( p, intermediates ) => {
+      if ( fs.existsSync( p ) )
+         throw new Error( "File I/O Error: Unable to create directory: File exists: " + p );
+      fs.mkdirSync( p, { recursive: !!intermediates } );
+   },
    extractDirectory:  p => path.dirname( p ),
    extractName:       p => path.basename( p, path.extname( p ) ),
    extractExtension:  p => path.extname( p ),

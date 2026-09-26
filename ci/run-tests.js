@@ -161,8 +161,64 @@ function load( file )
 }
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+               "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",
                "lib/Frames.js", "lib/Fly.js", "lib/Sky.js", "lib/Render.js",
                "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
+
+/*
+ * Files that are NOT loaded above, but must still PARSE.
+ *
+ * FrameSelector.js is the second entry point. It is deliberately not in
+ * LIBS -- it ends by calling main(), and the suite includes it itself --
+ * so nothing here ever parsed it. A structural edit once left it at 7.6
+ * MILLION lines, completely unloadable, and this suite reported "every
+ * runnable assertion passed" because the file it had broken was invisible
+ * to it. PixInsight then refused the script with no error anyone could
+ * see, which is a slow and confusing way to learn about a typo.
+ *
+ * Parsing is not running: these are compiled and thrown away. That is
+ * enough to catch the failure mode that actually happened.
+ */
+const PARSE_ONLY = [ "FrameSelector.js", "Loom.js", "selftest.js" ];
+
+for ( const file of PARSE_ONLY )
+{
+   let src;
+   try { ( { src } = load( file ) ); }
+   catch ( e )
+   {
+      console.error( "CANNOT READ " + file + ": " + e.message );
+      process.exit( 1 );
+   }
+   try { new Function( src ); }
+   catch ( e )
+   {
+      /*
+       * `new Function` reports the message but not the place. Narrowing by
+       * prefix finds the first line that will not parse, which is what
+       * anyone reading this actually needs.
+       */
+      const lines = src.split( "\n" );
+      let at = -1;
+      for ( let n = 1; n <= lines.length; ++n )
+      {
+         try { new Function( lines.slice( 0, n ).join( "\n" ) ); }
+         catch ( inner )
+         {
+            if ( inner.message === e.message ) { at = n; break; }
+         }
+      }
+      console.error( "SYNTAX ERROR in " + file + ": " + e.message );
+      console.error( "  " + lines.length + " lines after preprocessing" );
+      if ( at > 0 )
+      {
+         console.error( "  first unparseable at line " + at + ":" );
+         for ( let i = Math.max( 0, at-4 ); i < Math.min( lines.length, at+1 ); ++i )
+            console.error( "    " + String( i+1 ).padStart( 5 ) + "  " + lines[i] );
+      }
+      process.exit( 1 );
+   }
+}
 
 let loaded = 0;
 for ( const lib of LIBS )
