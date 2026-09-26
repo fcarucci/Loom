@@ -258,10 +258,13 @@ function loadConfig()
    Cache.setDir( config.cacheDir );
 
    /*
-    * The gradient dropdown from useGraXpert, and SyQon Studio Prism
-    * Essential's old name, so a run saved with either opens as it was.
+    * The gradient dropdown from useGraXpert, SyQon Studio Prism
+    * Essential's old name, Studio's one Prism entry (2.0, or Essential
+    * while 2.0 is refused), and the retired "Studio Parallax (correct
+    * only)", so a run saved with any of them opens with what is offered.
     */
-   Steps.migrateConfig( config );
+   var studioFound = Steps.studioAvailable();
+   Steps.migrateConfig( config, studioFound ? !Steps.studioPrism2Unavailable() : undefined );
 
    /*
     * A chosen cache folder that is not there disables the cache for this

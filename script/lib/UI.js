@@ -552,9 +552,9 @@ UI.SelectDialog = class extends Dialog
    this.sharpenToolCombo.enabled = tools.length > 0;
    this.sharpenToolCombo.toolTip = tools.length
       ? "<p>Aberration correction always runs when a tool is selected.</p>" +
-        "<p><b>SyQon Studio Parallax (correct only)</b> is that correction " +
-        "alone, as BlurXTerminator\'s correct-only pass does it: no star " +
-        "reduction, no detail.</p>"
+        "<p>With SyQon Studio installed, the aberration pass uses Studio " +
+        "Parallax\'s correction automatically. BlurXTerminator then does " +
+        "star reduction and detail on the composite.</p>"
       : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
    this.sharpenToolCombo.onItemSelected = function( i )
    {
@@ -699,15 +699,16 @@ UI.SelectDialog = class extends Dialog
       "plate, after star extraction and before the stretch, which is what " +
       "their authors ask for: noise reduced before the stretch amplifies " +
       "it. SyQon Prism runs <i>after</i> the stretch, which is the data it " +
-      "is built for. SyQon Studio\'s Prisms, Essential and 2.0, are linear " +
-      "again, so they run where NoiseXTerminator does.</p>" +
+      "is built for. SyQon Studio\'s Prism is linear again, so it runs " +
+      "where NoiseXTerminator does.</p>" +
       "<p><b>Strength</b> is the same ladder for every tool: Medium is the " +
-      "tool\'s own default, Low backs off, High pushes past it -- except " +
-      "on SyQon Studio Prism Essential, whose default is already its full " +
-      "strength, so High is the same as Medium.</p>" +
+      "tool\'s own default, Low backs off, High pushes past it.</p>" +
       "<p><b>SyQon Studio Prism 2.0</b> is Studio\'s paid Deep Prism: Low " +
       "is Advanced, Medium is Ultra, High is Max. Loom checks " +
-      "that your SyQon account can run them before it starts.</p>";
+      "that your SyQon account can run them before it starts. If it " +
+      "cannot, Loom offers <b>SyQon Studio Prism Essential</b> (included) " +
+      "in its place until a later check succeeds; Essential\'s High is " +
+      "the same as its Medium, its default being already full strength.</p>";
    this.noiseCombo.onItemSelected = function( i )
    {
       self.config.noiseTool = ( i == 0 ) ? "none" : noiseTools[i-1];
@@ -1193,11 +1194,12 @@ UI.SelectDialog = class extends Dialog
 
    this.gradientCombo = new ComboBox( this );
    for ( var gti = 0; gti < gradientTools.length; ++gti )
-      this.gradientCombo.addItem( ( gti == 0 ) ? "None" : gradientTools[gti] );
+      this.gradientCombo.addItem( Steps.gradientToolLabel( gradientTools[gti] ) );
    this.gradientCombo.currentItem = Math.max( 0, gradientTools.indexOf( config.gradientTool ) );
    this.gradientCombo.toolTip =
-      "<p>Background extraction on L, R, G and B, on the linear channels " +
-      "before registration.</p>" +
+      "<p>MultiscaleGradientCorrection always runs on L, R, G and B. This " +
+      "adds a second gradient pass after it, on the linear channels " +
+      "before registration; <b>Multi Gradient only</b> adds none.</p>" +
       "<p><b>GraXpert</b> takes the smoothing below. <b>SyQon Studio Deep " +
       "Gradient</b> takes no settings: it runs on the same linear data, which " +
       "is what its input contract asks for.</p>";
@@ -1913,7 +1915,6 @@ UI.SelectDialog = class extends Dialog
    {
       // !! matters: PJSR's Control.enabled rejects a non-Boolean, and
       // `config.sharpenTool && ...` yields the string itself when falsy.
-      // Steps.sharpenHasLevels: false too for Studio's correct-only use
       var on = Steps.sharpenHasLevels( this.config.sharpenTool );
       this.starReductionCombo.enabled = on;
       this.detailCombo.enabled = on;

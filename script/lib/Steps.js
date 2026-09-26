@@ -1568,15 +1568,21 @@ Steps.availableNoiseTools = function()
    }
    catch ( eP ) {}
    found.studio = Steps.studioAvailable();
+   found.prism2Unavailable = Steps.studioPrism2Unavailable();
    return Steps.noiseToolsFrom( found );
 };
 
 /*
  * The dropdown's entries from what was found, in a fixed order. Pure, so
- * the selftest can drive it. SyQon Studio's two Prisms are offered BESIDE
+ * the selftest can drive it. SyQon Studio's Prism is offered BESIDE
  * standalone Prism, not in its place: they are different models, and
  * Prism 2.0 is paid, so a user with Studio may still want the Prism they
  * own.
+ *
+ * Studio's Prism is ONE entry: Prism 2.0, or Essential in its place once
+ * a preflight has found 2.0 refused by the account (found.prism2Unavailable,
+ * Steps.studioPrism2Unavailable). The maintainer's rule: nobody wants the
+ * lesser model offered beside the better one.
  */
 Steps.noiseToolsFrom = function( found )
 {
@@ -1584,7 +1590,8 @@ Steps.noiseToolsFrom = function( found )
    if ( found.mldenoise ) out.push( Steps.NR_TOOL_MLDENOISE );
    if ( found.nxt )       out.push( Steps.NR_TOOL_NXT );
    if ( found.prism )     out.push( Steps.NR_TOOL_PRISM );
-   if ( found.studio )    out.push( Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 );
+   if ( found.studio )
+      out.push( found.prism2Unavailable ? Steps.NR_TOOL_STUDIO : Steps.NR_TOOL_STUDIO2 );
    return out;
 };
 
@@ -2435,15 +2442,10 @@ Steps.syqonExecutable = function()
    return Steps.findExecutable( "parallax_cli", Steps.syqonConfigPath() );
 };
 
-/*
- * Whether a sharpening tool takes star reduction and detail levels. Every
- * tool does except "none" and Studio Parallax's correct-only use, which is
- * aberration correction and nothing else -- BlurXTerminator's correct_only,
- * from Studio.
- */
+/* Whether a sharpening tool takes star reduction and detail levels. */
 Steps.sharpenHasLevels = function( tool )
 {
-   return !!tool && tool != "none" && tool != Steps.SHARPEN_TOOL_STUDIO_CORRECT;
+   return !!tool && tool != "none";
 };
 
 /* Which sharpening tools are usable right now. */
@@ -2458,16 +2460,16 @@ Steps.availableSharpenTools = function()
 
 /*
  * Pure, like Steps.noiseToolsFrom. Studio Parallax sits beside standalone
- * Parallax, and with it its correct-only use: the aberration pass alone,
- * in BlurXTerminator's correct_only place, for those who want Studio to
- * fix star shapes and nothing more.
+ * Parallax. Studio's correction alone is not an entry: with Studio found
+ * it replaces BlurXTerminator's correct-only pass by itself -- see
+ * Steps.aberrationCorrector.
  */
 Steps.sharpenToolsFrom = function( found )
 {
    var tools = [];
    if ( found.bxt )      tools.push( Steps.SHARPEN_TOOL_BXT );
    if ( found.parallax ) tools.push( Steps.SHARPEN_TOOL_SYQON );
-   if ( found.studio )   tools.push( Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_STUDIO_CORRECT );
+   if ( found.studio )   tools.push( Steps.SHARPEN_TOOL_STUDIO );
    return tools;
 };
 
@@ -2585,10 +2587,36 @@ Steps.noiseAmountFor = function( tool, level )
  * fixes star shape and optical aberration WITHOUT adding detail, so it is
  * the operation with no aesthetic downside.
  */
+/*
+ * The tool that really runs the aberration pass for a chosen tool.
+ *
+ * With BlurXTerminator chosen and SyQon Studio found, Studio Parallax's
+ * correction runs in place of BXT's correct_only -- automatically, the
+ * maintainer's rule: nothing to choose in the dialog. BXT still does star
+ * reduction and detail on the composite. Without Studio, BXT as before;
+ * every other tool corrects with itself (standalone Parallax keeps its
+ * own correction, Studio Parallax already uses Studio's).
+ */
+Steps.aberrationCorrector = function( tool, studioFound )
+{
+   return ( tool == Steps.SHARPEN_TOOL_BXT && studioFound ) ? Steps.SHARPEN_TOOL_STUDIO : tool;
+};
+
+/* Says which tool corrected, for the operation log line. */
+Steps.aberrationLogText = function( tool, studioFound )
+{
+   var corrector = Steps.aberrationCorrector( tool, studioFound );
+   return ( corrector == tool ) ? tool
+          : corrector + " (correction only, in place of " + tool + ")";
+};
+
 Steps.aberration = function( view, tool, linked, label )
 {
-   Util.operation( "aberration", tool, null, label || view.id );
-   if ( tool == Steps.SHARPEN_TOOL_BXT )
+   var studioFound = ( tool == Steps.SHARPEN_TOOL_BXT ) && Steps.studioAvailable();
+   Util.operation( "aberration", Steps.aberrationLogText( tool, studioFound ), null,
+                   label || view.id );
+   var corrector = Steps.aberrationCorrector( tool, studioFound );
+   if ( corrector == Steps.SHARPEN_TOOL_BXT )
    {
       var P = new BlurXTerminator;
       P.correct_only = true;
@@ -2599,18 +2627,17 @@ Steps.aberration = function( view, tool, linked, label )
          throw new Error( "BlurXTerminator (aberration) failed on " + view.id );
       return;
    }
-   if ( tool == Steps.SHARPEN_TOOL_SYQON )
+   if ( corrector == Steps.SHARPEN_TOOL_SYQON )
    {
       Steps.syqonExecuteStage( view, "aberration correction",
          { correctAberration: true, starReduction: 0, sharpen: 0.0 }, linked );
       return;
    }
-   if ( tool == Steps.SHARPEN_TOOL_STUDIO || tool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+   if ( corrector == Steps.SHARPEN_TOOL_STUDIO )
    {
       /*
        * Studio's "stellar correction / defect repair" stage alone -- for
-       * full Studio Parallax and for its correct-only use alike, which is
-       * the point of the latter: it is this pass, and only this. Linear,
+       * Studio Parallax, and in BXT's place when Studio is found. Linear,
        * declared: aberration runs on the calibrated per-channel masters,
        * before registration. `linked` is Loom's temporary-stretch choice
        * and Studio has no temporary stretch, so it does not apply.
@@ -4335,9 +4362,10 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
  * each when it is found -- the maintainer's call. Studio's models are not
  * the standalone ones under a new name (Prism 2.0 is a different network,
  * and paid), so a choice saved with a standalone tool stays with it.
- * Studio adds two uses of its own: Prism 2.0, whose Ultra and Max models
- * are Loom's denoise levels (Steps.NOISE_LEVELS.studio2), and Parallax
- * correct-only, the aberration pass alone.
+ * Studio adds Prism 2.0, whose Advanced, Ultra and Max models are Loom's
+ * denoise levels (Steps.NOISE_LEVELS.studio2), and, with BlurXTerminator
+ * chosen, runs the aberration pass in BXT's place with Parallax's
+ * correction (Steps.aberrationCorrector) -- no dropdown entry.
  *
  * NO TEMPORARY STRETCH. The standalone CLIs were trained on stretched data,
  * which is why Loom wrapped them in syqonCreateStretchedTempWindow and its
@@ -4366,7 +4394,7 @@ Steps.NR_TOOL_STUDIO       = "SyQon Studio Prism Essential";
 Steps.NR_TOOL_STUDIO2      = "SyQon Studio Prism 2.0";
 Steps.NR_TOOL_STUDIO_OLD   = "SyQon Studio Prism";
 Steps.SHARPEN_TOOL_STUDIO  = "SyQon Studio Parallax";
-Steps.SHARPEN_TOOL_STUDIO_CORRECT = "SyQon Studio Parallax (correct only)";
+Steps.SHARPEN_TOOL_STUDIO_CORRECT_OLD = "SyQon Studio Parallax (correct only)";
 Steps.STAR_TOOL_STUDIO     = "SyQon Studio Axiom";
 
 Steps.GRADIENT_TOOL_NONE     = "none";
@@ -4398,6 +4426,16 @@ Steps.STUDIO_TIMEOUT_MS = 30 * 60 * 1000;
  * from standalone Parallax to Studio's changes the tool, not the intent.
  */
 Steps.STUDIO_PARALLAX_FAMILY = "classic";
+
+/*
+ * The dropdown's label for a gradient tool. MultiscaleGradientCorrection
+ * always runs, so "none" is labelled for what does: MGC alone. The stored
+ * value stays "none", so saved settings and process icons still load.
+ */
+Steps.gradientToolLabel = function( tool )
+{
+   return ( tool == Steps.GRADIENT_TOOL_NONE ) ? "Multi Gradient only" : tool;
+};
 
 /*
  * The gradient tool a configuration asks for.
@@ -4453,13 +4491,37 @@ Steps.removeGradient = function( view, config )
  * Parameters and Settings are read; pure apart from the object it is
  * handed, so the selftest can drive it. Standalone SyQon choices are left
  * alone: Studio is offered beside those tools, not in their place.
+ * `prism2Offered`: true when Studio is found and Prism 2.0 is offered,
+ * false when Studio is found but Essential is offered in its place,
+ * undefined when Studio is not found.
  */
-Steps.migrateConfig = function( config )
+Steps.migrateConfig = function( config, prism2Offered )
 {
    config.gradientTool = Steps.gradientToolOf( config );
    // Essential's old name; the model, and so the pixels, are unchanged
    if ( config.noiseTool == Steps.NR_TOOL_STUDIO_OLD )
       config.noiseTool = Steps.NR_TOOL_STUDIO;
+   /*
+    * Studio's Prism is one entry, 2.0 or Essential (Steps.noiseToolsFrom):
+    * a saved choice of the other loads as the one offered. Undefined when
+    * Studio is not found, and then nothing is changed.
+    */
+   if ( prism2Offered === true && config.noiseTool == Steps.NR_TOOL_STUDIO )
+      config.noiseTool = Steps.NR_TOOL_STUDIO2;
+   else if ( prism2Offered === false && config.noiseTool == Steps.NR_TOOL_STUDIO2 )
+      config.noiseTool = Steps.NR_TOOL_STUDIO;
+   /*
+    * Studio Parallax (correct only) was a dropdown entry for a while. It
+    * is BlurXTerminator now, whose aberration pass Studio runs when found;
+    * star reduction and detail were greyed out under it, so they stay off
+    * rather than switching BXT's on from levels the user never saw.
+    */
+   if ( config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO_CORRECT_OLD )
+   {
+      config.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+      config.starReduction = "none";
+      config.detailLevel = "none";
+   }
    return config;
 };
 
@@ -4483,16 +4545,17 @@ Steps.studioModelLabel = function( model )
 
 /*
  * Every Studio model a configuration will run, each once, in pipeline
- * order. Pure: preflight probes what this returns.
+ * order. Pure: preflight probes what this returns. `studioFound` matters
+ * only for BlurXTerminator, whose aberration pass Studio then runs.
  */
-Steps.studioModelsFor = function( config )
+Steps.studioModelsFor = function( config, studioFound )
 {
    var out = [];
    function add( m ) { if ( out.indexOf( m ) < 0 ) out.push( m ); }
    if ( Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_GRADIENT );
-   if ( config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO ||
-        config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+   // Studio Parallax, or BXT's aberration pass run by Studio (studioFound)
+   if ( Steps.aberrationCorrector( config.sharpenTool, !!studioFound ) == Steps.SHARPEN_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_PARALLAX );
    if ( config.starTool == Steps.STAR_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_STARLESS );
@@ -4548,9 +4611,58 @@ Steps.studioProbeProblem = function( model, res )
              "available to your SyQon account (syqon-cli exit " +
              ( res.exitCode != null ? res.exitCode : "?" ) + "). Sign in through SyQon " +
              "Studio, or choose another " + Steps.studioModelRole( model );
-   if ( Steps.studioIsPrism( model ) && model != Steps.STUDIO_MODEL_DENOISE )
-      msg += ": " + Steps.NR_TOOL_STUDIO + " is included";
-   return msg + ".";
+   msg += ".";
+   if ( Steps.studioIsPrism2( model ) )
+      msg += " Until a check succeeds, Loom offers " + Steps.NR_TOOL_STUDIO +
+             " (included) in place of Prism 2.0.";
+   return msg;
+};
+
+/* The Deep Prism models behind SyQon Studio Prism 2.0. */
+Steps.studioIsPrism2 = function( model )
+{
+   for ( var level in Steps.NOISE_LEVELS.studio2 )
+      if ( Steps.NOISE_LEVELS.studio2[level].model == model )
+         return true;
+   return false;
+};
+
+/*
+ * The remembered refusal of Prism 2.0 after a check: true when a Prism 2.0
+ * model was refused, false when one ran, null when the check tried none
+ * (leave it as it was). `results` is [{ model, refused }].
+ */
+Steps.prism2FlagAfterCheck = function( results )
+{
+   var flag = null;
+   for ( var i = 0; i < results.length; ++i )
+   {
+      if ( !Steps.studioIsPrism2( results[i].model ) )
+         continue;
+      if ( results[i].refused )
+         return true;
+      flag = false;
+   }
+   return flag;
+};
+
+/*
+ * Settings: Prism 2.0 found refused by the account. Written by preflight,
+ * cleared by a later check where a Prism 2.0 model runs; while set, the
+ * dialog offers Prism Essential in 2.0's place.
+ */
+Steps.PRISM2_UNAVAILABLE_KEY = "Loom/studioPrism2Unavailable";
+
+Steps.studioPrism2Unavailable = function()
+{
+   try { return Settings.read( Steps.PRISM2_UNAVAILABLE_KEY, DataType_Boolean ) === true; }
+   catch ( e ) { return false; }
+};
+
+Steps.setStudioPrism2Unavailable = function( on )
+{
+   try { Settings.write( Steps.PRISM2_UNAVAILABLE_KEY, DataType_Boolean, !!on ); }
+   catch ( e ) {}
 };
 
 /* Why a run produced nothing, naming the model. */
@@ -4658,19 +4770,34 @@ Steps.studioProbe = function( model )
 /* Preflight's check: the problems, one per model the account refuses. */
 Steps.studioCheckEntitlement = function( config )
 {
-   var problems = [];
-   var models = Steps.studioModelsFor( config );
+   var problems = [], results = [];
+   var models = Steps.studioModelsFor( config, true );  // called only with Studio found
    for ( var i = 0; i < models.length; ++i )
    {
       Util.reportStage( "Checking SyQon Studio " + models[i] );
       var res = Steps.studioProbe( models[i] );
       var p = Steps.studioProbeProblem( models[i], res );
+      /*
+       * Only a clear answer counts towards the remembered flag: refused,
+       * or ran (exit 0). An inconclusive test run changes nothing.
+       */
+      if ( p != null || res.exitCode === 0 )
+         results.push( { model: models[i], refused: p != null } );
       if ( p != null )
          problems.push( p );
       else
          Util.log( "studio", models[i] + ": " + ( ( res.exitCode === 0 )
                    ? "available to this account" : "test run inconclusive (" +
                      Steps.studioExitMessage( res.exitCode ) + ")" ) );
+   }
+   var flag = Steps.prism2FlagAfterCheck( results );
+   if ( flag != null && flag != Steps.studioPrism2Unavailable() )
+   {
+      Steps.setStudioPrism2Unavailable( flag );
+      Util.log( "studio", flag
+                ? "Prism 2.0 is not available to this account: Loom offers " +
+                  Steps.NR_TOOL_STUDIO + " in its place until a check succeeds"
+                : "Prism 2.0 is available to this account again" );
    }
    return problems;
 };

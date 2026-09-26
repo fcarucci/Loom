@@ -253,8 +253,8 @@ previous session has no guaranteed meaning later.
 | **Solve** | plate solution, skipped if one is already present. Solved with **recursive surface splines** and **verified** against the catalogue | — |
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera read from `INSTRUME` |
 | **MGC** | MultiscaleGradientCorrection against the MARS reference. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
-| **Gradient removal** | background extraction on the linear channels. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | None, GraXpert (with its smoothing), SyQon Studio Deep Gradient; also on H/S/O |
-| **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax, SyQon Studio Parallax, or SyQon Studio Parallax (correct only): this correction alone, no star reduction or detail |
+| **Gradient removal** | background extraction on the linear channels. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | Multi Gradient only (MGC always runs; this adds no second pass), GraXpert (with its smoothing), SyQon Studio Deep Gradient; also on H/S/O |
+| **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. With SyQon Studio installed, the aberration pass uses Studio Parallax's correction automatically, BlurXTerminator's included |
 
 **Every solve is verified**, not just the first of a run: each channel is solved
 independently and SPFC calibrates each against its own solution, so each one is
@@ -286,7 +286,7 @@ reported only.
 | **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see below | on/off |
-| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism Essential or SyQon Studio Prism 2.0 (Low: Advanced, Medium: Ultra, High: Max; paid, checked against your SyQon account before the run); strength Low/Medium/High |
+| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism 2.0 (Low: Advanced, Medium: Ultra, High: Max; paid, checked against your SyQon account before the run; if the account refuses it, SyQon Studio Prism Essential is offered in its place until a check succeeds); strength Low/Medium/High |
 
 ### Narrowband palette
 

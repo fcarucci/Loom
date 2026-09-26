@@ -63,7 +63,7 @@ Pipeline.preflight = function( config )
     * stage after hours of work. About 13 s a model (measured: five models
     * took 65 s from PixInsight), once a session.
     */
-   if ( Steps.studioModelsFor( config ).length > 0 && Steps.studioAvailable() )
+   if ( Steps.studioModelsFor( config, true ).length > 0 && Steps.studioAvailable() )
       problems = problems.concat( Steps.studioCheckEntitlement( config ) );
 
    // MGC always runs on the broadband channels present in this selection,
@@ -419,9 +419,30 @@ Pipeline.compositeSharpenParams = function( config )
  */
 Pipeline.withStudioFamily = function( params, tool )
 {
-   if ( tool == Steps.SHARPEN_TOOL_STUDIO || tool == Steps.SHARPEN_TOOL_STUDIO_CORRECT )
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO )
       params.family = Steps.STUDIO_PARALLAX_FAMILY;
    return params;
+};
+
+/*
+ * The aberration stage's cache parameters. Keyed on the tool that really
+ * corrects: BlurXTerminator without Studio keys byte-for-byte as it always
+ * has, so its cached channels still hit, while BXT with Studio found adds
+ * the corrector (Studio Parallax) and its family -- a BXT-corrected
+ * channel must never be served as a Studio-corrected one, or back.
+ */
+Pipeline.aberrationParams = function( config, studioFound )
+{
+   var tool = config.sharpenTool || "none";
+   var p = { tool: tool, photometry: "linearfit-v1" };
+   var corrector = Steps.aberrationCorrector( tool, !!studioFound );
+   if ( corrector != tool )
+   {
+      p.corrector = corrector;
+      p.family = Steps.STUDIO_PARALLAX_FAMILY;
+      return p;
+   }
+   return Pipeline.withStudioFamily( p, tool );
 };
 
 /*
@@ -1743,9 +1764,7 @@ Pipeline.correctBroadband = function( chans, config, reg )
           * finished, calibrated composite, where a linked stretch keeps
           * the colour correction intact -- see Steps.correctComposite.
           */
-         aberration:    Pipeline.withStudioFamily( { tool: config.sharpenTool || "none",
-                                                     photometry: "linearfit-v1" },
-                                                   config.sharpenTool )
+         aberration:    Pipeline.aberrationParams( config, Steps.studioAvailable() )
       };
       var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
       bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;

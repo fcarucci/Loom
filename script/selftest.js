@@ -1643,18 +1643,25 @@ function runTests()
     */
    check( "denoise offers standalone Prism and both Studio Prisms together",
           Steps.noiseToolsFrom( { nxt: true, prism: true, studio: true } ),
-          [ Steps.NR_TOOL_NXT, Steps.NR_TOOL_PRISM,
-            Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 ] );
+          [ Steps.NR_TOOL_NXT, Steps.NR_TOOL_PRISM, Steps.NR_TOOL_STUDIO2 ] );
    check( "without Studio, only what is installed",
           Steps.noiseToolsFrom( { mldenoise: true, prism: true } ),
           [ Steps.NR_TOOL_MLDENOISE, Steps.NR_TOOL_PRISM ] );
    check( "with Studio alone, only Studio's",
           Steps.noiseToolsFrom( { studio: true } ),
-          [ Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 ] );
-   check( "sharpening offers standalone Parallax next to Studio's, and its correct-only use",
+          [ Steps.NR_TOOL_STUDIO2 ] );
+   /*
+    * Essential is hidden while Prism 2.0 is offered -- the maintainer's
+    * rule: nobody wants the lesser model beside the better one. It comes
+    * back in 2.0's place only once a preflight has found 2.0 refused by
+    * the account (remembered in Settings until a check succeeds).
+    */
+   check( "with Prism 2.0 refused, Essential is offered in its place",
+          Steps.noiseToolsFrom( { prism: true, studio: true, prism2Unavailable: true } ),
+          [ Steps.NR_TOOL_PRISM, Steps.NR_TOOL_STUDIO ] );
+   check( "sharpening offers standalone Parallax next to Studio's, and no correct-only entry",
           Steps.sharpenToolsFrom( { bxt: true, parallax: true, studio: true } ),
-          [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON,
-            Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_STUDIO_CORRECT ] );
+          [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO ] );
    check( "and no Studio entries without Studio",
           Steps.sharpenToolsFrom( { bxt: true, parallax: true } ),
           [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON ] );
@@ -1783,7 +1790,7 @@ function runTests()
    check( "the Studio models a run uses, each once",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
                                    noiseLevelL: "high",
-                                   sharpenTool: Steps.SHARPEN_TOOL_STUDIO_CORRECT,
+                                   sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                    starTool: Steps.STAR_TOOL_STUDIO,
                                    gradientTool: Steps.GRADIENT_TOOL_STUDIO } ),
           [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-max" ] );
@@ -1803,7 +1810,24 @@ function runTests()
           Steps.studioProbeProblem( "prism-max", { exitCode: 4, stderr: "" } ),
           "SyQon Studio: Prism Deep Max (prism-max) is not available to your SyQon " +
           "account (syqon-cli exit 4). Sign in through SyQon Studio, or choose " +
-          "another noise reduction tool: SyQon Studio Prism Essential is included." );
+          "another noise reduction tool. Until a check succeeds, Loom offers " +
+          "SyQon Studio Prism Essential (included) in place of Prism 2.0." );
+   check( "an account refusal of Essential or Parallax says nothing about 2.0",
+          /Prism 2\.0/.test( Steps.studioProbeProblem( "parallax", { exitCode: 4, stderr: "" } ) ),
+          false );
+
+   /*
+    * The remembered refusal: set when a Prism 2.0 model is refused, cleared
+    * when one runs, left alone when the check tried none of them.
+    */
+   check( "a refused Prism 2.0 model sets the flag",
+          Steps.prism2FlagAfterCheck( [ { model: "parallax", refused: false },
+                                        { model: "prism-max", refused: true } ] ), true );
+   check( "a Prism 2.0 model that ran clears it",
+          Steps.prism2FlagAfterCheck( [ { model: "prism-ultra", refused: false } ] ), false );
+   check( "a check with no Prism 2.0 model leaves it as it was",
+          Steps.prism2FlagAfterCheck( [ { model: "prism-essential", refused: false },
+                                        { model: "axiom", refused: true } ] ), null );
    check( "a missing session is the account too, whatever the code",
           /not available to your SyQon account/.test(
              Steps.studioProbeProblem( "axiom", { exitCode: 1,
@@ -1847,34 +1871,50 @@ function runTests()
           [ 0.25, 0.50, 0.75 ] );
 
    /*
-    * Studio Parallax, correct only: the aberration pass BlurXTerminator's
-    * correct_only makes, and nothing else. Same place (per channel, before
-    * registration), same Studio call as full Studio Parallax's aberration
-    * stage; star reduction and detail never run, whatever their levels.
+    * The aberration pass with BlurXTerminator chosen: when SyQon Studio is
+    * found, Studio Parallax's correction runs in place of BXT's
+    * correct_only, automatically -- the maintainer's rule. BXT still does
+    * star reduction and detail on the composite. Without Studio, BXT as
+    * before. Every other tool corrects with itself.
     */
-   check( "correct-only is an aberration tool",
-          Steps.aberrationWillRun( Steps.SHARPEN_TOOL_STUDIO_CORRECT ), true );
-   check( "with no composite stage, whatever the levels say",
-          Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO_CORRECT,
-                                             starReduction: "high", detailLevel: "high" } ),
-          null );
-   check( "and no star or detail amounts",
-          [ Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO_CORRECT, "stars", "high" ),
-            Steps.sharpenAmountFor( Steps.SHARPEN_TOOL_STUDIO_CORRECT, "detail", "high" ) ],
-          [ null, null ] );
-   check( "its levels are not offered",
-          [ Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_STUDIO_CORRECT ),
-            Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_STUDIO ),
-            Steps.sharpenHasLevels( Steps.SHARPEN_TOOL_BXT ),
-            Steps.sharpenHasLevels( "none" ) ],
-          [ false, true, true, false ] );
-   check( "correctComposite does nothing for it",
-          Steps.correctComposite( null, Steps.SHARPEN_TOOL_STUDIO_CORRECT, "high", "high" ),
-          false );
-   check( "its aberration pass runs Studio's classic family",
-          Pipeline.withStudioFamily( { tool: Steps.SHARPEN_TOOL_STUDIO_CORRECT },
-                                     Steps.SHARPEN_TOOL_STUDIO_CORRECT ),
-          { tool: Steps.SHARPEN_TOOL_STUDIO_CORRECT, family: "classic" } );
+   check( "BXT's aberration pass is Studio Parallax's when Studio is found",
+          [ Steps.aberrationCorrector( Steps.SHARPEN_TOOL_BXT, true ),
+            Steps.aberrationCorrector( Steps.SHARPEN_TOOL_BXT, false ) ],
+          [ Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_BXT ] );
+   check( "other tools correct with themselves, Studio or not",
+          [ Steps.aberrationCorrector( Steps.SHARPEN_TOOL_SYQON, true ),
+            Steps.aberrationCorrector( Steps.SHARPEN_TOOL_STUDIO, true ),
+            Steps.aberrationCorrector( "none", true ) ],
+          [ Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO, "none" ] );
+   check( "the log says which tool corrected",
+          Steps.aberrationLogText( Steps.SHARPEN_TOOL_BXT, true ),
+          "SyQon Studio Parallax (correction only, in place of BlurXTerminator)" );
+   check( "and says nothing extra when the chosen tool corrected",
+          Steps.aberrationLogText( Steps.SHARPEN_TOOL_BXT, false ), Steps.SHARPEN_TOOL_BXT );
+
+   /*
+    * The stage key. BXT without Studio keys exactly as it always has, so
+    * its cached channels still hit; BXT with Studio keys on the corrector
+    * that really ran, so a BXT-corrected channel is never served as a
+    * Studio-corrected one, or the other way round.
+    */
+   check( "BXT without Studio keys as before",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ),
+          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" } );
+   check( "BXT with Studio keys on Studio's corrector and family",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, true ),
+          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1",
+            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "classic" } );
+   check( "Studio Parallax keys as it did",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO }, true ),
+          { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "classic" } );
+   check( "no tool keys as none",
+          Pipeline.aberrationParams( {}, true ), { tool: "none", photometry: "linearfit-v1" } );
+
+   check( "preflight checks Parallax when BXT's pass will be Studio's",
+          [ Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, true ),
+            Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ) ],
+          [ [ "parallax" ], [] ] );
 
    /*
     * Gradient removal is a choice of tool now, not a GraXpert checkbox.
@@ -1885,6 +1925,18 @@ function runTests()
           Steps.gradientToolOf( { useGraXpert: true } ), Steps.GRADIENT_TOOL_GRAXPERT );
    check( "useGraXpert false is none",
           Steps.gradientToolOf( { useGraXpert: false } ), "none" );
+   /*
+    * MultiscaleGradientCorrection always runs, so the dropdown's "none"
+    * is not "no gradient removal": it is labelled for what does run. The
+    * stored value stays "none", so saved settings and icons still load.
+    */
+   check( "none is labelled Multi Gradient only; the tools by their names",
+          [ Steps.gradientToolLabel( Steps.GRADIENT_TOOL_NONE ),
+            Steps.gradientToolLabel( Steps.GRADIENT_TOOL_GRAXPERT ),
+            Steps.gradientToolLabel( Steps.GRADIENT_TOOL_STUDIO ) ],
+          [ "Multi Gradient only", "GraXpert", "SyQon Studio Deep Gradient" ] );
+   check( "and the stored value is still none",
+          Steps.GRADIENT_TOOL_NONE, "none" );
    check( "an empty configuration removes nothing",
           Steps.gradientToolOf( {} ), "none" );
    check( "the new setting wins over the old one",
@@ -1926,8 +1978,30 @@ function runTests()
       check( "a saved \"SyQon Studio Prism\" loads as Prism Essential, the model it ran",
              [ studio.gradientTool, studio.noiseTool ],
              [ Steps.GRADIENT_TOOL_GRAXPERT, Steps.NR_TOOL_STUDIO ] );
+      var ess = { noiseTool: Steps.NR_TOOL_STUDIO };
+      Steps.migrateConfig( ess, true );
+      check( "a saved Essential loads as Prism 2.0 when 2.0 is offered",
+             ess.noiseTool, Steps.NR_TOOL_STUDIO2 );
+      var old2 = { noiseTool: "SyQon Studio Prism" };
+      Steps.migrateConfig( old2, true );
+      check( "and so does Essential's old name",
+             old2.noiseTool, Steps.NR_TOOL_STUDIO2 );
+      var two = { noiseTool: Steps.NR_TOOL_STUDIO2 };
+      Steps.migrateConfig( two, false );
+      check( "a saved Prism 2.0 loads as Essential while 2.0 is refused",
+             two.noiseTool, Steps.NR_TOOL_STUDIO );
+      var none = { noiseTool: Steps.NR_TOOL_STUDIO };
+      Steps.migrateConfig( none );
+      check( "without Studio a saved Essential is left alone",
+             none.noiseTool, Steps.NR_TOOL_STUDIO );
       check( "the new name is not the old one",
              Steps.NR_TOOL_STUDIO != "SyQon Studio Prism", true );
+      var correct = { sharpenTool: "SyQon Studio Parallax (correct only)",
+                      starReduction: "medium", detailLevel: "low" };
+      Steps.migrateConfig( correct );
+      check( "a saved Studio correct-only choice becomes BlurXTerminator, which corrects with Studio",
+             [ correct.sharpenTool, correct.starReduction, correct.detailLevel ],
+             [ Steps.SHARPEN_TOOL_BXT, "none", "none" ] );
    } )();
 
    /* ---------------------------------------------------------------- */
