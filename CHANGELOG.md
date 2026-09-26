@@ -3,6 +3,10 @@
 What changed in each Loom release. Each release's notes on GitHub are its
 section of this file.
 
+## [Unreleased]
+
+- SyQon Studio Prism 2.0: Medium is now Max and High is Ultra.
+
 ## [0.3.0] — 2026-09-26
 
 ### Loom Fly-Through

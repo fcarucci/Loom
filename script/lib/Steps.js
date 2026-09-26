@@ -1659,12 +1659,12 @@ Steps.NOISE_LEVELS = {
     * SyQon Studio's Prism 2.0, the paid Deep Prism models. Each level is a
     * MODEL (and a blend, kept in the key), because Prism 2.0's strengths
     * are its models: Studio lists Advanced, Ultra and Max. The ladder is
-    * the maintainer's choice (2026-09-26), every level at Studio's own
-    * 1.00 blend:
+    * the maintainer's choice (2026-09-26, Medium and High swapped the same
+    * day), every level at Studio's own 1.00 blend:
     *
     *    Low     Advanced at 1.00   the lightest Deep Prism
-    *    Medium  Ultra at 1.00      Ultra as Studio runs it
-    *    High    Max at 1.00        pushes past Medium, as High does elsewhere
+    *    Medium  Max at 1.00        Max as Studio runs it
+    *    High    Ultra at 1.00      Ultra as Studio runs it
     *
     * Measured with syqon-cli on a synthetic linear frame (384x384 RGB,
     * sky sigma 1.73e-3), sky noise kept after each, against Essential:
@@ -1672,15 +1672,16 @@ Steps.NOISE_LEVELS = {
     *    Essential 1.00  0.77      Ultra 0.60  0.52      Ultra 1.00  0.20
     *    Advanced 1.00   0.39      Max 0.60    0.40      Max 1.00    0.04
     *
-    * so the ladder steps 0.39 -> 0.20 -> 0.04, every level stronger than
-    * Essential's full strength. Each level is its own licensed model, so
-    * preflight checks the one the chosen level runs. Max leaves 4% of the
-    * synthetic noise, which on real data is where faint signal starts to
-    * go with it: High is the level to inspect, as High is everywhere.
+    * so the ladder keeps 0.39 -> 0.04 -> 0.20, every level stronger than
+    * Essential's full strength. On that frame Medium (Max) removes more
+    * noise than High (Ultra); the maintainer chose the order knowing it.
+    * Each level is its own licensed model, so preflight checks the one
+    * the chosen level runs. Max leaves 4% of the synthetic noise, which
+    * on real data is where faint signal starts to go with it.
     */
    studio2: { low:    { model: "prism-advanced", application: 1.00 },
-              medium: { model: "prism-ultra", application: 1.00 },  // Ultra, Studio's blend
-              high:   { model: "prism-max",   application: 1.00 } }
+              medium: { model: "prism-max",   application: 1.00 },  // Max, Studio's blend
+              high:   { model: "prism-ultra", application: 1.00 } }
 };
 
 Steps.denoise = function( view, tool, level, label, alreadyStretched )
@@ -4362,7 +4363,7 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
  * each when it is found -- the maintainer's call. Studio's models are not
  * the standalone ones under a new name (Prism 2.0 is a different network,
  * and paid), so a choice saved with a standalone tool stays with it.
- * Studio adds Prism 2.0, whose Advanced, Ultra and Max models are Loom's
+ * Studio adds Prism 2.0, whose Advanced, Max and Ultra models are Loom's
  * denoise levels (Steps.NOISE_LEVELS.studio2), and, with BlurXTerminator
  * chosen, runs the aberration pass in BXT's place with Parallax's
  * correction (Steps.aberrationCorrector) -- no dropdown entry.

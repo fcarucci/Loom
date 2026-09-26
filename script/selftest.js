@@ -1754,19 +1754,19 @@ function runTests()
    /*
     * Prism 2.0: Studio's paid Deep Prism models, Advanced, Ultra and Max,
     * all linear like Essential. One model per level, each at Studio's
-    * 1.00 blend -- the maintainer's choice: Low Advanced, Medium Ultra,
-    * High Max. Measured on a synthetic linear frame, sky noise kept:
-    * 0.39, 0.20, 0.04.
+    * 1.00 blend -- the maintainer's choice: Low Advanced, Medium Max,
+    * High Ultra. Measured on a synthetic linear frame, sky noise kept:
+    * 0.39, 0.04, 0.20 -- Medium keeps less than High, knowingly.
     */
    check( "Prism 2.0 is a linear-stage denoiser too",
           Steps.denoiseIsLinear( Steps.NR_TOOL_STUDIO2 ), true );
-   check( "Prism 2.0's ladder: Advanced, Ultra, Max",
+   check( "Prism 2.0's ladder: Advanced, Max, Ultra",
           [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low" ),
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium" ),
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high" ) ],
           [ { model: "prism-advanced", application: 1.00 },
-            { model: "prism-ultra",    application: 1.00 },
-            { model: "prism-max",   application: 1.00 } ] );
+            { model: "prism-max",      application: 1.00 },
+            { model: "prism-ultra",    application: 1.00 } ] );
    check( "an unknown Prism 2.0 level has no amount",
           Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "extreme" ), null );
    check( "Ultra and Max are tiled and blended like Essential",
@@ -1779,7 +1779,7 @@ function runTests()
           Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
                                           noiseLevel: "high" }, "RGB" ),
           { tool: Steps.NR_TOOL_STUDIO2, level: "high", stretched: false,
-            amount: { model: "prism-max", application: 1.00 } } );
+            amount: { model: "prism-ultra", application: 1.00 } } );
 
    /*
     * Entitlement. Ultra, Max, Parallax and Axiom are paid; the account
@@ -1793,11 +1793,11 @@ function runTests()
                                    sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                    starTool: Steps.STAR_TOOL_STUDIO,
                                    gradientTool: Steps.GRADIENT_TOOL_STUDIO } ),
-          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-max" ] );
-   check( "Medium on both is Ultra alone",
+          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-ultra" ] );
+   check( "Medium on both is Max alone",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "medium",
                                    noiseLevelL: "medium" } ),
-          [ "prism-ultra" ] );
+          [ "prism-max" ] );
    check( "a run with no Studio tool uses no Studio model",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium",
                                    sharpenTool: Steps.SHARPEN_TOOL_BXT,
