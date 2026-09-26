@@ -3817,14 +3817,28 @@ FrameSelector.ScanWindow = class extends Dialog
           * The name goes second, where clipping costs least, elided from
           * the front so the timestamp and sequence number survive.
           */
+         // an unknown total (a card being read) shows the count alone, never "of 0"
          this.stageLabel.text =
-            "<b>" + phase + " (" + done + " of " + total + ")</b><br>" +
+            "<b>" + phase + " (" + ( total > 0 ? done + " of " + total : done ) + ")</b><br>" +
             Util.elideHead( label, FrameSelector.SCAN_NAME_CHARS );
          this.bar.repaint();
          CoreApplication.processEvents();
       }
       catch ( e ) {}
       return !this.cancelled;
+   }
+
+   /* A message with no count, for a step that has none yet (starting up). */
+   announce( text )
+   {
+      try
+      {
+         this.fraction = 0;
+         this.stageLabel.text = "<b>" + text + "</b><br>";
+         this.bar.repaint();
+         CoreApplication.processEvents();
+      }
+      catch ( e ) {}
    }
 
    /* Detached before teardown, for the reason PreviewControl.release states. */
@@ -3864,18 +3878,33 @@ FrameSelector.ScanWindow = class extends Dialog
  */
 FrameSelector.offerCard = function()
 {
+   /*
+    * The first thing on screen: looking through every mounted volume takes
+    * a moment (Time Machine backups, network shares), and with nothing
+    * shown the tool looked stuck while it opened.
+    */
    var cards = [];
-   try { cards = Asiair.detect(); } catch ( e ) { cards = []; }
+   var looking = new FrameSelector.ScanWindow;
+   try
+   {
+      looking.windowTitle = "Loom Frame Selector - starting up";
+      looking.announce( "Starting up: looking for an ASIAIR\u2026" );
+      looking.show();
+      CoreApplication.processEvents();
+      cards = Asiair.detect( function() { return looking.cancelled; },
+                             function( k, n, root ) { looking.report( "Looking for an ASIAIR", k, n, root ); } );
+   }
+   catch ( e ) { cards = []; }
+   finally
+   {
+      try { looking.hide(); } catch ( e ) {}
+      try { looking.release(); } catch ( e ) {}
+   }
    if ( cards.length == 0 )
       return null;
 
+   // no question first: a card is read straight away and every target's nights are shown (Cancel there opens the folder chooser)
    var root = cards[0];
-   var answer = ( new MessageBox(
-      "An ASIAIR card is mounted at\n" + root + "\n\nImport a night from it?",
-      "Loom Frame Selector", StdIcon_Question,
-      StdButton_Yes, StdButton_No ) ).execute();
-   if ( answer != StdButton_Yes )
-      return null;
 
    var scan = null;
    var progress = new FrameSelector.ScanWindow;
@@ -3884,7 +3913,7 @@ FrameSelector.offerCard = function()
       progress.show();
       CoreApplication.processEvents();
       scan = Asiair.scanCard( root, function( n ) {
-         try { progress.report( "Reading card", n, 0, "" ); } catch ( e ) {}
+         try { progress.report( "Reading the ASIAIR card: files found", n, 0, root ); } catch ( e ) {}
       } );
    }
    finally

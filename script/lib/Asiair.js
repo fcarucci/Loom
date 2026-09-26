@@ -44,24 +44,31 @@ Asiair.looksLikeCard = function( root )
  * be interrupted from PJSR, and pretending otherwise would be a comment
  * that lies.
  */
-Asiair.detect = function( shouldStop )
+Asiair.detect = function( shouldStop, onVolume )
 {
-   var found = [];
+   /*
+    * The volumes are listed first so each can be reported as "k of n":
+    * checking them all (Time Machine backups and network shares included)
+    * takes long enough that a silent startup looked stuck.
+    */
+   var names = [], found = [];
    var find = new FileFind;
    if ( !find.begin( Asiair.MOUNTS + "/*" ) )
       return found;
    do
+      if ( find.isDirectory && find.name != "." && find.name != ".." )
+         names.push( find.name );
+   while ( find.next() );
+   for ( var i = 0; i < names.length; ++i )
    {
       if ( shouldStop && shouldStop() )
          break;
+      var root = Asiair.MOUNTS + "/" + names[i];
+      if ( onVolume ) onVolume( i + 1, names.length, root );
       CoreApplication.processEvents();
-      if ( !find.isDirectory || find.name == "." || find.name == ".." )
-         continue;
-      var root = Asiair.MOUNTS + "/" + find.name;
       if ( Asiair.looksLikeCard( root ) )
          found.push( root );
    }
-   while ( find.next() );
    return found;
 };
 

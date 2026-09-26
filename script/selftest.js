@@ -5632,6 +5632,7 @@ function runTests()
           */
          var sw = new FrameSelector.ScanWindow;
          ok = ok && ( typeof sw.report == "function" );
+         ok = ok && ( typeof sw.announce == "function" );
          var cb = sw.callbacks();
          ok = ok && ( typeof cb.reading == "function" );
          ok = ok && ( typeof cb.measuring == "function" );
@@ -5640,6 +5641,21 @@ function runTests()
          ok = ok && ( cb.measuring( 1, 2, "H" ) === true );
          sw.cancelled = true;
          ok = ok && ( cb.reading( 2, 4, "frame_c" ) === false );
+
+         /*
+          * The startup window is a ScanWindow saying what it does before
+          * there is anything to count; the method once landed on the plot
+          * instead, and offerCard's catch turned that into "no card".
+          */
+         var hello = new FrameSelector.ScanWindow;
+         hello.fraction = 0.5;
+         hello.announce( "Starting up: looking for an ASIAIR" );
+         check( "the scan window announces a step with an empty bar",
+                hello.stageLabel.text.indexOf( "Starting up: looking for an ASIAIR" ) >= 0 && hello.fraction == 0, true );
+         hello.report( "Reading the ASIAIR card: files found", 12, 0, "/Volumes/card" );
+         check( "an unknown total shows the count alone",
+                hello.stageLabel.text.indexOf( "(12)" ) >= 0 && hello.stageLabel.text.indexOf( "of 0" ) < 0, true );
+         hello.release();
 
          /*
           * The plot is drawn, so a painting error is a constructor-class
@@ -7456,6 +7472,25 @@ function runTests()
              Asiair.looksLikeCard( base + "/detect-not" ), false );
       check( "and neither is one that is not there",
              Asiair.looksLikeCard( base + "/no-such-thing" ), false );
+
+      /*
+       * Detection says what it is doing, volume by volume: at startup it
+       * looked stuck with nothing on screen while it went through every
+       * mounted volume (Time Machine backups included).
+       */
+      var savedMounts = Asiair.MOUNTS, seen = [];
+      Asiair.MOUNTS = base;
+      try
+      {
+         var found = Asiair.detect( null, function( k, n, name ) { seen.push( k + "/" + n + " " + name ); } );
+         var names = found.map( function( f ) { return f.split( "/" ).pop(); /* no regex with an escaped slash: the PJSR preprocessor reads its "//" as a comment */ } );
+         check( "detect finds the cards among the volumes, and only cards",
+                names.indexOf( "detect-auto" ) >= 0 && names.indexOf( "detect-plan" ) >= 0 && names.indexOf( "detect-not" ) < 0, true );
+         var total = seen.length ? +seen[0].split( " " )[0].split( "/" )[1] : 0;
+         check( "detect reports each volume it checks, counted",
+                seen.length == total && total >= 3 && seen.every( function( x, i ) { return x.indexOf( ( i + 1 ) + "/" + total + " " ) == 0; } ), true );
+      }
+      finally { Asiair.MOUNTS = savedMounts; }
    } )();
 
    /* ---- ASIAIR card scan ---------------------------------------------------- */
@@ -7771,6 +7806,18 @@ function runTests()
       check( "two sessions on the card", survey.sessions.length, 2 );
       check( "three nights", survey.nights.length, 3 );
       check( "two targets, first seen first", survey.targets, [ "IC 1396A", "M31" ] );
+
+      /* The picker offers each target's last NightDialog.RECENT nights only, newest first. */
+      var many = { lights: [ L( "20260901-220000", "NGC 7023", "L" ), L( "20260905-220000", "NGC 7023", "L" ),
+                             L( "20260910-220000", "NGC 7023", "L" ), L( "20260915-220000", "NGC 7023", "L" ),
+                             L( "20260912-220000", "M31", "L" ) ], flats: [], unparseable: [] };
+      var ms = NightDialog.surveyOf( many, 4 );
+      check( "recentNights: the last three nights of a target, newest first",
+             NightDialog.recentNights( ms, "NGC 7023", 3 ).map( function( n ) { return NightDialog.rowFor( n ).date; } ),
+             [ "2026-09-15", "2026-09-10", "2026-09-05" ] );
+      check( "recentNights: a target with fewer nights shows them all",
+             NightDialog.recentNights( ms, "M31", 3 ).map( function( n ) { return NightDialog.rowFor( n ).date; } ), [ "2026-09-12" ] );
+      check( "recentNights: three by default", NightDialog.RECENT, 3 );
       check( "unreadable files are carried through", survey.unparseable.length, 1 );
 
       /*

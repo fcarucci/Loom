@@ -98,6 +98,20 @@ NightDialog.surveyOf = function( scan, gapHours )
             flatsBySession: flatsBySession, unparseable: scan.unparseable };
 };
 
+/*
+ * A target's most recent `k` nights, newest first: the picker shows only
+ * these (the maintainer's call) -- a card holds weeks of nights, and the
+ * one to import is almost always among the last few.
+ */
+NightDialog.RECENT = 3;
+NightDialog.recentNights = function( survey, target, k )
+{
+   var mine = survey.nights.filter( function( n ) { return n.target == target; } );
+   var key = function( n ) { var r = NightDialog.rowFor( n ); return r.date + " " + r.span; };
+   mine.sort( function( a, b ) { return key( a ) < key( b ) ? 1 : key( a ) > key( b ) ? -1 : 0; } );
+   return mine.slice( 0, k || NightDialog.RECENT );
+};
+
 /* The flats offered for one night, before headers are consulted. */
 NightDialog.flatsForNight = function( survey, night )
 {
@@ -206,12 +220,10 @@ NightDialog.Dialog = class extends Dialog
          parent.expanded = true;
          parent.setText( 0, target );
 
-         var total = 0;
-         for ( var n = 0; n < this.survey.nights.length; ++n )
+         var total = 0, recent = NightDialog.recentNights( this.survey, target, NightDialog.RECENT );
+         for ( var n = 0; n < recent.length; ++n )
          {
-            var night = this.survey.nights[n];
-            if ( night.target != target )
-               continue;
+            var night = recent[n];
             total += night.count;
 
             var row = NightDialog.rowFor( night );
