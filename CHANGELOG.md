@@ -3,7 +3,7 @@
 What changed in each Loom release. Each release's notes on GitHub are its
 section of this file.
 
-## [Unreleased]
+## [0.3.0] — 2026-09-26
 
 ### Loom Fly-Through
 
@@ -14,6 +14,14 @@ section of this file.
 - The progress bar says which region is being searched, and Cancel stops the solve.
 - An image solved blind with an empty Object box gets the name of the target found in its field. A name you typed is never replaced.
 - Offline, with no local Gaia and nothing cached, the solve stops at once and says what to install.
+
+### Loom Frame Selector
+
+**Import from an ASIAIR.** With an ASIAIR mounted (its card or its storage over USB), the Frame Selector finds it as it starts, reads it, and shows every target on it with its last three nights: frames, filters and flats. Pick a night, review it as usual, and choose a folder. The approved lights and that night's flats are copied into its `Light` and `Flat` folders as XISF, and the confirmation names both. Choosing a folder that is itself named `Light` or `Flat` uses its parent. Nothing on the ASIAIR is changed.
+
+**It says what it is doing.** A window opens at once while it looks for an ASIAIR, volume by volume. Reading the card shows the files found so far, and measuring goes frame by frame in small batches, with a bar that moves across the whole scan.
+
+**Fixes.** The review window's title-bar close button now closes it.
 
 ### Loom
 
