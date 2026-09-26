@@ -60,7 +60,8 @@ Object.assign( global.File, {
    createDirectory: ( p, intermediates ) => {
       if ( fs.existsSync( p ) )
          throw new Error( "File I/O Error: Unable to create directory: File exists: " + p );
-      fs.mkdirSync( p, { recursive: !!intermediates } );
+      // PJSR's second argument defaults to true: parents are made unless asked not to (CI has no /tmp/agent-scratch)
+      fs.mkdirSync( p, { recursive: intermediates !== false } );
    },
    extractDirectory:  p => path.dirname( p ),
    extractName:       p => path.basename( p, path.extname( p ) ),
