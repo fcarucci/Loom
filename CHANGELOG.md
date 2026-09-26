@@ -5,6 +5,16 @@ section of this file.
 
 ## [Unreleased]
 
+### Loom Fly-Through
+
+**Blind solving.** An image with no astrometric solution, no object name, no RA/Dec and no plate scale is now plate-solved by Loom's own solver, and PixInsight's ImageSolver confirms the result. A match ImageSolver can't confirm, or confirms somewhere else, is never used.
+- The solver's star index is built while it solves, from Gaia: the local database set up in Process → Gaia, else Gaia DR3 online. It searches the sky region by region, starting where your earlier solves were, then popular named objects, Messier objects, the rest of NGC/IC, and finally the whole sky.
+- Each region is read from the catalogue in one query: a 2° cone around a remembered solve or a catalogued object (objects within 1° of each other share one), a 6° cone in the whole-sky pass. Its stars are cached in `PixInsight/Loom/solver` in your home folder, so a region is never queried twice and later solves read the catalogue less and less. Nothing is downloaded ahead of time, and nothing is built in the background.
+- Online, a Gaia answer may take up to two minutes to start (VizieR is slow in dense fields such as the Magellanic Clouds), and a transfer that stops for 30 seconds is abandoned. A region that gets no answer is asked again after a short pause, then skipped (and asked again next time); the solve stops only when the catalogue has not answered for five minutes.
+- The progress bar says which region is being searched, and Cancel stops the solve.
+- An image solved blind with an empty Object box gets the name of the target found in its field. A name you typed is never replaced.
+- Offline, with no local Gaia and nothing cached, the solve stops at once and says what to install.
+
 ### Loom
 
 **SyQon Studio.** When SyQon Studio is installed (its `syqon-cli` is found in the app, through `SYQON_CLI_PATH`, or where SyQon's own script remembers it), its models are offered beside the standalone SyQon tools, which stay in the dropdowns when they are installed:

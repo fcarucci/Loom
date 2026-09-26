@@ -611,6 +611,9 @@ Fly.findObject = function( query, entries )
    ( entries || [] ).forEach( function( e ) { byId[e.id.toUpperCase()] = e; } );
    var hit = function( e, score, name ) { out.push( { id: e.id, ra: e.ra, dec: e.dec, diameter: e.diameter || 0, name: name || e.name || "", score: score } ); };
    if ( byId[compact] ) hit( byId[compact], 1 );
+   // an ASIAIR target such as "IC 1396A" names a part of a catalogued object
+   var sub = /^((?:NGC|IC)\d+)[A-Z]$/.exec( compact );
+   if ( !byId[compact] && sub && byId[sub[1]] ) hit( byId[sub[1]], 0.97 );
    var m = /^M(?:ESSIER)?(\d+)$/.exec( compact );
    if ( m ) ( entries || [] ).forEach( function( e ) { if ( e.messier == "M" + m[1] ) hit( e, 1, e.name || "M" + m[1] ); } );
    var typed = Fly.objectWords( q );
@@ -1114,6 +1117,31 @@ Fly.objectFromFileName = function( path, entries )
          if ( hit && hit.score >= Fly.FILE_NAME_SCORE && ( !best || hit.score > best.score ) ) best = hit;
       }
    return best;
+};
+
+/* The image's centre from its FITS keywords (RA/DEC degrees, OBJCTRA/OBJCTDEC sexagesimal, CRVAL on an RA axis), or null. */
+Fly.headerCentre = function( keywords )
+{
+   var kw = {};
+   ( keywords || [] ).forEach( function( k ) { kw[String( k.name ).trim().toUpperCase()] = String( k.value ).replace( /^'|'$/g, "" ).trim(); } );
+   function ok( ra, dec ) { return ra != null && dec != null && isFinite( ra ) && isFinite( dec ) && ra >= 0 && ra < 360 && Math.abs( dec ) <= 90 ? { ra: ra, dec: dec } : null; }
+   var r = null;
+   if ( /^RA/.test( kw.CTYPE1 || "" ) ) r = ok( parseFloat( kw.CRVAL1 ), parseFloat( kw.CRVAL2 ) );
+   if ( !r && kw.RA != null && kw.DEC != null ) r = ok( parseFloat( kw.RA ), parseFloat( kw.DEC ) );
+   if ( !r && kw.OBJCTRA != null && kw.OBJCTDEC != null ) r = ok( Fly.parseAngle( kw.OBJCTRA, true ), Fly.parseAngle( kw.OBJCTDEC, false ) );
+   return r;
+};
+
+/* An object named by the file (Fly.objectFromFileName) or, failing that, by a folder, innermost first. */
+Fly.objectFromPath = function( path, entries )
+{
+   var parts = String( path || "" ).split( /[\/\\]/ ).filter( function( p ) { return p.length; } );
+   for ( var i = parts.length - 1; i >= Math.max( 0, parts.length - 4 ); --i )
+   {
+      var hit = Fly.objectFromFileName( i == parts.length - 1 ? parts[i] : parts[i] + ".x", entries );
+      if ( hit ) return hit;
+   }
+   return null;
 };
 
 Fly.CACHE_FORMAT = 3;   // bump when what the cache holds changes shape

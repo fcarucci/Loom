@@ -162,8 +162,8 @@ function load( file )
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
                "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",
-               "lib/Frames.js", "lib/Fly.js", "lib/Sky.js", "lib/Render.js",
-               "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
+               "lib/Frames.js", "lib/Fly.js", "lib/Solve.js", "lib/Sky.js",
+               "lib/Render.js", "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
 
 /*
  * Files that are NOT loaded above, but must still PARSE.

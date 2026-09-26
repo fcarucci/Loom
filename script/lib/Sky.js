@@ -100,15 +100,58 @@ Sky.queryOnline = function( centre, radiusDeg, gMax )
    return s;
 };
 
+Sky.GAIA_ONLINE_STALL = 30000;         // ms without a byte before a transfer is abandoned
+Sky.GAIA_ONLINE_FIRST_BYTE = 120000;   // ms to the first byte: VizieR works a dense field out first (the LMC's 2 degree cone: 28 s)
+
+/*
+ * An onTransferProgress callback: false (abort) once `limitMs` pass with
+ * no new bytes, or `firstMs` (default `limitMs`) before the first one. The
+ * connection timeout covers only connecting; a VizieR answer that stopped
+ * mid-transfer once held PixInsight in curl for over an hour. `clock` is
+ * for the suite.
+ */
+Sky.stallWatch = function( limitMs, clock, firstMs )
+{
+   clock = clock || function() { return Date.now(); };
+   var last = 0, since = clock();
+   return function( bytes )
+   {
+      var now = clock();
+      if ( bytes != last ) { last = bytes; since = now; }
+      return now - since < ( last > 0 ? limitMs : firstMs || limitMs );
+   };
+};
+
+Sky.GAIA_ONLINE_TOTAL = 600000;       // ms for a whole answer: a trickle never stalls
+
+/* Whether a running transfer should stop for a Cancel: a blind solve sets it while it reads the catalogue. */
+Sky.transferCancelled = function() { return false; };
+
+/*
+ * The onTransferProgress test of a catalogue transfer: false (abort) on a
+ * stall (Sky.stallWatch), past GAIA_ONLINE_TOTAL, or on a Cancel. `clock`
+ * is for the suite.
+ */
+Sky.transferWatch = function( clock )
+{
+   clock = clock || function() { return Date.now(); };
+   var alive = Sky.stallWatch( Sky.GAIA_ONLINE_STALL, clock, Sky.GAIA_ONLINE_FIRST_BYTE ), start = clock();
+   return function( bytes )
+   {
+      return alive( bytes ) && clock() - start <= Sky.GAIA_ONLINE_TOTAL && !Sky.transferCancelled();
+   };
+};
+
 /* The body of a GET, or null on any failure. Replaceable, so the suite never touches the network. */
 Sky.fetchText = function( url )
 {
    try
    {
-      var t = new NetworkTransfer, buf = new ByteArray;
+      var t = new NetworkTransfer, buf = new ByteArray, alive = Sky.transferWatch();
       t.setURL( url );
       t.setConnectionTimeout( Sky.GAIA_ONLINE_TIMEOUT );
       t.onDownloadDataAvailable = function( data ) { buf.add( data ); return true; };
+      t.onTransferProgress = function( dlTotal, dlCurrent ) { return alive( dlCurrent ); };
       if ( !t.download() || t.responseCode != 200 )
       {
          Util.warn( "fly", "Gaia online: " + ( t.errorInformation || "HTTP " + t.responseCode ) );
@@ -125,6 +168,236 @@ Sky.requireSources = function( centre, radiusDeg )
    if ( !s || s.length == 0 )
       throw new Error( "No Gaia stars for this field: configure a Gaia DR3 database in Process > Gaia, or connect to the internet" );
    return s;
+};
+
+/* ------------------------------------------------------------------------
+ * Loom's blind solver: its star regions and solve history, kept per user.
+ * ------------------------------------------------------------------------ */
+
+Sky.solverIndexDir = function() { return File.homeDirectory + "/PixInsight/Loom/solver"; };
+
+Sky.cancelled = function() { var e = new Error( "Cancelled." ); e.loomCancel = true; return e; };
+
+/*
+ * One tile of the catalogue, or null when nothing answered. Sky.querySources
+ * marks a real answer with its origin; an answer without one is a failure
+ * (offline, refused), not an empty sky. An online answer cut at the row
+ * limit is read again as four smaller tiles.
+ */
+Sky.catalogueTile = function( centre, radius, gMax )
+{
+   var s = null;
+   for ( var attempt = 0; attempt < 3 && !( s && s.origin ); ++attempt ) s = Sky.querySources( centre, radius, gMax );
+   if ( !s || !s.origin ) return null;
+   if ( s.origin == "online" && s.length >= Fly.GAIA_ONLINE_MAX_ROWS )
+   {
+      // still cut at a quarter degree: the answer cannot be made complete, and an incomplete index would miss stars silently
+      if ( radius <= 0.25 ) throw new Error( "Gaia online returned more stars than it sends in one answer, even for a small patch at RA " + centre.ra.toFixed( 2 ) + ", Dec " + centre.dec.toFixed( 2 ) + ": configure a Gaia DR3 database in Process > Gaia." );
+      var out = [], r = radius/2, d = radius/2;
+      [ [ -1, -1 ], [ -1, 1 ], [ 1, -1 ], [ 1, 1 ] ].forEach( function( q )
+      {
+         var c = Solve.fromPlane( centre, q[0]*d, q[1]*d ), part = Sky.catalogueTile( c, r*1.5, gMax );
+         if ( part == null ) out = null; else if ( out ) out = out.concat( part );
+      } );
+      if ( out ) out.origin = "online";
+      return out;
+   }
+   return s;
+};
+
+/* ------------------------------------------------------------------------
+ * Blind solving with the index made on the fly: region by region around
+ * the likeliest centres (Solve.searchOrder), each region's stars read from
+ * Gaia (the local database, else online) in ONE query -- a query costs
+ * about the same whatever its radius, so a region is never read in tiles
+ * -- the first time it is needed, and kept per user, for good: nothing is
+ * read ahead, and nothing runs in the background.
+ * ------------------------------------------------------------------------ */
+
+Sky.regionDir = function() { return Sky.solverIndexDir() + "/regions-v" + Solve.INDEX_VERSION; };
+
+/* The regions read this session, by folder (the suite's folders never mix with the user's). */
+Sky._regions = null;
+Sky.forgetRegions = function() { Sky._regions = null; };
+
+Sky.NO_CATALOGUE = "Blind solving needs a star catalogue: configure a Gaia DR3 database in Process > Gaia, or connect to the internet.";
+/*
+ * VizieR can be slow in a dense field, or go quiet for minutes in the
+ * middle of a solve (every try failing, then answering again): a region
+ * with no answer is asked again after BLIND_RETRY_PAUSE, then skipped, and
+ * the solve gives up only after BLIND_OUTAGE with no answer at all.
+ */
+Sky.BLIND_RETRY_PAUSE = 15000;   // ms
+Sky.BLIND_OUTAGE = 300000;       // ms
+
+/* The clock and a wait that keeps the dialog alive (tick may throw to cancel); replaceable, so the suite never waits. */
+Sky.now = function() { return Date.now(); };
+Sky.pause = function( ms, tick )
+{
+   var end = Date.now() + ms;
+   while ( Date.now() < end ) { tick(); if ( typeof msleep == "function" ) msleep( 100 ); }
+};
+
+/*
+ * Region c's stars ({ra, dec, radius}), Float32 [ra, dec, G] to
+ * INDEX_G_MAX, the brightest per cell of every band's size (a
+ * Solve.Keeper, as the index keeps them): from this session's memory, else
+ * the cache, else the catalogue -- `reading()` is called first -- and then
+ * cached. Written to a part file and moved into place, so a write cut short
+ * is never read. null when no catalogue answered.
+ */
+Sky.regionCatalogue = function( c, reading )
+{
+   var dir = Sky.regionDir(), key = Solve.regionKey( c );
+   if ( !Sky._regions || Sky._regions.dir != dir ) Sky._regions = { dir: dir, arrays: {} };
+   var memo = Sky._regions.arrays;
+   if ( memo[key] ) return memo[key];
+   var path = dir + "/" + key + ".f32";
+   if ( File.exists( path ) )
+   {
+      try { return ( memo[key] = Sky.readArrays( path, [ ( new FileInfo( path ) ).size/4 ] )[0] ); }
+      catch ( e ) { Util.warn( "fly", "star region " + key + ": " + e ); }   // unreadable: read it again
+   }
+   if ( reading ) reading();
+   var s = Sky.catalogueTile( c, 1.02*( c.radius || Solve.REGION_RADIUS ), Solve.INDEX_G_MAX );
+   if ( s == null ) return null;
+   var keep = new Solve.Keeper( Solve.BANDS.map( function( b ) { return b.lo; } ), Solve.STARS_PER_CELL );
+   s.forEach( function( t ) { keep.add( { ra: t.ra, dec: t.dec, G: t.G } ); } );
+   var a = keep.toArrays();
+   // a cache that cannot be written (a full disk, a folder it may not write) costs the next solve a query, not this one its stars
+   try
+   {
+      if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+      Sky.writeArrays( path + ".part", [ a ] );
+      if ( File.exists( path ) ) File.remove( path );
+      File.move( path + ".part", path );
+   }
+   catch ( e ) { Util.warn( "fly", "star region " + key + " not cached: " + e ); }
+   return ( memo[key] = a );
+};
+
+/* This user's earlier solves, most recent first ([] when none or unreadable). */
+Sky.historyPath = function() { return Sky.solverIndexDir() + "/history.json"; };
+Sky.readHistory = function()
+{
+   try { return File.exists( Sky.historyPath() ) ? JSON.parse( File.readTextFile( Sky.historyPath() ) ) : []; }
+   catch ( e ) { Util.warn( "fly", "blind solve history: " + e ); return []; }
+};
+Sky.remember = function( centre )
+{
+   try
+   {
+      if ( !File.directoryExists( Sky.solverIndexDir() ) ) File.createDirectory( Sky.solverIndexDir(), true );
+      File.writeTextFile( Sky.historyPath(), JSON.stringify( Solve.pushHistory( Sky.readHistory(), centre ) ) );
+   }
+   catch ( e ) { Util.warn( "fly", "blind solve history not saved: " + e ); }
+};
+
+/* Where a blind solve looks, in order. Replaceable, so the suite can cut the list short. */
+Sky.blindCandidates = function()
+{
+   return Solve.searchOrder( Sky.readHistory(), Sky.readNgcIc() || [], Solve.REGION_STEP, undefined, Solve.TARGET_STEP, Solve.TARGET_RADIUS );
+};
+
+/*
+ * Solves an image with no hints at all: its stars against the sky, region
+ * by region (Solve.searchSky), each match handed to ImageSolver, which
+ * alone decides -- a blind match without its confirmation is never used
+ * (a blind solver once reported the Iris at RA 172, Dec +27).
+ */
+Sky.solveBlind = function( window, progress )
+{
+   var tick = function()
+   {
+      if ( typeof processEvents == "function" ) processEvents();
+      if ( progress.isCancelled && progress.isCancelled() ) throw Sky.cancelled();
+   };
+   var t0 = Date.now();
+   progress.stage( "Blind solving: finding the image's stars", 0, 0 );
+   // the detector drops saturated and spiky stars, the brightest of a real image: Solve.blindStars puts them back first
+   var img = window.mainView.image, W = img.width, H = img.height, dets = Solve.blindStars( Sky.detections( img ), Sky.intensity( img ), W, H );
+   if ( dets.length < Solve.MIN_MATCHES )
+      throw new Error( "Blind solving found only " + dets.length + " stars in the image: too few to solve from. Fill in Object (or RA/Dec)." );
+   tick();
+   var candidates = Sky.blindCandidates(), sizes = Solve.BANDS.map( function( b ) { return b.lo; } ), read = 0, reasons = [], confirmed = null, at = "";
+   var answered = 0, lastAnswer = Sky.now(), skipped = 0;
+   function indexFor( c )
+   {
+      var radius = c.radius || Solve.REGION_RADIUS;
+      tick();
+      var reading = function() { ++read; progress.stage( at + ": reading the star catalogue (query " + read + ")", 0, 0 ); };
+      // a transfer checks for Cancel while it waits (up to minutes online); an aborted one answers null, so tick() says why
+      var ask = function()
+      {
+         var was = Sky.transferCancelled;
+         Sky.transferCancelled = function() { if ( typeof processEvents == "function" ) processEvents(); return !!( progress.isCancelled && progress.isCancelled() ); };
+         try { return Sky.regionCatalogue( c, reading ); }
+         finally { Sky.transferCancelled = was; tick(); }
+      };
+      var a = ask();
+      if ( a == null && answered > 0 )
+      {
+         progress.stage( at + ": no answer from the star catalogue, asking again", 0, 0 );
+         Sky.pause( Sky.BLIND_RETRY_PAUSE, tick );
+         a = ask();
+      }
+      if ( a == null )
+      {
+         // nothing answered yet: offline, say so at once; otherwise the region is skipped, not cached, until the catalogue has been gone too long
+         if ( answered == 0 || Sky.now() - lastAnswer >= Sky.BLIND_OUTAGE ) throw new Error( Sky.NO_CATALOGUE );
+         ++skipped;
+         Util.warn( "fly", "blind: no catalogue answer near " + c.name + ", region skipped" );
+         return null;
+      }
+      ++answered; lastAnswer = Sky.now();
+      var stars = Solve.regionStars( [ a ], c, radius, sizes, Solve.STARS_PER_CELL );
+      tick();
+      return stars.length >= Solve.MIN_MATCHES ? Solve.regionIndex( stars, radius ) : null;
+   }
+   function accept( r )
+   {
+      var hints = Solve.hintsFrom( r );
+      Util.log( "fly", "blind: RA " + r.ra.toFixed( 4 ) + " Dec " + r.dec.toFixed( 4 ) + ", " + r.scale.toFixed( 3 ) +
+                "″/px, " + r.matches + "/" + r.of + " stars, chance 1e" + r.log10Chance.toFixed( 0 ) );
+      try
+      {
+         var solvedPixel = Sky.solveWithHints( window, hints, progress.stage );
+         // ImageSolver can settle on another field at the same scale: the solution must be where the blind match said
+         var got = Sky.field( window ).centre, diag = r.scale*Math.hypot( W, H )/3600;
+         if ( Fly.separation( got, r ) > 0.1*diag || Math.abs( Sky.solvedScale( window )/r.scale - 1 ) > 0.03 )
+            throw new Error( "ImageSolver's solution (RA " + got.ra.toFixed( 3 ) + ", Dec " + got.dec.toFixed( 3 ) + ") is not where the blind match put the image" );
+         if ( !Solve.sameField( r.corners, Sky.fieldCorners( window ), Solve.CORNER_TOL*diag ) )
+            throw new Error( "ImageSolver's solution is turned or mirrored against the blind match" );
+         confirmed = { hints: hints, solvedPixel: solvedPixel, result: r, centre: got };
+         return true;
+      }
+      catch ( e )
+      {
+         // a rejected or failed candidate must leave no solution behind: Sky.projector would believe it next time
+         Sky.clearSolution( window );
+         if ( e && e.loomCancel ) throw e;
+         reasons.push( String( e.message || e ) );
+         return false;
+      }
+   }
+   var found = Solve.searchSky( candidates, indexFor, dets, W, H,
+                                { tick: tick, accept: accept,
+                                  onRegion: function( k, n, c )
+                                  {
+                                     at = "Blind solving: searching the sky near " + c.name + " (region " + k + " of " + n + ")";
+                                     progress.stage( at, k, n );
+                                  } } );
+   if ( !found )
+   {
+      if ( reasons.length )
+         throw new Error( "Blind solving found " + reasons.length + " candidate position(s), but ImageSolver could not confirm any: " + reasons[0] );
+      throw new Error( "Blind solving found no match in the sky for this image's stars" + ( skipped ? " (" + skipped + " region(s) got no catalogue answer)" : "" ) + ". Fill in Object (or RA/Dec), focal length and pixel size." );
+   }
+   Sky.remember( confirmed.centre );
+   Util.log( "fly", "blind: solved in region " + found.region + " of " + candidates.length + " (near " + found.candidate.name + "), " +
+             read + " catalogue quer" + ( read == 1 ? "y" : "ies" ) + ", " + ( ( Date.now() - t0 )/1000 ).toFixed( 1 ) + " s" );
+   return { hints: confirmed.hints, solvedPixel: confirmed.solvedPixel, result: confirmed.result,
+            region: found.region, candidate: found.candidate, queries: read };
 };
 
 /*
@@ -870,7 +1143,7 @@ Sky.solveWithHints = function( window, hints, stage )
          if ( k > 1 ) Util.log( "fly", "solved at " + ( hints.pixel/k ).toFixed( 2 ) + " um: the image is drizzled " + k + "x" );
          return hints.pixel/k;
       }
-      catch ( e ) { reasons.push( String( e.message || e ) ); }
+      catch ( e ) { if ( e && e.loomCancel ) throw e; reasons.push( String( e.message || e ) ); }
    }
    // what was tried, so a wrong focal length or pixel size shows (the solver's own message did not say)
    throw new Error( Fly.solveFailure( hints, reasons ) );
@@ -897,6 +1170,13 @@ Sky.readArrays = function( path, lengths )
    f.openForReading( path );
    try { return lengths.map( function( n ) { return n ? f.read( DataType_ByteArray, 4*n ).toFloat32Array() : new Float32Array( 0 ); } ); }
    finally { f.close(); }
+};
+
+/* The solved image's corners ({ra, dec}: top left, top right, bottom left, bottom right), or null unsolved. */
+Sky.fieldCorners = function( window )
+{
+   var un = Sky.unprojector( window ), w = window.mainView.image.width, h = window.mainView.image.height;
+   return un ? [ un( 0, 0 ), un( w, 0 ), un( 0, h ), un( w, h ) ] : null;
 };
 
 /* The solved image's scale (arcsec/px), across its width. */
@@ -1022,6 +1302,14 @@ Sky.scaledWcs = function( wcs, f )
    return { crval1: wcs.crval1, crval2: wcs.crval2,
             crpix1: ( wcs.crpix1 - 0.5 )*f + 0.5, crpix2: ( wcs.crpix2 - 0.5 )*f + 0.5,
             cd: wcs.cd.map( function( v ) { return v/f; } ) };
+};
+
+/* Removes an astrometric solution and every WCS keyword from a window (a rejected blind candidate's). */
+Sky.WCS_KEYWORD = /^(CTYPE[12]|CRVAL[12]|CRPIX[12]|CD[12]_[12]|CDELT[12]|CROTA[12]|PC[12]_[12]|PV[12]_\d+|LONPOLE|LATPOLE|EQUINOX|RADESYS|A_\w+|B_\w+|AP_\w+|BP_\w+)$/;
+Sky.clearSolution = function( window )
+{
+   try { window.clearAstrometricSolution(); } catch ( e ) {}
+   window.keywords = window.keywords.filter( function( k ) { return !Sky.WCS_KEYWORD.test( k.name.trim() ); } );
 };
 
 /* Replaces the window's TAN keywords with `wcs`. */

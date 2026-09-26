@@ -30,7 +30,44 @@
 2. **Index size is about 100 MB, not "tens of MB".** Measured in Task 7, step 6; reported, not hidden.
 3. **The file-hint step (spec order, step 2)** reads XISF `Observation:Center:RA/Dec`, then the FITS keywords (`RA`/`DEC`, `OBJCTRA`/`OBJCTDEC`, `CRVAL1`/`CRVAL2` on an RA axis), then `OBJECT`/`Observation:Object:Name` through `Fly.findObject`, then folder names up to 3 levels up. The hints researcher found that the user's finished TIFF/PSB/PNG/JPG exports carry **no** centre (only masters and lights do), so on real finished images folder names and blind solving do the work. `Fly.findObject` also learns letter-suffixed ids ("IC 1396A" → IC1396): that's the user's own ASIAIR target name, and it resolved to nothing. *Deferred:* a candidate list of past solved centres, which the blind solver makes unnecessary.
 
-## Revision 3 (the maintainer, 2026-09-25): the index builds fully in the background
+## Revision 4 (the maintainer, 2026-09-25): the index is built on the fly while solving, and cached
+
+The maintainer's words: "I do not want to host anything, you must build the index on the fly while doing the resolves, and cache it." This **replaces** Revision 3's background whole-sky build and the dialog's build timer. Nothing is hosted and nothing is built ahead of a solve. What already exists and is verified stays: `Solve.makeIndex`/`IndexBuilder`, `Solve.solve`, `Solve.blindStars`, the ImageSolver confirmation with its centre check, `Sky.clearSolution`, and `Sky.catalogueTile`.
+
+**How a blind solve works now:**
+1. **Candidates, most likely first** (`Solve.searchOrder`), deduplicated so that no two centres are closer than `Solve.REGION_STEP` (3°):
+   1. the centres of this user's earlier solves (history);
+   2. Messier objects;
+   3. NGC/IC objects by diameter, largest first, from the catalogue `Sky.readNgcIc` already reads;
+   4. then `Solve.skyTiles( Solve.REGION_STEP )`, which covers the rest of the sky.
+2. **Each candidate's region** is a cone of radius `Solve.REGION_RADIUS` (6°). Its stars are the union of the 2° catalogue tiles (`Solve.skyTiles( Solve.TILE_RADIUS )`) that the cone touches.
+   - Each tile's stars are reduced per cell exactly as the index does (a `Solve.Keeper` over the bands' cell sizes, M = 5, G ≤ 13).
+   - They're **cached on disk per tile, forever**: `<solver dir>/tiles-v<INDEX_VERSION>/<tile index>.f32`, a Float32 array of `[ra, dec, G]`.
+   - A tile is fetched from the catalogue (`Sky.catalogueTile`: local Gaia, else VizieR) only when it isn't cached.
+3. **Region index:** `Solve.makeIndex( regionStars, bands with hi <= REGION_RADIUS, Q )`, built in memory. Then `Solve.solve( regionIndex, stars, W, H, { tick } )`, the unchanged verified matcher. A hit goes to ImageSolver, and must pass the centre check, as in Task 8.
+4. **Cache the region quads too** (`<solver dir>/regions-v<N>/<key>.f32`), if measurement shows that making them costs more than about 100 ms per region.
+5. **History:** a solved centre is appended to `<solver dir>/history.json`, at most 200 entries, most recent first.
+6. **Progress and cancel:**
+   - The progress text is "Blind solving: searching the sky near <name> (region k of n)", or "… reading the star catalogue (tile t)" while tiles are fetched.
+   - `tick()` pumps events and honours Cancel between tiles and inside `Solve.solve`.
+   - Nothing runs in the background, and nothing runs when the dialog merely opens.
+7. **Offline** with no cached tiles and no local Gaia: the solve stops after the first failed tile with the existing "needs a star catalogue" message.
+
+**Measurements that decide the constants** (ad hoc, in slot 2, on the three real images, with the tile cache cleared first to get cold numbers):
+- regions tried before the hit;
+- tiles fetched;
+- time to solve;
+- local Gaia versus online VizieR (online: Iris only, if time allows).
+
+**Acceptance** (local Gaia, cold cache): all three solve in under 60 s each. Warm cache: under 15 s each.
+
+**Removed** (code and tests):
+- the dialog's index build timer, its label, `startIndexBuild`, `Sky.currentIndexBuild`, `needsIndex`;
+- `Sky.IndexBuild`'s tile splitting (`nextSide` and the rest).
+
+`Sky.IndexBuild` as a whole may stay only if something still uses it; otherwise it is removed with its tests.
+
+## Revision 3 (the maintainer, 2026-09-25): the index builds fully in the background — SUPERSEDED by Revision 4
 
 The maintainer's words: "the solver building must be fully in background". A PJSR script has one thread, and a second PixInsight was ruled out earlier for star removal. So the build runs as **timer-driven slices on the dialog's event loop**: each slice is one catalogue tile, or one batch of quad cells, and stays within about 100 ms of JavaScript. This supersedes the blocking `Sky.buildSolverIndex` call inside `Sky.solverIndex` and `Sky.solveBlind`.
 

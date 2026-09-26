@@ -19,6 +19,7 @@
 #include "lib/Steps.js"
 #include "lib/Frames.js"
 #include "lib/Fly.js"
+#include "lib/Solve.js"
 #include "lib/Sky.js"
 #include "lib/Render.js"
 #include "lib/Pipeline.js"
@@ -313,6 +314,14 @@ function synthDir( name )
    else
       File.createDirectory( dir, true );
    return dir;
+}
+
+/* Empties a test folder (only ever one under synthDir). */
+function FlyThroughTestRemove( dir )
+{
+   if ( !File.directoryExists( dir ) ) return;
+   var f = new FileFind;
+   if ( f.begin( dir + "/*" ) ) do { if ( !f.isDirectory ) File.remove( dir + "/" + f.name ); } while ( f.next() );
 }
 
 function runTests()
@@ -8397,9 +8406,20 @@ function runFlyTests()
    // sharing the user's evicted their cached solves on every run
    var cacheRoot = ( typeof FlyThrough != "undefined" && IN_PIXINSIGHT ) ? FlyThrough.cacheRoot : null;
    if ( cacheRoot ) { var own = synthDir( "fly-cache" ); FlyThrough.cacheRoot = function() { return own; }; }
+   // and never the user's star tiles or solve history, nor a search of the whole sky: an unsolved image with
+   // no hints is solved blind (the solver's own tests give it a catalogue and a short list of places to look)
+   var solver = ( typeof Sky != "undefined" && Sky.solverIndexDir && IN_PIXINSIGHT ) ? { dir: Sky.solverIndexDir, candidates: Sky.blindCandidates } : null;
+   if ( solver )
+   {
+      var none = synthDir( "fly-solver-index" );
+      Sky.solverIndexDir = function() { return none; };
+      Sky.blindCandidates = function() { return []; };
+      Sky.forgetRegions();
+   }
    try { runFlyTestsClean(); }
    finally
    {
+      if ( solver ) { Sky.solverIndexDir = solver.dir; Sky.blindCandidates = solver.candidates; Sky.forgetRegions(); }
       if ( cacheRoot ) FlyThrough.cacheRoot = cacheRoot;
       if ( fetch ) Sky.fetchText = fetch;
       if ( typeof Sky != "undefined" && Sky.resetGaia ) Sky.resetGaia();
@@ -9093,6 +9113,44 @@ function runFlyTestsClean()
          check( "and makes no video", [ File.exists( dir + "/youtube_1080.mp4" ), File.exists( dir + "/" + Fly.videoName( null, "youtube_1080", "sdr" ) + ".mp4" ) ], [ false, false ] );
       }
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
+   } )();
+
+   /* identify on an unsolved image: no hints solve blind, failed hints fall back to blind, and a cancel stops there. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var savedBlind = Sky.solveBlind, savedHints = Sky.solveWithHints, savedProj = Sky.projector, blindCalls = 0, win = new ImageWindow( 64, 64, 1, 32, true, false, Util.freeWindowId( "blind_id" ) );
+      try
+      {
+         Sky.projector = function() { return null; };                       // never solved: identify stops at the solve
+         Sky.solveBlind = function() { ++blindCalls; throw new Error( "blind: no match" ); };
+         var msg = "";
+         try { FlyThrough.identify( win, { blind: true }, { stage: function() {}, isCancelled: function() { return false; } } ); } catch ( e ) { msg = e.message; }
+         check( "identify: no hints solves blind", blindCalls, 1 );
+         Sky.solveWithHints = function() { throw new Error( "hints: failed" ); };
+         blindCalls = 0; msg = "";
+         try { FlyThrough.identify( win, { hints: { ra: 1, dec: 2, focal: 500, pixel: 3.76 } }, { stage: function() {}, isCancelled: function() { return false; } } ); } catch ( e ) { msg = e.message; }
+         check( "identify: failed hints fall back to blind", blindCalls, 1 );
+         check( "identify: both reasons are reported", /hints: failed/.test( msg ) && /blind: no match/.test( msg ), true );
+         // ImageSolver wrote a solution the scale check then rejected: it must not survive the fallback, or the next analysis believes it
+         Sky.solveWithHints = function( w )
+         {
+            Sky.writeTanKeywords( w, { crval1: 10, crval2: 20, crpix1: 32, crpix2: 32, cd: [ -0.001, 0, 0, 0.001 ] } );
+            w.regenerateAstrometricSolution();
+            throw new Error( "hints: the scale the rig cannot give" );
+         };
+         var solvedAtBlind = null;
+         Sky.solveBlind = function( w ) { solvedAtBlind = savedProj( w ) != null; throw new Error( "blind: no match" ); };
+         try { FlyThrough.identify( win, { hints: { ra: 1, dec: 2, focal: 500, pixel: 3.76 } }, { stage: function() {}, isCancelled: function() { return false; } } ); } catch ( e ) {}
+         check( "identify: a rejected hinted solve is cleared before the blind solve", solvedAtBlind, false );
+         check( "identify: ...and the window is left unsolved when both fail", savedProj( win ), null );
+         Sky.solveBlind = function() { ++blindCalls; throw new Error( "blind: no match" ); };
+         Sky.solveWithHints = function() { throw FlyThrough.cancel(); };
+         blindCalls = 0;
+         try { FlyThrough.identify( win, { hints: { ra: 1, dec: 2, focal: 500, pixel: 3.76 } }, { stage: function() {}, isCancelled: function() { return true; } } ); } catch ( e ) {}
+         check( "identify: a cancel is not followed by a blind solve", blindCalls, 0 );
+         check( "identify: neither hints nor blind still asks for a solve", FlyThrough.identify( win, {}, null ).needsSolve, true );
+      }
+      finally { Sky.solveBlind = savedBlind; Sky.solveWithHints = savedHints; Sky.projector = savedProj; win.forceClose(); }
    } )();
 
    /*
@@ -10321,7 +10379,7 @@ function runFlyTestsClean()
          note = dlg.autoPrepare();
          check( "a nebula without a distance stops after the analysis", calls, [ "analyse" ] );
          check( "and asks for it (" + note + ")", /distance/i.test( note ), true );
-         // an unsolved image with nothing to solve from waits for its hints, without an error
+         // an unsolved image with nothing to solve from is analysed all the same: it is solved blind
          var bare = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_bare" ) );
          var savedFocal = Settings.read( FlyThrough.FOCAL_SETTING, DataType_String ), savedPixel = Settings.read( FlyThrough.PIXEL_SETTING, DataType_String );
          try
@@ -10330,9 +10388,10 @@ function runFlyTestsClean()
             dlg.chooseImage( bare );
             dlg.raEdit.text = dlg.decEdit.text = dlg.objectEdit.text = "";
             note = dlg.autoPrepare();
-            check( "an image with nothing to solve from is not analysed yet", calls, [] );
-            check( "the status asks for the hints (" + note + ")", /object/i.test( note ) && /focal/i.test( note ), true );
+            check( "an image with nothing to solve from is analysed all the same (solved blind)", calls, [ "analyse" ] );
+            check( "and no hints are asked for (" + note + ")", /nothing in the header/.test( note ), false );
             dlg.autoPending = false;
+            dlg.id = null;          // as before its analysis: complete hints start one
             dlg.objectEdit.text = "Elephant Trunk"; dlg.lookUpObject();
             check( "the Object box finds a name and fills the centre (" + dlg.objectMatch.text + ")", [ /IC1396A/.test( dlg.objectMatch.text ), dlg.raEdit.text, dlg.decEdit.text ], [ true, "324.0000", "57.5000" ] );
             dlg.focalEdit.text = "400"; dlg.pixelEdit.text = "3.76";
@@ -11146,6 +11205,27 @@ function runFlyTestsClean()
       check( "nothing when nothing matches", [ from( "Image13093" ), from( "masterLight_BIN-2_4144x2822_EXPOSURE-180.00s_FILTER-L_mono.xisf" ) ], [ null, null ] );
    } )();
 
+   /* Solve hints from the file: the header's centre (RA/DEC, OBJCTRA/OBJCTDEC, CRVAL on an RA axis), and an object named by a folder up to 3 levels up. */
+   ( function()
+   {
+      function kw( pairs ) { return pairs.map( function( p ) { return { name: p[0], value: p[1] }; } ); }
+      check( "headerCentre: RA/DEC in degrees", JSON.stringify( Fly.headerCentre( kw( [ [ "RA", "315.41" ], [ "DEC", "68.08" ] ] ) ) ), JSON.stringify( { ra: 315.41, dec: 68.08 } ) );
+      var o = Fly.headerCentre( kw( [ [ "OBJCTRA", "'21 01 38.0'" ], [ "OBJCTDEC", "'+68 04 48'" ] ] ) );
+      check( "headerCentre: OBJCTRA/OBJCTDEC sexagesimal", o && Math.abs( o.ra - 315.408 ) < 0.01 && Math.abs( o.dec - 68.08 ) < 0.01, true );
+      check( "headerCentre: CRVAL with an RA axis", JSON.stringify( Fly.headerCentre( kw( [ [ "CTYPE1", "'RA---TAN'" ], [ "CRVAL1", "10.5" ], [ "CRVAL2", "-5" ] ] ) ) ), JSON.stringify( { ra: 10.5, dec: -5 } ) );
+      check( "headerCentre: CRVAL without an RA axis is ignored", Fly.headerCentre( kw( [ [ "CRVAL1", "10.5" ], [ "CRVAL2", "-5" ] ] ) ), null );
+      check( "headerCentre: nothing", Fly.headerCentre( kw( [ [ "EXPTIME", "300" ] ] ) ), null );
+      check( "headerCentre: out of range is ignored", Fly.headerCentre( kw( [ [ "RA", "400" ], [ "DEC", "10" ] ] ) ), null );
+      var entries = [ { id: "IC1396", ra: 324.7, dec: 57.5, diameter: 170, name: "Elephant's Trunk Nebula" } ];
+      var hit = Fly.objectFromPath( "/Astro/IC 1396/2026-09-01/final_stretched.tif", entries );
+      check( "objectFromPath: from the folder name", hit && hit.id, "IC1396" );
+      check( "objectFromPath: the file name wins", Fly.objectFromPath( "/Astro/nothing/IC1396.tif", entries ).id, "IC1396" );
+      check( "objectFromPath: nothing", Fly.objectFromPath( "/Astro/2026-09-01/final.tif", entries ), null );
+      check( "objectFromPath: at most 3 folders up", Fly.objectFromPath( "/IC 1396/a/b/c/final.tif", entries ), null );
+      check( "findObject: IC 1396A resolves to IC1396", ( Fly.findObject( "IC 1396A", entries )[0] || {} ).id, "IC1396" );
+      check( "findObject: IC1396A resolves to IC1396", ( Fly.findObject( "IC1396A", entries )[0] || {} ).id, "IC1396" );
+   } )();
+
    /* An unsolved image whose file name names its object has the Object box and centre filled from it. */
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -11156,7 +11236,7 @@ function runFlyTestsClean()
          d = new FlyThrough.Dialog( null );
          d.setImage( w );
          check( "the object is read from the file name (" + d.objectEdit.text + ")", [ /North America/i.test( d.objectEdit.text ), d.raEdit.text != "", /NGC7000/.test( d.objectMatch.text ) ], [ true, true, true ] );
-         // the next image names nothing: its hints start empty, not with the last image's, and it is not analysed
+         // the next image names nothing: its hints start empty, not with the last image's, and it is solved blind
          var bare = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_nameless" ) );
          try
          {
@@ -11165,11 +11245,84 @@ function runFlyTestsClean()
             d.setImage( bare );
             check( "a new image naming nothing starts with empty hints", [ d.objectEdit.text, d.raEdit.text, d.decEdit.text, d.objectMatch.text ], [ "", "", "", "" ] );
             d.autoPrepare();
-            check( "and is not analysed", analysed, false );
+            check( "and is analysed all the same (solved blind)", analysed, true );
          }
          finally { bare.forceClose(); }
       }
       finally { if ( d ) d.release(); if ( w ) w.forceClose(); }
+   } )();
+
+   /* The header readers: XISF Observation:Center:RA/Dec and Observation:Object:Name first, else the FITS keywords. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var a = null, b = null;
+      try
+      {
+         a = new ImageWindow( 16, 16, 1, 32, true, false, Util.freeWindowId( "fly_hdr_centre" ) );
+         a.mainView.setPropertyValue( "Observation:Center:RA", 315.41 );
+         a.mainView.setPropertyValue( "Observation:Center:Dec", 68.08 );
+         var c = FlyThrough.headerCentre( a );
+         check( "headerCentre: XISF Observation:Center", c && [ c.ra, c.dec ], [ 315.41, 68.08 ] );
+         b = new ImageWindow( 16, 16, 1, 32, true, false, Util.freeWindowId( "fly_hdr_object" ) );
+         b.keywords = [ new FITSKeyword( "OBJECT", "'IC 1396A'", "" ) ];
+         check( "headerObject: the OBJECT keyword", FlyThrough.headerObject( b ), "IC 1396A" );
+      }
+      finally { if ( a ) a.forceClose(); if ( b ) b.forceClose(); }
+   } )();
+
+   /* A header centre is not overwritten by a name guessed from the view: OBJCTRA/OBJCTDEC point at the Iris, the view names IC1396. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = null, d = null;
+      try
+      {
+         w = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "IC1396_hdr" ) );
+         w.keywords = [ new FITSKeyword( "OBJCTRA", "'21 01 38.0'", "" ), new FITSKeyword( "OBJCTDEC", "'+68 04 48'", "" ) ];
+         d = new FlyThrough.Dialog( null );
+         d.setImage( w );
+         check( "the header's centre wins over the view name (" + d.raEdit.text + ")", [ Math.abs( parseFloat( d.raEdit.text ) - 315.4 ) < 0.05, d.objectMatch.text ], [ true, "Centre from the image's header" ] );
+      }
+      finally { if ( d ) d.release(); if ( w ) w.forceClose(); }
+   } )();
+
+   /* An unsolved image with no centre is solved blind: nothing is missing, and the choices say blind. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = null, d = null;
+      try
+      {
+         w = new ImageWindow( 64, 48, 3, 32, true, true, Util.freeWindowId( "fly_blind_choice" ) );
+         d = new FlyThrough.Dialog( null );
+         d.setImage( w );
+         check( "an unsolved image with no centre is solved blind", [ d.raEdit.text, d.choices().blind === true, d.choices().hints === undefined, d.hintsMissing() ], [ "", true, true, false ] );
+      }
+      finally { if ( d ) d.release(); if ( w ) w.forceClose(); }
+   } )();
+
+   /*
+    * Nothing is built ahead of a solve (Revision 4): opening the dialog
+    * starts no timer and asks no catalogue; blind solving reads the tiles it
+    * needs while it solves.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = { query: Sky.querySources, cands: Sky.blindCandidates }, d = null, asked = 0;
+      try
+      {
+         Sky.querySources = function() { ++asked; return []; };
+         Sky.blindCandidates = function() { ++asked; return []; };
+         d = new FlyThrough.Dialog( null );
+         if ( d.onShow ) d.onShow();
+         processEvents();
+         check( "opening the dialog starts nothing: no index build, no timer, no catalogue query",
+                [ asked, d.indexBuild === undefined, d.indexTimer === undefined, d.indexStartTimer === undefined, d.indexLabel === undefined, typeof d.startIndexBuild ],
+                [ 0, true, true, true, true, "undefined" ] );
+      }
+      finally
+      {
+         if ( d ) d.release();
+         Sky.querySources = saved.query; Sky.blindCandidates = saved.cands;
+      }
    } )();
 
    /*
@@ -11332,6 +11485,55 @@ function runFlyTestsClean()
       finally
       {
          FlyThrough.cacheRoot = real.root; Sky.workingCopy = real.copy; FlyThrough.identify = real.identify; FlyThrough.build = real.build; FlyThrough.renderDraft = real.draft;
+         fx.windows.forEach( function( w ) { w.forceClose(); } );
+      }
+   } )();
+
+   /*
+    * A blind solve names the image: an empty Object box gets the target
+    * found in the solved field (Francesco: "fill up the name yourself with
+    * the result of the blind solve"). A typed name is the user's, and no
+    * target leaves the box empty.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fly-blind-name" ), fx = flyTestScene( dir ), target = null, blind = true;
+      var real = { root: FlyThrough.cacheRoot, copy: Sky.workingCopy, identify: FlyThrough.identify, remember: FlyThrough.Dialog.prototype.rememberObject };
+      var remembered = 0;
+      FlyThrough.cacheRoot = function() { return dir + "/cache"; };
+      Sky.workingCopy = function( w ) { var c = Sky.copyWindow( w, "fly_work" ); c.keywords = w.keywords; return { window: c, scale: 1 }; };
+      FlyThrough.identify = function( w ) { return { proj: Sky.projector( w ), field: Sky.field( w ), pick: { best: target, runnerUp: null }, target: target, type: "nebula",
+                                                     D: 900, distanceSource: "typed", cluster: null, sources: fx.sources,
+                                                     blind: blind ? { ra: 315.4, dec: 68.1, scale: 0.86 } : null }; };
+      FlyThrough.Dialog.prototype.rememberObject = function() { ++remembered; };
+      var run = function( typed )
+      {
+         var d = new FlyThrough.Dialog( null );
+         try
+         {
+            d.tools = [ "StarXTerminator" ];
+            d.setImage( fx.image );
+            d.objectEdit.text = typed; d.objectMatch.text = "";
+            d.distanceEdit.text = "900";
+            d.analyse();
+            return [ d.objectEdit.text, d.objectMatch.text ];
+         }
+         finally { d.release(); }
+      };
+      try
+      {
+         target = { id: "NGC7023", name: "Iris Nebula", ra: 315.4, dec: 68.16, diameter: 18 };
+         check( "a blind solve fills an empty Object box with the target", run( "" ), [ "Iris Nebula", "NGC7023 \u00b7 Iris Nebula (from the blind solve)" ] );
+         check( "...a target without a common name by its id", ( target = { id: "NGC7380", name: "", ra: 341.8, dec: 58.1, diameter: 20 }, run( "" )[0] ), "NGC7380" );
+         target = { id: "NGC7023", name: "Iris Nebula", ra: 315.4, dec: 68.16, diameter: 18 };
+         check( "a typed name is never overwritten", run( "my Iris" ), [ "my Iris", "" ] );
+         check( "no target in the field: the box stays empty", ( target = null, run( "" ) ), [ "", "" ] );
+         check( "not solved blind: the box is left alone", ( target = { id: "NGC7023", name: "Iris Nebula", ra: 315.4, dec: 68.16, diameter: 18 }, blind = false, run( "" ) ), [ "", "" ] );
+         check( "the blind name is not remembered as the image's hints", remembered, 0 );
+      }
+      finally
+      {
+         FlyThrough.cacheRoot = real.root; Sky.workingCopy = real.copy; FlyThrough.identify = real.identify; FlyThrough.Dialog.prototype.rememberObject = real.remember;
          fx.windows.forEach( function( w ) { w.forceClose(); } );
       }
    } )();
@@ -12291,6 +12493,700 @@ function runFlyTestsClean()
    } )();
 
    /* fly-tests-end */
+   runSolveTests();
+}
+
+/* Loom's blind solver. Solve.js is pure and runs under node. */
+function runSolveTests()
+{
+   /* A catalogue transfer that stops sending is abandoned: one sat an hour in curl_easy_perform with no data. */
+   ( function()
+   {
+      var now = 0, watch = Sky.stallWatch( 30000, function() { return now; } );
+      check( "stallWatch: data arriving keeps a transfer going", ( now = 20000, watch( 100 ) ) && ( now = 45000, watch( 5000 ) ), true );
+      check( "stallWatch: 30 s without a byte aborts it", ( now = 74000, watch( 5000 ) ), true );
+      check( "stallWatch: ...and past the limit returns false", ( now = 76000, watch( 5000 ) ), false );
+      var now2 = 0, w2 = Sky.stallWatch( 30000, function() { return now2; } );
+      check( "stallWatch: a transfer that never starts is abandoned too", ( now2 = 31000, w2( 0 ) ), false );
+      // VizieR works out a dense field before its first byte: 28 s for the LMC's 2 degree cone
+      var now3 = 0, w3 = Sky.stallWatch( 30000, function() { return now3; }, 120000 );
+      check( "stallWatch: the first byte may take longer than the stall limit", ( now3 = 90000, w3( 0 ) ), true );
+      check( "stallWatch: ...up to its own limit", ( now3 = 121000, w3( 0 ) ), false );
+      var now4 = 0, w4 = Sky.stallWatch( 30000, function() { return now4; }, 120000 );
+      check( "stallWatch: after the first byte the stall limit holds", ( now4 = 60000, w4( 100 ) ) && ( now4 = 91000, w4( 100 ) ), false );
+      check( "fetchText gives the first byte GAIA_ONLINE_FIRST_BYTE", Sky.GAIA_ONLINE_FIRST_BYTE >= 60000 && Sky.GAIA_ONLINE_FIRST_BYTE > Sky.GAIA_ONLINE_STALL, true );
+      // a trickle never stalls, so the whole answer has a deadline too; and Cancel is seen while a transfer runs
+      var now5 = 0, w5 = Sky.transferWatch( function() { return now5; } ), bytes = 0;
+      check( "transferWatch: a transfer receiving data goes on", ( now5 = 1000, w5( ++bytes ) ), true );
+      var alive5 = true;
+      for ( now5 = 0; now5 < Sky.GAIA_ONLINE_TOTAL; now5 += 10000 ) alive5 = alive5 && w5( ++bytes );
+      check( "transferWatch: ...until GAIA_ONLINE_TOTAL, however it trickles", [ alive5, ( now5 = Sky.GAIA_ONLINE_TOTAL + 1, w5( ++bytes ) ) ], [ true, false ] );
+      var savedCancelled = Sky.transferCancelled, now6 = 0, w6 = Sky.transferWatch( function() { return now6; } );
+      try
+      {
+         Sky.transferCancelled = function() { return true; };
+         check( "transferWatch: a cancel aborts the transfer", ( now6 = 1000, w6( 100 ) ), false );
+      }
+      finally { Sky.transferCancelled = savedCancelled; }
+      check( "transferWatch: nothing is cancelled outside a blind solve", Sky.transferCancelled(), false );
+      check( "GAIA_ONLINE_TOTAL outlasts the slowest answer seen (about 30 s) many times over", Sky.GAIA_ONLINE_TOTAL >= 300000, true );
+   } )();
+   check( "Solve loads", typeof Solve, "object" );
+   function near( a, b, e ) { return Math.abs( a - b ) <= e; }
+
+   /* ---- tangent plane ---------------------------------------------- */
+   ( function()
+   {
+      var c = { ra: 315.4, dec: 68.1 };
+      var p = Solve.toPlane( c, 315.4, 68.1 );
+      check( "toPlane: the centre is the origin", near( p[0], 0, 1e-12 ) && near( p[1], 0, 1e-12 ), true );
+      var q = Solve.toPlane( c, 316.4, 68.6 ), back = Solve.fromPlane( c, q[0], q[1] );
+      check( "fromPlane undoes toPlane", near( back.ra, 316.4, 1e-9 ) && near( back.dec, 68.6, 1e-9 ), true );
+      check( "toPlane: east is +xi", Solve.toPlane( c, 315.5, 68.1 )[0] > 0, true );
+      check( "toPlane: north is +eta", Solve.toPlane( c, 315.4, 68.2 )[1] > 0, true );
+      check( "toPlane: the far side is null", Solve.toPlane( c, 135.4, -68.1 ), null );
+      var w = Solve.fromPlane( { ra: 359.9, dec: 0 }, 0.3, 0 );
+      check( "fromPlane wraps RA into [0,360)", near( w.ra, 0.2, 1e-4 ), true );   // atan: 0.3 on the plane is 0.29999 degrees
+   } )();
+
+   /* ---- quad codes --------------------------------------------------- */
+   ( function()
+   {
+      var pts = [ [ 0, 0 ], [ 10, 10 ], [ 3, 6 ], [ 7, 2 ] ];
+      var q = Solve.quadCode( pts );
+      check( "quadCode: A and B are the farthest pair", [ q.order[0], q.order[1] ].sort().join(), "0,1" );
+      check( "quadCode: C is left of D", q.code[0] <= q.code[2], true );
+      check( "quadCode: canonical (cx + dx <= 1)", q.code[0] + q.code[2] <= 1 + 1e-12, true );
+      function moved( f ) { return pts.map( function( p ) { return f( p[0], p[1] ); } ); }
+      function same( a, b ) { return a.code.every( function( v, i ) { return near( v, b.code[i], 1e-9 ); } ); }
+      var t = 0.7, s = 3.2;
+      check( "quadCode: shift, turn and zoom leave the code alone",
+             same( q, Solve.quadCode( moved( function( x, y ) { return [ 5 + s*( x*Math.cos( t ) - y*Math.sin( t ) ), -8 + s*( x*Math.sin( t ) + y*Math.cos( t ) ) ]; } ) ) ), true );
+      var shuffled = [ pts[2], pts[0], pts[3], pts[1] ], r = Solve.quadCode( shuffled );
+      check( "quadCode: the input order does not matter", same( q, r ), true );
+      check( "quadCode: order maps back to the same stars", shuffled[r.order[0]].join() + shuffled[r.order[2]].join(), pts[q.order[0]].join() + pts[q.order[2]].join() );
+      var m = Solve.quadCode( moved( function( x, y ) { return [ x, -y ]; } ) );
+      check( "quadCode: a mirror image has a different code", same( q, m ), false );
+      check( "quadCode: a star outside the AB circle is no quad", Solve.quadCode( [ [ 0, 0 ], [ 10, 0 ], [ 5, 4.9 ], [ 9.5, 3 ] ] ), null );
+   } )();
+
+   /* ---- similarity fit ------------------------------------------------ */
+   ( function()
+   {
+      var truth = { a: 1e-4*Math.cos( 0.4 ), b: 1e-4*Math.sin( 0.4 ), tx: 0.2, ty: -0.1 };
+      [ 0, 1 ].forEach( function( parity )
+      {
+         var img = [ [ 10, 20 ], [ 900, 40 ], [ 400, 700 ], [ 50, 600 ], [ 700, 500 ] ];
+         var sky = img.map( function( p ) { var u = p[0], v = parity ? -p[1] : p[1]; return [ truth.a*u - truth.b*v + truth.tx, truth.b*u + truth.a*v + truth.ty ]; } );
+         var f = Solve.fitSimilarity( img, sky, parity );
+         check( "fitSimilarity recovers the transform (parity " + parity + ")",
+                near( f.a, truth.a, 1e-12 ) && near( f.b, truth.b, 1e-12 ) && near( f.tx, 0.2, 1e-9 ) && near( f.ty, -0.1, 1e-9 ), true );
+         check( "fitSimilarity: exact points, no residual (parity " + parity + ")", f.rms < 1e-12, true );
+         var p = Solve.applySimilarity( f, 123, 456 ), back = Solve.invertSimilarity( f, p[0], p[1] );
+         check( "invertSimilarity undoes applySimilarity (parity " + parity + ")", near( back[0], 123, 1e-6 ) && near( back[1], 456, 1e-6 ), true );
+      } );
+      check( "fitSimilarity: scale is degrees per pixel", near( Solve.fitSimilarity( [ [ 0, 0 ], [ 100, 0 ] ], [ [ 0, 0 ], [ 0.01, 0 ] ], 0 ).scale, 1e-4, 1e-15 ), true );
+   } )();
+
+   /* ---- sky grid, keeper, tiles, band quads --------------------------- */
+   /* A deterministic synthetic sky patch: n stars, uniform over [ra0, ra0+w] x [dec0, dec0+h], G 6..13. */
+   function synthSky( seed, n, ra0, dec0, w, h )
+   {
+      var s = seed >>> 0, out = [];
+      function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+      for ( var i = 0; i < n; ++i )
+         out.push( { ra: ra0 + w*rnd(), dec: dec0 + h*rnd(), G: 6 + 7*rnd() } );
+      return out;
+   }
+   ( function()
+   {
+      check( "BANDS start at 0.3 degrees", near( Solve.BANDS[0].lo, 0.3, 1e-12 ), true );
+      check( "BANDS: each hi is the next lo", Solve.BANDS.slice( 1 ).every( function( b, k ) { return near( b.lo, Solve.BANDS[k].hi, 1e-12 ); } ), true );
+      check( "cellOf: nearby points share a cell", Solve.cellOf( 10.01, 20.01, 0.3 ) == Solve.cellOf( 10.02, 20.02, 0.3 ), true );
+      check( "cellOf: far points do not", Solve.cellOf( 10, 20, 0.3 ) == Solve.cellOf( 11, 20, 0.3 ), false );
+      check( "cellsNear includes the point's own cell", Solve.cellsNear( 10, 20, 0.5, 0.3 ).indexOf( Solve.cellOf( 10, 20, 0.3 ) ) >= 0, true );
+      check( "cellsNear at the pole includes every column", Solve.cellsNear( 0, 89.9, 0.5, 0.3 ).indexOf( Solve.cellOf( 180, 89.95, 0.3 ) ) >= 0, true );
+
+      var sky = synthSky( 7, 4000, 100, 30, 4, 4 );
+      var keep = new Solve.Keeper( [ 0.3 ], 5 );
+      sky.forEach( function( s ) { keep.add( s ); } );
+      var kept = keep.stars(), perCell = {};
+      kept.forEach( function( s ) { var c = Solve.cellOf( s.ra, s.dec, 0.3 ); perCell[c] = ( perCell[c] || 0 ) + 1; } );
+      check( "Keeper keeps at most M per cell", Object.keys( perCell ).every( function( c ) { return perCell[c] <= 5; } ), true );
+      var c0 = Solve.cellOf( kept[0].ra, kept[0].dec, 0.3 );
+      var inCell = sky.filter( function( s ) { return Solve.cellOf( s.ra, s.dec, 0.3 ) == c0; } ).sort( function( a, b ) { return a.G - b.G; } ).slice( 0, 5 );
+      check( "Keeper keeps the brightest", inCell.every( function( s ) { return kept.indexOf( s ) >= 0; } ), true );
+      var round = Solve.Keeper.fromArrays( [ 0.3 ], 5, keep.toArrays() ).stars();
+      check( "Keeper round-trips through arrays", round.length, kept.length );
+
+      var tiles = Solve.skyTiles( 2 ), probe = synthSky( 11, 300, 0, -90, 360, 180 ), covered = true;
+      probe.forEach( function( p ) { if ( !tiles.some( function( t ) { return Fly.separation( t, p ) <= 2; } ) ) covered = false; } );
+      check( "skyTiles cover the sky", covered, true );
+      check( "skyTiles: a few thousand at 2 degrees", tiles.length > 3000 && tiles.length < 7000, true );
+
+      var quads = Solve.bandQuads( kept, Solve.BANDS[0], 2 );
+      check( "bandQuads makes quads", quads.length > 100, true );
+      check( "bandQuads: every quad's AB is in its band", quads.every( function( q )
+      {
+         var d = Fly.separation( kept[q.ids[0]], kept[q.ids[1]] );
+         return d >= Solve.BANDS[0].lo - 1e-9 && d < Solve.BANDS[0].hi + 1e-9;
+      } ), true );
+      check( "bandQuads: no quad twice", quads.map( function( q ) { return q.ids.slice().sort().join(); } ).filter( function( k, i, all ) { return all.indexOf( k ) != i; } ).length, 0 );
+   } )();
+
+   /* ---- code hash ------------------------------------------------------ */
+   ( function()
+   {
+      var n = 20000, codes = new Float32Array( 4*n ), s = 5;
+      function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+      for ( var i = 0; i < 4*n; ++i ) codes[i] = -0.2 + 1.4*rnd();
+      var h = Solve.buildHash( codes ), q = [ codes[400], codes[401], codes[402], codes[403] ];
+      var hits = Solve.lookup( h, codes, [ q[0] + 0.004, q[1] - 0.004, q[2], q[3] ], 0.01 );
+      check( "lookup finds a near code", hits.indexOf( 100 ) >= 0, true );
+      var brute = [];
+      for ( var k = 0; k < n; ++k )
+      {
+         var d = 0;
+         for ( var j = 0; j < 4; ++j ) d += ( codes[4*k + j] - q[j] )*( codes[4*k + j] - q[j] );
+         if ( Math.sqrt( d ) <= 0.01 ) brute.push( k );
+      }
+      check( "lookup matches brute force", Solve.lookup( h, codes, q, 0.01 ).sort( function( a, b ) { return a - b; } ).join(), brute.join() );
+      check( "lookup: nothing far away", Solve.lookup( h, codes, [ 5, 5, 5, 5 ], 0.01 ).length, 0 );
+   } )();
+
+   /* ---- index ----------------------------------------------------------- */
+   ( function()
+   {
+      var keep = new Solve.Keeper( Solve.BANDS.slice( 0, 3 ).map( function( b ) { return b.lo; } ), 5 );
+      synthSky( 21, 6000, 200, -20, 5, 5 ).forEach( function( s ) { keep.add( s ); } );
+      var idx = Solve.makeIndex( keep.stars(), Solve.BANDS.slice( 0, 3 ), 2 );
+      check( "makeIndex has quads in each band", [ 0, 1, 2 ].every( function( b ) { for ( var i = 0; i < idx.band.length; ++i ) if ( idx.band[i] == b ) return true; return false; } ), true );
+      var io = Solve.indexArrays( idx ), back = Solve.indexFromArrays( JSON.parse( JSON.stringify( io.header ) ), io.arrays );
+      check( "index round-trips: stars", back.stars.length, idx.stars.length );
+      check( "index round-trips: quads", back.quads.length, idx.quads.length );
+      check( "index round-trips: the hash finds quad 0", Solve.lookup( back.hash, back.codes, Array.prototype.slice.call( back.codes, 0, 4 ), 1e-6 ).indexOf( 0 ) >= 0, true );
+      var c = { ra: 202.5, dec: -17.5 }, near = Solve.starsNear( idx, c, 0.5 );
+      var brute = 0;
+      for ( var i = 0; i < idx.stars.length; i += 3 ) if ( Fly.separation( c, { ra: idx.stars[i], dec: idx.stars[i + 1] } ) <= 0.5 ) ++brute;
+      check( "starsNear matches brute force", near.length, brute );
+   } )();
+
+   /* ---- the index built a slice at a time ---------------------------------- */
+   ( function()
+   {
+      var bands = Solve.BANDS.slice( 0, 3 ), keep = new Solve.Keeper( bands.map( function( b ) { return b.lo; } ), 5 );
+      synthSky( 21, 6000, 200, -20, 5, 5 ).forEach( function( s ) { keep.add( s ); } );
+      var stars = keep.stars(), whole = Solve.makeIndex( stars, bands, 2 );
+      var b = new Solve.IndexBuilder( stars, bands, 2 ), steps = 0, rising = true, last = 0, gridSteps = 0, chunk = Solve.GRID_CHUNK;
+      check( "IndexBuilder: no index before it is done", b.index(), null );
+      Solve.GRID_CHUNK = 500;   // the whole-sky grid is made a chunk of stars a step; here too, so slicing it is tested
+      try
+      {
+         while ( !b.step( 7 ) )
+         {
+            ++steps;
+            if ( b.fraction() == 0 ) ++gridSteps;
+            if ( b.fraction() < last || b.fraction() >= 1 ) rising = false;
+            last = b.fraction();
+         }
+      }
+      finally { Solve.GRID_CHUNK = chunk; }
+      check( "IndexBuilder makes a band's star grid over several steps", gridSteps >= Math.ceil( stars.length/500 ), true );
+      check( "IndexBuilder takes many slices", steps > 10, true );
+      check( "IndexBuilder: fraction rises to 1", rising && b.fraction() == 1, true );
+      var sliced = b.index();
+      function same( x, y ) { if ( x.length != y.length ) return false; for ( var i = 0; i < x.length; ++i ) if ( x[i] != y[i] ) return false; return true; }
+      check( "IndexBuilder in slices makes the same index as makeIndex",
+             same( sliced.quads, whole.quads ) && same( sliced.codes, whole.codes ) && same( sliced.band, whole.band ), true );
+      var flat = [];
+      bands.forEach( function( band ) { Solve.bandQuads( stars, band, 2 ).forEach( function( q ) { flat = flat.concat( q.ids ); } ); } );
+      check( "makeIndex's quads are bandQuads', band by band", same( whole.quads, flat ), true );
+   } )();
+
+   /* ---- one catalogue tile: an online answer at the row limit is read again in pieces ---- */
+   ( function()
+   {
+      var savedQuery = Sky.querySources, savedMax = Fly.GAIA_ONLINE_MAX_ROWS, msg = "";
+      try
+      {
+         Fly.GAIA_ONLINE_MAX_ROWS = 10;
+         Sky.querySources = function( c, r ) { var a = []; for ( var i = 0; i < ( r >= 2 ? 10 : 3 ); ++i ) a.push( { ra: c.ra, dec: c.dec + i*1e-3, G: 10 } ); a.origin = "online"; return a; };
+         check( "a tile at the row limit is read again as four", Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ).length, 12 );
+         Sky.querySources = function( c ) { var a = []; for ( var i = 0; i < 10; ++i ) a.push( { ra: c.ra, dec: c.dec, G: 10 } ); a.origin = "online"; return a; };
+         try { Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ); } catch ( e ) { msg = String( e.message ); }
+         check( "a patch at the row limit even when small fails", /Process > Gaia/.test( msg ), true );
+         var n = 0;
+         Sky.querySources = function() { ++n; return []; };
+         check( "no answer (no origin) is tried 3 times, then null", [ Sky.catalogueTile( { ra: 66, dec: 16 }, 2, 13 ), n ].join(), [ null, 3 ].join() );
+      }
+      finally { Sky.querySources = savedQuery; Fly.GAIA_ONLINE_MAX_ROWS = savedMax; }
+   } )();
+
+   /* ---- where a blind solve looks, and the regions it builds on the fly ---- */
+   ( function()
+   {
+      check( "REGION_RADIUS is 6 degrees", Solve.REGION_RADIUS, 6 );
+      check( "REGION_STEP is 3 degrees", Solve.REGION_STEP, 3 );
+      var ngc = [ { id: "NGC1", ra: 10, dec: 10, diameter: 5, messier: "" },
+                  { id: "NGC2", ra: 50, dec: -20, diameter: 60, messier: "" },
+                  { id: "NGC1952", ra: 83.6, dec: 22, diameter: 6, messier: "M1" },
+                  { id: "NGC224", ra: 10.7, dec: 41.3, diameter: 190, messier: "M31" },
+                  { id: "NGC221", ra: 10.67, dec: 40.87, diameter: 8, messier: "M32" },   // beside M31
+                  { id: "NGC3", ra: 50.5, dec: -20.5, diameter: 30, messier: "" },        // beside NGC2
+                  { id: "NGC4", ra: 130, dec: 5 },                                         // no diameter: last
+                  { id: "NGC5", ra: 150, dec: -60, diameter: 2, name: "Test Nebula", messier: "" } ];
+      var aliases = [ { names: [ "Test Alias" ], id: "NGC1" }, { names: [ "Nowhere" ], id: "NGC99999" } ];
+      var history = [ { ra: 200, dec: 30 }, { ra: 200.5, dec: 30.2 }, { ra: 83.5, dec: 22.1 } ];
+      var order = Solve.searchOrder( history, ngc, 3, aliases ), names = order.map( function( c ) { return c.name; } );
+      check( "searchOrder: earlier solves, then popular names by size, then Messier by number, then NGC/IC by diameter",
+             names.slice( 0, 7 ).join(), "an earlier solve,an earlier solve,NGC1,NGC5,M31,NGC2,NGC4" );
+      check( "searchOrder: Loom's own popular names count, the Elephant's Trunk at its own position",
+             Solve.searchOrder( [], [], 3 ).filter( function( c ) { return c.name == "IC1396A"; } ).map( function( c ) { return c.ra + "," + c.dec; } ).join(), "324,57.5" );
+      check( "searchOrder: near-duplicates are left out (M32 by M31, NGC3 by NGC2, M1 by an earlier solve)",
+             [ "M32", "NGC3", "M1" ].every( function( n ) { return names.indexOf( n ) < 0; } ) && names.filter( function( n ) { return n == "an earlier solve"; } ).length, 2 );
+      var named = order.filter( function( c ) { return !c.sky; } ), apart = true;
+      named.forEach( function( a, i ) { named.slice( i + 1 ).forEach( function( b ) { if ( Fly.separation( a, b ) < 3 ) apart = false; } ); } );
+      check( "searchOrder: the named candidates are at least a step apart", apart, true );
+      check( "searchOrder: the sky tiles follow, named by position", order.slice( 7 ).every( function( c ) { return c.sky && /^RA \d/.test( c.name ); } ) && order.length > 1000, true );
+      var covered = true, s = 17;
+      function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+      var probe = Solve.searchOrder( [], [], 3, [] );
+      for ( var i = 0; i < 1500; ++i )
+      {
+         var p = { ra: 360*rnd(), dec: Math.asin( 2*rnd() - 1 )/Fly.RAD };
+         if ( !order.some( function( c ) { return Fly.separation( c, p ) <= 3; } ) || !probe.some( function( c ) { return Fly.separation( c, p ) <= 3; } ) ) covered = false;
+      }
+      check( "searchOrder: every point of the sky is within a step of a candidate", covered, true );
+
+      var rb = Solve.regionBands( Solve.BANDS, 6 );
+      check( "regionBands: the bands whose quads fit in the region", rb.length > 0 && rb.every( function( b ) { return b.hi <= 6; } ) &&
+             Solve.BANDS.filter( function( b ) { return b.hi <= 6; } ).length == rb.length && rb[0] === Solve.BANDS[0], true );
+
+      var cone = { ra: 300, dec: 60 };
+      check( "regionKey: a region's cache name depends on its centre and radius",
+             Solve.regionKey( { ra: 300, dec: 60, radius: 2 } ) != Solve.regionKey( { ra: 300, dec: 60, radius: 6 } ) &&
+             Solve.regionKey( { ra: 300, dec: 60, radius: 2 } ) == Solve.regionKey( { ra: 300.00001, dec: 60, radius: 2 } ), true );
+      var ord = Solve.searchOrder( [], [ { id: "NGC9101", ra: 10, dec: 10, diameter: 5 }, { id: "NGC9102", ra: 10.7, dec: 10, diameter: 4 } ], 3, [], 1, 2 );
+      check( "searchOrder: targets get the small target cone, the sky the region cone",
+             ord[0].radius == 2 && ord.filter( function( c ) { return c.sky; } ).every( function( c ) { return c.radius == Solve.REGION_RADIUS; } ), true );
+      check( "searchOrder: targets are merged only within the target step", ord.filter( function( c ) { return !c.sky; } ).length, 1 );
+      // a region's stars: the tiles' stars inside the cone, each once, the brightest per cell
+      var sizes = [ 0.3, 0.6 ], a = new Float32Array( [ 300, 60, 9, 300.5, 60, 10, 320, 60, 8 ] ), b = new Float32Array( [ 300, 60, 9, 300.2, 60.1, 11 ] );
+      var rs = Solve.regionStars( [ a, b ], cone, 6, sizes, 5 );
+      check( "regionStars: inside the cone, each star once", rs.map( function( t ) { return t.G; } ).sort().join(), "10,11,9" );
+
+      var h = [];
+      for ( i = 0; i < 205; ++i ) h = Solve.pushHistory( h, { ra: i, dec: 0 } );
+      h = Solve.pushHistory( h, { ra: 200.01, dec: 0 } );
+      check( "pushHistory: most recent first, the same field once, at most HISTORY_MAX", [ h.length, h[0].ra, h[1].ra, h.filter( function( e ) { return Math.abs( e.ra - 200 ) < 0.5; } ).length ].join(), [ Solve.HISTORY_MAX, 200.01, 204, 1 ].join() );
+   } )();
+
+   /* ---- the search, end to end: an image near the 5th Messier candidate ---- */
+   ( function()
+   {
+      var spots = [ [ 20, 10 ], [ 80, -30 ], [ 140, 40 ], [ 200, -10 ], [ 66, 16 ], [ 300, 50 ] ], sky = [];
+      var ngc = spots.map( function( p, k ) { return { id: "NGC" + ( 9000 + k ), ra: p[0], dec: p[1], diameter: 10, messier: "M" + ( k + 1 ) }; } );
+      spots.forEach( function( p, k ) { sky = sky.concat( synthSky( 300 + k, 60000, p[0] - 7, p[1] - 7, 14, 14 ) ); } );
+      var truth = { ra: 66.8, dec: 16.5 }, W = 3840, H = 2560, scale = 1.2/W, dets = [], f = { a: scale*Math.cos( 0.4 ), b: scale*Math.sin( 0.4 ), parity: 0, tx: 0, ty: 0 };
+      var c0 = Solve.applySimilarity( f, W/2, H/2 ); f.tx = -c0[0]; f.ty = -c0[1];
+      sky.forEach( function( t )
+      {
+         var p = Solve.toPlane( truth, t.ra, t.dec );
+         if ( !p ) return;
+         var xy = Solve.invertSimilarity( f, p[0], p[1] );
+         if ( xy[0] >= 0 && xy[1] >= 0 && xy[0] < W && xy[1] < H ) dets.push( { x: xy[0], y: xy[1], flux: Math.pow( 10, -0.4*t.G ) } );
+      } );
+      var sizes = Solve.BANDS.map( function( b ) { return b.lo; } ), regions = [], offered = [];
+      function starsFor( c )
+      {
+         var keep = new Solve.Keeper( sizes, Solve.STARS_PER_CELL );
+         sky.forEach( function( t ) { if ( Fly.separation( t, c ) <= Solve.REGION_RADIUS ) keep.add( t ); } );
+         return keep.stars();
+      }
+      function indexFor( c ) { return Solve.regionIndex( starsFor( c ) ); }
+      var found = Solve.searchSky( Solve.searchOrder( [], ngc, Solve.REGION_STEP, [] ).slice( 0, 12 ), indexFor, dets, W, H,
+                                   { onRegion: function( k, n, c ) { regions.push( c.name ); },
+                                     accept: function( r ) { offered.push( r ); return true; } } );
+      check( "searchSky: solved in the 5th region", found && [ found.region, found.candidate.name, regions.length ].join(), "5,M5,5" );
+      check( "searchSky: the right centre", !!found && Fly.separation( found.result, truth ) < 0.01, true );
+      check( "searchSky: no wrong region offered a match", offered.length > 0 && offered.every( function( r ) { return Fly.separation( r, truth ) < 0.05; } ), true );
+      // a match the caller rejects is not offered again by the next regions, and the search goes on
+      offered = []; regions = [];
+      var twice = Solve.searchOrder( [ { ra: 67.5, dec: 17 } ], ngc, 1, [] ).slice( 0, 7 );   // the earlier solve's region holds the field too, and so does M5's
+      var none = Solve.searchSky( twice, indexFor, dets, W, H,
+                                  { onRegion: function( k, n, c ) { regions.push( c.name ); }, accept: function( r ) { offered.push( r ); return false; } } );
+      check( "searchSky: a rejected match is offered once, and every region is tried", [ none, offered.length, regions.length, regions[5] ].join(), [ null, 1, 7, "M5" ].join() );
+      // the same centre turned or mirrored is another solution: a rejected one does not hide it
+      var here = { ra: 66, dec: 16 };
+      check( "sameSolution: same centre, turn and mirroring", Solve.sameSolution( { ra: 66, dec: 16, rotation: 359.5, parity: 0 }, { ra: 66.01, dec: 16, rotation: 0.5, parity: 0 } ), true );
+      check( "sameSolution: mirrored, turned or elsewhere, no",
+             [ Solve.sameSolution( { ra: 66, dec: 16, rotation: 10, parity: 0 }, { ra: 66, dec: 16, rotation: 10, parity: 1 } ),
+               Solve.sameSolution( { ra: 66, dec: 16, rotation: 10, parity: 0 }, { ra: 66, dec: 16, rotation: 100, parity: 0 } ),
+               Solve.sameSolution( { ra: 66, dec: 16, rotation: 10, parity: 0 }, { ra: 66.2, dec: 16, rotation: 10, parity: 0 } ) ], [ false, false, false ] );
+      // hypotheses at one centre and scale but turned or mirrored are verified one by one: a false first one does not hide the true one
+      var fitA = { a: 0.001, b: 0, parity: 0, scale: 0.001 }, fitB = { a: 0.001, b: 0, parity: 1, scale: 0.001 }, fitC = { a: 0, b: 0.001, parity: 0, scale: 0.001 };
+      check( "triedKey: the same orientation is one hypothesis", Solve.triedKey( fitA, here ), Solve.triedKey( { a: 0.001, b: 0.00001, parity: 0, scale: 0.001 }, here ) );
+      check( "triedKey: mirrored or turned is another",
+             [ Solve.triedKey( fitA, here ) == Solve.triedKey( fitB, here ), Solve.triedKey( fitA, here ) == Solve.triedKey( fitC, here ) ], [ false, false ] );
+      check( "triedKey: ...within the same vote (centre and scale)", Solve.voteKey( fitA, here ) == Solve.voteKey( fitB, here ) && Solve.voteKey( fitA, here ) == Solve.voteKey( fitC, here ), true );
+      var savedSolve = Solve.solve;
+      try
+      {
+         Solve.solve = function() { return [ { ra: here.ra, dec: here.dec, rotation: 30, parity: 0 }, { ra: here.ra, dec: here.dec, rotation: 30, parity: 1 } ]; };
+         var other = Solve.searchSky( [ { ra: 66, dec: 16, name: "one" } ], function() { return { quads: [ 0 ] }; }, [], 100, 100,
+                                      { accept: function( r ) { return r.parity == 1; } } );
+         check( "searchSky: a rejected match does not hide the mirrored one at its centre", other ? other.result.parity : null, 1 );
+      }
+      finally { Solve.solve = savedSolve; }
+   } )();
+
+   /* ---- blind solve on synthetic fields --------------------------------- */
+   ( function()
+   {
+      // one index for a 12x12 degree patch; fields are cut out of it
+      var bands = Solve.BANDS.slice( 0, 6 ), keep = new Solve.Keeper( bands.map( function( b ) { return b.lo; } ), 5 );
+      var sky = synthSky( 99, 60000, 60, 10, 12, 12 );
+      sky.forEach( function( s ) { keep.add( s ); } );
+      var idx = Solve.makeIndex( keep.stars(), bands, 2 );
+
+      /* An image of `sky` at centre, scale (deg/px), turn (rad), parity; drop and spurious are fractions. */
+      function field( centre, scale, turn, parity, drop, spurious, seed )
+      {
+         var W = 3840, H = 2560, s = seed >>> 0, dets = [];
+         function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+         var f = { a: scale*Math.cos( turn ), b: scale*Math.sin( turn ), parity: parity, tx: 0, ty: 0 };
+         var c0 = Solve.applySimilarity( f, W/2, H/2 ); f.tx = -c0[0]; f.ty = -c0[1];
+         sky.forEach( function( t )
+         {
+            var p = Solve.toPlane( centre, t.ra, t.dec );
+            if ( !p ) return;
+            var xy = Solve.invertSimilarity( f, p[0], p[1] );
+            if ( xy[0] < 0 || xy[1] < 0 || xy[0] >= W || xy[1] >= H || rnd() < drop ) return;
+            dets.push( { x: xy[0] + 0.3*( rnd() - 0.5 ), y: xy[1] + 0.3*( rnd() - 0.5 ), flux: Math.pow( 10, -0.4*t.G )*( 0.8 + 0.4*rnd() ) } );
+         } );
+         var real = dets.length;
+         for ( var k = 0; k < spurious*real; ++k ) dets.push( { x: W*rnd(), y: H*rnd(), flux: Math.pow( 10, -0.4*( 8 + 5*rnd() ) ) } );
+         var corners = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ] ].map( function( p ) { var q = Solve.applySimilarity( f, p[0], p[1] ); return Solve.fromPlane( centre, q[0], q[1] ); } );
+         return { dets: dets, W: W, H: H, corners: corners };
+      }
+      function solves( name, centre, scale, turn, parity, drop, spurious )
+      {
+         var f = field( centre, scale, turn, parity, drop, spurious, 3 ), t0 = Date.now();
+         var r = Solve.solve( idx, f.dets, f.W, f.H, {} )[0];
+         check( name + ": solved", !!r, true );
+         if ( !r ) return;
+         check( name + ": centre within 0.01 deg", Fly.separation( r, centre ) < 0.01, true );
+         check( name + ": scale within 0.5%", Math.abs( r.scale/( scale*3600 ) - 1 ) < 0.005, true );
+         check( name + ": parity", r.parity, parity );
+         check( name + ": the corners where they are", r.corners && r.corners.length == 4 && r.corners.every( function( c, i ) { return Fly.separation( c, f.corners[i] ) < 0.01; } ), true );
+         check( name + ": under 20 s", Date.now() - t0 < 20000, true );
+      }
+      solves( "1.2 deg field", { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0.2 );
+      ( function()
+      {
+         // ImageSolver's answer must lie on the blind match corner for corner: the same centre and scale, turned or mirrored, is another solution
+         var a = field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0, 0, 3 ).corners, tol = Solve.CORNER_TOL*1.2*Math.hypot( 3840, 2560 )/3840;
+         function turnedBy( deg ) { return field( { ra: 66, dec: 16 }, 1.2/3840, 0.3 + deg*Math.PI/180, 0, 0, 0, 3 ).corners; }
+         var mirrored = field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 1, 0, 0, 3 ).corners;
+         var nudged = a.map( function( c ) { return { ra: c.ra + 0.002, dec: c.dec - 0.002 }; } );
+         check( "sameField: the same corners agree", Solve.sameField( a, a, tol ), true );
+         check( "sameField: a small offset agrees", Solve.sameField( a, nudged, tol ), true );
+         check( "sameField: turned by 1 degree still agrees (fit and distortion)", Solve.sameField( a, turnedBy( 1 ), tol ), true );
+         check( "sameField: turned by 5 or 29 degrees, no", [ Solve.sameField( a, turnedBy( 5 ), tol ), Solve.sameField( a, turnedBy( 29 ), tol ) ], [ false, false ] );
+         check( "sameField: mirrored, no", Solve.sameField( a, mirrored, tol ), false );
+         check( "sameField: no corners (no solution), no", [ Solve.sameField( a, null, tol ), Solve.sameField( null, a, tol ) ], [ false, false ] );
+      } )();
+      solves( "same sky at half the scale (drizzled)", { ra: 66, dec: 16 }, 0.6/3840, 0.3, 0, 0.2, 0.2 );
+      solves( "mirrored field solves", { ra: 65, dec: 15 }, 1.5/3840, 2.0, 1, 0.2, 0.2 );
+      solves( "field with 60% spurious detections", { ra: 67, dec: 17 }, 2/3840, -1.0, 0, 0.3, 0.6 );
+      solves( "4 deg field", { ra: 66, dec: 16 }, 4/3840, 1.0, 0, 0.1, 0.1 );
+
+      var blank = Solve.solve( idx, [], 3840, 2560, {} );
+      check( "no stars: no solution", blank.length, 0 );
+      var few = field( { ra: 66, dec: 16 }, 1.2/3840, 0, 0, 0, 0, 1 ).dets.slice( 0, 5 );
+      check( "five stars: no solution", Solve.solve( idx, few, 3840, 2560, {} ).length, 0 );
+      var elsewhere = field( { ra: 66, dec: 16 }, 1.2/3840, 0, 0, 0, 0, 1 );
+      elsewhere.dets.forEach( function( d ) { d.x = 3840 - d.x; d.y = ( d.y*7919 ) % 2560; } );   // no sky looks like this
+      check( "scrambled field: no confident match", Solve.solve( idx, elsewhere.dets, 3840, 2560, {} ).length, 0 );
+      check( "log10Chance: 10 of 10 at p 0.01 is -20", Math.abs( Solve.log10Chance( 10, 10, 0.01 ) + 20 ) < 1e-9, true );
+      check( "log10Chance: 0 of n is certain", Solve.log10Chance( 0, 50, 0.1 ), 0 );
+      var r12 = Solve.solve( idx, field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0.2, 3 ).dets, 3840, 2560, {} )[0];
+      check( "a solution's matches spread over the image", r12 && r12.spread >= Solve.MIN_SPREAD, true );
+      var corner = field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0, 3 );
+      corner.dets = corner.dets.filter( function( d ) { return d.x < 1280 && d.y < 850; } );   // one ninth of the image
+      check( "matches in one corner only: no solution", Solve.solve( idx, corner.dets, 3840, 2560, {} ).length, 0 );
+      var ticks = 0;
+      Solve.solve( idx, field( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 0.2, 0.2, 3 ).dets, 3840, 2560, { tick: function() { ++ticks; } } );
+      check( "solve ticks while it works", ticks > 0, true );
+   } )();
+
+   /* ---- blind solve: hints, cancel, and the hand-off to ImageSolver ------ */
+   check( "hintsFrom: focal 1000 and the pixel that gives the scale",
+          ( function() { var h = Solve.hintsFrom( { ra: 1, dec: 2, scale: 0.966 } ); return h.focal == 1000 && Math.abs( 206.265*h.pixel/h.focal - 0.966 ) < 1e-12 && h.ra == 1 && h.dec == 2; } )(), true );
+   ( function()
+   {
+      var savedOnce = Sky.solveOnce, tries = 0, err = null;
+      Sky.solveOnce = function() { ++tries; throw Sky.cancelled(); };
+      try { Sky.solveWithHints( {}, { ra: 1, dec: 2, focal: 1000, pixel: 4 } ); }
+      catch ( e ) { err = e; }
+      finally { Sky.solveOnce = savedOnce; }
+      check( "solveWithHints: a cancel is not retried at other scales", tries == 1 && !!( err && err.loomCancel ), true );
+   } )();
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      // the catalogue: a synthetic 12x12 degree patch, counted; the solver's folder: the suite's own
+      var sky = synthSky( 77, 60000, 60, 10, 12, 12 ), calls = 0, offline = false;
+      var saved = { query: Sky.querySources, dir: Sky.solverIndexDir, ngc: Sky.readNgcIc, cands: Sky.blindCandidates, solve: Sky.solveWithHints,
+                    field: Sky.field, scale: Sky.solvedScale, corners: Sky.fieldCorners }, got = null, truthCorners = null;
+      Sky.querySources = function( centre, radius, gMax )
+      {
+         ++calls;
+         if ( offline ) return [];   // no origin: no catalogue answered
+         var s = sky.filter( function( t ) { return t.G <= gMax && Fly.separation( t, centre ) <= radius; } );
+         s.origin = "test";
+         return s;
+      };
+      var dir = synthDir( "solver-fly" );
+      Sky.solverIndexDir = function() { return dir; };
+      Sky.readNgcIc = function() { return [ { id: "NGC9001", ra: 66, dec: 16, diameter: 10, messier: "" }, { id: "NGC9002", ra: 200, dec: -40, diameter: 5, messier: "" } ]; };
+      // the real order without Loom's popular names (the Elephant's Trunk would come first), cut short: a rejected match would otherwise go on through the whole sky
+      Sky.blindCandidates = function() { return Solve.searchOrder( Sky.readHistory(), Sky.readNgcIc(), Solve.REGION_STEP, [], Solve.TARGET_STEP, Solve.TARGET_RADIUS ).slice( 0, 3 ); };
+      Sky.solveWithHints = function( w, hints ) { got = hints; return hints.pixel; };
+      // "ImageSolver" here agrees with the hints it was given
+      Sky.field = function() { return { centre: { ra: got.ra, dec: got.dec }, radiusDeg: 1 }; };
+      Sky.solvedScale = function() { return 206.265*got.pixel/got.focal; };
+      Sky.fieldCorners = function() { return truthCorners; };
+      var W = 1920, H = 1280, scale = 1.5/W, centre = { ra: 66, dec: 16 };
+      var win = new ImageWindow( W, H, 1, 32, true, false, "solve_synth" );
+      try
+      {
+         var img = win.mainView.image, f = { a: scale, b: 0, tx: 0, ty: 0, parity: 0 };
+         var c0 = Solve.applySimilarity( f, W/2, H/2 ); f.tx = -c0[0]; f.ty = -c0[1];
+         function cornersOf( g ) { return [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ] ].map( function( p ) { var q = Solve.applySimilarity( g, p[0], p[1] ); return Solve.fromPlane( centre, q[0], q[1] ); } ); }
+         truthCorners = cornersOf( f );
+         // one buffer, one setSamples: per-pixel setSample over thousands of stars is slow in PJSR
+         var buf = new Float32Array( W*H );
+         for ( var i = 0; i < buf.length; ++i ) buf[i] = 0.05;
+         sky.forEach( function( t )
+         {
+            var p = Solve.toPlane( centre, t.ra, t.dec ); if ( !p ) return;
+            var xy = Solve.invertSimilarity( f, p[0], p[1] ), amp = Math.min( 0.9, 50*Math.pow( 10, -0.4*t.G ) );
+            for ( var y = Math.floor( xy[1] ) - 4; y <= Math.floor( xy[1] ) + 4; ++y )
+               for ( var x = Math.floor( xy[0] ) - 4; x <= Math.floor( xy[0] ) + 4; ++x )
+                  if ( x >= 0 && y >= 0 && x < W && y < H )
+                     buf[y*W + x] = Math.min( 1, buf[y*W + x] + amp*Math.exp( -( ( x - xy[0] )*( x - xy[0] ) + ( y - xy[1] )*( y - xy[1] ) )/( 2*1.5*1.5 ) ) );
+         } );
+         win.mainView.beginProcess( UndoFlag_NoSwapFile );
+         img.setSamples( buf );
+         win.mainView.endProcess();
+         check( "the synthetic image has stars to solve from", Sky.detections( img ).length >= 100, true );
+         var texts = [], quiet = { stage: function( t ) { texts.push( t ); }, isCancelled: function() { return false; } };
+         var savedBlind = Solve.blindStars, ranked = 0;
+         Solve.blindStars = function() { ++ranked; return savedBlind.apply( Solve, arguments ); };
+         var r = Sky.solveBlind( win, quiet );
+         Solve.blindStars = savedBlind;
+         check( "solveBlind ranks the image's stars with Solve.blindStars", ranked, 1 );
+         check( "solveBlind hands ImageSolver the centre", got && Fly.separation( got, centre ) < 0.02, true );
+         check( "solveBlind hands ImageSolver the scale", got && Math.abs( 206.265*got.pixel/got.focal - scale*3600 )/( scale*3600 ) < 0.01, true );
+         check( "solveBlind: found in the first region, near NGC9001", r.region + " " + r.candidate.name, "1 NGC9001" );
+         check( "solveBlind: the region is read from the catalogue in one query", calls, 1 );
+         check( "solveBlind: says how many catalogue queries it made", r.queries, 1 );
+         check( "solveBlind: no tile count any more", "tilesRead" in r, false );
+         var regionDir = dir + "/regions-v" + Solve.INDEX_VERSION, files = 0, ff = new FileFind;
+         if ( ff.begin( regionDir + "/*.f32" ) ) do ++files; while ( ff.next() );
+         check( "solveBlind: the region's stars are cached on disk", files, 1 );
+         check( "solveBlind: says which region it searches", texts.some( function( t ) { return /^Blind solving: searching the sky near NGC9001 \(region 1 of 3\)$/.test( t ); } ), true );
+         check( "solveBlind: says when it reads the catalogue", texts.some( function( t ) { return /reading the star catalogue \(query \d+/.test( t ); } ), true );
+         var hist = JSON.parse( File.readTextFile( dir + "/history.json" ) );
+         check( "solveBlind: the solve goes into the history", hist.length == 1 && Fly.separation( hist[0], centre ) < 0.02, true );
+         // a second solve: its earlier solve first, every tile from the cache
+         Sky.forgetRegions();
+         calls = 0; texts = [];
+         var again = Sky.solveBlind( win, quiet );
+         check( "a second solve makes no catalogue query", calls, 0 );
+         check( "...and says so", again.queries, 0 );
+         check( "a second solve starts at the earlier solve", again.region + " " + again.candidate.name, "1 an earlier solve" );
+
+         Sky.solveWithHints = function() { throw new Error( "not confirmed" ); };
+         var msg = "";
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "an unconfirmed blind match is not used", /could not confirm/.test( msg ), true );
+         // "ImageSolver" leaves a real solution behind, somewhere else: it must be rejected and removed
+         Sky.solveWithHints = function( w, hints )
+         {
+            got = hints;
+            var d = hints.pixel/hints.focal*180/Math.PI;
+            Sky.writeTanKeywords( w, { crval1: hints.ra + 3, crval2: hints.dec, crpix1: W/2, crpix2: H/2, cd: [ -d, 0, 0, d ] } );
+            w.regenerateAstrometricSolution();
+            return hints.pixel;
+         };
+         Sky.field = function() { return { centre: { ra: got.ra + 3, dec: got.dec }, radiusDeg: 1 }; };   // "solved" elsewhere
+         msg = "";
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "a confirmation somewhere else is not used", /not where the blind match/.test( msg ), true );
+         check( "a rejected candidate leaves the window unsolved", Sky.projector( win ), null );
+         // "ImageSolver" at the right centre and scale, but mirrored: rejected too
+         Sky.solveWithHints = function( w, hints ) { got = hints; return hints.pixel; };
+         Sky.field = function() { return { centre: { ra: got.ra, dec: got.dec }, radiusDeg: 1 }; };
+         truthCorners = cornersOf( { a: f.a, b: f.b, tx: f.tx, ty: -f.ty, parity: 1 } );
+         msg = "";
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "a confirmation mirrored against the blind match is not used", /turned or mirrored/.test( msg ), true );
+         truthCorners = null;
+         msg = "";
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "a confirmation with no solution to compare is not used", /turned or mirrored/.test( msg ), true );
+         truthCorners = cornersOf( f );
+         var cancelled = null;
+         try { Sky.solveBlind( win, { stage: function() {}, isCancelled: function() { return true; } } ); } catch ( e ) { cancelled = e; }
+         check( "solveBlind: a cancel stops it", !!( cancelled && cancelled.loomCancel ), true );
+         // a cancel while reading the catalogue: the regions read so far stay cached, no further query is made
+         dir = synthDir( "solver-fly-cancel" );
+         Sky.forgetRegions();
+         Sky.solveWithHints = function() { throw new Error( "not confirmed" ); };   // so the search goes on past region 1
+         calls = 0;
+         cancelled = null;
+         try { Sky.solveBlind( win, { stage: function() {}, isCancelled: function() { return calls >= 2; } } ); } catch ( e ) { cancelled = e; }
+         check( "solveBlind: a cancel between regions stops the reading", !!( cancelled && cancelled.loomCancel ) && calls == 2, true );
+         // a cancel while a transfer runs: the transfer sees it (Sky.transferCancelled), and the solve stops as cancelled, not as "no catalogue"
+         dir = synthDir( "solver-fly-cancel-transfer" );
+         Sky.forgetRegions();
+         var clicked = false, seen = [], transferring = Sky.querySources;
+         Sky.querySources = function() { clicked = true; seen.push( Sky.transferCancelled() ); return []; };
+         cancelled = null;
+         try { Sky.solveBlind( win, { stage: function() {}, isCancelled: function() { return clicked; } } ); } catch ( e ) { cancelled = e; }
+         Sky.querySources = transferring;
+         check( "solveBlind: a transfer sees Cancel", seen.length > 0 && seen[0], true );
+         check( "solveBlind: a cancel during a transfer stops as cancelled", !!( cancelled && cancelled.loomCancel ), true );
+         check( "solveBlind: outside the solve, transfers are not cancelled", Sky.transferCancelled(), false );
+
+         // offline, no local Gaia, nothing cached: stop at the first tile, and say what to do
+         dir = synthDir( "solver-fly-offline" );
+         Sky.forgetRegions();
+         offline = true; calls = 0; msg = "";
+         var t0 = Date.now();
+         try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+         check( "offline: fails fast with a clear message", calls <= 3 && /Process > Gaia/.test( msg ) && /internet/.test( msg ) && Date.now() - t0 < 30000, true );
+
+         // online, a region the catalogue does not answer (VizieR slow in a dense field, or briefly down): asked again after a pause, then skipped
+         var silentAt = [ { ra: 120, dec: 10 } ], answering = Sky.querySources, fakeNow = 0, pauses = 0, silentCalls = 0;
+         for ( var sr = 1; sr < 30; ++sr ) silentAt.push( { ra: 120 + 3*sr, dec: 10 } );
+         var savedClock = { now: Sky.now, pause: Sky.pause };
+         Sky.now = function() { return fakeNow; };
+         Sky.pause = function( ms, tick ) { ++pauses; fakeNow += ms; tick(); };
+         Sky.querySources = function( centre )
+         {
+            if ( silentAt.some( function( s ) { return Fly.separation( s, centre ) < 1; } ) ) { ++silentCalls; return []; }
+            return answering.apply( Sky, arguments );
+         };
+         function region( c, name ) { return { ra: c.ra, dec: c.dec, name: name, sky: false, radius: Solve.TARGET_RADIUS }; }
+         Sky.solveWithHints = function( w, hints ) { got = hints; return hints.pixel; };
+         Sky.field = function() { return { centre: { ra: got.ra, dec: got.dec }, radiusDeg: 1 }; };
+         try
+         {
+            dir = synthDir( "solver-fly-skip" );
+            Sky.forgetRegions();
+            offline = false; msg = "";
+            Sky.blindCandidates = function() { return [ region( { ra: 200, dec: -40 }, "empty" ), region( silentAt[0], "silent" ), region( centre, "NGC9001" ) ]; };
+            var skipped = null;
+            try { skipped = Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+            check( "a region the catalogue does not answer is skipped", skipped ? skipped.region + " " + skipped.candidate.name : msg, "3 NGC9001" );
+            check( "...after one pause and a second ask", pauses + " " + silentCalls, "1 6" );
+            check( "...and is not cached: a later solve asks again", File.exists( dir + "/regions-v" + Solve.INDEX_VERSION + "/" + Solve.regionKey( region( silentAt[0] ) ) + ".f32" ), false );
+            // a brief outage: the region answers when asked again, and is searched
+            dir = synthDir( "solver-fly-outage" );
+            Sky.forgetRegions();
+            pauses = 0; msg = "";
+            Sky.querySources = function( centre )
+            {
+               if ( pauses == 0 && Fly.separation( centre, { ra: 66, dec: 16 } ) < 1 ) return [];
+               return answering.apply( Sky, arguments );
+            };
+            Sky.blindCandidates = function() { return [ region( { ra: 200, dec: -40 }, "empty" ), region( centre, "NGC9001" ) ]; };
+            var back = null;
+            try { back = Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+            check( "a region that answers after a pause is searched", back ? back.region + " " + back.candidate.name : msg, "2 NGC9001" );
+            // no answer for BLIND_OUTAGE: the catalogue is gone, say so
+            dir = synthDir( "solver-fly-gone" );
+            Sky.forgetRegions();
+            Sky.querySources = function( centre )
+            {
+               if ( silentAt.some( function( s ) { return Fly.separation( s, centre ) < 1; } ) ) return [];
+               return answering.apply( Sky, arguments );
+            };
+            fakeNow = 0; pauses = 0; msg = "";
+            Sky.blindCandidates = function() { return [ region( { ra: 200, dec: -40 }, "empty" ) ].concat( silentAt.map( function( s ) { return region( s, "silent" ); } ), [ region( centre, "NGC9001" ) ] ); };
+            try { Sky.solveBlind( win, quiet ); } catch ( e ) { msg = String( e.message ); }
+            check( "no catalogue answer for BLIND_OUTAGE stops the search", /Process > Gaia/.test( msg ) && fakeNow >= Sky.BLIND_OUTAGE && pauses < silentAt.length, true );
+            check( "BLIND_OUTAGE outlasts a VizieR outage of a few minutes", Sky.BLIND_OUTAGE >= 300000, true );
+         }
+         finally { Sky.now = savedClock.now; Sky.pause = savedClock.pause; }
+      }
+      finally
+      {
+         win.forceClose();
+         Sky.querySources = saved.query; Sky.solverIndexDir = saved.dir; Sky.readNgcIc = saved.ngc; Sky.blindCandidates = saved.cands;
+         Sky.solveWithHints = saved.solve; Sky.field = saved.field; Sky.solvedScale = saved.scale; Sky.fieldCorners = saved.corners;
+         Sky.forgetRegions();
+      }
+   } )();
+
+   /* A region the cache cannot store (a full disk, a folder it may not write) is still searched: the stars are in hand. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = { query: Sky.querySources, dir: Sky.solverIndexDir }, blocker = synthDir( "solver-cache-fail" ) + "/not-a-folder";
+      File.writeTextFile( blocker, "x" );
+      Sky.solverIndexDir = function() { return blocker; };
+      Sky.querySources = function( centre ) { var s = [ { ra: centre.ra, dec: centre.dec, G: 8 } ]; s.origin = "test"; return s; };
+      Sky.forgetRegions();
+      try
+      {
+         var a = null, err = "";
+         try { a = Sky.regionCatalogue( { ra: 10, dec: 20, radius: 2 }, null ); } catch ( e ) { err = String( e.message || e ); }
+         check( "a region the cache cannot store is still used", a ? a.length : err, 3 );
+      }
+      finally { Sky.querySources = saved.query; Sky.solverIndexDir = saved.dir; Sky.forgetRegions(); }
+   } )();
+
+   /* ---- real-image robustness (Task 6b) ---------------------------------- */
+   ( function()
+   {
+      // a quad whose circle also holds a brighter star that isn't in the catalogue's quad (a nebula knot, or a star the catalogue ranks fainter)
+      var quad = [ { x: 100, y: 100, flux: 50 }, { x: 900, y: 700, flux: 40 }, { x: 400, y: 300, flux: 10 }, { x: 650, y: 380, flux: 9 } ];
+      var extra = { x: 520, y: 450, flux: 30 };
+      var want = Solve.quadCode( quad.map( function( d ) { return [ d.x, d.y ]; } ) ).code;
+      var got = Solve.imageQuads( quad.concat( [ extra ] ), 40 ).some( function( q ) { return q.parity == 0 && q.code.every( function( v, i ) { return near( v, want[i], 1e-9 ); } ); } );
+      check( "imageQuads: a brighter extra star inside the circle doesn't hide the quad", got, true );
+   } )();
+   ( function()
+   {
+      /*
+       * A stretched finished image: a saturated star with four spikes (StarDetector drops these),
+       * a saturated star in a bright nebula, a faint star, and a big bright patch that is no star.
+       */
+      var W = 400, H = 300, buf = new Float32Array( W*H );
+      function add( cx, cy, f ) { for ( var y = 0; y < H; ++y ) for ( var x = 0; x < W; ++x ) buf[y*W + x] += f( x - cx, y - cy ); }
+      for ( var i = 0; i < buf.length; ++i ) buf[i] = 0.05;
+      add( 100.3, 80.6, function( dx, dy ) { var r = Math.hypot( dx, dy ); return 2*Math.exp( -r*r/( 2*6*6 ) ) + ( ( Math.abs( dx ) < 1 || Math.abs( dy ) < 1 ) && r < 40 ? 0.6*( 1 - r/40 ) : 0 ); } );
+      add( 280, 200, function( dx, dy ) { return 0.6*Math.exp( -( ( dx - 12 )*( dx - 12 ) + dy*dy )/( 2*25*25 ) ); } );          // nebula, off-centre from the star
+      add( 280.4, 199.7, function( dx, dy ) { var r2 = dx*dx + dy*dy; return 1.2*Math.exp( -r2/( 2*2.5*2.5 ) ); } );
+      add( 330, 60, function( dx, dy ) { var r2 = dx*dx + dy*dy; return 0.3*Math.exp( -r2/( 2*1.5*1.5 ) ); } );
+      for ( var y = 230; y < 290; ++y ) for ( var x = 10; x < 190; ++x ) buf[y*W + x] = Math.max( buf[y*W + x], 0.95 );   // a flat bright patch, 180 px wide
+      for ( i = 0; i < buf.length; ++i ) buf[i] = Math.min( 1, buf[i] );
+      var s = Solve.brightStars( buf, W, H );
+      function found( x, y ) { return s.filter( function( b ) { return Math.hypot( b.x - x, b.y - y ) < 1; } ).length; }
+      check( "brightStars: the spiky saturated star, once", found( 100.3, 80.6 ), 1 );
+      check( "brightStars: the star inside bright nebula, once", found( 280.4, 199.7 ), 1 );
+      check( "brightStars: nothing on the flat bright patch", s.filter( function( b ) { return b.y > 225; } ).length, 0 );
+      check( "brightStars: the spiky star ranks first (the biggest core)", s.length > 0 && Math.hypot( s[0].x - 100.3, s[0].y - 80.6 ) < 1, true );
+
+      var dets = [ { x: 330, y: 60, flux: 5 }, { x: 280.6, y: 199.9, flux: 3 }, { x: 20, y: 20, flux: 1 } ];
+      var merged = Solve.blindStars( dets, buf, W, H );
+      var want = [ [ 100.3, 80.6 ], [ 280.4, 199.7 ], [ 330, 60 ], [ 20, 20 ] ], ranked = Solve.brightest( merged, 10 );
+      check( "blindStars: bright stars first, then the detector's by flux, no star twice",
+             ranked.length == 4 && want.every( function( p, i ) { return Math.hypot( ranked[i].x - p[0], ranked[i].y - p[1] ) < 1; } ), true );
+      check( "blindStars: an image with nothing saturated keeps the detector's stars", Solve.blindStars( dets, new Float32Array( W*H ).fill( 0.05 ), W, H ).length, 3 );
+   } )();
 }
 
 function main()

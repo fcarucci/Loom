@@ -21,6 +21,7 @@
 #include "lib/Pipeline.js"
 #include "lib/Frames.js"
 #include "lib/Fly.js"
+#include "lib/Solve.js"
 #include "lib/Sky.js"
 #include "lib/Render.js"
 #endif
@@ -303,6 +304,24 @@ FlyThrough.removeQuietly = function( path )
    try { if ( File.exists( path ) ) File.remove( path ); } catch ( e ) {}
 };
 
+/* An open image's centre: XISF Observation:Center:RA/Dec, else its FITS keywords (Fly.headerCentre); null when neither. */
+FlyThrough.headerCentre = function( window )
+{
+   var v = window.mainView, ra = null, dec = null;
+   try { ra = v.propertyValue( "Observation:Center:RA" ); dec = v.propertyValue( "Observation:Center:Dec" ); } catch ( e ) {}
+   if ( typeof ra == "number" && typeof dec == "number" && ra >= 0 && ra < 360 && Math.abs( dec ) <= 90 ) return { ra: ra, dec: dec };
+   return Fly.headerCentre( window.keywords.map( function( k ) { return { name: k.name, value: k.value }; } ) );
+};
+
+/* An open image's object name: XISF Observation:Object:Name, else the OBJECT keyword; "" when neither. */
+FlyThrough.headerObject = function( window )
+{
+   var name = "";
+   try { name = window.mainView.propertyValue( "Observation:Object:Name" ) || ""; } catch ( e ) {}
+   if ( !name ) window.keywords.forEach( function( k ) { if ( k.name.trim().toUpperCase() == "OBJECT" ) name = String( k.value ).replace( /^'|'$/g, "" ).trim(); } );
+   return String( name );
+};
+
 /*
  * Phase one, fast: where the image points, what it shows, how far away.
  * choices = { hints: {ra, dec, focal, pixel} for an unsolved image,
@@ -314,12 +333,35 @@ FlyThrough.identify = function( window, choices, progress )
 {
    choices = choices || {};
    var stage = ( progress && progress.stage ) ? progress.stage : function() {};
+   var blind = null;
    if ( Sky.projector( window ) == null )
    {
-      if ( !choices.hints )
+      if ( !choices.hints && !choices.blind )
          return { needsSolve: true };
-      stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
-      var solvedPixel = Sky.solveWithHints( window, choices.hints, stage );
+      var blindProgress = { stage: stage, isCancelled: function() { return !!( progress && progress.isCancelled && progress.isCancelled() ); } };
+      var hintError = null;
+      if ( choices.hints )
+      {
+         stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
+         try { var solvedPixel = Sky.solveWithHints( window, choices.hints, stage ); }
+         catch ( e )
+         {
+            // ImageSolver may have written the solution the scale check then rejected: Sky.projector would believe it next time
+            Sky.clearSolution( window );
+            if ( FlyThrough.isCancel( e ) ) throw e;
+            hintError = e;
+         }
+      }
+      if ( !choices.hints || hintError )
+      {
+         if ( hintError ) stage( "The hints did not solve: solving blind", 0, 0 );
+         try { blind = Sky.solveBlind( window, blindProgress ); solvedPixel = blind.solvedPixel; }
+         catch ( e )
+         {
+            if ( FlyThrough.isCancel( e ) || !hintError ) throw e;
+            throw new Error( String( hintError.message || hintError ) + "\n\nBlind solving: " + String( e.message || e ) );
+         }
+      }
    }
    stage( "Finding what the image shows (NGC/IC catalogue)", 1, 4 );
    var proj = Sky.projector( window ), field = Sky.field( window );
@@ -332,7 +374,8 @@ FlyThrough.identify = function( window, choices, progress )
    var id = { proj: proj, field: field, pick: pick, target: target, type: type, D: null, distanceSource: null, cluster: null,
               aim: field.centre,
               sources: ( stage( "Looking up the stars and their distances in Gaia", 2, 4 ), Sky.requireSources( field.centre, field.radiusDeg ) ),
-              solvedPixel: ( typeof solvedPixel == "number" ) ? solvedPixel : null };
+              solvedPixel: ( typeof solvedPixel == "number" ) ? solvedPixel : null,
+              blind: blind ? blind.result : null };
    if ( type == "galaxy" )
    {
       id.D = Infinity;
@@ -710,7 +753,22 @@ FlyThrough.describeTarget = function( id )
    if ( !t )
       return "No NGC/IC object in the field: type the distance.";
    return "<b>" + t.id + "</b>" + ( t.name ? " (" + t.name + ")" : "" ) +
-          ( id.pick.runnerUp ? " &nbsp; runner-up: " + id.pick.runnerUp.id : "" );
+          ( id.pick.runnerUp ? " &nbsp; runner-up: " + id.pick.runnerUp.id : "" ) +
+          ( id.blind ? " \u00b7 solved blind" : "" );
+};
+
+/*
+ * The Object box after a blind solve: the target found in the solved field
+ * ({ object, match }), only when the box is empty -- a typed name is the
+ * user's -- and there is a target; else null. Not remembered as the
+ * image's hints: that would save focal and pixel values the solve did not
+ * use.
+ */
+FlyThrough.blindObject = function( id, typed )
+{
+   var t = id && id.blind ? id.target : null;
+   if ( !t || String( typed || "" ).trim() ) return null;
+   return { object: t.name || t.id, match: t.id + ( t.name ? " \u00b7 " + t.name : "" ) + " (from the blind solve)" };
 };
 
 /* Where the distance came from. */
@@ -927,7 +985,10 @@ FlyThrough.Dialog = class extends Dialog
       this.setImage( this.imageWindow );
       // an image active when the dialog opens is got ready as soon as the dialog is on screen
       var self = this;
-      this.onShow = function() { if ( self.imageWindow && !self.shownOnce ) { self.shownOnce = true; self.chooseImage( self.imageWindow ); } };
+      this.onShow = function()
+      {
+         if ( self.imageWindow && !self.shownOnce ) { self.shownOnce = true; self.chooseImage( self.imageWindow ); }
+      };
    }
    catch ( e )
    {
@@ -1059,8 +1120,6 @@ FlyThrough.Dialog = class extends Dialog
    autoPrepare( progress )
    {
       this.requireTool();
-      if ( this.hintsMissing() )
-         return "No astrometric solution and nothing in the header to solve from: fill in Object (or RA/Dec), focal length and pixel size, and it starts by itself.";
       var self = this, o = null;
       // the dialog stays usable meanwhile (analysing): what is changed is read when it ends
       var note = this.analysing( function()
@@ -1131,19 +1190,35 @@ FlyThrough.Dialog = class extends Dialog
       this.needsHints = has && ( Sky.projector( this.imageWindow ) == null );
       // an image's hints start empty -- never the last image's -- then come from its memory or its name
       this.objectEdit.text = this.raEdit.text = this.decEdit.text = this.objectMatch.text = "";
+      // the header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do)
+      if ( this.needsHints && !this.raEdit.text.trim() )
+      {
+         var hc = FlyThrough.headerCentre( this.imageWindow );
+         if ( hc ) { this.raEdit.text = hc.ra.toFixed( 4 ); this.decEdit.text = hc.dec.toFixed( 4 ); this.objectMatch.text = "Centre from the image's header"; }
+      }
+      // and the header's object name (OBJECT, Observation:Object:Name)
+      if ( this.needsHints && !this.raEdit.text.trim() )
+      {
+         var name = FlyThrough.headerObject( this.imageWindow );
+         if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
+         var oh = name ? Fly.findObject( name, this.ngcIc || [] )[0] : null;
+         if ( oh ) { this.objectEdit.text = oh.name || oh.id; this.raEdit.text = oh.ra.toFixed( 4 ); this.decEdit.text = oh.dec.toFixed( 4 ); this.objectMatch.text = oh.id + " (from the image's header)"; }
+      }
       if ( this.needsHints ) this.recallObject();
-      if ( this.needsHints && !this.objectEdit.text.trim() ) this.objectFromName();
+      if ( this.needsHints && !this.objectEdit.text.trim() && !this.raEdit.text.trim() ) this.objectFromName();
       this.hints.visible = this.needsHints;
       if ( this.targetLabel ) this.targetLabel.text = "";
       [ "draftButton", "renderButton" ].forEach( function( k ) { if ( this[k] ) this[k].enabled = has; }, this );
    }
 
-   /* An unsolved image without a centre, focal length or pixel size to solve from. */
+   /*
+    * Never, now: an unsolved image always proceeds -- complete hints go
+    * through Sky.solveWithHints, anything less is solved blind. Kept for
+    * hintsEdited, which asks it before starting the analysis.
+    */
    hintsMissing()
    {
-      if ( !this.needsHints ) return false;
-      var ra = Fly.parseAngle( this.raEdit.text, true ), dec = Fly.parseAngle( this.decEdit.text, false );
-      return !( ra != null && dec != null && this.number( this.focalEdit ) > 0 && this.number( this.pixelEdit ) > 0 );
+      return false;
    }
 
    /* A solve hint was edited: focal length and pixel size are remembered, and complete hints start the analysis. */
@@ -1733,10 +1808,10 @@ FlyThrough.Dialog = class extends Dialog
       if ( this.distanceTouched && this.number( this.distanceEdit ) > 0 ) c.distance = this.number( this.distanceEdit );
       if ( this.needsHints )
       {
-         c.hints = { ra: Fly.parseAngle( this.raEdit.text, true ), dec: Fly.parseAngle( this.decEdit.text, false ),
-                     focal: this.number( this.focalEdit ), pixel: this.number( this.pixelEdit ) };
-         if ( !( c.hints.ra != null && c.hints.dec != null && c.hints.focal > 0 && c.hints.pixel > 0 ) )
-            throw new Error( "Solving needs the centre (RA and Dec, or an object name), and a positive focal length and pixel size." );
+         var h = { ra: Fly.parseAngle( this.raEdit.text, true ), dec: Fly.parseAngle( this.decEdit.text, false ),
+                   focal: this.number( this.focalEdit ), pixel: this.number( this.pixelEdit ) };
+         // complete hints solve directly; anything less is solved blind (Sky.solveBlind)
+         if ( h.ra != null && h.dec != null && h.focal > 0 && h.pixel > 0 ) c.hints = h; else c.blind = true;
       }
       return c;
    }
@@ -1788,6 +1863,8 @@ FlyThrough.Dialog = class extends Dialog
       this.hints.visible = ( Sky.projector( this.work.window ) == null );
       this.id = id;
       this.targetLabel.text = FlyThrough.describeTarget( id );
+      var named = FlyThrough.blindObject( id, this.objectEdit.text );
+      if ( named ) { this.objectEdit.text = named.object; this.objectMatch.text = named.match; this.objectMatch.toolTip = ""; }
       // a type or distance set while it was analysed is the user's: kept
       if ( !this.typeTouched ) this.typeCombo.currentItem = ( id.type == "galaxy" ) ? 1 : 0;
       if ( id.D != null && isFinite( id.D ) && !this.distanceTouched ) this.distanceEdit.text = String( Math.round( id.D ) );
@@ -2012,12 +2089,12 @@ FlyThrough.Dialog = class extends Dialog
    objectFromName()
    {
       if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
-      var hit = Fly.objectFromFileName( this.imageWindow.filePath || this.imageWindow.mainView.id, this.ngcIc || [] );
+      var hit = Fly.objectFromPath( this.imageWindow.filePath || this.imageWindow.mainView.id, this.ngcIc || [] );
       if ( !hit ) return;
       this.objectEdit.text = hit.name || hit.id;
       this.raEdit.text = hit.ra.toFixed( 4 );
       this.decEdit.text = hit.dec.toFixed( 4 );
-      this.objectMatch.text = hit.id + ( hit.name ? " \u00b7 " + hit.name : "" ) + " (from the file name)";
+      this.objectMatch.text = hit.id + ( hit.name ? " \u00b7 " + hit.name : "" ) + " (from the file or folder name)";
    }
 
    /* The key an image's hints are remembered under: its file, or its name when it was never saved (for the session). */
