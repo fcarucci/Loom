@@ -777,6 +777,27 @@ Util.elideHead = function( text, max )
    return "..." + t.substring( t.length - ( n - 3 ) );
 };
 
+/*
+ * The moving block of a progress bar whose total is not known yet (a card
+ * being read). An empty bar there looked like nothing happening; a block
+ * going back and forth says the work is alive. Placed by the time since
+ * the step began, not by the number of reports, so it moves at the same
+ * speed however fast or slow the files come -- and it moves only when a
+ * report comes in, so a step that really has stopped shows as stopped.
+ */
+Util.PULSE_PERIOD_MS = 1600;
+
+Util.pulseBlock = function( elapsedMs, width )
+{
+   var w = Math.max( 8, Math.round( width/4 ) ), travel = Math.max( 0, width - w );
+   var t = Number( elapsedMs );
+   if ( !isFinite( t ) || t < 0 )
+      return { x: 0, width: w };
+   var phase = ( t % Util.PULSE_PERIOD_MS )/Util.PULSE_PERIOD_MS;
+   var along = ( phase < 0.5 ) ? 2*phase : 2 - 2*phase;
+   return { x: Math.round( along*travel ), width: w };
+};
+
 Util.scanProgressMessage = function( action, label, done, total )
 {
    var text = String( action );

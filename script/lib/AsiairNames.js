@@ -463,6 +463,41 @@ AsiairNames.isInside = function( path, root )
 };
 
 /*
+ * The folder an import writes into, from the one that was chosen.
+ *
+ * The import makes its own Light and Flat folders. Choosing a Light (or
+ * Flat) folder itself -- the natural thing to pick -- would write
+ * Light/Light and Light/Flat, so that choice means its parent. Only an
+ * exact name, in any case: "Lights" is someone's own folder.
+ */
+AsiairNames.importRoot = function( chosen )
+{
+   var path = String( chosen ).replace( /\/+$/, "" );
+   var cut = path.lastIndexOf( "/" );
+   var name = path.substring( cut + 1 );
+   if ( cut > 0 && /^(light|flat)$/i.test( name ) )
+      return { root: path.substring( 0, cut ), chosen: name };
+   return { root: path, chosen: null };
+};
+
+/*
+ * The import's confirmation: the two folders frames will actually land
+ * in, each with its count, and the parent note when the chosen folder was
+ * a Light or Flat folder itself.
+ */
+AsiairNames.importSummary = function( manifest, chosen )
+{
+   var r = AsiairNames.importRoot( chosen );
+   var lines = [];
+   if ( r.chosen != null )
+      lines.push( "Using " + r.root + " (the folder you chose is its " + r.chosen + " folder)", "" );
+   lines.push( "Written as XISF copies:",
+               "Lights (" + manifest.lights.length + ") \u2192 " + r.root + "/Light",
+               "Flats (" + manifest.flats.length + ") \u2192 " + r.root + "/Flat" );
+   return lines.join( "\n" );
+};
+
+/*
  * What the import will write, decided in one pass.
  *
  * Built ONCE at Run with the lights and the flats frozen together, so the

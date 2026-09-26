@@ -1816,3 +1816,87 @@ Frames.thumbnailOrder = function( count, selected, first, visible )
       ( i >= first && i < first + visible ? inView : rest ).push( i );
    return inView.sort( byDistance ).concat( rest.sort( byDistance ) );
 };
+
+/* ------------------------------------------------------------------------
+ * Measuring in batches.
+ * ---------------------------------------------------------------------- */
+
+/*
+ * A list cut into consecutive batches of `size`, the last one short. A
+ * size below one is one: a batch with nothing in it would measure nothing
+ * and report nothing, forever.
+ */
+Frames.batchesOf = function( list, size )
+{
+   var n = Math.max( 1, Math.floor( Number( size ) ) || 1 ), out = [];
+   for ( var i = 0; i < list.length; i += n )
+      out.push( list.slice( i, i + n ) );
+   return out;
+};
+
+/*
+ * Measure `paths` batch by batch.
+ *
+ * SubframeSelector runs a whole call before JavaScript gets control back,
+ * so a channel measured in one call is minutes with nothing on screen
+ * moving and a Cancel button nobody reads. Between batches the caller is
+ * told how many frames are done -- onBatch( done ) -- and returning false
+ * from it stops before the next batch.
+ *
+ * measureBatch( batch ) returns a map of path to metrics, or null to
+ * abandon the channel. Results stay keyed by PATH, never by position. A
+ * result for a path the batch did not ask for abandons the channel too:
+ * its statistics would describe a set that is not the set on screen. A
+ * path with no result is simply absent, exactly as in one call.
+ *
+ * Returns { measured, cancelled, abandoned }; measured is null when
+ * abandoned, and holds the batches completed before a cancel.
+ */
+Frames.measureInBatches = function( paths, size, measureBatch, onBatch )
+{
+   var measured = {}, done = 0;
+   var batches = Frames.batchesOf( paths || [], size );
+   for ( var b = 0; b < batches.length; ++b )
+   {
+      var batch = batches[b], got = measureBatch( batch );
+      if ( got == null )
+         return { measured: null, cancelled: false, abandoned: true };
+      var asked = {};
+      for ( var i = 0; i < batch.length; ++i )
+         asked[batch[i]] = true;
+      for ( var p in got )
+      {
+         if ( !asked[p] || measured[p] != null )
+            return { measured: null, cancelled: false, abandoned: true };
+         measured[p] = got[p];
+      }
+      done += batch.length;
+      if ( onBatch != null && onBatch( done ) === false )
+         return { measured: measured, cancelled: true, abandoned: false };
+   }
+   return { measured: measured, cancelled: false, abandoned: false };
+};
+
+/*
+ * What the scan window shows while a channel is measured.
+ *
+ * The title counts the channel's frames, cached ones included, since that
+ * is the channel the review will show. The bar is the WHOLE scan: frames
+ * still to be measured across every channel, so it moves steadily from
+ * start to end instead of restarting at each channel. `overall` is
+ * { done, total, channel, channels }; without it the bar is the channel.
+ */
+Frames.measuringLines = function( filter, done, total, overall )
+{
+   var title = "Measuring " + filter + " (" + done + " of " + total + " frames)";
+   if ( overall == null )
+      return { title: title, detail: "",
+               fraction: total > 0 ? done/total : 0 };
+   var where = "channel " + overall.channel + " of " + overall.channels + ", ";
+   if ( !( overall.total > 0 ) )
+      return { title: title, detail: where + "every frame already measured",
+               fraction: 1 };
+   return { title: title,
+            detail: where + overall.done + " of " + overall.total + " frames measured in all",
+            fraction: overall.done/overall.total };
+};

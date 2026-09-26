@@ -6042,6 +6042,15 @@ function runTests()
           */
          ok = ok && ( typeof dlg.refresh == "function" );
          ok = ok && ( typeof dlg.commit == "function" );
+         /*
+          * PJSR keeps a window open unless onClose returns true, undefined
+          * included: the review's title-bar close did nothing.
+          */
+         // on a dialog of its own: closing releases it, and the checks below go on using `dlg`
+         var closing = tracked( new FrameSelector.Dialog( state ) );
+         check( "the review's own close box closes it", closing.onClose(), true );
+         check( "and releases it on the way", closing.released, true );
+         closing.cancel();
          dlg.cancel();
 
          /*
@@ -7885,6 +7894,46 @@ function runTests()
    check( "an empty import schedules nothing",
           AsiairNames.manifest( [], [], "/dest" ).lights.length, 0 );
 
+   /*
+    * A destination chosen as the Light (or Flat) folder itself would get
+    * Light/Light and Light/Flat: the import writes its own Light and Flat
+    * folders, so the folder it writes into is that one's parent.
+    */
+   check( "a folder named Light is taken as its parent's Light folder",
+          AsiairNames.importRoot( "/Astro/Day 12 - Mt Madonna/Light" ),
+          { root: "/Astro/Day 12 - Mt Madonna", chosen: "Light" } );
+   check( "so is Flat, whatever its case",
+          AsiairNames.importRoot( "/Astro/Night/flat/" ),
+          { root: "/Astro/Night", chosen: "flat" } );
+   check( "any other folder is used as it is",
+          AsiairNames.importRoot( "/Astro/Day 12 - Mt Madonna" ),
+          { root: "/Astro/Day 12 - Mt Madonna", chosen: null } );
+   check( "a name that only contains Light is not Light",
+          AsiairNames.importRoot( "/Astro/Lights" ).chosen, null );
+   check( "a Light folder at the top has nothing above it and is used as it is",
+          AsiairNames.importRoot( "/Light" ), { root: "/Light", chosen: null } );
+
+   ( function()
+   {
+      var man = { lights: [ {}, {}, {} ], flats: [ {} ] };
+      var text = AsiairNames.importSummary( man, "/Astro/Day 12/Light" );
+      check( "the confirmation names the folder the lights go to",
+             text.indexOf( "Lights (3) → /Astro/Day 12/Light" ) >= 0, true );
+      check( "and the one the flats go to",
+             text.indexOf( "Flats (1) → /Astro/Day 12/Flat" ) >= 0, true );
+      check( "it says they are written as XISF copies", text.indexOf( "XISF copies" ) >= 0, true );
+      check( "and says it is using the parent of a chosen Light folder",
+             text.indexOf( "Using /Astro/Day 12 (the folder you chose is its Light folder)" ) >= 0, true );
+      check( "it no longer claims anything about the card",
+             /card is not modified/i.test( text ), false );
+      check( "a folder used as it is gets no such note",
+             AsiairNames.importSummary( man, "/Astro/Day 12" ).indexOf( "Using" ), -1 );
+      check( "and the manifest writes under the parent, never Light/Light",
+             AsiairNames.manifest( [ { path: "/card/a.fit", filter: "S" } ], [],
+                                   AsiairNames.importRoot( "/Astro/Day 12/Light" ).root ).lights[0].dst,
+             "/Astro/Day 12/Light/a.xisf" );
+   } )();
+
    /* ---- ASIAIR detection ---------------------------------------------------- */
 
    /*
@@ -8368,6 +8417,276 @@ function runTests()
 
       var empty = FrameSelector.scanPaths( [], null );
       check( "an empty list is not a cancellation", empty.cancelled, false );
+   } )();
+
+   /* ---- measuring in batches, so the scan window moves ------------------- */
+
+   /*
+    * A channel measured in ONE SubframeSelector call gives JavaScript no
+    * control back until the whole channel is done: the window sat at
+    * "Measuring (1 of 2) / S" for minutes with nothing moving. Measured in
+    * batches, the window is told after every batch, and Cancel is read
+    * between them.
+    */
+   check( "frames are cut into batches of the given size",
+          Frames.batchesOf( [ "a", "b", "c", "d", "e" ], 2 ),
+          [ [ "a", "b" ], [ "c", "d" ], [ "e" ] ] );
+   check( "nothing to measure is no batch at all", Frames.batchesOf( [], 8 ), [] );
+   check( "a batch never holds fewer than one frame",
+          Frames.batchesOf( [ "a", "b" ], 0 ), [ [ "a" ], [ "b" ] ] );
+   check( "and a batch larger than the list is the list",
+          Frames.batchesOf( [ "a", "b" ], 8 ), [ [ "a", "b" ] ] );
+
+   ( function()
+   {
+      function fake( asked )
+      {
+         return function( batch )
+         {
+            asked.push( batch.slice() );
+            var out = {};
+            for ( var i = 0; i < batch.length; ++i )
+               out[batch[i]] = { path: batch[i] };
+            return out;
+         };
+      }
+      var paths = [ "a", "b", "c", "d", "e" ];
+
+      var asked = [], told = [];
+      var run = Frames.measureInBatches( paths, 2, fake( asked ),
+                                         function( done ) { told.push( done ); return true; } );
+      check( "each batch is measured on its own", asked, [ [ "a", "b" ], [ "c", "d" ], [ "e" ] ] );
+      check( "and the count is reported after every batch", told, [ 2, 4, 5 ] );
+      check( "every frame's result comes back, keyed by its path",
+             Object.keys( run.measured ).sort(), paths );
+      check( "a finished run is neither cancelled nor abandoned",
+             [ run.cancelled, run.abandoned ], [ false, false ] );
+
+      asked = [];
+      run = Frames.measureInBatches( paths, 2, fake( asked ), function( done ) { return false; } );
+      check( "Cancel is read between batches: nothing after it is measured", asked.length, 1 );
+      check( "and the cancelled run says so", run.cancelled, true );
+      check( "keeping what was measured before it", Object.keys( run.measured ).sort(), [ "a", "b" ] );
+
+      var calls = 0;
+      run = Frames.measureInBatches( paths, 2, function( batch )
+      {
+         return ( ++calls == 2 ) ? null : fake( [] )( batch );
+      }, null );
+      check( "a batch that abandons the channel abandons all of it",
+             [ run.abandoned, run.measured, calls ], [ true, null, 2 ] );
+
+      run = Frames.measureInBatches( paths, 2, function( batch )
+      {
+         var out = fake( [] )( batch );
+         out["z"] = { path: "z" };
+         return out;
+      }, null );
+      check( "a result for a frame the batch did not ask for abandons the channel",
+             run.abandoned, true );
+
+      run = Frames.measureInBatches( paths, 2, function( batch )
+      {
+         var out = fake( [] )( batch );
+         delete out["c"];
+         return out;
+      }, null );
+      check( "a frame with no result is simply absent, not an abandonment",
+             [ run.abandoned, "c" in run.measured, Object.keys( run.measured ).length ],
+             [ false, false, 4 ] );
+
+      run = Frames.measureInBatches( [], 8, fake( asked = [] ), function() { return false; } );
+      check( "nothing to measure runs nothing and cancels nothing",
+             [ asked.length, run.cancelled, run.abandoned ], [ 0, false, false ] );
+   } )();
+
+   /*
+    * The line says which channel and how far into it; the bar is the whole
+    * scan, every frame still to be measured across every channel, so it
+    * moves steadily rather than restarting at each channel.
+    */
+   ( function()
+   {
+      var s = Frames.measuringLines( "S", 16, 48, { done: 40, total: 96, channel: 1, channels: 2 } );
+      check( "the line names the channel and counts its frames",
+             s.title, "Measuring S (16 of 48 frames)" );
+      check( "the second line gives the channel and the whole scan",
+             s.detail, "channel 1 of 2, 40 of 96 frames measured in all" );
+      check( "the bar is the whole scan, not the channel", s.fraction, 40/96 );
+
+      var all = Frames.measuringLines( "H", 12, 12, { done: 0, total: 0, channel: 2, channels: 2 } );
+      check( "a channel already measured says so",
+             all.detail, "channel 2 of 2, every frame already measured" );
+      check( "and nothing left to measure is a full bar", all.fraction, 1 );
+
+      var bare = Frames.measuringLines( "H", 1, 2, null );
+      check( "without the whole-scan figures the bar is the channel",
+             [ bare.title, bare.detail, bare.fraction ], [ "Measuring H (1 of 2 frames)", "", 0.5 ] );
+   } )();
+
+   /*
+    * A total nobody knows yet (a card being read) cannot fill a bar, and an
+    * empty bar looked like nothing happening. A block moving back and forth
+    * shows the work is alive; it is placed by the time since the step
+    * began, so it moves at the same speed however fast the files come.
+    */
+   check( "the moving block starts at the left", Util.pulseBlock( 0, 400 ), { x: 0, width: 100 } );
+   check( "is halfway across a quarter of the way through its period",
+          Util.pulseBlock( Util.PULSE_PERIOD_MS/4, 400 ).x, 150 );
+   check( "reaches the right edge at half its period",
+          Util.pulseBlock( Util.PULSE_PERIOD_MS/2, 400 ).x, 300 );
+   check( "and comes back", Util.pulseBlock( Util.PULSE_PERIOD_MS*3/4, 400 ).x, 150 );
+   check( "a whole period later it is where it began",
+          Util.pulseBlock( Util.PULSE_PERIOD_MS, 400 ).x, 0 );
+   check( "a time that is not a time draws the block at the start",
+          Util.pulseBlock( NaN, 400 ), { x: 0, width: 100 } );
+   check( "a narrow bar still has a visible block",
+          Util.pulseBlock( 0, 20 ).width, 8 );
+
+   /*
+    * Batching must not change a single number. Measured over the same
+    * generated frames in ONE call and in batches of 3 and of 1, every
+    * per-frame metric must be identical -- not close, identical. A metric
+    * that depended on the whole set (a normalisation over the frames
+    * measured together) would show up here as a difference.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fs-batch-same" ), paths = [];
+      for ( var i = 0; i < 7; ++i )
+         paths.push( synthFrame( dir + "/sub" + i + ".xisf",
+                                 { fwhm: 2.8 + 0.3*i, background: 0.015 + 0.002*i,
+                                   noise: 0.001 + 0.0004*i, seed: 40 + i } ) );
+      var whole = FrameSelector.measure( paths );
+      check( "the frames measure in one call", whole != null && Object.keys( whole ).length, 7 );
+      if ( whole == null )
+         return;
+      [ 3, 1 ].forEach( function( size )
+      {
+         var parts = FrameSelector.measureBatched( paths, size, null, null );
+         check( "and in batches of " + size, !parts.abandoned && Object.keys( parts.measured ).length, 7 );
+         if ( parts.abandoned )
+            return;
+         var differ = [];
+         for ( var p = 0; p < paths.length; ++p )
+         {
+            var a = whole[paths[p]], b = parts.measured[paths[p]];
+            for ( var k in a )
+               if ( JSON.stringify( a[k] ) !== JSON.stringify( b[k] ) )
+                  differ.push( File.extractName( paths[p] ) + " " + k + " " + a[k] + " vs " + b[k] );
+         }
+         check( "batches of " + size + " give every frame exactly the numbers one call gives: " +
+                differ.slice( 0, 3 ).join( "; " ), differ.length, 0 );
+      } );
+   } )();
+
+   /*
+    * The whole scan, batched: the window hears after every batch, the bar
+    * counts only frames that still need measuring (a cached frame is not
+    * measured again), and Cancel between batches stops the scan with the
+    * batches already done kept in the cache.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fs-batch-scan" ), paths = [];
+      for ( var i = 0; i < 5; ++i )
+         paths.push( synthFrame( dir + "/s" + i + ".xisf",
+                                 { fwhm: 3.0, background: 0.02, noise: 0.002, seed: 60 + i, filter: "S" } ) );
+      for ( var j = 0; j < 3; ++j )
+         paths.push( synthFrame( dir + "/h" + j + ".xisf",
+                                 { fwhm: 3.0, background: 0.02, noise: 0.002, seed: 70 + j, filter: "H" } ) );
+
+      var real = { cached: FrameSelector.cachedMeasurement, store: FrameSelector.storeMeasurement,
+                   batch: FrameSelector.MEASURE_BATCH };
+      var hit = FrameSelector.fileIdentity( paths[0] ).digest, stored = [];
+      try
+      {
+         FrameSelector.MEASURE_BATCH = 2;
+         FrameSelector.cachedMeasurement = function( id ) { return id.digest == hit ? { cachedStub: true } : null; };
+         FrameSelector.storeMeasurement = function( id, m ) { stored.push( id.digest ); };
+
+         var seen = [];
+         var scan = FrameSelector.scanPaths( paths, {
+            reading: function() { return true; },
+            measuring: function( done, total, filter, overall )
+            {
+               seen.push( [ filter, done, total, overall.done, overall.total ] );
+               return true;
+            } } );
+         check( "a batched scan finishes", scan.cancelled, false );
+         check( "the window hears at each channel's start and after every batch", seen,
+                [ [ "S", 1, 5, 0, 7 ], [ "S", 3, 5, 2, 7 ], [ "S", 5, 5, 4, 7 ],
+                  [ "H", 0, 3, 4, 7 ], [ "H", 2, 3, 6, 7 ], [ "H", 3, 3, 7, 7 ] ] );
+         check( "only the uncached frames are measured", stored.length, 7 );
+         check( "the cached frame keeps its cached numbers",
+                scan.channels.S.metrics[paths[0]].cachedStub, true );
+         check( "and every frame has numbers",
+                [ Object.keys( scan.channels.S.metrics ).length, Object.keys( scan.channels.H.metrics ).length ],
+                [ 5, 3 ] );
+
+         stored = [];
+         var stopped = FrameSelector.scanPaths( paths, {
+            reading: function() { return true; },
+            measuring: function( done, total, filter, overall ) { return overall.done < 2; } } );
+         check( "Cancel between batches stops the scan", stopped.cancelled, true );
+         check( "after one batch, which is kept in the cache", stored.length, 2 );
+      }
+      finally
+      {
+         FrameSelector.cachedMeasurement = real.cached;
+         FrameSelector.storeMeasurement = real.store;
+         FrameSelector.MEASURE_BATCH = real.batch;
+      }
+   } )();
+
+   /*
+    * The window itself: the measuring line and the whole-scan bar, and a
+    * card being read -- a total nobody knows yet -- shown as a block that
+    * moves on every report rather than a bar that stays empty.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var sw = new FrameSelector.ScanWindow;
+      try
+      {
+         var cb = sw.callbacks();
+         cb.measuring( 16, 48, "S", { done: 40, total: 96, channel: 1, channels: 2 } );
+         check( "the window names the channel and its frames",
+                sw.stageLabel.text.indexOf( "Measuring S (16 of 48 frames)" ) >= 0, true );
+         check( "and fills the bar for the whole scan", sw.fraction, 40/96 );
+         check( "a known total is a bar, not a moving block", sw.indeterminate, false );
+
+         cb.reading( 3, 48, "sub_0003.fit" );
+         check( "reading says what it reads",
+                sw.stageLabel.text.indexOf( "Reading frames (3 of 48)" ) >= 0, true );
+
+         sw.report( "Reading the ASIAIR card: files found", 1, 0, "/Volumes/card" );
+         check( "an unknown total is a moving block", sw.indeterminate, true );
+         var first = Util.pulseBlock( sw.pulseElapsed, 460 ).x;
+         sw.pulseStart -= Util.PULSE_PERIOD_MS/4;
+         sw.report( "Reading the ASIAIR card: files found", 2, 0, "/Volumes/card" );
+         check( "which moves between reports",
+                Util.pulseBlock( sw.pulseElapsed, 460 ).x != first, true );
+         check( "and keeps the count",
+                sw.stageLabel.text.indexOf( "files found (2)" ) >= 0, true );
+         sw.report( "Reading frames", 1, 4, "a.fit" );
+         check( "a known total after it is a bar again", sw.indeterminate, false );
+      }
+      finally { sw.release(); }
+
+      /*
+       * Deleting, converting and writing run under a window of their own,
+       * which cannot stop them half way -- so its Cancel is off.
+       */
+      var cancelOn = null;
+      var got = FrameSelector.withProgress( "Loom Frame Selector - test", function( w )
+      {
+         cancelOn = w.cancelButton.enabled;
+         w.report( "Deleting rejected frames", 1, 3, "a.fit" );
+         return 42;
+      } );
+      check( "a step under its own window gives back its result, with Cancel off",
+             [ got, cancelOn ], [ 42, false ] );
    } )();
 
    check( "an AppleDouble sidecar is not a frame",

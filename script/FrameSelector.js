@@ -66,8 +66,14 @@ FrameSelector.newMeasureProcess = function()
  * A path with no result row is simply absent from the returned map; the
  * caller turns that into an unmeasurable entry. Returns null when the
  * channel must be abandoned entirely.
+ *
+ * `schema`, when given, is shared by every batch of one channel: the
+ * table's shape is checked on the channel's FIRST row only, and the
+ * optional columns that check blanks stay blank for the whole channel --
+ * exactly what one call over the channel would do. Checked per batch, a
+ * column could be blank for some frames and not others.
  */
-FrameSelector.measure = function( paths )
+FrameSelector.measure = function( paths, schema )
 {
    var out = {};
    if ( paths == null || paths.length == 0 )
@@ -97,7 +103,7 @@ FrameSelector.measure = function( paths )
    for ( var a = 0; a < paths.length; ++a )
       asked[paths[a]] = true;
 
-   var disabled = null;                   // optional columns unusable this run
+   var shape = schema || {};              // disabled: optional columns unusable this run
    for ( var r = 0; r < P.measurements.length; ++r )
    {
       var m = Frames.metricsFromRow( P.measurements[r] );
@@ -107,15 +113,19 @@ FrameSelector.measure = function( paths )
        * nothing new, and a single bad row is a bad frame, which the
        * review is there to catch.
        */
-      if ( r == 0 && ( disabled = FrameSelector.checkSchema( m ) ) == null )
-         return null;
+      if ( r == 0 && !shape.checked )
+      {
+         shape.checked = true;
+         if ( ( shape.disabled = FrameSelector.checkSchema( m ) ) == null )
+            return null;
+      }
       var problem = FrameSelector.pathProblem( m, asked, out );
       if ( problem != null )
       {
          Util.error( "frames", problem + "; abandoning this channel" );
          return null;                    // null = the channel failed
       }
-      Frames.sanitizeOptional( m, disabled );
+      Frames.sanitizeOptional( m, shape.disabled );
       out[m.path] = m;
    }
    return out;
@@ -504,20 +514,37 @@ FrameSelector.cohortFrom = function( paths, progress )
 FrameSelector.storedMetrics = function( m ) { return Frames.storedMetrics( m ); };
 
 /*
- * Fingerprint, measure, fingerprint again.
+ * Frames per SubframeSelector call.
  *
- * A frame whose identity differs across the measurement is UNSTABLE:
- * something rewrote it while it was being read, so its numbers describe
- * bytes that are no longer there. Without this, measuring A, having it
- * replaced by B, and fingerprinting B would produce a manifest that
- * authorises deleting B on A's numbers. An unstable frame is dropped from
- * the cohort entirely rather than shown with numbers nobody can act on.
- *
- * Returns null when the group must be abandoned, which discards the cached
- * numbers too -- a channel measured over a set that is not the set on screen
- * has no statistics worth showing.
+ * Small enough that the scan window moves and Cancel is read every few
+ * seconds on a real channel; large enough that the fixed cost of a call
+ * stays a small part of the whole. Measured on 1.9.5 over 16 generated
+ * 3000x2000 frames, warm: one call 523 ms; batches of 8, 596 ms; of 4,
+ * 990 ms; of 1, 1052 ms -- roughly 35-150 ms per extra call, against
+ * frames that measured at only 33 ms each. A real frame is several times
+ * larger and slower, so at 8 the cost is a few percent.
  */
-FrameSelector.measureGroup = function( group, before )
+FrameSelector.MEASURE_BATCH = 8;
+
+/*
+ * Measure in batches of `size` through ONE schema, so the whole channel
+ * is read exactly as a single call would read it. onBatch( done ) and
+ * settle( batch, measured ) are optional; see Frames.measureInBatches.
+ */
+FrameSelector.measureBatched = function( paths, size, onBatch, settle )
+{
+   var schema = {};
+   return Frames.measureInBatches( paths, size, function( batch )
+   {
+      var measured = FrameSelector.measure( batch, schema );
+      if ( measured != null && settle != null )
+         settle( batch, measured );
+      return measured;
+   }, onBatch );
+};
+
+/* A channel's frames split into those already measured and those not. */
+FrameSelector.cachedSplit = function( group )
 {
    var need = [], metrics = {};
    for ( var j = 0; j < group.length; ++j )
@@ -528,31 +555,57 @@ FrameSelector.measureGroup = function( group, before )
       else
          need.push( group[j].path );
    }
-   if ( need.length == 0 )
-      return { metrics: metrics, unstable: [] };
+   return { need: need, metrics: metrics };
+};
 
-   var measured = FrameSelector.measure( need );
-   if ( measured == null )
+/*
+ * Fingerprint, measure, fingerprint again.
+ *
+ * A frame whose identity differs across the measurement is UNSTABLE:
+ * something rewrote it while it was being read, so its numbers describe
+ * bytes that are no longer there. Without this, measuring A, having it
+ * replaced by B, and fingerprinting B would produce a manifest that
+ * authorises deleting B on A's numbers. An unstable frame is dropped from
+ * the cohort entirely rather than shown with numbers nobody can act on.
+ *
+ * Done per batch, right after it is measured, and each batch's numbers are
+ * cached then: a scan cancelled half way keeps the half it measured.
+ *
+ * Returns null when the group must be abandoned, which discards the
+ * channel's numbers too -- a channel measured over a set that is not the
+ * set on screen has no statistics worth showing. `cancelled` is set when
+ * onBatch returned false.
+ */
+FrameSelector.measureGroup = function( group, before, onBatch, split )
+{
+   var plan = split || FrameSelector.cachedSplit( group );
+   var metrics = plan.metrics, unstable = [];
+   if ( plan.need.length == 0 )
+      return { metrics: metrics, unstable: [], cancelled: false };
+
+   var run = FrameSelector.measureBatched( plan.need, FrameSelector.MEASURE_BATCH, onBatch,
+      function( batch, measured )
+      {
+         for ( var k = 0; k < batch.length; ++k )
+         {
+            var path = batch[k];
+            var now = FrameSelector.fileIdentity( path );
+            if ( now == null || now.digest != before[path].digest )
+            {
+               unstable.push( path );
+               continue;                  // the measured bytes are gone
+            }
+            if ( measured[path] != null )
+            {
+               var stored = FrameSelector.storedMetrics( measured[path] );
+               FrameSelector.storeMeasurement( before[path], stored );
+               metrics[path] = stored;
+            }
+         }
+      } );
+   if ( run.abandoned )
       return null;
-
-   var unstable = [];
-   for ( var k = 0; k < need.length; ++k )
-   {
-      var path = need[k];
-      var now = FrameSelector.fileIdentity( path );
-      if ( now == null || now.digest != before[path].digest )
-      {
-         unstable.push( path );
-         continue;                        // the measured bytes are gone
-      }
-      if ( measured[path] != null )
-      {
-         var stored = FrameSelector.storedMetrics( measured[path] );
-         FrameSelector.storeMeasurement( before[path], stored );
-         metrics[path] = stored;
-      }
-   }
-   return { metrics: metrics, unstable: unstable };
+   return { metrics: metrics, unstable: unstable, cancelled: run.cancelled };
 };
 
 /*
@@ -566,6 +619,12 @@ FrameSelector.measureGroup = function( group, before )
  * callbacks, cancellation by a callback RETURNING FALSE, and the shape of
  * a cancelled result. Ordinary folder scanning is this feature's
  * most-used path and must not regress.
+ *
+ * measuring( done, total, filter, overall ) is called as each channel
+ * starts and after every batch: done and total count the channel's
+ * frames, cached ones included; overall is { done, total, channel,
+ * channels } over the frames still to be measured in the WHOLE scan, which
+ * is what the bar shows. Cancel is read on every call.
  */
 FrameSelector.scanPaths = function( paths, progress )
 {
@@ -578,13 +637,23 @@ FrameSelector.scanPaths = function( paths, progress )
    var channels = {}, unstable = [];
 
    var keys = Object.keys( groups );
+   var splits = [], overall = { done: 0, total: 0, channel: 0, channels: keys.length };
+   for ( var i = 0; i < keys.length; ++i )
+   {
+      splits.push( FrameSelector.cachedSplit( groups[keys[i]] ) );
+      overall.total += splits[i].need.length;
+   }
+
    for ( var g = 0; g < keys.length; ++g )
    {
-      if ( progress != null && progress.measuring != null &&
-           progress.measuring( g + 1, keys.length, keys[g] ) === false )
-         return { channels: channels, unstable: unstable, cancelled: true };
       var group = groups[keys[g]];
-      var measured = FrameSelector.measureGroup( group, cohort.before );
+      var tell = FrameSelector.measuringReporter( progress, keys[g], group.length,
+                                                  group.length - splits[g].need.length, overall );
+      overall.channel = g + 1;
+      if ( !tell( 0 ) )
+         return { channels: channels, unstable: unstable, cancelled: true };
+      var measured = FrameSelector.measureGroup( group, cohort.before, tell, splits[g] );
+      overall.done = tell.base + splits[g].need.length;
       if ( measured == null )             // the channel was abandoned
       {
          channels[keys[g]] = { entries: group, metrics: {},
@@ -592,10 +661,34 @@ FrameSelector.scanPaths = function( paths, progress )
          continue;
       }
       unstable = unstable.concat( measured.unstable );
+      /*
+       * A channel stopped half way is not put in the result: its
+       * statistics would describe a set that is not the channel.
+       */
+      if ( measured.cancelled )
+         return { channels: channels, unstable: unstable, cancelled: true };
       channels[keys[g]] = { entries: group, metrics: measured.metrics,
                             problems: Frames.comparability( group ).problems };
    }
    return { channels: channels, unstable: unstable, cancelled: false };
+};
+
+/*
+ * One channel's report: `measured` frames of this channel's batches done,
+ * so far. Moves the whole-scan count on and answers whether to go on.
+ * Created before the channel starts, so `base` is where it started.
+ */
+FrameSelector.measuringReporter = function( progress, filter, size, cached, overall )
+{
+   var tell = function( measured )
+   {
+      overall.done = tell.base + measured;
+      if ( progress == null || progress.measuring == null )
+         return true;
+      return progress.measuring( cached + measured, size, filter, overall ) !== false;
+   };
+   tell.base = overall.done;
+   return tell;
 };
 
 FrameSelector.scan = function( folder, progress )
@@ -682,8 +775,11 @@ FrameSelector.appendOutcome = function( logPath, manifest, path )
  * the record says what actually died rather than only what was intended. If
  * the log cannot be written, nothing is deleted: an unrecorded deletion is
  * worse than a deferred one.
+ *
+ * Each file is fingerprinted whole before it goes, which is slow on a big
+ * folder, so onProgress( done, total, path ) is told before each one.
  */
-FrameSelector.execute = function( manifest )
+FrameSelector.execute = function( manifest, onProgress )
 {
    var result = { deleted: 0, skipped: 0, failed: 0, stopped: false,
                   logPath: null };
@@ -703,6 +799,8 @@ FrameSelector.execute = function( manifest )
    for ( var i = 0; i < pending.length; ++i )
    {
       var e = pending[i];
+      if ( onProgress )
+         onProgress( i + 1, pending.length, e.path );
       /*
        * Recomputed immediately before the unlink. This does NOT close the
        * window -- nothing in PJSR locks a file, so a replacement in that
@@ -2222,8 +2320,13 @@ FrameSelector.Dialog = class extends Dialog
        * closes it.
        */
       this.closeButton.onClick = function() { self.release(); self.cancel(); };
-      // The window's own close box does not go through the Close button.
-      this.onClose = function() { self.release(); };
+      /*
+       * The window's own close box does not go through the Close button.
+       * True, always: PJSR keeps the window open when onClose returns
+       * anything else, undefined included, so the title-bar close did
+       * nothing (FlyThrough's closing() had the same bug).
+       */
+      this.onClose = function() { self.release(); return true; };
    }
 
    /* What every control does, and how the table is refreshed. */
@@ -2670,7 +2773,13 @@ FrameSelector.Dialog = class extends Dialog
       if ( approved.length == 0 )
          return null;
 
-      var result = FrameSelector.exportApproved( approved, this.state.destination );
+      var dest = this.state.destination;
+      var result = FrameSelector.withProgress( "Loom Frame Selector - writing", function( w )
+      {
+         // one SubframeSelector call: a count it cannot give, so the block
+         w.display( "Writing " + approved.length + " approved frame(s) as XISF", dest, null );
+         return FrameSelector.exportApproved( approved, dest );
+      } );
       var message = ( result.refused != null )
          ? ( "Nothing was written: " + result.refused )
          : ( result.written + " frame(s) written to\n" + this.state.destination +
@@ -2722,8 +2831,14 @@ FrameSelector.Dialog = class extends Dialog
          return null;
       }
 
-      var matches = self.matchedFlats( lights );
-      var manifest = AsiairNames.manifest( lights, matches, dest );
+      var matches = FrameSelector.withProgress( "Loom Frame Selector - flats", function( w )
+      {
+         return self.matchedFlats( lights, function( done, total, path )
+         {
+            w.report( "Reading flat headers", done, total, File.extractName( path ) );
+         } );
+      } );
+      var manifest = AsiairNames.manifest( lights, matches, AsiairNames.importRoot( dest ).root );
       if ( manifest.collisions.length > 0 )
       {
          ( new MessageBox(
@@ -2734,9 +2849,7 @@ FrameSelector.Dialog = class extends Dialog
          return null;
       }
 
-      var summary = "Import " + manifest.lights.length + " light(s) and " +
-                    manifest.flats.length + " flat(s) into\n" + dest +
-                    "\n\nThe card is not modified.";
+      var summary = AsiairNames.importSummary( manifest, dest );
       if ( ( new MessageBox( summary, "Loom Frame Selector", StdIcon_Question,
                              StdButton_Yes, StdButton_No ) ).execute() != StdButton_Yes )
          return null;
@@ -2779,8 +2892,11 @@ FrameSelector.Dialog = class extends Dialog
     * used to select or reject a flat, because narrowing by a value the
     * header can contradict drops flats that actually match and no later
     * check gets them back.
+    *
+    * One header per candidate flat, off the card: onFlat( done, total, path )
+    * is told before each.
     */
-   matchedFlats( lights )
+   matchedFlats( lights, onFlat )
    {
       var wanted = [], seen = {};
       for ( var i = 0; i < lights.length; ++i )
@@ -2795,7 +2911,11 @@ FrameSelector.Dialog = class extends Dialog
       var records = [];
       var flats = this.state.candidateFlats || [];
       for ( var f = 0; f < flats.length; ++f )
+      {
+         if ( onFlat )
+            onFlat( f + 1, flats.length, flats[f].path );
          records.push( Asiair.describe( flats[f] ) );
+      }
 
       return AsiairNames.matchFlats( wanted, records );
    }
@@ -2833,7 +2953,13 @@ FrameSelector.Dialog = class extends Dialog
             self.state.phase = Frames.nextPhase( self.state.phase, "commit" );
             self.state.locked = true;
             self.state.manifest = manifest;
-            var result = FrameSelector.execute( manifest );
+            var result = FrameSelector.withProgress( "Loom Frame Selector - deleting", function( w )
+            {
+               return FrameSelector.execute( manifest, function( done, total, path )
+               {
+                  w.report( "Deleting rejected frames", done, total, File.extractName( path ) );
+               } );
+            } );
 
             /*
              * Asked for the input folder as the destination: the rejected
@@ -2845,7 +2971,17 @@ FrameSelector.Dialog = class extends Dialog
              * about to be removed is work thrown away.
              */
             if ( self.destinationIsSource() )
-               result.converted = FrameSelector.convertInPlace( self.approvedPaths() );
+            {
+               var keep = self.approvedPaths(), todo = Frames.needingXisf( keep ).length;
+               // a folder already in XISF has nothing to convert and gets no window
+               result.converted = ( todo == 0 ) ? FrameSelector.convertInPlace( keep ) :
+                  FrameSelector.withProgress( "Loom Frame Selector - converting", function( w )
+                  {
+                     w.display( "Converting " + todo + " frame(s) to XISF where they are",
+                                "", null );
+                     return FrameSelector.convertInPlace( keep );
+                  } );
+            }
 
             self.state.phase = Frames.nextPhase( self.state.phase,
                                                  result.stopped ? "stop" : "finish" );
@@ -3727,6 +3863,13 @@ FrameSelector.ScanWindow = class extends Dialog
       var self = this;
       this.cancelled = false;
       this.fraction = 0;
+      /*
+       * A total nobody knows yet: the bar shows a moving block instead,
+       * placed by the time since the first such report (Util.pulseBlock).
+       */
+      this.indeterminate = false;
+      this.pulseStart = null;
+      this.pulseElapsed = 0;
 
       this.windowTitle = "Loom Frame Selector - scanning";
 
@@ -3758,9 +3901,17 @@ FrameSelector.ScanWindow = class extends Dialog
             {
                var w = this.width, h = this.height;
                g.fillRect( 0, 0, w, h, new Brush( 0xff202020 ) );
-               var filled = Math.round( w * Math.max( 0, Math.min( 1, self.fraction ) ) );
-               if ( filled > 0 )
-                  g.fillRect( 0, 0, filled, h, new Brush( 0xff3c8cd8 ) );
+               if ( self.indeterminate )
+               {
+                  var block = Util.pulseBlock( self.pulseElapsed, w );
+                  g.fillRect( block.x, 0, block.x + block.width, h, new Brush( 0xff3c8cd8 ) );
+               }
+               else
+               {
+                  var filled = Math.round( w * Math.max( 0, Math.min( 1, self.fraction ) ) );
+                  if ( filled > 0 )
+                     g.fillRect( 0, 0, filled, h, new Brush( 0xff3c8cd8 ) );
+               }
                g.pen = new Pen( 0xff606060 );
                g.drawRect( 0, 0, w - 1, h - 1 );
             }
@@ -3809,18 +3960,38 @@ FrameSelector.ScanWindow = class extends Dialog
     */
    report( phase, done, total, label )
    {
+      /*
+       * Count first and on its own line: it is what the window is for.
+       * The name goes second, where clipping costs least, elided from
+       * the front so the timestamp and sequence number survive.
+       *
+       * An unknown total (a card being read) shows the count alone, never
+       * "of 0", and a moving block rather than a bar that stays empty.
+       */
+      return this.display( phase + " (" + ( total > 0 ? done + " of " + total : done ) + ")",
+                           Util.elideHead( label, FrameSelector.SCAN_NAME_CHARS ),
+                           ( total > 0 ) ? ( done / total ) : null );
+   }
+
+   /*
+    * Both lines and the bar. A fraction of null is a total nobody knows:
+    * the block moves on by the time since the first such call.
+    */
+   display( title, detail, fraction )
+   {
       try
       {
-         this.fraction = ( total > 0 ) ? ( done / total ) : 0;
-         /*
-          * Count first and on its own line: it is what the window is for.
-          * The name goes second, where clipping costs least, elided from
-          * the front so the timestamp and sequence number survive.
-          */
-         // an unknown total (a card being read) shows the count alone, never "of 0"
-         this.stageLabel.text =
-            "<b>" + phase + " (" + ( total > 0 ? done + " of " + total : done ) + ")</b><br>" +
-            Util.elideHead( label, FrameSelector.SCAN_NAME_CHARS );
+         this.indeterminate = ( fraction == null );
+         if ( this.indeterminate )
+         {
+            var now = Date.now();
+            if ( this.pulseStart == null )
+               this.pulseStart = now;
+            this.pulseElapsed = now - this.pulseStart;
+         }
+         else
+            this.fraction = fraction;
+         this.stageLabel.text = "<b>" + title + "</b><br>" + ( detail || "" );
          this.bar.repaint();
          CoreApplication.processEvents();
       }
@@ -3831,14 +4002,7 @@ FrameSelector.ScanWindow = class extends Dialog
    /* A message with no count, for a step that has none yet (starting up). */
    announce( text )
    {
-      try
-      {
-         this.fraction = 0;
-         this.stageLabel.text = "<b>" + text + "</b><br>";
-         this.bar.repaint();
-         CoreApplication.processEvents();
-      }
-      catch ( e ) {}
+      this.display( text, "", 0 );
    }
 
    /* Detached before teardown, for the reason PreviewControl.release states. */
@@ -3857,15 +4021,44 @@ FrameSelector.ScanWindow = class extends Dialog
    {
       var self = this;
       return {
+         /*
+          * Each frame is fingerprinted whole and its header read before
+          * anything is measured -- the slow first half of a scan.
+          */
          reading: function( done, total, name )
          {
-            return self.report( "Reading", done, total, name );
+            return self.report( "Reading frames", done, total, name );
          },
-         measuring: function( done, total, filter )
+         measuring: function( done, total, filter, overall )
          {
-            return self.report( "Measuring", done, total, filter );
+            var l = Frames.measuringLines( filter, done, total, overall );
+            return self.display( l.title, l.detail, l.fraction );
          }
       };
+   }
+};
+
+/*
+ * Run one step under its own progress window, which is always taken down
+ * again, before anything modal can open behind it. For steps that cannot
+ * be stopped half way -- deleting, converting, writing -- so Cancel is
+ * off: a button that does nothing is worse than none.
+ */
+FrameSelector.withProgress = function( title, work )
+{
+   var w = new FrameSelector.ScanWindow;
+   try
+   {
+      w.windowTitle = title;
+      w.cancelButton.enabled = false;
+      w.show();
+      CoreApplication.processEvents();
+      return work( w );
+   }
+   finally
+   {
+      try { w.hide(); } catch ( e ) {}
+      try { w.release(); } catch ( e ) {}
    }
 };
 
