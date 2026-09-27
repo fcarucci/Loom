@@ -12,6 +12,10 @@ section of this file.
   - With the stretch off, only Advanced runs, and the log says the second pass was skipped.
   - The check before a run tries all three models, Advanced, Ultra and Max, whatever the level, so Prism 2.0 is offered only when your account can run all of them. If it can't, Loom offers Prism Essential in Prism 2.0's place, as before.
 
+## [0.3.1] — 2026-09-26
+
+- **Updates:** Loom's updater now installs a release only when it is newer than the version you have. Before, it installed the latest published release whenever its version merely differed from yours, so a copy newer than the latest release, the same version written differently (0.3 and 0.3.0), or a release tag that is not a version number would have been installed over it, updating you backwards.
+
 ## [0.3.0] — 2026-09-26
 
 ### Loom Fly-Through

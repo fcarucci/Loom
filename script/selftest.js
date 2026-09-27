@@ -1999,6 +1999,82 @@ function runTests()
           zs.indexOf( Update.RELEASE_MARKER ) >= 0, true );
 
    /*
+    * Only a NEWER release is installed. The generated script itself decides,
+    * run by /bin/sh against a stand-in curl (a shell function, so nothing
+    * reaches the network) that answers with one release tag and fails any
+    * download: a tag the script means to install ends "failed" at the
+    * download, one it refuses ends "unchanged". Update.isNewerTag is the
+    * oracle, so the shell and the JS rule cannot drift apart.
+    */
+   ( function()
+   {
+      // unique per run, so two suites running at once cannot share it; removed below
+      var dir = File.systemTempDirectory + "/loom-selftest-update-tag-" + Date.now() + "-" +
+                Math.floor( Math.random()*1e6 ), state = dir + "/state";
+      File.createDirectory( state, true );
+      function removeFolder( d )
+      {
+         if ( !File.directoryExists( d ) ) return;
+         var f = new FileFind, files = [], dirs = [];
+         if ( f.begin( d + "/*" ) )
+            do
+            {
+               if ( f.name == "." || f.name == ".." ) continue;
+               ( f.isDirectory ? dirs : files ).push( d + "/" + f.name );
+            }
+            while ( f.next() );
+         files.forEach( function( p ) { File.remove( p ); } );
+         dirs.forEach( removeFolder );
+         File.removeDirectory( d );
+      }
+      function runShell( path )
+      {
+         if ( !IN_PIXINSIGHT )
+            return process.mainModule.require( "child_process" )
+                      .spawnSync( "/bin/sh", [ path ], { encoding: "utf8" } ).status;
+         var P = new ExternalProcess, t0 = Date.now();
+         P.start( "/bin/sh", [ path ] );
+         while ( P.isStarting || P.isRunning )
+         {
+            CoreApplication.processEvents();
+            if ( Date.now() - t0 > 20000 ) { P.terminate(); return -1; }
+         }
+         return P.exitCode;
+      }
+      function decides( tag, current )
+      {
+         var script = Update.zipScriptPosix( { dir: dir + "/Loom", stateDir: state, version: current,
+                                               owner: "o", repo: "r" } ).split( "\n" );
+         script.splice( 1, 0,
+            "curl() {",
+            "  for a in \"$@\"; do [ \"$a\" = -o ] && return 22; done",
+            "  printf '{\"tag_name\": \"%s\", \"browser_download_url\": \"https://example.invalid/r.zip\"}' " +
+               Update.quotePosix( tag ),
+            "}" );
+         var out = state + "/" + Update.OUTCOME_FILE;
+         if ( File.exists( out ) ) File.remove( out );
+         File.writeTextFile( dir + "/run.sh", script.join( "\n" ) );
+         runShell( dir + "/run.sh" );
+         var rec = File.exists( out ) ? Update.parseOutcome( File.readTextFile( out ) ) : null;
+         return rec == null ? "no record" : rec.status;
+      }
+      var rows = [ [ "v0.4.0", "0.3.0" ], [ "v0.3.0", "0.3.0" ], [ "v0.2.9", "0.3.0" ], [ "0.3", "0.3.0" ],
+                   [ "0.3.1", "0.3" ], [ "v0.10.0", "0.9.0" ], [ "v0.9.0", "0.10.0" ], [ "V1.0", "0.3.0" ],
+                   [ "nightly", "0.3.0" ], [ "v0.4.0", "not-a-version" ] ];
+      var decided;
+      try { decided = rows.map( function( r ) { return r[0] + " over " + r[1] + ": " + decides( r[0], r[1] ); } ); }
+      finally { removeFolder( dir ); }
+      check( "the release helper installs a tag only when it is newer, as Update.isNewerTag says",
+             decided,
+             rows.map( function( r ) { return r[0] + " over " + r[1] + ": " +
+                                              ( Update.isNewerTag( r[0], r[1] ) ? "failed" : "unchanged" ); } ) );
+      check( "...and leaves no temporary folder behind", File.directoryExists( dir ), false );
+   } )();
+   check( "...and no longer by comparing the tag for equality",
+          [ zs.indexOf( "if ! is_newer \"$TAG\" \"$CURRENT\"; then" ) >= 0, zs.indexOf( "= \"$CURRENT\" ]" ) < 0 ],
+          [ true, true ] );
+
+   /*
     * Outcome records. A shell redirect would record TEXT, not outcome:
     * `>` truncates when the process starts, so an empty file cannot tell
     * success from a refusal from a worker that was killed.
@@ -2818,6 +2894,18 @@ function runTests()
           psZip.indexOf( Update.RELEASE_MARKER ) >= 0, true );
    check( "the staging directory is cleaned up however it ends",
           psZip.indexOf( "Remove-Item -LiteralPath $WORK" ) >= 0, true );
+   /*
+    * The Windows helper refuses a tag that is not newer by the same rule as
+    * the POSIX one (Update.isNewerTag); PowerShell cannot run here, so its
+    * text is what is pinned.
+    */
+   check( "the Windows download installs only a newer tag, never on equality",
+          [ psZip.indexOf( "if (-not (Test-Newer $TAG $CURRENT)) {" ) >= 0,
+            psZip.indexOf( "function Test-Newer($tag, $current) {" ) >= 0,
+            psZip.indexOf( "-eq $CURRENT" ) < 0,
+            psZip.indexOf( "'^[0-9]+\\.[0-9]+(\\.[0-9]+)?$'" ) >= 0,
+            psZip.indexOf( "if ($a[$i] -ne $b[$i]) { return ($a[$i] -gt $b[$i]) }" ) >= 0 ],
+          [ true, true, true, true, true ] );
 
    /*
     * And the whole path end to end: a Windows checkout writes a .ps1 and
