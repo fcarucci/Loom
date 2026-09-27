@@ -15120,10 +15120,215 @@ function runFlyTestsClean()
 
    /* fly-tests-end */
    }
+   runPixInsightGapTests();
    runSolveTests();
    runPipeTests();
    runFinishingTests();
    runFailurePathTests();
+}
+
+/*
+ * PixInsight-only checks for code the node suite cannot reach: the white
+ * balance applied to a real image, a real cache store and load, the main
+ * dialog's controls writing their config fields, and the night picker's
+ * rows. Synthetic images and folders only.
+ */
+function runPixInsightGapTests()
+{
+   if ( testGroup( "steps.characterization" ) ) {
+   /*
+    * Steps.applyWhiteBalance: the gains, then every channel's background
+    * brought to the mean of the three -- what SPCC's neutralisation does,
+    * and the half without which the cast only moves into the background.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var w = new ImageWindow( 64, 64, 3, 32, true, true, Util.freeWindowId( "wb_char" ) );
+      try
+      {
+         var bg = [ 0.1, 0.2, 0.3 ];
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < 3; ++c )
+            w.mainView.image.fill( bg[c], new Rect( 0, 0, 64, 64 ), c, c );
+         w.mainView.image.setSample( 0.3, 10, 10, 0 );     // one star, red only
+         w.mainView.endProcess();
+         Steps.applyWhiteBalance( w.mainView, [ 3, 1, 0.5 ] );
+         var img = w.mainView.image, all = new Rect( 0, 0, 64, 64 );
+         var med = [ 0, 1, 2 ].map( function( k ) { return img.median( all, k, k ).toFixed( 6 ); } );
+         check( "applyWhiteBalance: every background ends at the mean of the gained backgrounds",
+                med, [ "0.216667", "0.216667", "0.216667" ] );
+         check( "applyWhiteBalance: a star is gained, then offset like its background",
+                img.sample( 10, 10, 0 ).toFixed( 6 ), "0.816667" );
+         var threw = "";
+         try { Steps.applyWhiteBalance( w.mainView, [ 1, 1 ] ); }
+         catch ( e ) { threw = e.message; }
+         check( "applyWhiteBalance: anything but three factors is refused",
+                threw, "applyWhiteBalance: need three factors for " + w.mainView.id );
+      }
+      finally { w.forceClose(); }
+   } )();
+
+   } if ( testGroup( "cache" ) ) {
+   /*
+    * A real Cache.store / lookup / load round trip, with its sidecar and
+    * companion, and the reasons verifyStoredFile gives for an entry that
+    * will not read back.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "cache-roundtrip" ), savedDir = Cache.overrideDir;
+      var K = "fedcba9876543210fedcba9876543210fedcba98";
+      var w = null, back = null, stars = null, other = null;
+      Cache.setDir( dir );
+      try
+      {
+         w = new ImageWindow( 32, 16, 1, 32, true, false, Util.freeWindowId( "cache_char" ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         w.mainView.image.fill( 0.25 );
+         w.mainView.image.setSample( 0.75, 3, 2 );
+         w.mainView.endProcess();
+
+         check( "Cache: nothing stored, nothing found",
+                [ Cache.lookup( K ), Cache.load( K, "x" ), Cache.lookupCompanion( K, "stars" ),
+                  Cache.loadCompanion( K, "stars", "x" ) ], [ null, null, null, null ] );
+         var path = Cache.store( K, w, { stage: "test" } );
+         check( "Cache.store: the entry and its sidecar are where the key says",
+                [ path, Cache.lookup( K ),
+                  JSON.parse( File.readTextFile( Cache.metaPathFor( K ) ) ).stage ],
+                [ dir + "/" + K + ".xisf", dir + "/" + K + ".xisf", "test" ] );
+         back = Cache.load( K, "cache_back" );
+         check( "Cache.load: the same image back, under the id asked for",
+                [ back.mainView.id, back.mainView.image.width, back.mainView.image.height,
+                  back.mainView.image.sample( 3, 2 ).toFixed( 4 ), back.mainView.image.sample( 0, 0 ).toFixed( 4 ) ],
+                [ "cache_back", 32, 16, "0.7500", "0.2500" ] );
+         check( "Cache.storeCompanion: beside the entry, found and loaded by name",
+                [ Cache.storeCompanion( K, "stars", w ), Cache.lookupCompanion( K, "stars" ),
+                  ( stars = Cache.loadCompanion( K, "stars", "cache_stars" ) ).mainView.id ],
+                [ dir + "/" + K + ".stars.xisf", dir + "/" + K + ".stars.xisf", "cache_stars" ] );
+
+         other = new ImageWindow( 16, 32, 1, 32, true, false, Util.freeWindowId( "cache_other" ) );
+         check( "verifyStoredFile: a good entry has nothing to report",
+                Cache.verifyStoredFile( path, w ), null );
+         check( "verifyStoredFile: an entry of another shape says what it reads back as",
+                Cache.verifyStoredFile( path, other ),
+                "it reads back as 32x16x1, not the 16x32x1 that was saved" );
+         check( "verifyStoredFile: an entry that was never written",
+                Cache.verifyStoredFile( dir + "/absent.xisf", w ), "it was not written at all" );
+         File.writeTextFile( dir + "/broken.xisf", "not an image" );
+         check( "verifyStoredFile: a file that is no image is reported, not trusted",
+                Cache.verifyStoredFile( dir + "/broken.xisf", w ) != null, true );
+      }
+      finally
+      {
+         [ w, back, stars, other ].forEach( function( x ) { if ( x != null ) try { x.forceClose(); } catch ( e ) {} } );
+         Cache.setDir( savedDir );
+      }
+   } )();
+
+   } if ( testGroup( "ui" ) ) {
+   /*
+    * Every control of the main dialog writes the config field it stands
+    * for. Built with a fixed set of installed tools, so the dropdowns hold
+    * the same entries on every machine; each control is set and its
+    * handler called, as a click would.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = [ [ "availableNoiseTools", Steps.availableNoiseTools ],
+                    [ "availableSharpenTools", Steps.availableSharpenTools ],
+                    [ "availableStarTools", Steps.availableStarTools ],
+                    [ "studioAvailable", Steps.studioAvailable ],
+                    [ "moduleAvailable", Steps.moduleAvailable ] ];
+      Steps.availableNoiseTools = function() { return [ Steps.NR_TOOL_NXT, Steps.NR_TOOL_STUDIO2 ]; };
+      Steps.availableSharpenTools = function() { return [ Steps.SHARPEN_TOOL_BXT ]; };
+      Steps.availableStarTools = function() { return [ Steps.STAR_TOOL_STARNET ]; };
+      Steps.studioAvailable = function() { return true; };
+      Steps.moduleAvailable = function( name ) { return name == "GraXpert"; };
+      var dlg = null, err = "";
+      try { dlg = tracked( new UI.SelectDialog( Config.defaults() ) ); }
+      catch ( e ) { err = String( e ); }
+      finally { saved.forEach( function( s ) { Steps[s[0]] = s[1]; } ); }
+      check( "the dialog builds with a fixed set of tools" + ( err ? ": " + err : "" ), dlg != null, true );
+      if ( dlg == null )
+         return;
+
+      function pick( control, index ) { dlg[control].currentItem = index; dlg[control].onItemSelected( index ); }
+      function tick( control, on ) { dlg[control].checked = on; dlg[control].onCheck( on ); }
+      function value( control, v ) { dlg[control].setValue( v ); dlg[control].onValueUpdated( v ); }
+      var rows = [
+         [ "noiseCombo", pick, 2, "noiseTool", Steps.NR_TOOL_STUDIO2 ],
+         [ "noiseLevelCombo", pick, 2, "noiseLevel", "high" ],
+         [ "noiseLevelLCombo", pick, 0, "noiseLevelL", "low" ],
+         [ "noiseCombo", pick, 0, "noiseTool", "none" ],
+         [ "sharpenToolCombo", pick, 1, "sharpenTool", Steps.SHARPEN_TOOL_BXT ],
+         [ "starReductionCombo", pick, 3, "starReduction", "high" ],
+         [ "detailCombo", pick, 1, "detailLevel", "low" ],
+         [ "sharpenToolCombo", pick, 0, "sharpenTool", "none" ],
+         [ "starCombo", pick, 1, "starTool", Steps.STAR_TOOL_STARNET ],
+         [ "gradientCombo", pick, 2, "gradientTool", Steps.GRADIENT_TOOL_STUDIO ],
+         [ "gradientCombo", pick, 0, "gradientTool", Steps.GRADIENT_TOOL_NONE ],
+         [ "stretchCheck", tick, true, "stretch", true ],
+         [ "stretchMethodCombo", pick, 1, "stretchMethod", Steps.STRETCH_METHOD_MAS ],
+         [ "stretchMethodCombo", pick, 0, "stretchMethod", Steps.STRETCH_METHOD_MTF ],
+         [ "keepLinearCheck", tick, true, "keepLinear", true ],
+         [ "exportPsbCheck", tick, true, "exportPsb", true ],
+         [ "graxpertNarrowband", tick, true, "graxpertNarrowband", true ],
+         [ "smoothing", value, 0.3, "smoothing", 0.3 ],
+         [ "nbBandwidth", value, 6.5, "narrowbandBandwidth", 6.5 ],
+         [ "nbNormalize", tick, false, "narrowbandNormalize", false ],
+         [ "reduceHalos", tick, true, "reduceHalos", true ],
+         [ "validateOnly", tick, true, "validateOnly", true ],
+         [ "ignoreCache", tick, true, "ignoreCache", true ],
+         [ "useCache", tick, false, "useCache", false ]
+      ];
+      var got = rows.map( function( r )
+      {
+         try { r[1]( r[0], r[2] ); return r[0] + " -> " + r[3] + " = " + JSON.stringify( dlg.config[r[3]] ); }
+         catch ( e ) { return r[0] + " threw " + e; }
+      } );
+      check( "every control writes its own config field",
+             got, rows.map( function( r ) { return r[0] + " -> " + r[3] + " = " + JSON.stringify( r[4] ); } ) );
+      check( "turning the cache off greys out Ignore cache", dlg.ignoreCache.enabled, false );
+   } )();
+
+   } if ( testGroup( "asiair.night" ) ) {
+   /*
+    * What the night picker shows: a row per target with its frame count,
+    * a row per night with its date, span, count, filters and flats, and
+    * the line describing the chosen night.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      function L( stamp, target, filter )
+      { return { key: AsiairNames.stampKey( stamp ), stamp: stamp, target: target, filter: filter, type: "Light" }; }
+      function F( stamp, filter )
+      { return { key: AsiairNames.stampKey( stamp ), stamp: stamp, target: "", filter: filter, type: "Flat" }; }
+      var survey = NightDialog.surveyOf( {
+         lights: [ L( "20260920-200000", "IC 1396A", "H" ), L( "20260920-230000", "IC 1396A", "O" ),
+                   L( "20260921-020000", "M31", "L" ) ],
+         flats: [ F( "20260921-060000", "H" ) ], unparseable: [] }, 4 );
+      var d = tracked( new NightDialog.Dialog( survey, "/Volumes/ASIAIR" ) );
+      function texts( node ) { var t = []; for ( var c = 0; c < 4; ++c ) t.push( node.text( c ) ); return t; }
+      var rows = [];
+      for ( var i = 0; i < d.tree.numberOfChildren; ++i )
+      {
+         var p = d.tree.child( i );
+         rows.push( texts( p ) );
+         for ( var j = 0; j < p.numberOfChildren; ++j )
+            rows.push( texts( p.child( j ) ) );
+      }
+      check( "the night picker's rows", rows,
+             [ [ "IC 1396A", "2", "", "" ],
+               [ "2026-09-20  20:00-23:00", "2", "H O", "1" ],
+               [ "M31", "1", "", "" ],
+               [ "2026-09-21  02:00-02:00", "1", "L", "1" ] ] );
+      d.tree.currentNode = d.tree.child( 0 ).child( 0 );
+      d.remember();
+      check( "the night picker describes the chosen night", [ d.where.text, d.detail.text ],
+             [ "Card: /Volumes/ASIAIR",
+               "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in H, O.<br/>1 flat in this observing session." ] );
+   } )();
+   }
 }
 
 /* Loom's blind solver. Solve.js is pure and runs under node. */
