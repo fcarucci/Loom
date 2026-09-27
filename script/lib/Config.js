@@ -230,7 +230,7 @@ Config.loadParameters = function( config, store )
 Config.loadFilters = function( config, store )
 {
    config.filters = {};
-   var fkeys = [ "L", "R", "G", "B" ];
+   var fkeys = Util.BROADBAND;
    for ( var fi = 0; fi < fkeys.length; ++fi )
    {
       var fv = store.settings.read( Config.SETTINGS_PREFIX + "filter_" + fkeys[fi], DataType_String );
@@ -364,7 +364,7 @@ Config.save = function( config, store )
       "stretchMethod", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
       "sharpenTool", "starReduction", "detailLevel", "useCache", "autoUpdate", "cacheDir",
       "smoothing", "savedList" ] );
-   var fk = [ "L", "R", "G", "B" ];
+   var fk = Util.BROADBAND;
    for ( var i = 0; i < fk.length; ++i )
       store.settings.write( K + "filter_" + fk[i], DataType_String,
                             ( config.filters && config.filters[fk[i]] ) ? config.filters[fk[i]] : "" );

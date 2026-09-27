@@ -969,20 +969,33 @@ Pipeline.cleanWhiteBalanceCachePath = function( key )
 };
 
 /*
+ * The crop's part of a source key, and with it the halo matching's: both
+ * change pixels that no cached stage of their own accounts for.
+ */
+Pipeline.cropTag = function( common )
+{
+   return "|crop:" + common.x0 + "," + common.y0 + "," + common.x1 + "," + common.y1;
+};
+
+Pipeline.cropHalosTag = function( common, config )
+{
+   return Pipeline.cropTag( common ) + "|halos:" + ( config.reduceHalos ? "1" : "0" );
+};
+
+/*
  * The measurement's cache key, from the three pre-correction keys, the
  * crop, the filters and the instrument. Throws if a channel has no key.
  */
 Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume )
 {
-   var trio = [ "R", "G", "B" ];
+   var trio = Util.RGB_GROUP;
    for ( var t = 0; t < trio.length; ++t )
       if ( !chans[trio[t]].cleanKey )
          throw new Error( "no pre-correction cache key for " + trio[t] );
 
    return Cache.hash( "cleanwb|" + chans.R.cleanKey + "|" +
                       chans.G.cleanKey + "|" + chans.B.cleanKey +
-                      "|crop:" + common.x0 + "," + common.y0 + "," +
-                      common.x1 + "," + common.y1 +
+                      Pipeline.cropTag( common ) +
                       "|" + JSON.stringify( config.filters || {} ) +
                       "|" + String( lumInstrume ) );
 };
@@ -1066,7 +1079,7 @@ Pipeline.registerCleanChannel = function( cleanKey, k, config, refView, refFinge
 Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
                                               lumInstrume, refView, refFingerprint )
 {
-   var trio = [ "R", "G", "B" ];
+   var trio = Util.RGB_GROUP;
    var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
 
@@ -1127,6 +1140,13 @@ Pipeline.RGB_FINISHING = { sharpen: "sharpenRGB", extract: "extractRGB",
 Pipeline.PALETTE_FINISHING = { sharpen: "paletteSharpen", extract: "paletteExtract",
                                denoiseLinear: "paletteDenoiseLinear",
                                stretch: "paletteStretch", denoise: "paletteDenoise" };
+/*
+ * L: no sharpening (that is the composites' star reduction and detail),
+ * its own denoise strength (`which`, see Pipeline.denoiseLevelFor) and an
+ * unlinked stretch, since it is one channel.
+ */
+Pipeline.L_FINISHING = { extract: "extractL", denoiseLinear: "denoiseLinearL",
+                         stretch: "stretchL", denoise: "denoiseL", which: "L", unlinked: true };
 
 /* Copies every own entry of `from` onto `to`, in `from`'s key order. */
 Pipeline.appendStages = function( to, from )
@@ -1143,10 +1163,12 @@ Pipeline.appendStages = function( to, from )
  * denoise, stretch and stretched denoise. Written once, so the RGB
  * composite and every palette cannot drift apart.
  *
- * `label` names the composite in logs and window ids ("RGB", or the
- * palette's name), `noun` is what the warnings call it ("composite" or
- * "palette"), `names` maps each role to its stage name (RGB_FINISHING or
- * PALETTE_FINISHING).
+ * `label` names the plate in logs and window ids ("RGB", a palette's
+ * name, "L"), `noun` is what the warnings call it ("composite",
+ * "palette", or null for "it"), `names` maps each role to its stage name
+ * (RGB_FINISHING, PALETTE_FINISHING or L_FINISHING). A role without a
+ * name is not run. A linear copy is kept only by a stretch stage that
+ * stores one (Pipeline.STAGE_COMPANIONS).
  *
  * Returns { params, runners }. The params are in the order the chain has
  * always been keyed with -- sharpen, extract, linear denoise, stretch,
@@ -1174,15 +1196,16 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
     * stars plate was already stretched inside the extraction stage,
     * from its own clone -- see Steps.extractStars.
     */
+   var linked = !names.unlinked, level = Pipeline.denoiseLevelFor( config, names.which );
    var params = {};
    var candidates = [
       [ names.sharpen,       Pipeline.compositeSharpenParams( config ) ],
       [ names.extract,       Pipeline.starExtractionParams( config ) ],
-      [ names.denoiseLinear, Pipeline.linearDenoiseParams( config ) ],
-      [ names.stretch,       Pipeline.stretchParams( config, true ) ],
-      [ names.denoise,       Pipeline.stretchedDenoiseParams( config ) ] ];
+      [ names.denoiseLinear, Pipeline.linearDenoiseParams( config, names.which ) ],
+      [ names.stretch,       Pipeline.stretchParams( config, linked ) ],
+      [ names.denoise,       Pipeline.stretchedDenoiseParams( config, names.which ) ] ];
    for ( var i = 0; i < candidates.length; ++i )
-      if ( candidates[i][1] != null )
+      if ( candidates[i][0] && candidates[i][1] != null )
          params[ candidates[i][0] ] = candidates[i][1];
 
    /*
@@ -1191,22 +1214,23 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
     */
    function keptAfter( tag, e, failed, kept )
    {
-      Util.warn( tag, label + " could not be " + failed + " (" + e +
-                      "); the " + noun + " is kept " + kept );
+      Util.warn( tag, label + " could not be " + failed + " (" + e + "); " +
+                      ( noun ? "the " + noun : "it" ) + " is kept " + kept );
       return Pipeline.SKIP_CACHE;
    }
 
    var runners = {};
-   runners[names.sharpen] = function( h )
-   {
-      Pipeline.checkAbort( "sharpening " + label );
-      try
+   if ( names.sharpen )
+      runners[names.sharpen] = function( h )
       {
-         Steps.correctComposite( h.view, config.sharpenTool,
-                                 config.starReduction, config.detailLevel, label );
-      }
-      catch ( e ) { return keptAfter( "sharpen", e, "corrected", "as it is" ); }
-   };
+         Pipeline.checkAbort( "sharpening " + label );
+         try
+         {
+            Steps.correctComposite( h.view, config.sharpenTool,
+                                    config.starReduction, config.detailLevel, label );
+         }
+         catch ( e ) { return keptAfter( "sharpen", e, "corrected", "as it is" ); }
+      };
    runners[names.extract] = function( h )
    {
       Pipeline.checkAbort( "extracting stars from " + label );
@@ -1220,9 +1244,9 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
    runners[names.stretch] = function( h )
    {
       Pipeline.checkAbort( "stretching " + label );
-      if ( config.keepLinear )
+      if ( config.keepLinear && Pipeline.STAGE_COMPANIONS[names.stretch] == "linear" )
          Pipeline.keepLinearCopy( h, label, reg );
-      try { Steps.stretchBy( config.stretchMethod, h.view, true, label + " starless" ); }
+      try { Steps.stretchBy( config.stretchMethod, h.view, linked, label + " starless" ); }
       catch ( e ) { return keptAfter( "stretch", e, "stretched", "linear" ); }
    };
    runners[names.denoiseLinear] = function( h )
@@ -1230,14 +1254,14 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
       Pipeline.checkAbort( "denoising " + label );
       // `false`: linear by construction here, whatever the run's
       // stretch setting says about what happens later.
-      try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+      try { Steps.denoise( h.view, config.noiseTool, level,
                            label + " linear", false, Pipeline.linearDenoisePass( config ) ); }
       catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
    };
    runners[names.denoise] = function( h )
    {
       Pipeline.checkAbort( "denoising " + label );
-      try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, label,
+      try { Steps.denoise( h.view, config.noiseTool, level, label,
                            !!config.stretch, "stretched" ); }
       catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
    };
@@ -1320,9 +1344,7 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                                chans[map[0]].currentKey + "|" +
                                chans[map[1]].currentKey + "|" +
                                chans[map[2]].currentKey +
-                               "|crop:" + common.x0 + "," + common.y0 + "," +
-                               common.x1 + "," + common.y1 +
-                               "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
+                               Pipeline.cropHalosTag( common, config ) );
 
    var palParams = {
       paletteCombine: {},
@@ -1437,9 +1459,7 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
     */
    var rgbSource = Cache.hash( "rgb|" + chans.R.currentKey + "|" +
                                chans.G.currentKey + "|" + chans.B.currentKey +
-                               "|crop:" + common.x0 + "," + common.y0 + "," +
-                               common.x1 + "," + common.y1 +
-                               "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
+                               Pipeline.cropHalosTag( common, config ) );
 
    var rgbParams = {
       combine:  {},
@@ -2150,7 +2170,7 @@ Pipeline.matchHalos = function( chans, config )
 Pipeline.balanceNarrowband = function( chans, config )
 {
    var medians = {};
-   var nb = [ "H", "S", "O" ];
+   var nb = Util.NARROWBAND;
    for ( var n = 0; n < nb.length; ++n )
       if ( chans[nb[n]] )
          medians[nb[n]] = Steps.medianOfCentre( chans[nb[n]].view, 0.6 );
@@ -2247,82 +2267,18 @@ Pipeline.splitLuminance = function( chans, config, reg, common )
    if ( !( chans.L && Pipeline.starExtractionParams( config ) != null ) )
       return;
 
-   var lSource = Cache.hash( "lstars|" + chans.L.currentKey +
-                             "|crop:" + common.x0 + "," + common.y0 + "," +
-                             common.x1 + "," + common.y1 +
-                             "|halos:" + ( config.reduceHalos ? "1" : "0" ) );
-   var lStages = { extractL: Pipeline.starExtractionParams( config ) };
    /*
-    * L is denoised on the same rule as the composites: NXT and
-    * MLDenoise linear, after extraction and before the stretch;
-    * Prism after the stretch. Only one of the two slots is in the
-    * chain, because only one tool is chosen -- except Prism 2.0 at
-    * Medium and High, which runs Advanced in the first and Ultra or
-    * Max in the second (see Pipeline.linearDenoiseParams).
-    *
-    * L was left out until now, and it is the plate that needs it
-    * most: a single channel, usually the shortest integration of the
-    * set, carrying the detail everything else is blended against.
+    * L runs the composites' finishing tail minus sharpening, at its own
+    * denoise strength and with an unlinked stretch (Pipeline.L_FINISHING).
+    * It was left out of noise reduction until then, and it is the plate
+    * that needs it most: a single channel, usually the shortest
+    * integration of the set, carrying the detail everything else is
+    * blended against.
     */
-   if ( Pipeline.linearDenoiseParams( config, "L" ) != null )
-      lStages.denoiseLinearL = Pipeline.linearDenoiseParams( config, "L" );
-   if ( Pipeline.stretchParams( config, false ) != null )
-      lStages.stretchL = Pipeline.stretchParams( config, false );
-   if ( Pipeline.stretchedDenoiseParams( config, "L" ) != null )
-      lStages.denoiseL = Pipeline.stretchedDenoiseParams( config, "L" );
-   var lChain = Pipeline.buildStageKeys( lSource, lStages );
-   var lRunners = {
-      extractL: function( c )
-      {
-         Pipeline.checkAbort( "extracting stars from L" );
-         var split = Steps.extractStars( c.window, config.starTool, "L",
-                                         !!config.stretch );
-         if ( split == null )
-            return Pipeline.SKIP_CACHE;
-         reg.add( split.stars );
-         c.stars = split.stars;
-      },
-      denoiseLinearL: function( c )
-      {
-         Pipeline.checkAbort( "denoising L" );
-         // `false`: linear by construction here, whatever the run's
-         // stretch setting says about what happens later.
-         try { Steps.denoise( c.view, config.noiseTool,
-                              Pipeline.denoiseLevelFor( config, "L" ),
-                              "L linear", false, Pipeline.linearDenoisePass( config ) ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", "L could not be denoised (" + e +
-                                  "); it is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      denoiseL: function( c )
-      {
-         Pipeline.checkAbort( "denoising L" );
-         try { Steps.denoise( c.view, config.noiseTool,
-                              Pipeline.denoiseLevelFor( config, "L" ),
-                              "L", !!config.stretch, "stretched" ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", "L could not be denoised (" + e +
-                                  "); it is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      stretchL: function( c )
-      {
-         Pipeline.checkAbort( "stretching L" );
-         try { Steps.stretchBy( config.stretchMethod, c.view, false, "L starless" ); }
-         catch ( e )
-         {
-            Util.warn( "stretch", "L could not be stretched (" + e +
-                                  "); it is kept linear" );
-            return Pipeline.SKIP_CACHE;
-         }
-      }
-   };
-   Pipeline.processChain( chans.L, lChain, config, reg, lRunners );
+   var lSource = Cache.hash( "lstars|" + chans.L.currentKey + Pipeline.cropHalosTag( common, config ) );
+   var tail = Pipeline.finishingStages( "L", null, Pipeline.L_FINISHING, config, reg );
+   Pipeline.processChain( chans.L, Pipeline.buildStageKeys( lSource, tail.params ),
+                          config, reg, tail.runners );
 };
 
 /*
@@ -2360,7 +2316,7 @@ Pipeline.collectResults = function( results, chans, rgb )
     */
 Pipeline.chooseKeepers = function( chans, paletteWins )
 {
-   var keep = ( paletteWins.length > 0 ) ? [ "L" ] : [ "L", "H", "S", "O" ];
+   var keep = ( paletteWins.length > 0 ) ? [ "L" ] : [ "L" ].concat( Util.NARROWBAND );
    if ( paletteWins.length > 0 )
    {
       var dropped = [];

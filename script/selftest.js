@@ -18712,6 +18712,7 @@ function runFinishingTests()
            } ],
          [ Pipeline, "buildStageKeys", function( src, params )
            {
+              got.src = src;
               got.params = JSON.stringify( params );
               return realKeys( src, params );
            } ],
@@ -18722,6 +18723,9 @@ function runFinishingTests()
          reg = reg || { add: function() {} };
          if ( kind == "RGB" )
             Pipeline.buildRGB( chans, config, reg, common, "ZWO ASI2600MM", null );
+         else if ( kind == "L" )
+            Pipeline.splitLuminance( { L: { key: "L", currentKey: "keyL", view: { id: "viewL" } } },
+                                     config, reg, common );
          else
             Pipeline.buildPalette( kind, chans, config, reg, common );
       }
@@ -18906,7 +18910,10 @@ function runFinishingTests()
       try
       {
          var keys = Object.keys( got.runners );
-         keys.slice( keys.length - 5 ).forEach( function( stage )
+         // L's four in chain order, whatever order they were declared in
+         ( kind == "L" ? keys.sort( function( a, b )
+                         { return Pipeline.STAGE_ORDER.indexOf( a ) - Pipeline.STAGE_ORDER.indexOf( b ); } )
+                       : keys.slice( keys.length - 5 ) ).forEach( function( stage )
          {
             calls = [];
             var h = { window: { id: "win", hasAstrometricSolution: hasSolution }, view: { id: "view" } };
@@ -19226,6 +19233,419 @@ function runFinishingTests()
                 transcript( kind, s[1], s[2], s[3] ), runnerExpected[kind + " " + s[0]] );
       } );
    } );
+
+   /*
+    * P3: L's finishing chain (Pipeline.splitLuminance), pinned the same
+    * way before it is built by finishingStages: a rolling digest over the
+    * matrix plus Prism 2.0, the params and chain of two corners in the
+    * clear, and every L runner against the recording fakes.
+    */
+   function lLine( config )
+   {
+      var got = capture( "L", config );
+      if ( got.chain === undefined )
+         return "none";
+      // runner names as a set: processChain looks runners up by stage name
+      return got.params + "#" + Object.keys( got.runners ).sort().join( "," ) + "#" + JSON.stringify( got.chain );
+   }
+   var lDigest = "", lDistinct = {};
+   matrix( function( config )
+   {
+      var line = lLine( config );
+      lDigest = Cache.hash( lDigest + "\n" + line );
+      lDistinct[line.split( "#" )[0]] = true;
+   } );
+   [ "none", "low", "medium", "high" ].forEach( function( level )
+   {
+      [ "", "low", "high" ].forEach( function( levelL )
+      {
+         [ false, true ].forEach( function( stretch )
+         {
+            var line = lLine( { useCache: true, starTool: Steps.STAR_TOOL_STARNET, noiseTool: Steps.NR_TOOL_STUDIO2,
+                                noiseLevel: level, noiseLevelL: levelL, stretch: stretch,
+                                stretchMethod: Steps.STRETCH_METHOD_MTF, keepLinear: stretch } );
+            lDigest = Cache.hash( lDigest + "\n" + line );
+            lDistinct[line.split( "#" )[0]] = true;
+         } );
+      } );
+   } );
+   check( "finishing: L distinct params over the matrix and Prism 2.0",
+          Object.keys( lDistinct ).length, 75 );
+   check( "finishing: L params, runner names and stage keys over the matrix and Prism 2.0",
+          lDigest, "b6d76e8e765636dc627a6e9d7befb8393c148ebf" );
+   var L_CORNERS = [
+       [
+        {
+         "extractL": {
+          "tool": "SyQon Starless",
+          "starsTarget": 0.5,
+          "stretchStars": true
+         },
+         "denoiseLinearL": {
+          "tool": "NoiseXTerminator",
+          "level": "high",
+          "stretched": true,
+          "amount": [
+           0.95,
+           0.1
+          ]
+         },
+         "stretchL": {
+          "method": "MultiscaleAdaptiveStretch",
+          "linked": false,
+          "keepLinear": true,
+          "mas": {
+           "targetBackground": 0.15,
+           "aggressiveness": 0.7,
+           "dynamicRangeCompression": 0.4,
+           "contrastRecovery": true,
+           "contrastRecoveryIntensity": 1,
+           "previewLargeScale": false,
+           "backgroundROIEnabled": false,
+           "saturationEnabled": false
+          }
+         }
+        },
+        [
+         "denoiseL",
+         "denoiseLinearL",
+         "extractL",
+         "stretchL"
+        ],
+        [
+         "extractL 0c45ccdde47f1adae8b0a0ebcf454ca34f665594 +stars",
+         "denoiseLinearL f3a43558f67a21096fbfcdbd77ea3548803c0b6f",
+         "stretchL 187a31be0d2a97a129c2b5a68d3f75438c9ff38b"
+        ]
+       ],
+       [
+        {
+         "extractL": {
+          "tool": "SyQon Starless",
+          "starsTarget": 0.5,
+          "stretchStars": true
+         },
+         "stretchL": {
+          "target": 0.25,
+          "linked": false,
+          "keepLinear": false
+         },
+         "denoiseL": {
+          "tool": "SyQon Prism",
+          "level": "high",
+          "stretched": true,
+          "amount": 0.95
+         }
+        },
+        [
+         "denoiseL",
+         "denoiseLinearL",
+         "extractL",
+         "stretchL"
+        ],
+        [
+         "extractL 0c45ccdde47f1adae8b0a0ebcf454ca34f665594 +stars",
+         "stretchL a93f0dec9823e7df38ceab21e219b31d346c04cb",
+         "denoiseL 27b8d4f8acffe3d3b9e847c1792c780c609597b8"
+        ]
+       ]
+      ];
+   var L_RUNNERS = {
+       "all succeed, keep linear, solved": [
+        [
+         "extractL",
+         "undefined",
+         [
+          "checkAbort(\"extracting stars from L\")",
+          "extractStars(win,\"SyQon Starless\",\"L\",true)",
+          "reg.add(L_stars)"
+         ],
+         "L_stars",
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L linear\",false,\"linear\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "undefined",
+         [
+          "checkAbort(\"stretching L\")",
+          "stretchBy(\"MultiscaleAdaptiveStretch\",view,false,\"L starless\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L\",true,\"stretched\")"
+         ],
+         null,
+         null
+        ]
+       ],
+       "all succeed, keep linear, unsolved": [
+        [
+         "extractL",
+         "undefined",
+         [
+          "checkAbort(\"extracting stars from L\")",
+          "extractStars(win,\"SyQon Starless\",\"L\",true)",
+          "reg.add(L_stars)"
+         ],
+         "L_stars",
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L linear\",false,\"linear\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "undefined",
+         [
+          "checkAbort(\"stretching L\")",
+          "stretchBy(\"MultiscaleAdaptiveStretch\",view,false,\"L starless\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L\",true,\"stretched\")"
+         ],
+         null,
+         null
+        ]
+       ],
+       "no linear copy, no stretch": [
+        [
+         "extractL",
+         "undefined",
+         [
+          "checkAbort(\"extracting stars from L\")",
+          "extractStars(win,\"SyQon Starless\",\"L\",false)",
+          "reg.add(L_stars)"
+         ],
+         "L_stars",
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L linear\",false,\"all\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "undefined",
+         [
+          "checkAbort(\"stretching L\")",
+          "stretchBy(\"mtf\",view,false,\"L starless\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L\",false,\"stretched\")"
+         ],
+         null,
+         null
+        ]
+       ],
+       "every step fails, no stars": [
+        [
+         "extractL",
+         "loom-skip-cache",
+         [
+          "checkAbort(\"extracting stars from L\")",
+          "extractStars(win,\"SyQon Starless\",\"L\",true)"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "loom-skip-cache",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L linear\",false,\"linear\")",
+          "warn(\"denoise\",\"L could not be denoised (Error: denoise failed); it is kept as it is\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "loom-skip-cache",
+         [
+          "checkAbort(\"stretching L\")",
+          "stretchBy(\"MultiscaleAdaptiveStretch\",view,false,\"L starless\")",
+          "warn(\"stretch\",\"L could not be stretched (Error: stretchBy failed); it is kept linear\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "loom-skip-cache",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L\",true,\"stretched\")",
+          "warn(\"denoise\",\"L could not be denoised (Error: denoise failed); it is kept as it is\")"
+         ],
+         null,
+         null
+        ]
+       ],
+       "solution copy fails, extraction throws": [
+        [
+         "extractL",
+         "threw extractStars failed",
+         [
+          "checkAbort(\"extracting stars from L\")",
+          "extractStars(win,\"SyQon Starless\",\"L\",true)"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L linear\",false,\"linear\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "undefined",
+         [
+          "checkAbort(\"stretching L\")",
+          "stretchBy(\"MultiscaleAdaptiveStretch\",view,false,\"L starless\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "undefined",
+         [
+          "checkAbort(\"denoising L\")",
+          "denoise(view,\"NoiseXTerminator\",\"high\",\"L\",true,\"stretched\")"
+         ],
+         null,
+         null
+        ]
+       ],
+       "cancelled": [
+        [
+         "extractL",
+         "threw checkAbort failed",
+         [
+          "checkAbort(\"extracting stars from L\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseLinearL",
+         "threw checkAbort failed",
+         [
+          "checkAbort(\"denoising L\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "stretchL",
+         "threw checkAbort failed",
+         [
+          "checkAbort(\"stretching L\")"
+         ],
+         null,
+         null
+        ],
+        [
+         "denoiseL",
+         "threw checkAbort failed",
+         [
+          "checkAbort(\"denoising L\")"
+         ],
+         null,
+         null
+        ]
+       ]
+      };
+   [ everything, prism ].forEach( function( config, i )
+   {
+      var got = capture( "L", config );
+      check( "finishing: L corner " + i + " params, runners and chain",
+             [ JSON.parse( got.params ), Object.keys( got.runners ).sort(), got.chain.map( function( e )
+                { return e.stage + " " + e.key + ( e.companion ? " +" + e.companion : "" ); } ) ],
+             L_CORNERS[i] );
+   } );
+   check( "finishing: no star tool, no L chain at all",
+          capture( "L", { useCache: true, starTool: "none", stretch: true, noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "high" } ).chain,
+          undefined );
+   scenarios.forEach( function( s )
+   {
+      check( "finishing: L runners, " + s[0], transcript( "L", s[1], s[2], s[3] ), L_RUNNERS[s[0]] );
+   } );
+
+   /*
+    * P3: the source keys the composites chain from, as text (Cache.hash
+    * made the identity for the duration), crop and halos tails included.
+    */
+   ( function()
+   {
+      var restore = stub( [ [ Cache, "hash", function( str ) { return "H(" + str + ")"; } ] ] );
+      try
+      {
+         var halos = JSON.parse( JSON.stringify( everything ) );
+         halos.reduceHalos = true;
+         var wbChans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
+         check( "finishing: the source key texts, crop and halos included",
+                [ capture( "RGB", everything ).src, capture( "SHO", halos ).src, capture( "L", halos ).src,
+                  Pipeline.cleanWhiteBalanceKey( wbChans, { filters: { R: "Astronomik R" } }, common, "CAM" ),
+                  Pipeline.cleanWhiteBalanceKey( wbChans, {}, common, null ) ],
+                [ "H(rgb|keyR|keyG|keyB|crop:1,2,300,200|halos:0)",
+                  "H(palette|SHO|keyS|keyH|keyO|crop:1,2,300,200|halos:1)",
+                  "H(lstars|keyL|crop:1,2,300,200|halos:1)",
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{\"R\":\"Astronomik R\"}|CAM)",
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{}|null)" ] );
+      }
+      finally { restore(); }
+   } )();
    }
 }
 
