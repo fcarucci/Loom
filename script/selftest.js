@@ -15615,6 +15615,160 @@ function runSolveTests()
       check( "config: save then load returns every persisted field", got.roundTrip, got.roundTripExpected );
       check( "config: and the round trip is the fixture's", got.roundTrip, want.roundTrip );
    } )();
+
+   /*
+    * Loom.js main, as a transcript: every collaborator it reaches, in
+    * order, for each way a launch can end -- refused core, relaunch after
+    * an update, dialog cancelled, preflight failed, validate only, a run
+    * that finishes and one that throws. Node only: the run log and the
+    * Cancel window are stubbed on the console and UI, which under
+    * PixInsight are the real ones. main is lifted out of the source,
+    * since this file's own main() replaces it.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var G = ( function() { return this; } )();
+      var src = File.readTextFile( LOOM_DIR + "/Loom.js" );
+      var at = src.indexOf( "\nfunction main()" );
+      var loomMain = ( 0, eval )( "(" + src.substring( at, src.indexOf( "\n}\n", at ) + 2 )
+                                     .split( "#" + "__FILE__" ).join( "\"/x/script/Loom.js\"" ) + ")" );
+
+      function transcript( s )
+      {
+         var log = [];
+         function rec( what ) { log.push( what ); }
+         var saved = [
+            [ console, [ "show", "writeln", "beginLog", "endLog", "abortEnabled" ] ],
+            [ Util, [ "BANNER", "checkCoreVersion", "log", "warn", "cancelRequested", "reportProgress", "reportStage" ] ],
+            [ Update, [ "describeVersion", "reportLast", "checkNow", "relaunch", "SCRIPT_DIR", "SCRIPT_FILE" ] ],
+            [ UI, [ "SelectDialog", "CancelWindow" ] ],
+            [ Pipeline, [ "preflight", "run", "cancelWindow" ] ],
+            [ Cache, [ "ensureLogDir" ] ],
+            [ G, [ "loadConfig", "saveConfig", "MessageBox", "ElapsedTime" ] ]
+         ].map( function( e ) { return [ e[0], e[1], e[1].map( function( k ) { return e[0][k]; } ) ]; } );
+         var config = { validateOnly: !!s.validateOnly, views: {}, paths: { L: "/m/L.xisf" } };
+         var threw = null;
+         try
+         {
+            console.show = function() { rec( "console.show" ); };
+            console.writeln = function( t ) { rec( "console.writeln " + t.replace( /\d{4}-[\d_-]+/g, "<stamp>" ) ); };
+            console.beginLog = function( p ) { rec( "console.beginLog " + p.replace( /\d{4}-[\d_-]+/g, "<stamp>" ) ); };
+            console.endLog = function() { rec( "console.endLog" ); };
+            console.abortEnabled = false;
+            Util.BANNER = [ "Loom", "banner" ];
+            Util.checkCoreVersion = function( c ) { rec( "checkCoreVersion " + ( c === LOOM_CORE_CHECK ) ); return !s.oldCore; };
+            Util.log = function( m, t ) { rec( "log " + m + ": " + t.replace( /\d{4}-[\d_-]+/g, "<stamp>" ) ); };
+            Util.warn = function( m, t ) { rec( "warn " + m + ": " + t ); };
+            // the folder above Loom.js's own, whether main or a helper reads #__FILE__
+            Update.describeVersion = function( dir ) { rec( "describeVersion " + dir.replace( /^.*\/script\/\.\.$/, "<script>/.." ) ); return "Loom vX"; };
+            Update.reportLast = function() { rec( "Update.reportLast" ); };
+            Update.checkNow = function( c ) { rec( "Update.checkNow " + ( c === config ) ); return s.update || null; };
+            Update.relaunch = function() { rec( "Update.relaunch" ); return !!s.relaunches; };
+            UI.SelectDialog = function( c ) { rec( "SelectDialog " + ( c === config ) ); this.execute = function() { rec( "dialog.execute" ); return !s.cancelled; }; };
+            UI.CancelWindow = function()
+            {
+               rec( "new CancelWindow" );
+               if ( s.noCancelWindow )
+                  throw new Error( "no window" );
+               this.cancelled = false;
+               this.show = function() { rec( "cancelWin.show" ); };
+               this.cancel = function() { rec( "cancelWin.cancel" ); };
+               this.setProgress = function( p, t ) { rec( "cancelWin.setProgress " + p + " " + t ); };
+               this.setStage = function( t ) { rec( "cancelWin.setStage " + t ); };
+            };
+            Pipeline.preflight = function( c ) { rec( "preflight " + ( c === config ) ); return s.problems || []; };
+            Pipeline.run = function( c )
+            {
+               rec( "Pipeline.run, cancelWindow " + ( Pipeline.cancelWindow != null ) +
+                    ", cancelRequested " + Util.cancelRequested() );
+               Util.reportProgress( 50, "half" );
+               Util.reportStage( "stage" );
+               if ( s.runThrows )
+                  throw new Error( "run failed" );
+               return s.results;
+            };
+            Cache.ensureLogDir = function()
+            {
+               rec( "Cache.ensureLogDir" );
+               if ( s.noLogDir )
+                  throw new Error( "no dir" );
+               return "/cache/logs";
+            };
+            G.loadConfig = function() { rec( "loadConfig" ); return config; };
+            G.saveConfig = function( c ) { rec( "saveConfig " + ( c === config ) ); };
+            G.MessageBox = function( text, title, icon, buttons )
+            {
+               rec( "MessageBox " + title + ": " + text + " " + ( icon === StdIcon_Error ) + " " + ( buttons === StdButton_Ok ) );
+               this.execute = function() { rec( "MessageBox.execute" ); };
+            };
+            G.ElapsedTime = function() { this.text = "1 s"; };
+            try { loomMain(); }
+            catch ( e ) { threw = e.message; }
+            rec( "after: cancelWindow " + ( Pipeline.cancelWindow === null ? "null" : typeof Pipeline.cancelWindow ) +
+                 ", cancelRequested " + Util.cancelRequested() + ", abortEnabled " + console.abortEnabled +
+                 ", SCRIPT_FILE " + Update.SCRIPT_FILE + ", threw " + threw );
+         }
+         finally
+         {
+            saved.forEach( function( e ) { e[1].forEach( function( k, i ) { e[0][k] = e[2][i]; } ); } );
+         }
+         return log;
+      }
+
+      var view = function( id ) { return { mainView: { id: id } }; };
+      var got = {
+         oldCore: transcript( { oldCore: true } ),
+         relaunched: transcript( { update: { status: "updated", to: "1.2.3" }, relaunches: true } ),
+         relaunchFailedThenCancelled: transcript( { update: { status: "updated", to: "1.2.3" }, cancelled: true } ),
+         upToDateThenCancelled: transcript( { update: { status: "current" }, cancelled: true } ),
+         preflightFailed: transcript( { problems: [ "no L", "no R" ] } ),
+         validateOnly: transcript( { validateOnly: true } ),
+         run: transcript( { results: { b: view( "RGB_stars" ), a: view( "RGB_starless" ), c: null, d: {} } } ),
+         nothingProduced: transcript( { results: {}, noLogDir: true, noCancelWindow: true } ),
+         runThrows: transcript( { runThrows: true } )
+      };
+      var LOG = "/cache/logs/loom-run-<stamp>.log";
+      var START = [ "console.show", "console.writeln <end><cbr>Loom", "console.writeln <end><cbr>banner",
+                    "describeVersion <script>/..", "console.writeln <end><cbr>Loom vX",
+                    "console.writeln <end><cbr>", "checkCoreVersion true" ];
+      var UPDATE = [ "loadConfig", "Update.reportLast", "Update.checkNow true" ];
+      var RESTART = [ "log update: restarting Loom on 1.2.3...", "Update.relaunch" ];
+      var DIALOG = [ "SelectDialog true", "dialog.execute" ];
+      var PREFLIGHT = [ "console.show", "saveConfig true", "preflight true" ];
+      var RUN = [ "Cache.ensureLogDir", "console.beginLog " + LOG, "log log: console log: " + LOG,
+                  "new CancelWindow", "cancelWin.show", "console.show",
+                  "Pipeline.run, cancelWindow true, cancelRequested false",
+                  "cancelWin.setProgress 50 half", "cancelWin.setStage stage", "cancelWin.cancel" ];
+      var END_LOG = [ "console.endLog", "console.writeln <end><cbr>[log] run log written to " + LOG ];
+      function after( abort, file, threw )
+      {
+         return [ "after: cancelWindow null, cancelRequested false, abortEnabled " + abort +
+                  ", SCRIPT_FILE " + file + ", threw " + threw ];
+      }
+      var F = "/x/script/Loom.js";
+      check( "Loom main: every way a launch ends, collaborators in order", got, {
+         oldCore: START.concat( after( false, Update.SCRIPT_FILE, null ) ),
+         relaunched: START.concat( UPDATE, RESTART, after( false, F, null ) ),
+         relaunchFailedThenCancelled: START.concat( UPDATE, RESTART, DIALOG, after( false, F, null ) ),
+         upToDateThenCancelled: START.concat( UPDATE, DIALOG, after( false, F, null ) ),
+         preflightFailed: START.concat( UPDATE, DIALOG, PREFLIGHT,
+                                        [ "MessageBox Loom: preflight failed: no L\nno R true true",
+                                          "MessageBox.execute" ], after( false, F, null ) ),
+         validateOnly: START.concat( UPDATE, DIALOG, PREFLIGHT,
+                                     [ "log validate: All checks passed. Nothing executed.",
+                                       "log validate: L <- /m/L.xisf",
+                                       "log validate: Results stay as open windows" ], after( false, F, null ) ),
+         run: START.concat( UPDATE, DIALOG, PREFLIGHT, RUN,
+                            [ "log done: Finished in 1 s. Produced: RGB_starless, RGB_stars." ],
+                            END_LOG, after( true, F, null ) ),
+         nothingProduced: START.concat( UPDATE, DIALOG, PREFLIGHT,
+                                        [ "Cache.ensureLogDir", "warn log: could not start the console log: Error: no dir",
+                                          "new CancelWindow", "warn ui: could not show the Cancel window: Error: no window",
+                                          "Pipeline.run, cancelWindow false, cancelRequested false",
+                                          "log done: Finished in 1 s. Nothing produced." ], after( false, F, null ) ),
+         runThrows: START.concat( UPDATE, DIALOG, PREFLIGHT, RUN, END_LOG, after( true, F, "run failed" ) )
+      } );
+   } )();
    }
 }
 

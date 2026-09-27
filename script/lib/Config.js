@@ -59,8 +59,8 @@ Config.pixinsightStore = function()
  * Only keys with no other rule are here. What is read or written
  * differently -- paths and filters, palettes, the gradient tool and its
  * legacy useGraXpert twin, a bandwidth that must be positive, the
- * savedList fallback -- stays as code in Config.load and Config.save,
- * and ignoreCache is never persisted at all. The ORDER of reads and
+ * savedList fallback -- stays as code in Config.load, its helpers and
+ * Config.save, and ignoreCache is never persisted at all. The ORDER of reads and
  * writes is the order of the lists passed to loadFields and saveFields
  * there; the fixture in ci/fixtures/config.json pins it.
  */
@@ -180,15 +180,25 @@ Config.defaults = function()
 };
 
 /*
- * Restores from a saved process instance when launched from one, and
- * from Settings otherwise. This is what makes the script draggable to
- * the workspace as a reusable icon.
+ * Reads the named Parameters, in the order given, into config: each pair
+ * is a name and the Parameters getter its type needs.
  */
-Config.load = function( store )
+Config.loadParameterFields = function( config, store, pairs )
 {
-   var K = Config.SETTINGS_PREFIX;
-   var config = Config.defaults();
+   for ( var i = 0; i < pairs.length; ++i )
+   {
+      var name = pairs[i][0];
+      if ( store.parameters.has( name ) )
+         config[name] = store.parameters[pairs[i][1]]( name );
+   }
+};
 
+/*
+ * What a saved process instance carries: the channel paths and the few
+ * settings that travel with the icon.
+ */
+Config.loadParameters = function( config, store )
+{
    for ( var i = 0; i < Util.CHANNELS.length; ++i )
    {
       var key = Util.CHANNELS[i];
@@ -198,15 +208,12 @@ Config.load = function( store )
       // from a previous session/run has no guaranteed meaning now, so
       // only file paths round-trip through Parameters.
    }
-   if ( store.parameters.has( "savedList" ) )
-      config.savedList = store.parameters.getString( "savedList" );
-   if ( store.parameters.has( "smoothing" ) )
-      config.smoothing = store.parameters.getReal( "smoothing" );
+   Config.loadParameterFields( config, store, [ [ "savedList", "getString" ], [ "smoothing", "getReal" ] ] );
    /*
     * A process icon saved before the gradient dropdown carries only
     * useGraXpert. Loaded into the legacy field and cleared from the new
-    * one, so Steps.migrateConfig below maps it: true is GraXpert, false
-    * is none.
+    * one, so Steps.migrateConfig maps it: true is GraXpert, false is
+    * none.
     */
    if ( store.parameters.has( "gradientTool" ) )
       config.gradientTool = store.parameters.getString( "gradientTool" );
@@ -215,12 +222,58 @@ Config.load = function( store )
       config.useGraXpert = store.parameters.getBoolean( "useGraXpert" );
       config.gradientTool = "";
    }
-   if ( store.parameters.has( "graxpertNarrowband" ) )
-      config.graxpertNarrowband = store.parameters.getBoolean( "graxpertNarrowband" );
-   if ( store.parameters.has( "useCache" ) )
-      config.useCache = store.parameters.getBoolean( "useCache" );
-   if ( store.parameters.has( "autoUpdate" ) )
-      config.autoUpdate = store.parameters.getBoolean( "autoUpdate" );
+   Config.loadParameterFields( config, store, [ [ "graxpertNarrowband", "getBoolean" ],
+                                                [ "useCache", "getBoolean" ],
+                                                [ "autoUpdate", "getBoolean" ] ] );
+};
+
+/*
+ * Remembered filter choices. A FITS FILTER of L/R/G/B names the channel,
+ * not the physical filter, so these are the only record of which filter
+ * each channel was actually shot through.
+ */
+Config.loadFilters = function( config, store )
+{
+   config.filters = {};
+   var fkeys = [ "L", "R", "G", "B" ];
+   for ( var fi = 0; fi < fkeys.length; ++fi )
+   {
+      var fv = store.settings.read( Config.SETTINGS_PREFIX + "filter_" + fkeys[fi], DataType_String );
+      if ( fv != null && fv.length > 0 )
+         config.filters[fkeys[fi]] = fv;
+   }
+};
+
+/* The gradient tool from Settings, or from the checkbox it replaced. */
+Config.loadGradientSetting = function( config, store )
+{
+   var K = Config.SETTINGS_PREFIX;
+   var gt = store.settings.read( K + "gradientTool", DataType_String );
+   if ( gt != null && gt.length > 0 )
+   {
+      config.gradientTool = gt;
+      return;
+   }
+   // settings from before the dropdown: the checkbox's value decides
+   var gx = store.settings.read( K + "useGraXpert", DataType_Boolean );
+   if ( gx != null )
+   {
+      config.useGraXpert = gx;
+      config.gradientTool = "";
+   }
+};
+
+/*
+ * Restores from a saved process instance when launched from one, and
+ * from Settings otherwise. This is what makes the script draggable to
+ * the workspace as a reusable icon.
+ */
+Config.load = function( store )
+{
+   var K = Config.SETTINGS_PREFIX;
+   var config = Config.defaults();
+
+   Config.loadParameters( config, store );
 
    if ( config.savedList.length == 0 )
    {
@@ -229,17 +282,7 @@ Config.load = function( store )
          config.savedList = savedList;
    }
 
-   // Remembered filter choices. A FITS FILTER of L/R/G/B names the
-   // channel, not the physical filter, so these are the only record of
-   // which filter each channel was actually shot through.
-   config.filters = {};
-   var fkeys = [ "L", "R", "G", "B" ];
-   for ( var fi = 0; fi < fkeys.length; ++fi )
-   {
-      var fv = store.settings.read( K + "filter_" + fkeys[fi], DataType_String );
-      if ( fv != null && fv.length > 0 )
-         config.filters[fkeys[fi]] = fv;
-   }
+   Config.loadFilters( config, store );
 
    var pal = store.settings.read( K + "palettes", DataType_String );
    if ( pal != null && pal.length > 0 )
@@ -257,19 +300,7 @@ Config.load = function( store )
       "stretchMethod", "stretch", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
       "sharpenTool", "starReduction", "detailLevel" ] );
 
-   var gt = store.settings.read( K + "gradientTool", DataType_String );
-   if ( gt != null && gt.length > 0 )
-      config.gradientTool = gt;
-   else
-   {
-      // settings from before the dropdown: the checkbox's value decides
-      var gx = store.settings.read( K + "useGraXpert", DataType_Boolean );
-      if ( gx != null )
-      {
-         config.useGraXpert = gx;
-         config.gradientTool = "";
-      }
-   }
+   Config.loadGradientSetting( config, store );
 
    Config.loadFields( config, store, [ "autoUpdate", "useCache", "smoothing", "cacheDir" ] );
 

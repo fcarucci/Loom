@@ -96,15 +96,15 @@ var LOOM_CORE_CHECK = {
    }
 };
 
-function main()
+/*
+ * The banner, so a run log opens with what it is and which build
+ * produced it -- including a run that is about to be refused for the
+ * core version, where knowing which Loom refused it is the whole
+ * question. console.show() because a previous modal may have slid the
+ * console away.
+ */
+function writeBanner()
 {
-   /*
-    * The banner first, so a run log opens with what it is and which build
-    * produced it -- including a run that is about to be refused for the
-    * core version, where knowing which Loom refused it is the whole
-    * question. console.show() because a previous modal may have slid the
-    * console away.
-    */
    console.show();
    for ( var bl = 0; bl < Util.BANNER.length; ++bl )
       console.writeln( "<end><cbr>" + Util.BANNER[bl] );
@@ -112,114 +112,99 @@ function main()
                     Update.describeVersion( File.extractDirectory( #__FILE__ ) + "/..",
                                             Update.io ) );
    console.writeln( "<end><cbr>" );
+}
 
-   // Before the updater, before the dialog, before anything is opened:
-   // an unsupported core must name itself rather than fail obscurely
-   // several minutes into a run.
-   if ( !Util.checkCoreVersion( LOOM_CORE_CHECK ) )
-      return;
-
-   var config = loadConfig();
-
-   /*
-    * The updater, before anything else and before the dialog.
-    *
-    * reportLast() says what the PREVIOUS launch's update did; start()
-    * spawns this launch's, detached. Neither waits: #include is resolved
-    * at parse time, so an update cannot apply to the script already
-    * running, and there is nothing to be gained by waiting for it.
-    */
-   Update.SCRIPT_DIR = File.extractDirectory( #__FILE__ );
-   Update.SCRIPT_FILE = #__FILE__;
-   /*
-    * Any record left by an older asynchronous check, then the check for
-    * this launch -- which BLOCKS, because "the result is reported at the
-    * next launch" is not an answer to "is there a new version?".
-    *
-    * An update that lands cannot apply to this run: #include is resolved
-    * when the script is parsed, and that has already happened. So Loom
-    * restarts itself instead of continuing on code it has just
-    * superseded, and the dialog opens in the relaunched copy.
-    */
+/*
+ * Any record left by an older asynchronous check, then the check for
+ * this launch -- which BLOCKS, because "the result is reported at the
+ * next launch" is not an answer to "is there a new version?".
+ *
+ * An update that lands cannot apply to this run: #include is resolved
+ * when the script is parsed, and that has already happened. So Loom
+ * restarts itself instead of continuing on code it has just
+ * superseded, and the dialog opens in the relaunched copy. True when
+ * it did, and this run must stop.
+ */
+function updateAndRelaunch( config )
+{
    Update.reportLast();
    var updated = Update.checkNow( config );
-   if ( updated != null && updated.status == "updated" )
-   {
-      Util.log( "update", "restarting Loom on " + updated.to + "..." );
-      if ( Update.relaunch() )
-         return;
-      // Could not relaunch: carry on rather than leaving the user with
-      // nothing. Update.relaunch has already said so.
-   }
+   if ( updated == null || updated.status != "updated" )
+      return false;
+   Util.log( "update", "restarting Loom on " + updated.to + "..." );
+   // Could not relaunch: carry on rather than leaving the user with
+   // nothing. Update.relaunch has already said so.
+   return Update.relaunch();
+}
 
-   // Deliberately NOT defaulted: an empty output folder means "keep the
-   // results as open windows in the current project".
-
-   var dialog = new UI.SelectDialog( config );
-   if ( !dialog.execute() )
-      return;
-
-   // the modal dialog slid an auto-hidden console away; bring it back
-   console.show();
-
-   // Persist the selection IMMEDIATELY, before preflight can abort the
-   // run. Saving only after a successful preflight meant that any failed
-   // run -- the exact case where the user will try again -- threw away
-   // the list they had just assembled.
-   saveConfig( config );
-
-   // Preflight runs unconditionally, whether or not Validate only is
-   // ticked -- a validate-only run is exactly "run every preflight check
-   // and execute nothing", not a separate, weaker check.
+/*
+ * Preflight runs unconditionally, whether or not Validate only is
+ * ticked -- a validate-only run is exactly "run every preflight check
+ * and execute nothing", not a separate, weaker check. False, having
+ * said why, when the run must not go ahead.
+ */
+function preflightPassed( config )
+{
    var problems = Pipeline.preflight( config );
-   if ( problems.length > 0 )
-   {
-      new MessageBox( problems.join( "\n" ),
-                      "Loom: preflight failed",
-                      StdIcon_Error, StdButton_Ok ).execute();
-      return;
-   }
+   if ( problems.length == 0 )
+      return true;
+   new MessageBox( problems.join( "\n" ),
+                   "Loom: preflight failed",
+                   StdIcon_Error, StdButton_Ok ).execute();
+   return false;
+}
 
-   if ( config.validateOnly )
-   {
-      reportValidateOnly( config );
-      return;
-   }
-
-   var t = new ElapsedTime;
-
-   /*
-    * Write the Process Console to a file for the duration of the run.
-    *
-    * PixInsight keeps no console log of its own, so when a run goes wrong
-    * the only record is whatever is still scrolled into the dock -- gone
-    * the moment it is cleared, and impossible to hand to anyone else. The
-    * log lands in a logs/ subfolder of the cache -- a place the user has
-    * already chosen and sized, without being counted in the cache's size
-    * or deleted by "Clear cache", both of which skip directories.
-    *
-    * Named by start time so runs do not overwrite each other.
-    */
-   var runLogPath = null;
+/*
+ * Write the Process Console to a file for the duration of the run.
+ *
+ * PixInsight keeps no console log of its own, so when a run goes wrong
+ * the only record is whatever is still scrolled into the dock -- gone
+ * the moment it is cleared, and impossible to hand to anyone else. The
+ * log lands in a logs/ subfolder of the cache -- a place the user has
+ * already chosen and sized, without being counted in the cache's size
+ * or deleted by "Clear cache", both of which skip directories.
+ *
+ * Named by start time so runs do not overwrite each other. Returns the
+ * log's path, or null when it could not be started.
+ */
+function startRunLog()
+{
    try
    {
       var stamp = ( new Date() ).toISOString()
                      .replace( /[:.]/g, "-" ).replace( "T", "_" ).substring( 0, 19 );
-      runLogPath = Cache.ensureLogDir() + "/loom-run-" + stamp + ".log";
+      var runLogPath = Cache.ensureLogDir() + "/loom-run-" + stamp + ".log";
       console.beginLog( runLogPath );
       Util.log( "log", "console log: " + runLogPath );
+      return runLogPath;
    }
    catch ( e )
    {
-      runLogPath = null;
       Util.warn( "log", "could not start the console log: " + e );
+      return null;
    }
+}
 
-   /*
-    * A Cancel window for the duration of the run. Shown, never executed:
-    * execute() would block this script, which is the opposite of what is
-    * wanted. Pipeline.checkAbort pumps events so the button responds.
-    */
+function endRunLog( runLogPath )
+{
+   if ( runLogPath == null )
+      return;
+   try
+   {
+      console.endLog();
+      console.writeln( "<end><cbr>[log] run log written to " + runLogPath );
+   }
+   catch ( e ) { /* nothing useful to say once the log itself failed */ }
+}
+
+/*
+ * A Cancel window for the duration of the run. Shown, never executed:
+ * execute() would block this script, which is the opposite of what is
+ * wanted. Pipeline.checkAbort pumps events so the button responds.
+ * Returns the window, or null when it could not be shown.
+ */
+function showCancelWindow()
+{
    var cancelWin = null;
    try
    {
@@ -269,6 +254,95 @@ function main()
       Util.warn( "ui", "could not show the Cancel window: " + e );
       Pipeline.cancelWindow = null;
    }
+   return cancelWin;
+}
+
+/* Undoes showCancelWindow's hooks, and closes the window if there is one. */
+function closeCancelWindow( cancelWin )
+{
+   Pipeline.cancelWindow = null;
+   Util.cancelRequested = function() { return false; };
+   Util.reportProgress = function() {};
+   Util.reportStage = function() {};
+   if ( cancelWin != null )
+      try { cancelWin.cancel(); } catch ( e ) {}
+}
+
+/*
+ * Report whatever the pipeline actually returned, rather than probing for
+ * a fixed set of names.
+ *
+ * The old version asked for results.RGB and results[<palette>] by name,
+ * and star extraction renames those results to RGB_starless / RGB_stars /
+ * <palette>_starless -- so a run that produced a perfectly good composite
+ * announced "No RGB produced." Enumerating the results cannot go stale
+ * the next time a key changes.
+ */
+function describeProduced( results )
+{
+   var made = [];
+   for ( var k in results )
+      if ( results[k] && results[k].mainView )
+         try { made.push( results[k].mainView.id ); }
+         catch ( e ) {}
+   made.sort();
+   return made.length ? ". Produced: " + made.join( ", " ) + "."
+                      : ". Nothing produced.";
+}
+
+function main()
+{
+   writeBanner();
+
+   // Before the updater, before the dialog, before anything is opened:
+   // an unsupported core must name itself rather than fail obscurely
+   // several minutes into a run.
+   if ( !Util.checkCoreVersion( LOOM_CORE_CHECK ) )
+      return;
+
+   var config = loadConfig();
+
+   /*
+    * The updater, before anything else and before the dialog.
+    *
+    * reportLast() says what the PREVIOUS launch's update did; start()
+    * spawns this launch's, detached. Neither waits: #include is resolved
+    * at parse time, so an update cannot apply to the script already
+    * running, and there is nothing to be gained by waiting for it.
+    */
+   Update.SCRIPT_DIR = File.extractDirectory( #__FILE__ );
+   Update.SCRIPT_FILE = #__FILE__;
+   if ( updateAndRelaunch( config ) )
+      return;
+
+   // Deliberately NOT defaulted: an empty output folder means "keep the
+   // results as open windows in the current project".
+
+   var dialog = new UI.SelectDialog( config );
+   if ( !dialog.execute() )
+      return;
+
+   // the modal dialog slid an auto-hidden console away; bring it back
+   console.show();
+
+   // Persist the selection IMMEDIATELY, before preflight can abort the
+   // run. Saving only after a successful preflight meant that any failed
+   // run -- the exact case where the user will try again -- threw away
+   // the list they had just assembled.
+   saveConfig( config );
+
+   if ( !preflightPassed( config ) )
+      return;
+
+   if ( config.validateOnly )
+   {
+      reportValidateOnly( config );
+      return;
+   }
+
+   var t = new ElapsedTime;
+   var runLogPath = startRunLog();
+   var cancelWin = showCancelWindow();
 
    var results;
    /*
@@ -278,51 +352,11 @@ function main()
     */
    try
    {
-   try { results = Pipeline.run( config ); }
-   finally
-   {
-      Pipeline.cancelWindow = null;
-      Util.cancelRequested = function() { return false; };
-      Util.reportProgress = function() {};
-      Util.reportStage = function() {};
-      if ( cancelWin != null )
-         try { cancelWin.cancel(); } catch ( e ) {}
+      try { results = Pipeline.run( config ); }
+      finally { closeCancelWindow( cancelWin ); }
+      Util.log( "done", "Finished in " + t.text + describeProduced( results ) );
    }
-   /*
-    * Report whatever the pipeline actually returned, rather than probing for
-    * a fixed set of names.
-    *
-    * The old version asked for results.RGB and results[<palette>] by name,
-    * and star extraction renames those results to RGB_starless / RGB_stars /
-    * <palette>_starless -- so a run that produced a perfectly good composite
-    * announced "No RGB produced." Enumerating the results cannot go stale
-    * the next time a key changes.
-    */
-   Util.log( "done", "Finished in " + t.text +
-             ( function()
-               {
-                  var made = [];
-                  for ( var k in results )
-                     if ( results[k] && results[k].mainView )
-                        try { made.push( results[k].mainView.id ); }
-                        catch ( e ) {}
-                  made.sort();
-                  return made.length ? ". Produced: " + made.join( ", " ) + "."
-                                     : ". Nothing produced.";
-               } )() );
-   }
-   finally
-   {
-      if ( runLogPath != null )
-      {
-         try
-         {
-            console.endLog();
-            console.writeln( "<end><cbr>[log] run log written to " + runLogPath );
-         }
-         catch ( e ) { /* nothing useful to say once the log itself failed */ }
-      }
-   }
+   finally { endRunLog( runLogPath ); }
 }
 
 /*
