@@ -404,7 +404,7 @@ FrameSelector.saveTable = function()
 {
    try
    {
-      Cache.ensureDir();
+      Util.ensureDirectory( Cache.dir() );
       File.writeTextFile( FrameSelector.cachePath(),
                           JSON.stringify( FrameSelector.table || {} ) );
    }
@@ -454,15 +454,10 @@ FrameSelector.storeMeasurement = function( identity, metrics )
 
 FrameSelector.frameFilesIn = function( folder )
 {
-   var paths = [], find = new FileFind;
-   if ( find.begin( folder + "/*" ) )
-      do
-      {
-         if ( find.isFile && /\.(xisf|fits?|fit)$/i.test( find.name ) )
-            paths.push( folder + "/" + find.name );
-      }
-      while ( find.next() );
-   return paths;
+   return Util.findEntries( folder + "/*" ).filter( function( e )
+   {
+      return e.isFile && /\.(xisf|fits?|fit)$/i.test( e.name );
+   } ).map( function( e ) { return folder + "/" + e.name; } );
 };
 
 /*
@@ -698,9 +693,7 @@ FrameSelector.writeManifestLog = function( manifest, path )
 {
    try
    {
-      var dir = File.extractDirectory( path );
-      if ( !File.directoryExists( dir ) )
-         File.createDirectory( dir, true );
+      Util.ensureDirectory( File.extractDirectory( path ) );
       var lines = [ "# Loom Frame Selector",
                     "# built " + ( new Date( manifest.created ) ).toISOString(),
                     "# " + manifest.entries.length + " frame(s) condemned" ];
@@ -1541,9 +1534,7 @@ FrameSelector.writeManifest = function( manifest, onProgress )
    var written = 0, failed = [], cancelled = false;
    for ( var i = 0; i < all.length; ++i )
    {
-      var dir = all[i].dst.substring( 0, all[i].dst.lastIndexOf( "/" ) );
-      if ( !File.directoryExists( dir ) )
-         File.createDirectory( dir, true );
+      Util.ensureDirectory( all[i].dst.substring( 0, all[i].dst.lastIndexOf( "/" ) ) );
 
       var made = FrameSelector.convertOne( all[i].src, all[i].dst );
       var good = made.ok ? FrameSelector.verifyImported( all[i].src, all[i].dst ) : made;
@@ -3205,8 +3196,7 @@ FrameSelector.exportApproved = function( approved, destination )
 
    try
    {
-      if ( !File.directoryExists( destination ) )
-         File.createDirectory( destination, true );
+      Util.ensureDirectory( destination );
       /*
        * Emptied first, everything in it, so the folder holds exactly this
        * run's frames afterwards. If anything cannot be removed, nothing is
@@ -3247,15 +3237,10 @@ FrameSelector.exportApproved = function( approved, destination )
 FrameSelector.emptyDirectory = function( dir )
 {
    var out = { removed: 0, failed: [] };
-   var entries = [], find = new FileFind;
-   if ( find.begin( dir + "/*" ) )
-      do
-      {
-         if ( find.name != "." && find.name != ".." )
-            entries.push( { path: dir + "/" + find.name,
-                            folder: find.isDirectory && !find.isSymbolicLink } );
-      }
-      while ( find.next() );
+   var entries = Util.findEntries( dir + "/*" ).map( function( e )
+   {
+      return { path: dir + "/" + e.name, folder: e.isDirectory && !e.isSymbolicLink };
+   } );
    for ( var i = 0; i < entries.length; ++i )
       FrameSelector.removeEntry( entries[i], out );
    return out;

@@ -50,7 +50,7 @@ Cache.setDir = function( path )
  * setting means the system temp directory, which always exists and is
  * created on demand if it does not.
  *
- * This matters because Cache.ensureDir creates intermediate directories.
+ * This matters because Util.ensureDirectory creates intermediate directories.
  * With the cache on an external volume -- under /Volumes -- an
  * unmounted drive would otherwise have Loom CREATE that path on the boot
  * disk and quietly fill it with the tens of gigabytes a few runs produce,
@@ -104,8 +104,7 @@ Cache.logDir = function()
 Cache.ensureLogDir = function()
 {
    var d = Cache.logDir();
-   if ( !File.directoryExists( d ) )
-      File.createDirectory( d, true );
+   Util.ensureDirectory( d );
    return d;
 };
 
@@ -213,7 +212,7 @@ Cache.companionPathFor = function( key, name )
 
 Cache.storeCompanion = function( key, name, window )
 {
-   Cache.ensureDir();
+   Util.ensureDirectory( Cache.dir() );
    var path = Cache.companionPathFor( key, name );
    window.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                   false/*strict*/, false/*noWarnings*/ );
@@ -267,12 +266,6 @@ Cache.openAs = function( path, newId )
    return w;
 };
 
-Cache.ensureDir = function()
-{
-   if ( !File.directoryExists( Cache.dir() ) )
-      File.createDirectory( Cache.dir(), true );
-};
-
 /* Path of a cached result, or null when absent. */
 Cache.lookup = function( key )
 {
@@ -299,14 +292,7 @@ Cache.totalBytes = function()
    if ( !File.directoryExists( Cache.dir() ) )
       return 0;
    var total = 0;
-   var find = new FileFind;
-   if ( find.begin( Cache.dir() + "/*" ) )
-      do
-      {
-         if ( !find.isDirectory )
-            total += find.size;
-      }
-      while ( find.next() );
+   Util.findEntries( Cache.dir() + "/*" ).forEach( function( e ) { if ( !e.isDirectory ) total += e.size; } );
    return total;
 };
 
@@ -316,18 +302,12 @@ Cache.clear = function()
    var freed = Cache.totalBytes();
    if ( !File.directoryExists( Cache.dir() ) )
       return 0;
-   var doomed = [];
-   var find = new FileFind;
-   if ( find.begin( Cache.dir() + "/*" ) )
-      do
-      {
-         if ( !find.isDirectory )
-            doomed.push( Cache.dir() + "/" + find.name );
-      }
-      while ( find.next() );
-   for ( var i = 0; i < doomed.length; ++i )
-      try { File.remove( doomed[i] ); }
-      catch ( e ) { /* leave it; the count below is best effort */ }
+   Util.findEntries( Cache.dir() + "/*" ).forEach( function( e )
+   {
+      if ( !e.isDirectory )
+         try { File.remove( Cache.dir() + "/" + e.name ); }
+         catch ( x ) { /* leave it; the count below is best effort */ }
+   } );
    return freed;
 };
 
@@ -403,7 +383,7 @@ Cache.discardUnreadable = function( path, key, reason )
 
 Cache.store = function( key, window, meta )
 {
-   Cache.ensureDir();
+   Util.ensureDirectory( Cache.dir() );
    var path = Cache.pathFor( key );
    window.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                   false/*strict*/, false/*noWarnings*/ );
@@ -441,19 +421,13 @@ Cache.entryCount = function()
 {
    if ( !File.directoryExists( Cache.dir() ) )
       return 0;
-   var n = 0;
-   var find = new FileFind;
-   if ( find.begin( Cache.dir() + "/*.xisf" ) )
-      do
-      {
-         /*
-          * Companions (<key>.stars.xisf) belong to an entry, they are not
-          * entries: counting them would report twice as many cached results
-          * as there are stages.
-          */
-         if ( !find.isDirectory && !Cache.isCompanionFileName( find.name ) )
-            ++n;
-      }
-      while ( find.next() );
-   return n;
+   /*
+    * Companions (<key>.stars.xisf) belong to an entry, they are not
+    * entries: counting them would report twice as many cached results
+    * as there are stages.
+    */
+   return Util.findEntries( Cache.dir() + "/*.xisf" ).filter( function( e )
+   {
+      return !e.isDirectory && !Cache.isCompanionFileName( e.name );
+   } ).length;
 };

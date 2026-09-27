@@ -2317,6 +2317,62 @@ function runTests()
           [ 5000, 7000, 0, 0 ] );
 
    /*
+    * The directory listings the helpers make, on a tree of their own: files
+    * and folders apart, the dot entries never, and the folder-only and
+    * file-only readers each seeing their own kind. The patterns PJSR's
+    * FileFind applies are kept out of it: the node shim lists everything,
+    * so each folder holds only names its pattern would match.
+    */
+   var lsRoot = "/tmp/agent-scratch/loom-listing-" + ( IN_PIXINSIGHT ? "pi" : "node" );
+   var lsClear = function( d )
+   {
+      Util.directoryEntries( d ).forEach( function( n )
+      {
+         var p = d + "/" + n;
+         if ( File.directoryExists( p ) ) { lsClear( p ); File.removeDirectory( p ); } else File.remove( p );
+      } );
+   };
+   if ( File.directoryExists( lsRoot ) ) lsClear( lsRoot );
+   [ "/settings/core-2-pxi.settings", "/mars/a.xmars", "/card/Light/M 31", "/card/Light/M 42" ].forEach( function( d )
+   {
+      ensureDir( lsRoot + d );
+   } );
+   [ "/settings/core-1-pxi.settings", "/settings/core-3-pxi.settings", "/mars/b.xmars", "/mars/c.xmars",
+     "/card/Light/one.fit", "/card/Light/two.fit" ].forEach( function( f ) { File.writeTextFile( lsRoot + f, "x" ); } );
+   check( "coreSettingsFiles: every settings file, not a folder of that name",
+          Steps.coreSettingsFiles( lsRoot + "/settings" ).sort(),
+          [ lsRoot + "/settings/core-1-pxi.settings", lsRoot + "/settings/core-3-pxi.settings" ] );
+   check( "coreSettingsFiles: a folder that is not there has none", Steps.coreSettingsFiles( lsRoot + "/none" ), [] );
+   check( "marsDatabasesInDirectory: the databases, sorted, not a folder of that name",
+          Steps.marsDatabasesInDirectory( lsRoot + "/mars" ), [ lsRoot + "/mars/b.xmars", lsRoot + "/mars/c.xmars" ] );
+   check( "Asiair.entriesIn: the folders, or the files, never the dot entries",
+          [ Asiair.entriesIn( lsRoot + "/card/Light", true ).sort(), Asiair.entriesIn( lsRoot + "/card/Light", false ).sort(),
+            Asiair.entriesIn( lsRoot + "/none", false ) ],
+          [ [ "M 31", "M 42" ], [ "one.fit", "two.fit" ], [] ] );
+   check( "Util.directoryEntries: files and folders alike",
+          Util.directoryEntries( lsRoot + "/card/Light" ).sort(), [ "M 31", "M 42", "one.fit", "two.fit" ] );
+   check( "Util.ensureDirectory: makes every missing level, and an existing one is left alone",
+          ( function()
+          {
+             Util.ensureDirectory( lsRoot + "/made/a/b" );
+             Util.ensureDirectory( lsRoot + "/made/a/b" );
+             return [ File.directoryExists( lsRoot + "/made/a/b" ), Util.directoryEntries( lsRoot + "/made" ) ];
+          } )(), [ true, [ "a" ] ] );
+   // the two recursive removers, which only PixInsight loads
+   if ( IN_PIXINSIGHT )
+   {
+      [ "/tree/a/b", "/empty/x/y" ].forEach( function( d ) { ensureDir( lsRoot + d ); } );
+      [ "/tree/a/b/f1", "/tree/f2", "/empty/x/y/f", "/empty/g" ].forEach( function( f ) { File.writeTextFile( lsRoot + f, "x" ); } );
+      FlyThrough.removeTree( lsRoot + "/tree" );
+      check( "FlyThrough.removeTree: the folder and everything in it", File.directoryExists( lsRoot + "/tree" ), false );
+      var emptied = FrameSelector.emptyDirectory( lsRoot + "/empty" );
+      check( "FrameSelector.emptyDirectory: every file and folder inside, counted, the folder itself kept",
+             [ emptied.removed, emptied.failed, Util.directoryEntries( lsRoot + "/empty" ), File.directoryExists( lsRoot + "/empty" ) ],
+             [ 4, [], [], true ] );
+   }
+   lsClear( lsRoot );
+
+   /*
     * Picking a binary out of a candidate list. First match wins, and a
     * path that cannot be tested counts as absent rather than aborting the
     * search -- otherwise one odd entry in /Applications would hide every
@@ -3131,7 +3187,7 @@ function runTests()
     * A cache folder that is not there disables the cache rather than
     * being created.
     *
-    * Cache.ensureDir creates intermediate directories, so with the cache
+    * Util.ensureDirectory creates intermediate directories, so with the cache
     * on an external volume an unmounted drive would have Loom build a
     * decoy cache on the boot disk, fill it with the tens of gigabytes a
     * few runs produce, and then ignore the real one when the drive came

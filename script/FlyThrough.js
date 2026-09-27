@@ -36,8 +36,7 @@ function FlyThrough() {}
  */
 FlyThrough.prepareFolder = function( folder, keepFrames )
 {
-   if ( !File.directoryExists( folder ) )
-      File.createDirectory( folder, true );
+   Util.ensureDirectory( folder );
    Util.directoryEntries( folder ).filter( function( name )
    {
       return FlyThrough.isPartialFrame( name ) || ( !keepFrames && Fly.isFrameFile( name ) );
@@ -839,7 +838,7 @@ FlyThrough.cacheDir = function( root, window )
    var path = window.filePath, bytes = 0, mtime = 0, img = window.mainView.image;
    try { if ( path && File.exists( path ) ) { var fi = new FileInfo( path ); bytes = fi.size; mtime = fi.lastModified.getTime(); } } catch ( e ) {}
    var dir = root + "/" + Fly.imageCacheKey( path, bytes, mtime, img.width, img.height, img.numberOfChannels, Util.LOOM_VERSION, window.mainView.id );
-   if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+   Util.ensureDirectory( dir );
    return dir;
 };
 
@@ -901,7 +900,7 @@ FlyThrough.loadBuilt = function( dir, tool, workWindow, colourFrom )
 FlyThrough.saveDraft = function( dir, sig, d )
 {
    var folder = dir + "/draft-" + Fly.hashKey( sig );
-   if ( !File.directoryExists( folder ) ) File.createDirectory( folder, true );
+   Util.ensureDirectory( folder );
    d.bitmaps.forEach( function( b, i ) { b.save( folder + "/" + i + ".png" ); } );
    File.writeTextFile( folder + "/draft.json", JSON.stringify( { sig: sig, fps: d.fps, pingPong: d.pingPong, n: d.bitmaps.length } ) );
 };
@@ -931,30 +930,20 @@ FlyThrough.touch = function( dir, t )
 FlyThrough.prune = function( root, keep )
 {
    if ( !File.directoryExists( root ) ) return;
-   var entries = [], find = new FileFind;
-   if ( find.begin( root + "/*" ) )
-      do
-      {
-         if ( !find.isDirectory || find.name == "." || find.name == ".." ) continue;
-         var used = 0;
-         try { used = parseFloat( File.readTextFile( root + "/" + find.name + "/used" ) ) || 0; } catch ( e ) {}
-         entries.push( { name: find.name, used: used } );
-      }
-      while ( find.next() );
+   var entries = Util.findEntries( root + "/*" ).filter( function( e ) { return e.isDirectory; } ).map( function( e )
+   {
+      var used = 0;
+      try { used = parseFloat( File.readTextFile( root + "/" + e.name + "/used" ) ) || 0; } catch ( x ) {}
+      return { name: e.name, used: used };
+   } );
    Fly.cacheToPrune( entries, keep ).forEach( function( name ) { FlyThrough.removeTree( root + "/" + name ); } );
 };
 
 /* A folder and everything in it. */
 FlyThrough.removeTree = function( dir )
 {
-   var find = new FileFind, subs = [], files = [];
-   if ( find.begin( dir + "/*" ) )
-      do
-      {
-         if ( find.name == "." || find.name == ".." ) continue;
-         ( find.isDirectory ? subs : files ).push( dir + "/" + find.name );
-      }
-      while ( find.next() );
+   var subs = [], files = [];
+   Util.findEntries( dir + "/*" ).forEach( function( e ) { ( e.isDirectory ? subs : files ).push( dir + "/" + e.name ); } );
    files.forEach( function( f ) { try { File.remove( f ); } catch ( e ) {} } );
    subs.forEach( FlyThrough.removeTree );
    try { File.removeDirectory( dir ); } catch ( e ) {}

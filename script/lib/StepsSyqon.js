@@ -243,8 +243,7 @@ Steps.syqonTempDir = function()
 Steps.syqonEnsureTempDir = function()
 {
    var dir = Steps.syqonTempDir();
-   if ( !File.directoryExists( dir ) )
-      File.createDirectory( dir );
+   Util.ensureDirectory( dir );
    return dir;
 };
 
@@ -1182,8 +1181,7 @@ Steps.prismExecuteStage = function( view, strength, alreadyStretched )
       throw new Error( "SyQon Prism denoise failed on " + view.id + ": no valid image window." );
 
    var dir = File.systemTempDirectory + "/SyQonPrismCLI";
-   if ( !File.directoryExists( dir ) )
-      File.createDirectory( dir, true );
+   Util.ensureDirectory( dir );
    var tag = String( (new Date()).getTime() ) + "_" + Math.round( Math.random()*1e6 );
    var safe = Steps.syqonSanitizeFileName( view.id );
    var inPath  = dir + "/" + safe + "_" + tag + "_input.fits";
@@ -1324,8 +1322,7 @@ Steps.syqonStarlessRun = function( window, label )
       throw new Error( "SyQon Starless model not found" );
 
    var dir = File.systemTempDirectory + "/SyQonStarlessCLI";
-   if ( !File.directoryExists( dir ) )
-      File.createDirectory( dir, true );
+   Util.ensureDirectory( dir );
    var tag = String( (new Date()).getTime() ) + "_" + Math.round( Math.random()*1e6 );
    var safe = Steps.syqonSanitizeFileName( window.mainView.id );
    var inPath  = dir + "/" + safe + "_" + tag + "_in.tif";
@@ -1789,8 +1786,7 @@ Steps.studioProbe = function( model )
       return { exitCode: null, stderr: "syqon-cli not found" };
 
    var dir = File.systemTempDirectory + "/SyQonStudioCLI";
-   if ( !File.directoryExists( dir ) )
-      File.createDirectory( dir, true );
+   Util.ensureDirectory( dir );
    var stem = dir + "/loom_probe_" + model + "_" + String( (new Date()).getTime() );
    var inPath = stem + "_input.xisf", outPath = stem + "_output.xisf";
    var w = null;
@@ -2138,8 +2134,7 @@ Steps.studioRun = function( view, opLabel, opts )
 Steps.studioTempStem = function( viewId )
 {
    var dir = File.systemTempDirectory + "/SyQonStudioCLI";
-   if ( !File.directoryExists( dir ) )
-      File.createDirectory( dir, true );
+   Util.ensureDirectory( dir );
    var tag = String( (new Date()).getTime() ) + "_" + Math.round( Math.random()*1e6 );
    return dir + "/" + Steps.syqonSanitizeFileName( viewId ) + "_" + tag;
 };

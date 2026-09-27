@@ -307,7 +307,7 @@ Sky.regionCatalogue = function( c, reading )
    // a cache that cannot be written (a full disk, a folder it may not write) costs the next solve a query, not this one its stars
    try
    {
-      if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+      Util.ensureDirectory( dir );
       Sky.writeArrays( path + ".part", [ a ] );
       if ( File.exists( path ) ) File.remove( path );
       File.move( path + ".part", path );
@@ -327,7 +327,7 @@ Sky.remember = function( centre )
 {
    try
    {
-      if ( !File.directoryExists( Sky.solverIndexDir() ) ) File.createDirectory( Sky.solverIndexDir(), true );
+      Util.ensureDirectory( Sky.solverIndexDir() );
       File.writeTextFile( Sky.historyPath(), JSON.stringify( Solve.pushHistory( Sky.readHistory(), centre ) ) );
    }
    catch ( e ) { Util.warn( "fly", "blind solve history not saved: " + e ); }
@@ -1187,8 +1187,7 @@ Sky.solveWithHints = function( window, hints, stage )
  */
 Sky.writeArrays = function( path, arrays )
 {
-   var dir = File.extractDrive( path ) + File.extractDirectory( path );
-   if ( !File.directoryExists( dir ) ) File.createDirectory( dir, true );
+   Util.ensureDirectory( File.extractDrive( path ) + File.extractDirectory( path ) );
    var f = new File;
    f.createForWriting( path );
    try { arrays.forEach( function( a ) { if ( a.length ) f.write( a ); } ); }

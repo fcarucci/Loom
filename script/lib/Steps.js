@@ -381,17 +381,8 @@ Steps.marsDatabasesFromCoreSettings = function()
 // Every core-*-pxi.settings file in `dir`: one per PixInsight instance slot.
 Steps.coreSettingsFiles = function( dir )
 {
-   var files = [];
-   var ff = new FileFind;
-   if ( !ff.begin( dir + "/core-*-pxi.settings" ) )
-      return files;
-   do
-   {
-      if ( !ff.isDirectory && ff.name != "." && ff.name != ".." )
-         files.push( dir + "/" + ff.name );
-   }
-   while ( ff.next() );
-   return files;
+   return Util.findEntries( dir + "/core-*-pxi.settings" ).filter( function( e ) { return !e.isDirectory; } )
+      .map( function( e ) { return dir + "/" + e.name; } );
 };
 
 // The MARS database paths a settings file lists, trimmed, blanks dropped.
@@ -448,14 +439,7 @@ Steps.marsDatabasesInDirectory = function( dir )
    {
       if ( !dir || String( dir ).length == 0 || !File.directoryExists( dir ) )
          return out;
-      var find = new FileFind;
-      if ( find.begin( dir + "/*.xmars" ) )
-         do
-         {
-            if ( !find.isDirectory )
-               out.push( dir + "/" + find.name );
-         }
-         while ( find.next() );
+      Util.findEntries( dir + "/*.xmars" ).forEach( function( e ) { if ( !e.isDirectory ) out.push( dir + "/" + e.name ); } );
    }
    catch ( e ) {}
    out.sort();
@@ -3150,7 +3134,7 @@ Steps.saveQualityTable = function()
 {
    try
    {
-      Cache.ensureDir();
+      Util.ensureDirectory( Cache.dir() );
       File.writeTextFile( Steps.masterQualityCachePath(),
                           JSON.stringify( Steps.qualityTable || {} ) );
    }

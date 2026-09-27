@@ -51,14 +51,7 @@ Asiair.detect = function( shouldStop, onVolume )
     * checking them all (Time Machine backups and network shares included)
     * takes long enough that a silent startup looked stuck.
     */
-   var names = [], found = [];
-   var find = new FileFind;
-   if ( !find.begin( Asiair.MOUNTS + "/*" ) )
-      return found;
-   do
-      if ( find.isDirectory && find.name != "." && find.name != ".." )
-         names.push( find.name );
-   while ( find.next() );
+   var names = Asiair.entriesIn( Asiair.MOUNTS, true ), found = [];
    for ( var i = 0; i < names.length; ++i )
    {
       if ( shouldStop && shouldStop() )
@@ -81,19 +74,8 @@ Asiair.detect = function( shouldStop, onVolume )
  */
 Asiair.entriesIn = function( dir, wantDirectories )
 {
-   var out = [];
-   var find = new FileFind;
-   if ( !find.begin( dir + "/*" ) )
-      return out;
-   do
-   {
-      if ( find.name == "." || find.name == ".." )
-         continue;
-      if ( !!find.isDirectory == !!wantDirectories )
-         out.push( find.name );
-   }
-   while ( find.next() );
-   return out;
+   return Util.findEntries( dir + "/*" ).filter( function( e ) { return !!e.isDirectory == !!wantDirectories; } )
+      .map( function( e ) { return e.name; } );
 };
 
 /*

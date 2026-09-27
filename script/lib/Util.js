@@ -949,23 +949,35 @@ Util.fileCreatedMs = function( path, io )
  */
 Util.directoryEntries = function( root )
 {
-   var entries = [];
-   try
-   {
-      var find = new FileFind;
-      if ( find.begin( root + "/*" ) )
-         do
-         {
-            if ( find.name != "." && find.name != ".." )
-               entries.push( find.name );
-         }
-         while ( find.next() );
-   }
-   catch ( e )
-   {
-      return [];
-   }
-   return entries;
+   try { return Util.findEntries( root + "/*" ).map( function( e ) { return e.name; } ); }
+   catch ( e ) { return []; }
+};
+
+/*
+ * What FileFind lists for `pattern` (a folder and a mask, "dir/*.xmars"),
+ * one level, in its order, without "." and "..": { name, isDirectory,
+ * isFile, isSymbolicLink, size } per entry. Every directory walk in Loom
+ * reads its folder through here.
+ */
+Util.findEntries = function( pattern )
+{
+   var out = [], find = new FileFind;
+   if ( find.begin( pattern ) )
+      do
+      {
+         if ( find.name != "." && find.name != ".." )
+            out.push( { name: find.name, isDirectory: find.isDirectory, isFile: find.isFile,
+                        isSymbolicLink: find.isSymbolicLink, size: find.size } );
+      }
+      while ( find.next() );
+   return out;
+};
+
+/* `dir`, created with any missing parents when it is not there. */
+Util.ensureDirectory = function( dir )
+{
+   if ( !File.directoryExists( dir ) )
+      File.createDirectory( dir, true );
 };
 
 /* Keywords plus geometry from a single open, so the dialog can show size. */
