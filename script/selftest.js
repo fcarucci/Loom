@@ -14213,6 +14213,19 @@ function runFlyTestsClean()
       }
    } )();
 
+   /* A released dialog lets go of every control handler, so no closure keeps the dialog (and its images) alive. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dlg = new FlyThrough.Dialog( null );
+      dlg.release();
+      var held = [ [ "starQualityCombo", "onItemSelected" ], [ "folderEdit", "onEditCompleted" ], [ "clearFramesButton", "onClick" ],
+                   [ "draftButton", "onClick" ], [ "typeCombo", "onItemSelected" ], [ "objectEdit", "onEditCompleted" ],
+                   [ "durationSpin", "onValueUpdated" ], [ "imageList", "onViewSelected" ] ]
+         .filter( function( h ) { return dlg[h[0]] && dlg[h[0]][h[1]] != null; } )
+         .map( function( h ) { return h.join( "." ); } );
+      check( "a released Fly-Through dialog keeps no control handler", held, [] );
+   } )();
+
    /*
     * Spikes come in opposite pairs of equal strength (the support vanes). Fitted
     * one by one, a spike whose inner stretch was masked (a neighbour beside

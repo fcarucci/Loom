@@ -2313,9 +2313,9 @@ FlyThrough.Dialog = class extends Dialog
          this.releaseBuilt();
          if ( this.work ) { try { this.work.window.forceClose(); } catch ( e0 ) {} this.work = null; }
          var self = this;
-         [ "draftButton", "renderButton", "closeButton", "logoButton", "musicButton", "playButton", "folderButton", "ffmpegButton", "openButton" ]
+         [ "draftButton", "renderButton", "closeButton", "logoButton", "musicButton", "playButton", "folderButton", "ffmpegButton", "openButton", "clearFramesButton" ]
             .forEach( function( k ) { if ( self[k] ) self[k].onClick = null; } );
-         [ "typeCombo", "dynamicCombo", "fpsCombo", "orientationCombo", "loopCombo", "toolCombo", "logoPlaceCombo" ].forEach( function( k ) { if ( self[k] ) self[k].onItemSelected = null; } );
+         [ "typeCombo", "dynamicCombo", "fpsCombo", "orientationCombo", "loopCombo", "toolCombo", "logoPlaceCombo", "starQualityCombo" ].forEach( function( k ) { if ( self[k] ) self[k].onItemSelected = null; } );
          if ( this.durationSpin ) this.durationSpin.onValueUpdated = null;
          if ( this.imageList ) this.imageList.onViewSelected = null;
          if ( this.logoOpacity ) this.logoOpacity.onValueUpdated = null;
@@ -2323,7 +2323,7 @@ FlyThrough.Dialog = class extends Dialog
          if ( this.autoTimer ) { this.autoTimer.stop(); this.autoTimer.onTimeout = null; this.autoTimer = null; }
          this.stopPulse();
          if ( this.scrubber ) this.scrubber.onValueUpdated = null;
-         [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
+         [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit", "folderEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
          this.onClose = null;
          this.onShow = null;
          if ( this.presetChecks )
