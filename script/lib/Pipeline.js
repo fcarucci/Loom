@@ -261,8 +261,8 @@ Pipeline.STAGE_ORDER = [ "solve", "spfc", "mgc", "graxpert",
 Pipeline.compositeSharpenParams = function( config )
 {
    var tool = config.sharpenTool;
-   // no levels (none, or Studio's correct-only use): no composite stage
-   if ( !Steps.sharpenHasLevels( tool ) )
+   // no tool, no levels: no composite stage
+   if ( !Steps.toolChosen( tool ) )
       return null;
    var stars  = ( config.starReduction && config.starReduction != "none" ) ?
                 config.starReduction : null;
@@ -324,7 +324,7 @@ Pipeline.aberrationParams = function( config, studioFound )
 Pipeline.starExtractionParams = function( config )
 {
    var tool = config.starTool;
-   if ( !tool || tool == "none" )
+   if ( !Steps.toolChosen( tool ) )
       return null;
    /*
     * The stars target and the colour recovery both change the pixels the
@@ -391,7 +391,7 @@ Pipeline.denoiseLevelFor = function( config, which )
 Pipeline.compositeDenoiseParams = function( config, which )
 {
    var tool = config.noiseTool;
-   if ( !tool || tool == "none" )
+   if ( !Steps.toolChosen( tool ) )
       return null;
    var level = Pipeline.denoiseLevelFor( config, which );
    if ( !level || level == "none" )
@@ -1724,7 +1724,7 @@ Pipeline.broadbandRunners = function( channel, config )
          // Always runs when a tool is chosen -- the safe operation,
          // and the one that actually fixes star shape. Per channel,
          // unlinked, on native pixels.
-         if ( config.sharpenTool && config.sharpenTool != "none" )
+         if ( Steps.toolChosen( config.sharpenTool ) )
             Steps.aberration( c.view, config.sharpenTool, false, channel );
       }
    };
@@ -2207,7 +2207,7 @@ Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
 {
    var cleanFactors = null;
    if ( chans.R && chans.G && chans.B &&
-        Steps.aberrationWillRun( config.sharpenTool ) )
+        Steps.toolChosen( config.sharpenTool ) )
    {
       try
       {

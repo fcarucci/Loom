@@ -1111,11 +1111,12 @@ Steps.spccRGB = function( view, instrume, filters )
 };
 
 /*
- * True when the configured sharpening tool will actually run an aberration
- * correction. Single source of truth for both the per-channel runner and
- * the decision to build a clean SPCC reference.
+ * Whether a tool is chosen: not empty and not "none". A chosen sharpening
+ * tool always runs the aberration correction and takes star reduction and
+ * detail levels; one rule for the per-channel runner, the clean SPCC
+ * reference, the composite stage and the dialog.
  */
-Steps.aberrationWillRun = function( tool )
+Steps.toolChosen = function( tool )
 {
    return !!tool && tool != "none";
 };
@@ -1473,6 +1474,11 @@ Steps.matchBackgroundOffset = function( views, refView )
 Steps.NR_TOOL_NXT   = "NoiseXTerminator";
 Steps.NR_TOOL_PRISM = "SyQon Prism";
 Steps.NR_TOOL_MLDENOISE = "MLDenoise";
+// SyQon Studio's Prism (StepsSyqon.js). The _OLD name is Essential's from before
+// Prism 2.0 was offered beside it; Steps.migrateConfig maps it.
+Steps.NR_TOOL_STUDIO     = "SyQon Studio Prism Essential";
+Steps.NR_TOOL_STUDIO2    = "SyQon Studio Prism 2.0";
+Steps.NR_TOOL_STUDIO_OLD = "SyQon Studio Prism";
 
 /*
  * WHERE a denoiser runs is the tool's property, not the user's choice.
@@ -1506,8 +1512,8 @@ Steps.NR_TOOL_MLDENOISE = "MLDenoise";
  */
 Steps.denoiseIsLinear = function( tool )
 {
-   return tool == Steps.NR_TOOL_NXT || tool == Steps.NR_TOOL_MLDENOISE ||
-          tool == Steps.NR_TOOL_STUDIO || tool == Steps.NR_TOOL_STUDIO2;
+   var t = Steps.noiseTool( tool );
+   return t != null && t.linear;
 };
 
 Steps.prismConfigPath = function()
@@ -1734,32 +1740,15 @@ Steps.NOISE_LEVELS = {
  */
 Steps.denoise = function( view, tool, level, label, alreadyStretched, pass )
 {
-   if ( !tool || tool == "none" || !level || level == "none" )
+   if ( !Steps.toolChosen( tool ) || !level || level == "none" )
       return;
 
    Util.operation( "noise reduction", tool, level, label || view.id );
 
-   var run = Steps.denoiseRunner( tool );
-   if ( run == null )
+   var t = Steps.noiseTool( tool );
+   if ( t == null )
       throw new Error( "Unknown noise reduction tool: " + tool );
-   run( view, level, alreadyStretched, pass );
-};
-
-/*
- * Which runner a noise reduction tool uses, or null for a tool Loom does
- * not know. Built on each call rather than once, because the Studio tool
- * names are defined further down this file than Steps.denoise. Own
- * properties only, so a tool called "toString" is unknown, as it was.
- */
-Steps.denoiseRunner = function( tool )
-{
-   var runners = {};
-   runners[Steps.NR_TOOL_NXT]       = Steps.denoiseNXT;
-   runners[Steps.NR_TOOL_MLDENOISE] = Steps.denoiseMLDenoise;
-   runners[Steps.NR_TOOL_PRISM]     = Steps.denoisePrism;
-   runners[Steps.NR_TOOL_STUDIO]    = Steps.denoiseStudio;
-   runners[Steps.NR_TOOL_STUDIO2]   = Steps.denoiseStudio2;
-   return runners.hasOwnProperty( tool ) ? runners[tool] : null;
+   t.run( view, level, alreadyStretched, pass );
 };
 
 // A tool's setting for `level`, refusing a level the tool has no entry for.
@@ -1865,6 +1854,45 @@ Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
                    Steps.studioModelLabel( step.stretched.model ) +
                    ") is skipped because there is no stretch" );
    }
+};
+
+/*
+ * One entry per noise reduction tool: whether it runs on LINEAR data
+ * (Steps.denoiseIsLinear says why), its runner, and the ladder whose value
+ * its cache key carries (Steps.noiseAmountFor), mapped by `amount` where
+ * the key wants something other than the level's own value.
+ *
+ * MLDenoise has no ladder here ON PURPOSE: its stages key on the level
+ * label alone. Giving it one would re-key every cached MLDenoise stage.
+ */
+Steps.NOISE_TOOLS = {};
+Steps.NOISE_TOOLS[Steps.NR_TOOL_NXT] = { linear: true, run: Steps.denoiseNXT,
+   levels: Steps.NOISE_LEVELS.nxt,
+   // an array, not the object: paramsString serialises it verbatim, and
+   // the order here is fixed by this line rather than by key insertion
+   amount: function( lv ) { return [ lv.denoise, lv.detail ]; } };
+Steps.NOISE_TOOLS[Steps.NR_TOOL_MLDENOISE] = { linear: true, run: Steps.denoiseMLDenoise };
+Steps.NOISE_TOOLS[Steps.NR_TOOL_PRISM] = { linear: false, run: Steps.denoisePrism,
+   levels: Steps.NOISE_LEVELS.prism };
+Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO] = { linear: true, run: Steps.denoiseStudio,
+   levels: Steps.NOISE_LEVELS.studio };
+Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2] = { linear: true, run: Steps.denoiseStudio2,
+   levels: Steps.NOISE_LEVELS.studio2,
+   /*
+    * Per pass, the model as well as the blend: every pass runs at 1.00,
+    * so the model is what tells them apart. Built here so the key's
+    * field order is fixed. Without a pass, both of the level's passes.
+    */
+   amount: function( m, pass )
+   {
+      function one( p ) { return ( p == null ) ? null : { model: p.model, application: p.application }; }
+      return ( pass == null ) ? { linear: one( m.linear ), stretched: one( m.stretched ) } : one( m[pass] );
+   } };
+
+// A tool's entry, or null for one Loom does not know: own properties only, so "toString" is unknown.
+Steps.noiseTool = function( tool )
+{
+   return Object.prototype.hasOwnProperty.call( Steps.NOISE_TOOLS, tool ) ? Steps.NOISE_TOOLS[tool] : null;
 };
 
 /*
@@ -2086,12 +2114,6 @@ Steps.combineRGB = function( rView, gView, bView, id )
 Steps.SHARPEN_TOOL_BXT = "BlurXTerminator";
 Steps.SHARPEN_TOOL_SYQON = "SyQon Parallax";
 
-/* Whether a sharpening tool takes star reduction and detail levels. */
-Steps.sharpenHasLevels = function( tool )
-{
-   return !!tool && tool != "none";
-};
-
 /* Which sharpening tools are usable right now. */
 Steps.availableSharpenTools = function()
 {
@@ -2197,44 +2219,11 @@ Steps.sharpenAmountFor = function( tool, kind, level )
 
 Steps.noiseAmountFor = function( tool, level, pass )
 {
-   if ( level == null || level == "none" )
+   var t = Steps.noiseTool( tool );
+   var v = ( t == null || !t.levels || level == null || level == "none" ) ? null : t.levels[level];
+   if ( v == null )
       return null;
-   if ( tool == Steps.NR_TOOL_NXT )
-   {
-      var lv = Steps.NOISE_LEVELS.nxt[level];
-      // an array, not the object: paramsString serialises it verbatim, and
-      // the order here is fixed by this line rather than by key insertion
-      return ( lv == null ) ? null : [ lv.denoise, lv.detail ];
-   }
-   if ( tool == Steps.NR_TOOL_PRISM )
-   {
-      var s = Steps.NOISE_LEVELS.prism[level];
-      return ( s == null ) ? null : s;
-   }
-   if ( tool == Steps.NR_TOOL_STUDIO )
-   {
-      var a = Steps.NOISE_LEVELS.studio[level];
-      return ( a == null ) ? null : a;
-   }
-   if ( tool == Steps.NR_TOOL_STUDIO2 )
-   {
-      /*
-       * Per pass, the model as well as the blend: every pass runs at 1.00,
-       * so the model is what tells them apart. Built here so the key's
-       * field order is fixed. Without a pass, both of the level's passes.
-       */
-      var m = Steps.NOISE_LEVELS.studio2[level];
-      if ( m == null )
-         return null;
-      var amount = function( p )
-      {
-         return ( p == null ) ? null : { model: p.model, application: p.application };
-      };
-      if ( pass == null )
-         return { linear: amount( m.linear ), stretched: amount( m.stretched ) };
-      return amount( m[pass] );
-   }
-   return null;
+   return t.amount ? t.amount( v, pass ) : v;
 };
 
 /*
@@ -2453,7 +2442,7 @@ Steps.DETAIL_RUNNERS = {
  */
 Steps.correctComposite = function( view, tool, starLevel, detailLevel, label )
 {
-   if ( !Steps.sharpenHasLevels( tool ) )
+   if ( !Steps.toolChosen( tool ) )
       return false;
    var wantStars  = ( starLevel  && starLevel  != "none" );
    var wantDetail = ( detailLevel && detailLevel != "none" );
@@ -3063,7 +3052,7 @@ Steps.removeStars = function( window, tool, label, linear )
  */
 Steps.extractStars = function( window, tool, label, stretchStars )
 {
-   if ( !tool || tool == "none" )
+   if ( !Steps.toolChosen( tool ) )
       return null;
 
    var name = label || window.mainView.id;

@@ -2156,7 +2156,7 @@ UI.SelectDialog = class extends Dialog
    /* The amount means nothing without a noise tool selected. */
    updateNoiseEnabled()
    {
-      var on = !!( this.config.noiseTool && this.config.noiseTool != "none" );
+      var on = Steps.toolChosen( this.config.noiseTool );
       this.noiseLevelCombo.enabled = on;
       this.noiseLevelLabel.enabled = on;
       this.noiseLevelLCombo.enabled = on;
@@ -2179,7 +2179,7 @@ UI.SelectDialog = class extends Dialog
    {
       // !! matters: PJSR's Control.enabled rejects a non-Boolean, and
       // `config.sharpenTool && ...` yields the string itself when falsy.
-      var on = Steps.sharpenHasLevels( this.config.sharpenTool );
+      var on = Steps.toolChosen( this.config.sharpenTool );
       this.starReductionCombo.enabled = on;
       this.detailCombo.enabled = on;
    }

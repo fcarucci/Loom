@@ -1443,14 +1443,7 @@ Steps.syqonStarlessRun = function( window, label )
  * still names the model, in Studio's words (Steps.studioFailureText).
  * ------------------------------------------------------------------------ */
 
-/*
- * The names are what Settings and process icons store. "SyQon Studio
- * Prism" was Essential's name before Prism 2.0 was offered beside it;
- * Steps.migrateConfig maps it.
- */
-Steps.NR_TOOL_STUDIO       = "SyQon Studio Prism Essential";
-Steps.NR_TOOL_STUDIO2      = "SyQon Studio Prism 2.0";
-Steps.NR_TOOL_STUDIO_OLD   = "SyQon Studio Prism";
+// What Settings and process icons store; Studio's Prism names are in Steps.js.
 Steps.SHARPEN_TOOL_STUDIO  = "SyQon Studio Parallax";
 Steps.SHARPEN_TOOL_STUDIO_CORRECT_OLD = "SyQon Studio Parallax (correct only)";
 Steps.STAR_TOOL_STUDIO     = "SyQon Studio Axiom";
