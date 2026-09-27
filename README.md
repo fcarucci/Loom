@@ -1,826 +1,482 @@
 # Loom
 
-## Introduction
+Three PixInsight scripts for the work between capture and making pictures:
 
-Loom does the boring part.
+- **[Loom](#loom-1)** takes integrated masters to finished plates: solving,
+  flux calibration, gradient removal, registration, cropping, combination and
+  colour calibration, optionally followed by sharpening, star extraction,
+  stretch, noise reduction and a layered Photoshop file.
+- **[Frame Selector](#frame-selector)** measures a folder of subframes and
+  removes the bad ones before you integrate. It can also import a night
+  straight from an ASIAIR.
+- **[Fly-Through](#fly-through)** turns a finished image into a push-in video
+  whose stars pass by at their real Gaia distances.
 
-Between a stack of integrated masters and the point where you start making
-pictures there is a long stretch of mechanical work: solving, flux
-calibration, gradient removal, registration, cropping, combination, colour
-calibration. None of it is a matter of taste, all of it has to be right, and
-doing it by hand is an hour of clicking that produces the same answer every
-time. Loom runs that stretch and hands back open windows.
-
-**It is for people who already know PixInsight.** Loom is not a wizard and
-does not explain what SPFC is — it assumes you would be doing all of this by
-hand and would rather not. What it deliberately does not do is give you a
-hundred knobs: the options are few, each one is a decision only you can make,
-and everything else is derived. Fewer settings, a workflow that runs
-start-to-finish unattended, and the hour you would have spent on mechanical
-preparation left over for the part that is actually interesting.
-
-**It makes no artistic choices.** Every parameter it chooses is either
-measured from your data or fixed by a published convention, and the places
-where a human judgement would normally enter are either computed or left to
-you afterwards in Photoshop. Where it cannot decide something on evidence, it
-asks, or it does nothing.
-
-**It preserves signal.** Nothing is clipped that is not a single-pixel defect.
-Calibration is photometric where photometry applies and deliberately absent
-where it does not. The stretch uses the image's own black point and sends its
-own sky to a fixed level, so no range is spent on emptiness.
-
-**It supports the XT and SyQon tools** — BlurXTerminator, StarXTerminator,
-NoiseXTerminator, GraXpert, SyQon Studio, and the standalone SyQon Parallax,
-Prism and Starless — and offers only the ones your installation can actually
-run. SyQon Studio's models are offered beside the standalone SyQon tools,
-each when it is found.
-
-**It hands off to Photoshop.** Results can be written as 16-bit TIFFs and as a
-single layered PSB with the plates already stacked, blended and clipped the way
-they are meant to be used — palette at the bottom, stars screened on top,
-adjustment layers in place. Everything is tagged ProPhoto RGB so nothing shifts
-colour on the way across.
-
-**It is opinionated.** The steps and their order are not configurable, because
-the order is the part that is easy to get wrong and expensive to get wrong:
-aberration correction belongs on native pixels before registration; colour
-calibration belongs before sharpening; noise reduction belongs wherever its
-tool was designed to work. You choose which tools run and how hard, not when.
-
-Results stay as open windows. Loom never writes to disk — saving is your
-decision, made once you have looked at the result.
+**Loom is for people who already know PixInsight.** It is not a wizard and does
+not explain what SPFC is. The options are few, each a decision only you can
+make; everything else is measured from your data or fixed by a published
+convention. The steps and their order are fixed: you choose which tools run and
+how hard, not when. Where it cannot decide on evidence, it asks, or does
+nothing. Nothing is clipped that is not a single-pixel defect. Results stay as
+open windows; Loom writes to disk only when you ask it to export.
 
 ## Installation
 
-There are two ways to install Loom: from its PixInsight update repository,
-which is the easiest and keeps it up to date, or from the git repository.
-Use one or the other, not both — two copies register the scripts twice.
+Install from the PixInsight update repository or from git, not both: two
+copies register the scripts twice.
 
 ### From the PixInsight update repository (recommended)
 
 1. **Resources → Updates → Manage Repositories.**
-2. Click **Add**, enter the repository address, and confirm:
+2. Click **Add**, enter this address (with the trailing `/`), and confirm:
 
    ```
    https://fcarucci.github.io/Loom/
    ```
 
-   The address must end with the `/`.
-3. **Resources → Updates → Check for Updates.** Loom is listed among the
-   available packages; make sure it is selected and click **Apply**.
+3. **Resources → Updates → Check for Updates.** Make sure Loom is selected and
+   click **Apply**.
 4. The repository is not yet signed, so PixInsight asks you to confirm the
    download from an unsigned source. Confirm it.
-5. **Restart PixInsight** when asked — updates are installed while it
-   restarts.
+5. **Restart PixInsight** when asked; updates are installed while it restarts.
 
-The three scripts then appear together under **Script → Loom**: **Loom**,
-**Frame Selector** and **Loom Fly-Through**. If they do not, run **Script → Feature
-Scripts → Regenerate**, then **Done**.
+The scripts appear under **Script → Loom**: **Loom**, **Frame Selector** and
+**Loom Fly-Through**. If they do not, run **Script → Feature Scripts →
+Regenerate**, then **Done**. To update later, use **Check for Updates** again.
 
-**Updating** is the same **Check for Updates**: a new Loom version is offered
-like any other update.
-
-Loom needs PixInsight 1.9.4 or newer; the repository offers it only to those
-versions.
-
-### From the git repository
-
-**Get the code.** Clone the repository:
+### From git
 
 ```
 git clone https://git.local.carucci.studio/francesco/Loom.git ~/PixInsight/scripts/Loom
-```
-
-or from the GitHub mirror:
-
-```
+# or, from the GitHub mirror:
 git clone git@github.com:fcarucci/Loom.git ~/PixInsight/scripts/Loom
 ```
 
-`~/PixInsight/scripts/Loom` is the conventional location, but any location
-works — nothing in the code depends on the path.
+Any location works. Then **Script → Feature Scripts → Add**, choose the
+**Loom folder** (not its `script` subfolder), and click **Done**. PixInsight
+registers scripts by absolute path, so after moving or renaming the folder, add
+it again. To remove a stale entry, untick it and click **Done** (there is no
+Remove button); **Regenerate** drops entries whose file no longer exists.
 
-**Register it with PixInsight.** **Script → Feature Scripts → Add**, point it
-at the **Loom folder** — not the `script` subfolder — then **Done**. The scan
-descends into subfolders, which is how PixInsight's own bundled scripts are
-registered two levels below `src/scripts`, so the top-level folder is enough to
-find `script/Loom.js`. The scripts then appear under **Script → Loom**.
+With **Update Loom automatically** ticked in the Loom dialog, each launch of a
+git checkout checks for a newer Loom before the dialog opens and says what it
+found. If there is one, it is fast-forwarded and **Loom restarts itself** on
+the new version. The check gives up after fifteen seconds. A checkout with
+local changes is never touched, a diverged branch is refused rather than
+merged, and any failure is named in the Process Console and recorded in
+`<cache>/update/update.log`. The title bar shows version and commit, for
+example `Loom 0.1 (a4c1f2e)`.
 
-**Moving or renaming the folder breaks the registration.** PixInsight registers
-feature scripts by absolute file path, so after a move you have to add it again
-from its new location.
+### Optional tools
 
-**Removing a stale entry.** The Feature Scripts dialog has no Remove button —
-its buttons are Add, Regenerate, Enable All, Disable All, Done, Cancel. The
-checkbox is the removal mechanism, as the dialog itself says: "Enabled scripts
-will be featured on the Script menu; disabled ones will be removed." Untick the
-stale entry and click **Done**. **Regenerate** rescans the registered folders
-and rebuilds the list, discarding entries whose file no longer exists. A stale
-entry comes up already unticked, because PixInsight disables scripts whose file
-it cannot find.
-
-**Optional tools are detected, never required.** Loom offers only what the
-installation can actually run.
+Loom detects these and offers only what your installation can run.
 
 | kind | tools | how they are found |
 |---|---|---|
 | **Modules** | BlurXTerminator, StarXTerminator, NoiseXTerminator, GraXpert, StarNet2 | by name |
-| **External binaries** | SyQon Studio (`syqon-cli`), SyQon Parallax (`parallax_cli`), SyQon Prism (`prism_cli`), SyQon Starless (`SyQonStarless`) | a path remembered in Loom's settings, else the config file SyQon's own scripts write, else a scan of `/Applications` and `~/Applications` (Program Files and `%LOCALAPPDATA%\Programs` on Windows) two levels deep. For SyQon Studio, `SYQON_CLI_PATH` comes first, as in SyQon's own script |
+| **External programs** | SyQon Studio (`syqon-cli`), SyQon Parallax (`parallax_cli`), SyQon Prism (`prism_cli`), SyQon Starless (`SyQonStarless`) | a path remembered in Loom's settings, else the config file SyQon's own scripts write, else a scan of `/Applications` and `~/Applications` (Program Files and `%LOCALAPPDATA%\Programs` on Windows). For SyQon Studio, `SYQON_CLI_PATH` comes first |
+| **MLDenoise** | PixInsight's MachineLearning module plus a `.xmlm` model | see [Requirements](#requirements) |
 
-Whatever the search finds is remembered, so it normally runs once. The
-remembered path is what makes this reliable: SyQon's config files live in the
-system temp directory, which the OS is free to purge — and did, which is what
-made those tools silently disappear from the dropdowns until Loom kept its own
-record.
+What the search finds is remembered, so it normally runs once.
 
-**It keeps itself current.** With **Update Loom automatically** ticked, each
-launch checks for a newer Loom before the dialog opens and says what it found.
-If there is one it is fast-forwarded and **Loom restarts itself** — PJSR
-resolves `#include` when the script is parsed, so an update cannot apply to the
-run that fetched it, and the dialog opens from the updated copy instead.
+### Check the install
 
-The check is quick — a few hundred milliseconds against a local server — and
-gives up after fifteen seconds, so an unreachable one is a pause rather than a
-hang.
+Open **Script → Loom → Loom**, add masters, and tick **Validate only (check
+everything, run nothing)**. It runs every preflight check (files and views
+present, required FITS keywords, installed processes, the MARS database) and
+executes nothing. Do this first on a new setup or a new dataset.
 
-A checkout with local changes is never touched, a diverged branch is refused
-rather than merged, and anything that goes wrong is named in the Process
-Console rather than passed over in silence. What each attempt did is recorded
-in `<cache>/update/update.log`, beside the run logs and safe from **Clear
-cache**. The version and commit are in the dialog's title bar —
-`Loom 0.1 (a4c1f2e)` — because many commits share one version number.
+## Loom
 
-**Verify the install.** Open **Script → Loom → Loom**, add masters,
-and tick **Validate only (check everything, run nothing)**. It runs every
-preflight check — files and views present, required FITS keywords, installed
-processes, the MARS database — and executes nothing. That is the intended first
-run on a new setup; see **Requirements** for what those checks expect to find.
+![Loom](docs/images/loom.png)
 
-`script/selftest.js` is not part of installation and does not need registering.
-It writes its results to a file and is run from the command line, not the menu.
+### How to use
 
-## How to use
+1. **Add masters.** **Scan Masters Folder...** picks the newest master per
+   filter from a WBPP masters folder, preferring drizzled and autocropped
+   variants; **Add Files...** picks them directly. A view dragged onto the list
+   also works, and beats a file for the same channel. The channel comes from
+   each file's `FILTER` keyword.
+2. **Check the list.** **Created**, **FWHM**, **Ecc**, **Noise** and **Stars**
+   (from SubframeSelector) show each master against the previous integration of
+   its channel, coloured when it got worse: Loom always uses the newest master.
+   Measuring takes about 16 s per master the first time, then is cached.
+3. **Check the camera** under the list, with the QE curve it maps to. A master
+   whose `INSTRUME` was lost (WBPP's autocrop removes it) takes the camera its
+   siblings name.
+4. **Name the project** at the top. It follows the masters' folder until you
+   type your own, and names the exported PSB.
+5. **Set the options** below, then **Run**. A Cancel window stops the run at
+   the next checkpoint, after asking; cached stages survive, the step in
+   progress does not.
 
-**Add masters**, by any of three routes:
+**Caching.** Every stage is cached on its inputs and parameters: a repeat run
+does no pixel work, and a changed setting recomputes only its stage and those
+after it. **Ignore cache for this run** recomputes without discarding; **Clear
+cache** discards. Point **Cache folder** somewhere with room rather than the
+system temp directory, which the OS may purge. Every run, failed ones included,
+logs to `<cache>/logs/loom-run-<timestamp>.log`, which **Clear cache** keeps.
+A saved instance icon reuses a configuration (file selections only, not views).
 
-| | |
-|---|---|
-| **Scan Masters Folder...** | newest master per filter, preferring drizzled and autocropped variants |
-| **Add Files...** | pick masters directly |
+### What it does, and the options
 
-Scanning a folder is listed first because it is how a run normally starts: WBPP
-writes a masters folder and Loom picks the best variant per filter out of it.
-Adding files by hand is the exception.
-
-The channel comes from the file's `FILTER` keyword. A view dropped on the list
-still works and beats a file path for the same channel, but there is no longer a
-button to add every open view at once — it added whatever happened to be on the
-workspace, which is rarely what a run wants.
-
-**What the list tells you.** Beside the filter, size and drizzle factor:
-
-| column | |
-|---|---|
-| **Created** | when the master was stacked — a folder of restacks is otherwise distinguished only by a `(3)` in the name |
-| **FWHM**, **Ecc**, **Noise**, **Stars** | measured by SubframeSelector, each with its change against the **previous integration of the same channel** |
-
-Loom always uses the newest master — that is what a re-stack is for — but a
-newer stack is not automatically a better one, and the columns say so before the
-run rather than afterwards. A channel that went backwards is coloured. Bear in
-mind the senses differ: smaller FWHM, eccentricity and noise are better, more
-stars are better.
-
-The comparison is **within a channel**, never across. On any given rig one
-filter is simply softer than another — comparing G against R would flag a
-perfectly good G every time.
-
-Measuring costs about 16 seconds per master, so a first scan of a folder takes a
-while and the dialog says how far it has got: *Measuring masters: G (3 of 7)*.
-Everything that could change the list is disabled meanwhile, Run included.
-Results cache by path, size and modification time, so a rescan is instant and a
-re-stacked file is measured again.
-
-**The camera is reported once**, under the list, with the QE curve it resolves
-to. One session comes off one camera, so a master whose header lost `INSTRUME`
-— WBPP's own autocrop rewrites it away — takes the camera its siblings name.
-That matters more than it looks: an unnamed camera would otherwise be calibrated
-against the ideal QE curve while its siblings used the real one.
-
-**Name the project** in the box at the top. It is filled in from the folder your
-masters came from and follows the file list until you type something of your
-own; it names the exported PSB.
-
-**Set the options** (all described below), then **Run**. Run is greyed out until
-there is something to run.
-
-A Cancel window stays up for the duration and stops at the next checkpoint. It
-asks before it does, because cancelling is not undoable — the cached stages
-survive, the step in flight does not — and because a modeless dialog with one
-button collects the keyboard focus, so a stray Return would otherwise discard
-the work in progress. The Process Console stays open throughout, one green line
-per operation.
-
-**On a new dataset, tick "Validate only" first.** It runs every preflight
-check — files and views present, required keywords, installed processes, the
-MARS database — and executes nothing.
-
-**Caching.** Every stage is cached, keyed on its inputs and parameters, so a
-repeat run does no pixel work. Change one setting and only the affected stage
-and those after it recompute. **Ignore cache for this run** forces a recompute
-without discarding anything; **Clear cache** discards it.
-
-Set **Cache folder** to keep it somewhere with room — a fast external volume,
-say — rather than the system temp directory, which the OS is free to purge. A
-fully cached run reads no masters at all: the sources are opened lazily and
-skipped entirely when every stage that needs them is already cached.
-
-**Run logs.** Every run writes the whole Process Console to
-`<cache>/logs/loom-run-<timestamp>.log`, including the runs that fail — which
-are the ones anyone wants to read. They live in a subfolder, so **Clear cache**
-does not delete them.
-
-**Saved instances.** Drag the script's instance icon to the workspace to reuse
-a configuration. Only file-path selections round-trip; a view id from a
-previous session has no guaranteed meaning later.
-
-## Process
-
-### Per channel, on native uninterpolated pixels
+#### Per channel, on native pixels
 
 | step | what | options |
 |---|---|---|
-| **Solve** | plate solution, skipped if one is already present. Solved with **recursive surface splines** and **verified** against the catalogue | — |
-| **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera read from `INSTRUME` |
-| **MGC** | MultiscaleGradientCorrection against the MARS reference. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
-| **Gradient removal** | background extraction on the linear channels. Broadband by default; H, S and O too when asked — off by default, because narrowband data usually has little gradient and faint emission can be taken for background | Multi Gradient only (MGC always runs; this adds no second pass), GraXpert (with its smoothing), SyQon Studio Deep Gradient; also on H/S/O |
-| **Aberration** | star-shape correction, before registration so resampling cannot spread it | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. With SyQon Studio installed, the aberration pass uses Studio Parallax's correction automatically, BlurXTerminator's included |
+| **Solve** | plate solution, skipped if one is present; recursive surface splines, and every solve is verified against the catalogue | — |
+| **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera from `INSTRUME` |
+| **MGC** | MultiscaleGradientCorrection against MARS. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
+| **Gradient removal** | a second background pass on the linear channels | **Multi Gradient only** (no second pass), **GraXpert** (with its smoothing) or **SyQon Studio Deep Gradient**. **Also remove gradients from H, S and O** is off by default, because faint emission can be taken for background |
+| **Aberration** | star-shape correction, before registration | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. With SyQon Studio installed, Studio Parallax does the aberration pass even when BlurXTerminator is chosen; BlurXTerminator then does star reduction and detail |
 
-**Every solve is verified**, not just the first of a run: each channel is solved
-independently and SPFC calibrates each against its own solution, so each one is
-worth checking.
+The log grades each solve by its median deviation: 3.0 px or more is wrong,
+above 0.315 px is poor.
 
-The thresholds are on the median deviation in pixels, which is already the
-scale-relative form. At or above **3.0 px** the solution is wrong — that is the
-verifier's own matching tolerance, the largest deviation it can even represent.
-Above **0.315 px** it is poor: the median PixInsight published against Gaia DR3
-on a 34,000-control-point mosaic panel. Nothing is judged on the RMS, because
-both published figures are medians and RMS ≥ median by construction; the RMS is
-reported only.
-
-### Across channels
+#### Across channels
 
 | step | what | options |
 |---|---|---|
-| **Register** | everything to L; L is the reference and is never resampled. Without an L master, to the channel whose stars fix a registration best — lowest FWHM / √(star count), from the SubframeSelector measurement Loom already takes of each master — falling back to G, R, B, Ha, SII, OIII in that order when nothing could be measured. The run log names the choice and why | — |
-| **Crop** | to the area every channel actually covers | — |
-| **Halo match** | matches each channel's PSF to the widest, L excluded | on/off |
-| **White balance reference** | measured on channels the aberration correction never touched, because corrected photometry gives a wrong balance | automatic |
+| **Register** | to L, which is never resampled. Without L, to the channel with the best-defined stars (lowest FWHM / √stars), falling back to G, R, B, Ha, SII, OIII. The log names the choice | — |
+| **Crop** | to the area every channel covers | — |
+| **Halo match** | blurs each channel's PSF up to the widest, L excluded. Removes colour halos, at the cost of the sharpest channel's resolution | **Reduce halos (match channel PSFs)** |
+| **White balance reference** | measured on channels the aberration correction never touched | automatic |
 
-### RGB composite
+#### RGB composite
 
 | step | what | options |
 |---|---|---|
 | **Combine** | R, G, B | — |
 | **Solve, SPFC, SPCC** | calibration of the composite | filter curves |
-| **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
+| **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
-| **Stretch** | see below | on/off |
-| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism, and Prism 2.0's second pass, after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism 2.0 (two passes: Advanced on linear data, then Ultra or Max after the stretch; Low: Advanced, Medium: Advanced then Ultra, High: Advanced then Max; paid, checked against your SyQon account before the run; if the account refuses it, SyQon Studio Prism Essential is offered in its place until a check succeeds); strength Low/Medium/High |
+| **Stretch** | see [Stretch](#stretch) | on/off, method |
+| **Denoise** | on the finished L, RGB and palette (their starless plates when stars are extracted), never on the stars plate or single channels. Where it runs is set by the tool: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism, and Prism 2.0's second pass, after the stretch | tool, and a strength (Low/Medium/High) for **Colour** and for **L** separately. Medium is each tool's own default |
 
-### Narrowband palette
+**SyQon Studio Prism 2.0** is Studio's paid Deep Prism and runs in two passes:
+Advanced on linear data, then Ultra or Max after the stretch (Low: Advanced,
+Medium: Advanced then Ultra, High: Advanced then Max). With the stretch off
+only Advanced runs. If your SyQon account cannot run all three models,
+**SyQon Studio Prism Essential** is offered in its place until a later check
+succeeds.
 
-Built independently of RGB; either can be produced without the other.
+Each SyQon Studio model a run will use is tried once per PixInsight session
+(about 13 s each); one your account cannot run stops the run before it starts,
+by name. Studio may ask for your Mac password to reach its Keychain sign-in:
+choose **Always Allow**, or it asks every run.
+
+#### Narrowband palette
+
+Built independently of RGB; either can be produced without the other. No SPFC
+and no broadband SPCC: a palette is an aesthetic mapping, not a photometric
+one.
 
 | step | what | options |
 |---|---|---|
-| **Combine** | channels mapped to R, G, B by palette | SHO, HOO, HSO |
-| **SPCC narrowband** | emission-line calibration by wavelength and bandwidth | bandwidth in nm |
-| **Normalise** | a neutral NarrowbandNormalization pass | on/off |
+| **Combine** | channels mapped to R, G, B | SHO, HOO, HSO |
+| **SPCC narrowband** | emission-line calibration | filter bandwidth in nm (line wavelengths are fixed) |
+| **Normalise** | a NarrowbandNormalization pass after SPCC | **Normalise the palette**; off keeps SPCC's line ratios exactly |
 | **Sharpen, extract, stretch, denoise** | as for RGB | as above |
 
-No SPFC and no broadband SPCC: a palette is an aesthetic mapping of emission
-lines onto RGB, not a photometric rendition.
+#### Stretch
 
-### Stretch
+Off by default. **Histogram (deterministic MTF)** gives each plate one
+HistogramTransformation from that plate alone: black point at its darkest level
+that is not a single-pixel defect, midtone placing its sky median at a fixed
+target. Nothing to set, and the same input always gives the same output.
+**MultiscaleAdaptiveStretch** uses target background 0.15, aggressiveness 0.70,
+dynamic range compression 0.40 and contrast recovery at full intensity, with
+scale separation at the process default; save a MultiscaleAdaptiveStretch
+process icon to change them, and Loom uses it instead.
 
-Off by default, and there are two methods.
+The stars plate always uses the histogram stretch, before extraction and at its
+own target; the starless plates are stretched after. Each looks right alone,
+and they will **not** screen back together into the original.
 
-**Histogram (deterministic MTF)** is Loom's own. Each plate gets one
-`HistogramTransformation` computed from that plate alone — black point at its
-darkest level that is not a single-pixel defect, midtone placing its sky median
-at a fixed target. Nothing to set, and the same input always gives the same
-output.
+**Also keep the unstretched RGB and palette** keeps `RGB_linear` and
+`<palette>_linear` too (not L). Off by default: each costs a second full-size
+image in the cache.
 
-**MultiscaleAdaptiveStretch** hands the plate to the process of that name, with
-target background 0.15, aggressiveness 0.70, dynamic range compression 0.40 and
-contrast recovery on at full intensity. Scale separation is left at the
-process's own default. A saved MultiscaleAdaptiveStretch process icon, if you
-have made one, is used instead — so the way to change these numbers is to make
-an icon, not to edit the script.
+#### Export
 
-Starless plates are stretched after extraction. The stars plate is stretched
-*before* it, at a different target chosen to maximise the separation between
-faint stars and sky. The two therefore carry independent transforms so each
-looks right alone — and will **not** screen back together into the original.
+Set a folder in **Export 16-bit TIFFs to:** and every result is written there
+as a 16-bit TIFF named after its window (`RGB_starless.tif`, `RGB_stars.tif`,
+...); leave it empty and nothing is written. The plates on screen stay 32-bit.
+Export needs the stretch: a linear plate would posterise at 16 bits, so Loom
+writes nothing and says why.
 
-See `docs/superpowers/specs/2026-09-15-stretch-design.md` for the derivation
-and for the alternatives that measurement rejected.
+**Colour profiles.** Files and open plates carry **ROMM RGB** (ProPhoto RGB)
+or Generic Gray; the PSB embeds Adobe's `ProPhoto.icm` where installed. Where
+those are missing, as on Windows, Loom uses the widest installed working space
+(Rec. 2020, Wide Gamut RGB, Adobe RGB (1998), Display P3, sRGB) and logs which.
 
-### Export
+**Frequency-separate the L stars plate** splits `L_stars` into `L_stars_low`
+and `L_stars_high`, blurred by the plate's own star size, so cores and halos
+can be retouched separately. The high layer over the low one in **Linear
+Light** gives the original back.
 
-Optional. Set a folder in **Export 16-bit TIFFs to:** and every result is
-written there as a 16-bit TIFF named after its window — `RGB_starless.tif`,
-`RGB_stars.tif`, and so on. Leave it empty and nothing is written.
-
-The plates stay 32-bit float in the workspace; the conversion happens on a
-throwaway copy, so exporting never degrades what is on screen.
-
-Export requires the stretch. A linear plate keeps all its signal in the bottom
-fraction of a percent of the range, and quantising that to 16 bits posterises
-it — so Loom writes nothing and says why, rather than producing a file that
-looks fine in a listing and is ruined on open.
-
-#### Colour profiles
-
-Every exported file carries a profile, and so does every plate left in the
-workspace: **ROMM RGB** — colorimetrically ProPhoto RGB — for colour, and
-Generic Gray for mono. The gamut is wide enough to hold saturated emission-line
-colour that sRGB clips outright.
-
-The PSB embeds Adobe's own `ProPhoto.icm` bytes where they are installed,
-because Photoshop matches its working space by profile *name*: ROMM RGB and
-ProPhoto RGB are the same space, and Photoshop will still offer to convert
-between them.
-
-ROMM RGB and Generic Gray ship with macOS but not with Windows. Where they are
-missing, Loom reads the profiles installed on the machine and uses the widest
-standard working space it finds: Rec. 2020, then Wide Gamut RGB, Adobe RGB
-(1998), Display P3, and finally sRGB. Mono plates get a gray profile with the
-same gamma as the colour one, and the PSB carries the same profile as the
-plates. Monitor calibration profiles and linear spaces are never used. The run
-log says which profile was chosen, and why.
-
-#### Frequency separation
-
-**Frequency-separate the L stars plate** splits it into `L_stars_low` and
-`L_stars_high` using a Gaussian sized from the plate's own measured star width.
-This is exactly Photoshop's Apply Image method — the high layer is
-`(original − low) / 2 + 0.5`, recombining through Linear Light — so star cores
-and their halos can be retouched separately.
-
-#### The layered PSB
-
-**Also write one layered `<project>.psb`** assembles everything into a single
-Photoshop Large Document, bottom to top:
+**Also write one layered `<project>.psb`** writes one Photoshop Large Document
+into the export folder, bottom to top:
 
 | layer | |
 |---|---|
-| **HSO** group | the palette starless plate, with **Ha**, **SII** and **OIII** Curves layers above it, each already set to the channel that line was mapped to |
-| **RGB** group | the broadband starless plate, hidden — switch it on when you want it |
-| **Stars** group, *Screen* | RGB stars, and the L stars plate in *Luminosity*; with frequency separation on, that becomes an **L Stars** group holding the low layer and the high layer in *Soft Light* |
-| **Stars Curve**, **Stars Saturation** | clipped to the stars, so they work on the stars as they come out of the Screen blend and leave everything beneath alone |
+| **HSO** group | the palette starless plate, with **Ha**, **SII** and **OIII** Curves layers set to the channel each line was mapped to |
+| **RGB** group | the broadband starless plate, hidden |
+| **Stars** group, *Screen* | RGB stars, and the L stars plate in *Luminosity*; with frequency separation on, an **L Stars** group holding the low layer and the high layer |
+| **Stars Curve**, **Stars Saturation** | clipped to the stars |
 
-PSB rather than PSD because uncompressed 16-bit layers of a modern sensor's
-frame run to about 3 GB and PSD stops at 2. Expect the write to take a minute.
-
-The Curves layers open on RGB in Photoshop's panel whatever the file says —
-that is Photoshop's own state, not something a file can set — so each layer's
-name carries its channel: `Ha[R]`, `SII[G]`, `OIII[B]`, and `OIII[G,B]` for HOO
-where one line feeds two channels.
+Expect about 3 GB for a modern sensor (hence PSB, not PSD) and a minute to
+write. Photoshop always opens a Curves layer on RGB, so each layer's name
+carries its channel: `Ha[R]`, `SII[G]`, `OIII[B]`, or `OIII[G,B]` for HOO.
 
 ### Outputs
 
 With star extraction on: `L_starless` + `L_stars`, `RGB_starless` +
-`RGB_stars`, and `<palette>_starless`. Narrowband stars are kept only when the
-run produced no RGB composite, since the broadband stars are the ones you
-would recombine against. The unsplit plates are not kept — starless and stars
-reconstruct them.
-
-With it off: `L`, `RGB`, `<palette>`, and the narrowband channels themselves
-when no palette was built.
-
-The finished plates are **left open and cascaded**. Each is fitted to its
-window, then offset a title bar from the last, with the cascade centred as a
-block so the deck sits in the middle of the workspace. They are raised in a
-fixed order, so a given plate is always at the same depth in the pile and the
-palette ends on top.
+`RGB_stars`, and `<palette>_starless`; the unsplit plates are not kept, since
+starless and stars rebuild them, and narrowband stars only when there is no RGB
+composite. With it off: `L`, `RGB`, `<palette>`, and the narrowband channels
+themselves when no palette was built. The plates are left open and cascaded in
+the middle of the workspace, always in the same order, the palette on top.
 
 ## Frame Selector
 
-A second script in this repository — **Script → Loom → Frame Selector** — and
-not part of a Loom run. It measures every subframe in a
-folder, groups them by filter, works out where the line falls for that
-channel on that night, and removes the frames below it.
+![Frame Selector](docs/images/frame-selector.png)
 
-It exists because of a concrete failure: a re-stacked G master came back 8%
-softer, 31% more elongated, 18% noisier and with 31% fewer stars than the one
-it replaced, and nothing in the pipeline objected. Bad subs are cheaper to
-catch before they are integrated than after.
+**Script → Loom → Frame Selector** measures every subframe in a folder with
+SubframeSelector (the same numbers WBPP shows), groups them by `FILTER`, works
+out where the line falls for each channel on that night, and deletes the frames
+below it, or copies the rest to another folder.
 
-**It does not measure anything itself.** SubframeSelector does, because those
-are the numbers you already see in WBPP. A frame selector whose FWHM disagrees
-with the subframe table is one nobody can act on.
+A channel whose frames differ in exposure, binning, geometry or calibration
+state is flagged as not comparable; that is a warning, and Run still acts on
+it. Frames with no readable filter are shown but never rejected automatically.
 
-Grouping is by the raw `FILTER` keyword. A channel whose frames differ in
-exposure, binning, geometry or calibration state is reported as not comparable
-— a shorter exposure legitimately loses on SNR, and
-clipping it against the rest means less than it appears to. It is a warning,
-not a veto: the figures are still shown and Run still acts on them, because a
-tool that measures frames and then refuses to act on its own measurements is an
-obstacle rather than a safeguard. Frames with no readable filter are shown but
-never auto-rejected.
+### Presets and criteria
 
-### The presets
+Each channel has its own preset, which sets `k`, the width of the cut in
+normalised MADs:
 
-Three, because `k` — the width of the robust gate, in normalised MADs — is the
-one number that decides how much is dropped. **Each channel has its own**: a
-night's L and its Ha are not the same population, and one preset over both
-either spares the ragged channel or cuts into the clean one.
-
-| preset | `k` | asymptotic | at 20 frames | at 10 frames |
+| preset | `k` | expected rejection, many frames | at 20 frames | at 10 frames |
 |---|---|---|---|---|
 | Lenient | 3.0 | ~0.5% | ~2.8% | ~6% |
 | Balanced | 2.5 | ~2.5% | ~6.1% | ~10% |
 | Strict | 2.0 | ~9% | ~13.1% | ~17% |
 
-Those are expectations, not promised yields: the median and MAD are estimated
-from the same small sample being clipped. The dialog shows the actual count,
-which is the only number that is true.
+The dialog shows the actual count. Below 10 valid measurements in a channel
+the cut does not run.
 
-Below **10 valid measurements** in a channel the robust clip does not run at
-all. A median exists at three frames; a dispersion worth deleting files over
-does not.
+All four measurements rank frames (PSF SNR most heavily), but by default only
+**FWHM**, **eccentricity** and **star count** reject. **PSF SNR** does not,
+because integration already weights frames by signal, so dropping a faint frame
+loses signal for nothing; you can turn it on per channel. No weighting repairs
+a soft or elongated frame, and a drop in star count is the sign of cloud.
 
-### What may reject a frame
+The criteria panel has the preset, `k` and the channel switch, then one
+criterion per metric (`FWHM <=`, `ecc <=`, `stars >=`, `PSF SNR >=`), each a
+checkbox and a limit, and the number of frames Run keeps. An untouched limit is
+**automatic**: greyed and in italics, it shows the cut `k` gives on this night.
+**Type a number** to replace the automatic cut for that metric only (clear it
+to go back); it stays when the preset or `k` changes, and typing one on every
+metric keeps a whole good night. A typed limit applies once confirmed (Return,
+or moving to another box; Run confirms one still being edited). **Untick** a
+criterion to switch it off.
 
-Four measurements are taken and all four are scored, but only three of them
-may *delete* anything. Scoring ranks; gating rejects; they are not the same
-question.
+The keep count means what Run does: the frames left in place, or when copying,
+the frames copied. A channel switched off is not copied at all.
 
-| measurement | ranks | rejects by default |
-|---|---|---|
-| PSF SNR | yes, most heavily | **no** |
-| FWHM | yes | yes |
-| eccentricity | yes | yes |
-| stars | yes | yes |
+### Reviewing
 
-**PSF SNR is off because integration already handles it.** ImageIntegration
-weights each frame by its signal — WBPP's default is PSF Signal Weight — so the
-stack's SNR goes as the root of the sum of the frames' squared SNRs. Every
-frame carrying signal raises that sum, so deleting a faint one throws away
-signal that was already being discounted in proportion to its worth. On a
-measured 126-frame channel, dropping the two faintest cost about 0.4% SNR and
-bought nothing.
+Reading a folder is the slow part, and can be stopped. A scan writes nothing.
 
-**FWHM and eccentricity are on because no weighting repairs them.** The stacked
-PSF is a weighted blend of the frames' own, and weight follows signal rather
-than sharpness — so a soft frame with good SNR earns a *high* weight and blurs
-the result. That is the case rejection exists for. Star count is on as the
-evidence of transparency that FWHM does not carry: cloud removes stars without
-widening the ones left behind, and brings gradients that do not average away.
+- **Table**: one row per frame, named by what differs (full path on the
+  tooltip). A red cross marks a frame Run leaves out, and the measurement that
+  rejected it is red. SubframeSelector's **SNR** is shown for reading only.
+- **Plot**: the channel's measurement in frame order, with the range that keeps
+  a frame drawn as a band. Click a point to select its row.
+- **Filmstrip**: the channel's thumbnails, the selected one in yellow, rejected
+  ones crossed; the chooser at its left picks the number shown. Grey tiles are
+  not read yet; `!` could not be read.
+- **Preview**: 1:1. Double click toggles whole frame; drag, use the scroll bars
+  or the arrow keys (Shift for a page). Trackpad swipes do not scroll it.
+  Changing frame keeps the view in place, so the same stars stay in view.
 
-PSF SNR remains available per channel, because a frame far below the rest
-usually means something went wrong rather than that the night was dim.
-
-### Approval criteria
-
-The criteria sit in one panel, laid out the way SubframeStudio does it: the
-preset, `k` and the channel switch on the first row, and one criterion per
-metric on the second — `FWHM <=`, `ecc <=`, `stars >=`, `PSF SNR >=` — each a
-checkbox and a box holding its limit. The right-hand end says how many of the
-channel's frames Run keeps.
-
-**Every box is editable, and each metric is decided on its own.** An untouched
-box is *automatic*: it shows, greyed and in italics, the limit `k` times this
-night's spread gives, and that relative cut is what applies. Type a number and
-it becomes that metric's limit instead — the relative cut is set aside for
-that metric only, and the others carry on automatically. Clear the box to go
-back to automatic. A typed limit stays put when the preset or `k` changes.
-
-The two cannot be combined on one metric, deliberately. A clip on a channel's
-own median and MAD drops roughly the same *fraction* however good the night
-was — right for "drop this night's worst", wrong for "drop frames that are bad
-in absolute terms" — and a frame the relative cut rejects cannot be rescued by
-also passing a ceiling. Typing a limit on every metric is how an entire good
-night is kept.
-
-Unticking a criterion switches it off entirely, typed limit or not. A typed
-limit applies only once confirmed (Return, or moving to another box); Run
-confirms a box still being typed in, and never turns a rounded display back
-into a stored number.
-
-The keep count means what Run does: when culling in place, the frames left
-where they are; when the output is another folder, the frames copied there —
-and a channel switched off is then not copied at all.
-
-### Reading the review
-
-Reading a folder digests every frame whole before any measuring starts, so it
-is the slow part — a window reports the phase, the count and the file, and can
-be stopped. Nothing has been written at that point; a scan only measures.
-
-The frame column shows what differs between frames rather than what they share.
-Subframe names differ only in a timestamp and a sequence number, so the common
-prefix is dropped; the whole path is on the row's tooltip.
-
-A frame that will be deleted carries a red cross beside its name, and the
-measurement that condemned it is shown in red — the verdict names the metrics
-it turned on, so the column marked is the one that decided. Every row carries a
-mark, an empty one where the frame is kept, so the names keep a shared left
-edge.
-
-Under the table, the selected channel's measurements are plotted in frame
-order, with the range that keeps a frame drawn as a band behind them; the combo
-chooses which measurement. A metric that is not gated has no band, because
-nothing it does can reject. The plot and the table are two views of one
-selection: the selected frame is ringed, and clicking a point selects its row.
-
-The table also shows SubframeSelector's **SNR** estimate, beside PSF SNR, and
-the plot can show it. It is for reading only: it is not a criterion, not in the
-score, and cannot reject anything.
-
-The preview is 1:1. **Double click** switches between the whole frame and 1:1;
-**drag** the image, use the **scroll bars**, or the arrow keys after clicking
-it — Shift for a page at a time.
-
-A two-finger swipe does not move the preview, and cannot be made to.
-PixInsight delivers a swipe to a script as a wheel event carrying a single
-delta with no orientation, so a sideways swipe arrives with nothing in it;
-and no touch, gesture or pan handler exists on any scriptable control, with
-`ImageWindow/TouchEvents` enabled or not. The gesture is consumed by the core
-for image windows and never reaches a script. Changing frame keeps the view where it was — the
-frames of a channel are registered to each other, so the same offset shows the
-same stars, which is the only way to compare them.
-
-### The filmstrip
-
-Under the plot, the channel's frames are laid out as thumbnails, the selected
-one outlined in yellow with its neighbours either side; the arrows page
-through. A **red cross** marks every frame Run leaves out — the same rule as
-the table's mark and the keep count. Clicking
-a thumbnail selects that frame everywhere. The number under each thumbnail is
-FWHM to begin with; the chooser at the left of the strip switches it to any
-other measurement, independently of the plot. Clicking a thumbnail that is on
-screen leaves the strip where it is; choosing a frame elsewhere — the table,
-the plot — brings it into view.
-
-Thumbnails are read one frame per step while you work, the ones on screen
-first. Each takes about a third of a second, and the dialog pauses for that
-long while it does; a grey tile is one not read yet, and `!` is one that
-could not be read. The crosses and letters are drawn straight away: a verdict
-never waits for a picture.
+**Override** a verdict with Space or the button under the preview. It survives
+a change of `k`, is counted separately and logged, and lasts for the session.
 
 ### Anomaly tags
 
-Frames that look wrong compared with the rest of their channel are tagged, the
-way SubframeStudio tags them. The tags are **advisory and always on**: they
-never reject a frame, never change a verdict, and never reach the deletion
-log. Each names the most likely *cause* of what the numbers show, because
-causes that look alike are told apart:
+Frames that look wrong against the rest of their channel are tagged with the
+likely cause. Tags are advisory: they never change a verdict.
 
 | tag | letter | fires when |
 |---|---|---|
-| ALTITUDE | A | FWHM 20% above the sharpest quarter of the channel, but not once corrected for airmass — the target was low |
-| FOCUS | F | FWHM 20% above, even after the airmass correction, and it persists across consecutive frames |
-| SEEING | S | FWHM 20% above after the correction, on one frame whose neighbours in time are sharp |
+| ALTITUDE | A | FWHM 20% above the sharpest quarter of the channel, but not once corrected for airmass |
+| FOCUS | F | FWHM 20% above even after the airmass correction, across consecutive frames |
+| SEEING | S | FWHM 20% above after the correction, on one frame between sharp neighbours |
 | TRACKING | T | eccentricity more than 3σ above the channel's median |
-| CLOUD | C | star flux 25% below the channel's median beyond what extinction at that altitude explains, or background 5% above it |
+| CLOUD | C | star flux 25% below the median beyond what extinction explains, or background 5% above it |
 | DROPPED | D | fewer than 10% of the channel's median star count |
 
-Blur loses faint stars exactly as cloud does, so **a low star count alone names
-nothing**: what separates them is whether the stars got wider (blur) or dimmer
-(cloud). Seeing is scaled to airmass^0.6 and extinction taken as 0.15 mag per
-airmass. Altitude and star flux come from SubframeSelector; the time order from
-each frame's `DATE-OBS`. Without an altitude the airmass correction is skipped,
-and without times a blurred frame cannot be called isolated, so it is FOCUS. A
-metric raises nothing with fewer than 5 usable values, and a channel whose
-frames are not comparable, or that has no readable filter, is not tagged at
-all.
+A low star count alone names nothing. Without an altitude the airmass
+correction is skipped; without frame times a blurred frame is FOCUS. A metric
+needs 5 usable values; channels not comparable or without a filter are not
+tagged. Tags show on the preview, as letters on the filmstrip, and in the
+summary line.
 
-Checked on a clear night of 125 frames: the late S session, 20–39% wider at
-airmass 1.3–1.7, came out ALTITUDE; two frames stayed wide after the
-correction and were FOCUS (the next refocus brought the stars back); one lone
-spike was SEEING. That night had no cloud, so the CLOUD rule is checked only
-against constructed cases so far.
+### Deleting or copying
 
-Each tag is its own box, top right of the preview, under a red **REJECTED**
-when Run leaves the frame out (**CHANNEL OFF** when that is only because the
-channel is switched off while copying). On the filmstrip they are single
-letters along the top of the thumbnail. The summary line counts the tagged
-frames by kind.
+**Deleting in place** is the default, and the only irreversible thing the tool
+does. A confirmation gives the exact count per channel, and the list is written
+to a log under `~/PixInsight/Loom-frame-selector/` before any file is removed;
+if the log cannot be written, nothing is deleted. A frame that changed since it
+was measured (checked by digest), vanished or became unreadable is skipped and
+reported.
 
-### Deleting
-
-The default action deletes in place, and that is the only irreversible thing
-the tool does.
-
-Nothing is deleted until the table has been shown, a confirmation names the
-exact count and the per-channel breakdown, and the manifest has been written to
-a durable log under `~/PixInsight/Loom-frame-selector/` — **before** any file is
-removed, with each outcome appended as it happens. If the log cannot be
-written, nothing is deleted.
-
-Identity is a digest of the whole file, taken when the frame was measured and
-rechecked immediately before the unlink. Path, size and modification time are
-not identity; a replacement preserves all three. A frame that changed, vanished
-or became unreadable is skipped and reported rather than deleted.
-
-Writing the approved frames **to another folder** is available instead: point
-the output at it and Run copies them there as XISF, leaving every original
-alone. **The output folder is emptied first** — everything in it, hidden files
-and subfolders included, without asking — so afterwards it holds exactly this
-run's frames. A symbolic link inside it is removed as a link; what it points at
-is never touched. If anything in the folder cannot be removed, nothing is
-copied. Run refuses outright to empty a folder that is, or contains, the folder
-of any frame being copied, and never empties the filesystem root or your home
-folder. Deleting the originals after a copy is deliberately *not* offered:
-check the results, then delete the source folder yourself.
-
-A verdict can be overridden by hand — space on the row, or the button under the
-preview. An override wins over the formula, survives a change of `k`, is counted
-separately so a summary never hides it, and is recorded in the deletion log.
-Overrides last for the session only.
+**Copying to another folder** writes the approved frames there as XISF and
+leaves the originals alone. **The output folder is emptied first**, without
+asking, hidden files and subfolders included (a symbolic link is removed, never
+followed). If anything in it cannot be removed, nothing is copied. Run refuses
+to empty a folder that is or contains a source folder, the filesystem root, or
+your home folder. Deleting the originals after a copy is not offered.
 
 ### Importing from an ASIAIR
 
-Plug the ASIAIR in over USB-C and open the Frame Selector. If a card is
-mounted, Loom offers it before showing the folder chooser; decline and nothing
-changes.
+Plug the ASIAIR in over USB-C, or mount its card, and open the Frame Selector.
+It recognises the ASIAIR by its `Plan/Light` or `Autorun/Light` folders,
+whatever the volume is called, and offers it before the folder chooser; decline
+and nothing changes. Cancel stops the card read. A stalled network mount can
+hold up detection.
 
-The card is recognised by its **layout**, not by its volume name. Depending on
-model, firmware and which storage was recording, the same content mounts as
-`BOOT`, `EMMC Images`, `SD Images` or `USB Images`; what does not change is a
-`Plan/Light` or `Autorun/Light` directory. Both `Plan` and `Autorun` are read,
-so a night shot in either mode is visible.
+Every target is listed with its last three nights: frames, filters, and flats
+filter by filter, a filter with no flats in red. A night is one target in one
+session, and a session ends at a gap of more than four hours, so two sessions
+on one date stay separate. Flats are matched to a night as a whole batch, by
+filter and binning, and by camera and rotation where both state them; gain is
+not compared, as WBPP groups flats by gain itself.
 
-Frames are grouped into **nights**. A night is one target within one observing
-session, and a session is a run of light frames with no gap longer than four
-hours. Flats take no part in that clustering: a run of daytime flats would
-otherwise bridge the gap between two nights and merge them. Two sessions on the
-same calendar date stay two rows, which is the reason for clustering by gap
-rather than by an observing date.
+Review the night as usual, then Run:
 
-Flats are grouped into batches by the same rule, and a batch is assigned
-**whole** to the session nearest its midpoint, never flat by flat — half a flat
-set calibrates nothing. Within that session a flat suits a light filter when the
-filter and binning agree, both read from FITS headers, and when the camera and
-rotation agree wherever both sides state them. A rotation change puts the dust
-somewhere else, so it invalidates the flat. Gain is not compared: a flat is a
-ratio, and WBPP groups flats by gain itself. A filter with no flats is shown as
-missing rather than hidden.
-
-Reviewing works exactly as it does for a folder. When you Run:
-
-- A **destination is mandatory.** Nothing is ever written back to the card — not
-  the destination you pick, nor `Light` or `Flat` beneath it, each of which is
-  resolved and checked, so a symlink pointing at the card is refused.
-- Approved lights go to `<destination>/Light`, the night's matched flats to
-  `<destination>/Flat`, both converted to XISF.
-- Two source frames that would land on one name are refused outright rather than
-  overwritten, because overwriting silently loses one of them.
-- Each written file is reopened and checked: same geometry, and `FILTER`,
-  `EXPTIME` and `DATE-OBS` still present. A file that fails is deleted and
-  reported rather than left to block its own replacement.
-
-Three limits, stated rather than implied. Converting to XISF re-encodes, so the
-copy cannot be hashed against the card — geometry and keyword survival are the
-strongest check available under that choice. A stalled network mount can hold up
-detection for one directory test, which PJSR gives no way to interrupt.
-And filenames cannot establish calibration correctness beyond filter, binning,
-camera and rotation; the matched set is shown with its date so a wrong one is
-visible before you Run.
+- **Choose a destination**; nothing is ever written to the ASIAIR. A folder
+  named `Light` or `Flat` means its parent.
+- Approved lights go to `<destination>/Light` and the night's flats to
+  `<destination>/Flat`, as XISF. Two frames that would get the same name are
+  refused rather than overwritten.
+- Each written file is reopened and checked (geometry, `FILTER`, `EXPTIME`,
+  `DATE-OBS`); one that fails is deleted and reported.
+- The review is then locked, so the night cannot be imported twice.
 
 Darks and bias frames are not imported.
 
 ## Fly-Through
 
-A third script — **Script → Loom → Loom Fly-Through** — that turns a finished image
-into a push-in video: the camera moves towards the target, and the photo's own
-stars pass by at their real distances.
+![Fly-Through](docs/images/fly-through.png)
 
-**See it**: [a fly-through into the Elephant's Trunk (IC 1396A), made with
-Loom](https://www.youtube.com/shorts/1aVtptmTbuY).
+**Script → Loom → Loom Fly-Through** turns a finished image into a push-in
+video: the camera moves towards the target and the image's own stars pass by at
+their real distances. [See an example: the Elephant's Trunk
+(IC 1396A)](https://www.youtube.com/shorts/1aVtptmTbuY).
 
-**The flight is measured, not guessed.** Each star's distance comes from its
-**Gaia DR3 parallax**, and its motion is exact 3-D geometry, not a zoom: a
-nearer star moves faster, grows and brightens by the inverse-square law. Stars
-without a reliable parallax, and blends, stay in the backdrop. The backdrop is
-the starless image. A nebula sits at the distance of its **ionising cluster**
-— stars sharing one proper motion and parallax; on IC 1396 that is Trumpler 37
-at 922 pc, against a published ~925 pc — and grows by a share of what that
-distance gives (**Nebula motion**, 40% by default; 100% is physical and far too
-much to watch). A galaxy is effectively at infinity and stays fixed. Nothing in
-front of the backdrop ever spreads slower than it, so no star reads as behind
-the nebula.
+Star distances come from **Gaia DR3 parallaxes**, and nearer stars move
+faster, grow and brighten by real 3-D geometry; the rest stay in the starless
+backdrop. A nebula sits at the distance of its ionising cluster (Trumpler 37 at
+922 pc for IC 1396); a galaxy stays fixed. Each star is modelled from your own
+stars layer, spikes included.
 
-**The stars are your stars.** Every star is deblended from the stars layer with
-its own model — its profile on its local sky, its colour, its diffraction
-spikes fitted to the image's own spike falloff and width, in opposite pairs —
-so each moving star takes its own light and leaves the sky behind. Far away a
-star is drawn from your photograph; as it comes close it turns to its smooth
-model (its core first, so a clipped square core comes out round), its core
-stays sharp while its glow and spikes grow, light past white **blooms** into a
-round core, a halo and a faint glare, and fast stars get **motion blur** from a
-180° shutter. A star partly out of frame, or behind a nearer one, casts shorter,
-fainter spikes, and close stars fade out before they grow past what they bear.
-**Twinkle** (3% by default) adds a slow per-star shimmer; it is not physical —
-space has no air — and 0 turns it off. **Star colour** sets their saturation.
+### How to use
 
-**Choose an image, and it gets ready.** Open the dialog, pick an open image or
-**Open…** a FITS, XISF or TIFF file. It is resampled to a 4K working size,
-solved, analysed, its stars extracted, and a draft starts playing — with a
-progress bar and Cancel throughout, and the counts shown: stars detected,
-moving, and in the background. A solved image is used as is. An unsolved one
-(typically a TIFF) needs its centre: type the object — an NGC/IC id, a Messier
-number or a name such as *Elephant's Trunk*, typos forgiven — and the focal
-length and pixel size, which are remembered for your rig. Drizzled images are
-found at half or a third of the pixel size. What you type is remembered per
-image, so it solves by itself next time. Gaia comes from the database you
-configured for SPFC/SPCC, and stars are removed with whichever of
-StarXTerminator, StarNet2, SyQon Studio or SyQon Starless you have (the
-choice is remembered).
+1. **Choose an image**: an open one, or **Open…** a FITS, XISF or TIFF file.
+   It is resampled to a 4K working size, solved, analysed and its stars
+   extracted, with progress and Cancel. The dialog shows how many stars were
+   detected, how many move, and how many stay in the background.
+2. **Solving.** A solved image is used as is. For an unsolved one (usually a
+   TIFF), type the **Object** (NGC/IC, Messier, or a name such as *Elephant's
+   Trunk*; typos are forgiven) or RA/Dec, and the **Focal** length and
+   **Pixel** size, remembered for your rig. Drizzled images are found at half or
+   a third of the pixel size. With nothing typed, Loom solves blind. What you
+   enter is remembered per image.
+3. **Draft**: a quick 480 px, quarter-frame-rate SDR preview. Adjust and draw
+   it again.
+4. **Render** writes the full frames and the video. Cancel finishes the current
+   frame and keeps what is written. Every option is remembered.
 
-**Output**: 16-bit TIFF frames per preset — Social 1080×1920 and 1080×1080,
-YouTube 3840×2160 or 1920×1080, and an Exhibition 3840×2160 loop, either
-**back and forth** or a **crossfade** from its end into its start — in
-**horizontal** or **vertical** orientation (a vertical image is turned, never cut
-to a band), plus a video when ffmpeg is installed (`brew install ffmpeg` on
-macOS, `winget install Gyan.FFmpeg` on Windows). ffmpeg is found automatically;
-Browse overrides it. Formats are offered only if that ffmpeg can encode them:
-MP4 H.264, MP4 H.265/HEVC (tagged for Apple players), MOV ProRes 422 HQ and WebM
-VP9. Without ffmpeg, the frames are still written and the exact command is
-printed. The output goes next to the image. Rendering again with only a new
-format, quality or music keeps the frames and runs ffmpeg alone.
+**Blind solving** uses Gaia (your local database, else Gaia DR3 online),
+searching near your earlier solves first, then named objects, Messier, NGC/IC
+and the whole sky; PixInsight's ImageSolver must confirm the match. Regions are
+cached in `PixInsight/Loom/solver` in your home folder. The solve gives up after
+five minutes without a catalogue answer, or at once offline with nothing local
+or cached. An empty Object box gets the name of the target found.
 
-**Logo and music**: a logo (PNG transparency kept) in one of seven places,
-sized and spaced for every preset, with an opacity and an optional fade-in after
-N seconds; and music, looped if shorter and cut to the video, faded in and out —
-or, for a looping video, crossfaded from its end into its beginning.
+### Options
 
-**Colour**: every frame is converted from your image's own ICC profile (Loom's
-plates are ProPhoto) to Rec.709. The conversion reads the profile itself, so it
-does not matter which profiles the machine has installed.
+| option | what it does |
+|---|---|
+| **Type**, **Distance (pc)** | Nebula (moves at the given distance, filled from its cluster) or Galaxy (fixed) |
+| **Star tool** | StarXTerminator, StarNet2, SyQon Studio or SyQon Starless, whichever you have |
+| **Travel (pc)**, **Easing** | how far the camera moves in (at most 0.9 of a nebula's distance); Smooth or Linear |
+| **Growth**, **Brighten approaching stars** | how much approaching stars grow (0.15 by default); inverse-square brightening, on by default |
+| **Nebula motion (%)** | how much the nebula grows, as a share of what its distance gives; 40% by default, 100% is physical and far too much to watch |
+| **Twinkle (%)**, **Bloom (%)**, **Motion blur**, **Star colour** | a slow per-star shimmer (3%, not physical, 0 is off); the glow of stars past white; streaks from a 180° shutter; star saturation |
+| **Duration (s)**, **fps**, **Orientation**, **Loop** | length; 24, 25, 30 or 60 fps; Horizontal or Vertical (a vertical image is turned, never cut); None, Back and forth, or Crossfade from end to start |
+| **Star quality** | Highest (from the 4K working image), High (default, looks the same, about 30% faster), Medium (softer stars, about three times faster than Highest) |
+| **Presets** | Social 1080×1920 and 1080×1080, YouTube 3840×2160 and 1920×1080, Exhibition 3840×2160 (loop) |
+| **Dynamic range**, **Peak (nits)**, **Stars into HDR headroom** | SDR or HDR, see below |
+| **Logo**, **Opacity**, **Fade in after (s)** | a logo (PNG transparency kept) in one of seven places, sized for each preset |
+| **Music**, **Fade in/out** | looped if shorter, cut to the video; a looping video's music crossfades end into start |
+| **Output**, **Create video**, **Format**, **Quality** | the folder for frames and video (the image's own folder by default); the video, when ffmpeg is found |
+| **Clear rendered frames…** | deletes the frames kept for reuse, so the next render draws every frame afresh |
 
-**HDR**: choose SDR or HDR. In HDR, star light that SDR would clip at white is
-kept, and rolled off towards a peak you set (default 1000 nits). Social and
-YouTube default to **HLG**, which also looks right on SDR screens. Exhibition
-defaults to **PQ (HDR10)**, for a display you control, with the mastering
-metadata measured from the frames. HDR uses HEVC 10-bit (default), VP9 10-bit or
-ProRes; H.264 is SDR only.
+### Output
 
-**Draft first**: the draft is 480 px at a quarter of the video's frame rate, so
-it is quick, and it is always SDR. Changing the orientation or the logo draws it
-again. Render then writes the full frames; Cancel finishes the current frame and
-keeps what is written. Every option is remembered for next time.
+16-bit TIFF frames per preset, plus a video when ffmpeg is installed
+(`brew install ffmpeg` on macOS, `winget install Gyan.FFmpeg` on Windows).
+ffmpeg is found automatically; **Browse…** overrides it. Only formats it can
+encode are offered: MP4 H.264, MP4 H.265/HEVC (tagged for Apple players), MOV
+ProRes 422 HQ and WebM VP9. Without ffmpeg the frames are still written and the
+exact command is printed. Rendering again with only a new format, quality or
+music reuses the frames. Videos are named after object, preset and encoding,
+for example `NGC7023_Iris_Nebula_youtube_1080_vertical_HDR-PQ.mp4`. Every frame
+is converted from the image's own ICC profile to Rec.709.
 
-**Render time** on an Apple M4 Max, 1920×1080 frames of the Elephant's Trunk
-(1,288 moving stars): about 1.8 s a frame, so a 20-second clip at 30 fps takes
-about 18 minutes; star extraction takes a few minutes more.
+**HDR** keeps star light that SDR would clip, rolled off towards the peak (1000
+nits by default). Social and YouTube default to **HLG**, which also looks right
+on SDR screens; Exhibition to **PQ (HDR10)**, with mastering metadata measured
+from the frames. HDR uses HEVC 10-bit (default), VP9 10-bit or ProRes; H.264 is
+SDR only. The draft is always SDR, so judge HDR in the video.
 
-**Known limits**
-- An unsolved image needs its centre (the object name or RA/Dec): PixInsight's
-  solver cannot solve blind.
-- Star distances use Gaia's typical parallax error for each magnitude, not each
-  star's own, so a few stars will sit at the wrong depth.
-- The cluster finder has been checked on IC 1396 and the North America Nebula.
-  Its distance is always shown, with member count and range, and you can edit
-  it.
-- Windows is covered by tests that simulate Windows, and has not yet been run
-  by hand.
+**Render time**: about 1.8 s per 1920×1080 frame on an Apple M4 Max (1,288
+moving stars), so 18 minutes for 20 s at 30 fps. The dialog shows an estimate.
+
+**Known limits.** Star distances use Gaia's typical parallax error for each
+magnitude, not each star's own, so a few stars sit at the wrong depth. The
+cluster finder has been checked on IC 1396 and the North America Nebula; its
+distance is always shown, with member count and range, and you can edit it.
+Fly-Through has not yet been run by hand on Windows.
 
 ## Requirements
 
-**PixInsight 1.9.4 or later**, checked at startup: Loom refuses to run on an
-older core rather than failing later on a symbol that is not there. On 1.9.5
-and later, every solve is verified (AstrometricResiduals) and uses recursive
-surface splines; both are new in 1.9.5, so on 1.9.4 solves are not verified
-and the splines setting does nothing. The test suite is built and run both
-ways, but Loom has not yet been run by hand on a real 1.9.4.
+- **PixInsight 1.9.4 or later** on macOS or Windows, checked at startup. On
+  1.9.4 solves are not verified or spline-fitted, and Loom has not been run by
+  hand there. Developed on macOS; a full Windows run has been done on 1.9.5.
+- **A camera Loom recognises**, read from `INSTRUME`: the IMX571 family
+  (ASI2600/6200/533/094, QHY268/600), IMX178, IMX183, IMX492, IMX585, MN34230
+  and the KAF sensors. Anything else is calibrated against the Ideal QE curve.
+- **A MARS database** (`*.xmars`) for MGC: the folder set in Loom's dialog,
+  else a saved MultiscaleGradientCorrection process icon, else what the MGC
+  interface remembers; Loom asks only when none gives one. A run with broadband
+  channels and no MARS database is refused before it starts.
+- **Gaia**: the database set up in PixInsight for SPFC and SPCC. Fly-Through
+  uses it too, and its blind solver can fall back to Gaia DR3 online.
+- **Optional:** the tools in [Optional tools](#optional-tools), and ffmpeg for
+  Fly-Through video.
+- **MLDenoise needs a model**, which PixInsight does not ship: install a `.xmlm`
+  model from the Databases repository under **Resources → Updates**. Loom looks
+  in the install's `library`, then `~/PixInsight/library`, then
+  `~/PixInsight/models`, and offers MLDenoise only when module and model are
+  both present.
 
-Developed and run on macOS. It also runs on Windows: a full Windows run
-(PixInsight 1.9.5) found the missing colour profiles, the `_1` plate names and
-the channel-combination warnings fixed in 0.1.11–0.1.13.
+## Development
 
-The camera is read from the `INSTRUME` keyword, not assumed.
-`Util.qeCurveNameForCamera` maps it to one of PixInsight's QE curves — the
-IMX571 family (ASI2600/6200/533/094, QHY268/600), IMX178, IMX183, IMX492,
-IMX585, MN34230 and the KAF sensors. An unrecognised camera falls back to the
-Ideal QE curve rather than calibrating against the wrong sensor.
-
-MGC needs at least one MARS database (`*.xmars`). No path is assumed: Loom
-uses the folder set in its own dialog, else a saved
-`MultiscaleGradientCorrection` process icon, else what the MGC interface has
-persisted. The dialog asks only when the last two come up empty. Preflight
-fails loudly if no route yields a database on disk.
-
-Optional tools are detected, and only what is installed is offered.
-
-**MLDenoise needs a model, and PixInsight ships none.** The process lives in the
-core `MachineLearning` module, but a fresh instance has an empty `modelPath` and
-executing it then fails outright with *"No model path specified"*. Models are
-distributed separately, as `.xmlm` containers, through the Databases repository
-under **Resources → Updates**. Loom finds one itself — the install's `library`,
-then `~/PixInsight/library`, then `~/PixInsight/models` — and offers MLDenoise
-only when module *and* model are both present, so a tool that would die mid-run
-is never in the dropdown.
+`script/selftest.js` is the PixInsight test suite (not part of installation; it
+writes its results to a file and is run from the command line). The Node suite
+is `node ci/run-tests.js`. Design notes, including the stretch derivation, are
+in `docs/superpowers/specs/`; release notes in [CHANGELOG.md](CHANGELOG.md).
