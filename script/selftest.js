@@ -11132,6 +11132,30 @@ function runTests()
       check( "a partial match says so", summary[1].text, "O: 1 flat (partial match)" );
       check( "a missing one is not hidden", summary[2].text, "S: no flats" );
       check( "and is flagged for the UI", summary[2].strength, "missing" );
+
+      /*
+       * ...and the picker says it: the chosen night's description lists
+       * its filters' flats, a filter with none in the warning colour, so a
+       * night missing a filter's flats is seen before it is imported.
+       * Matched by the filter in the file names, as the offer itself is.
+       */
+      function describe( filters, flatFilters )
+      {
+         var night = { target: "IC 1396A", date: "2026-09-20", count: 2, filters: filters, sessionIndex: 0 };
+         var flats = flatFilters.map( function( f ) { return { filter: f, path: "/card/Flat/" + f + ".fit" }; } );
+         return NightDialog.Dialog.prototype.describe.call(
+            { survey: { flatsBySession: { 0: flats } }, selectedNight: night } );
+      }
+      check( "the chosen night names a filter with no flats",
+             [ describe( [ "H", "O" ], [ "H" ] ), describe( [ "H" ], [ "H", "H" ] ) ],
+             [ "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in H, O.<br/>1 flat in this observing session: " +
+                  "H: 1 flat, <span style='color:#ff5555'>O: no flats</span>.",
+               "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in H.<br/>2 flats in this observing session: " +
+                  "H: 2 flats." ] );
+      check( "a night with no flats at all says so for every filter",
+             describe( [ "L", "R" ], [] ),
+             "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in L, R.<br/>0 flats in this observing session: " +
+                "<span style='color:#ff5555'>L: no flats</span>, <span style='color:#ff5555'>R: no flats</span>." );
    } )();
 
    /* ---- the night picker must actually construct -------------------------- */
@@ -16637,7 +16661,8 @@ function runPixInsightGapTests()
       d.remember();
       check( "the night picker describes the chosen night", [ d.where.text, d.detail.text ],
              [ "Card: /Volumes/ASIAIR",
-               "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in H, O.<br/>1 flat in this observing session." ] );
+               "<b>IC 1396A</b> &mdash; 2026-09-20, 2 frames in H, O.<br/>1 flat in this observing session: " +
+               "H: 1 flat, <span style='color:#ff5555'>O: no flats</span>." ] );
    } )();
    }
 }

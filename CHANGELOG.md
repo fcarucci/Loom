@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Frame Selector, import from an ASIAIR:** the chosen night's description now lists its flats filter by filter, and a filter with no flats is shown in red, so a night missing some flats is noticed before it is imported. Before, it gave only the total number of flats in the session.
 - **Noise reduction:** MLDenoise's cached results now record the strength they were made at, as every other denoiser's do, so a future change to what Low, Medium or High means re-runs them instead of reusing the old result. Existing MLDenoise noise reduction results in the cache are re-run once.
 - **MARS check before a run:** a run with any broadband channel and no MARS database is now refused before it starts, with the other pre-run problems. Before, it stopped at gradient correction, after the first channel had been plate-solved and flux-calibrated.
 - **Noise reduction:** SyQon Studio Prism 2.0 now denoises in two passes. Advanced runs on the linear plate, before the stretch, where it keeps faint detail; after the stretch, Ultra (Medium) or Max (High) removes the noise that is left. Low is Advanced alone. Every pass runs at Studio's full blend. This follows SyQon's published input contract: Advanced takes linear data only, Ultra and Max take linear or stretched data.

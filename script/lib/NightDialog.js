@@ -253,16 +253,30 @@ NightDialog.Dialog = class extends Dialog
       this.detail.text = this.describe();
    }
 
+   /*
+    * The chosen night, and its flats filter by filter -- matched by the
+    * filter in the file names, as the offer is -- with a filter that has
+    * none in the warning colour: flatSummary keeps it visible, and this is
+    * where the observer sees it before importing.
+    */
    describe()
    {
       if ( this.selectedNight == null )
          return "Select a night.";
       var flats = NightDialog.flatsForNight( this.survey, this.selectedNight );
+      var perFilter = NightDialog.flatSummary( this.selectedNight.filters.map( function( f )
+      {
+         var hits = flats.filter( function( x ) { return x.filter == f; } );
+         return { filter: f, flats: hits, strength: hits.length ? "exact" : "missing" };
+      } ) ).map( function( s )
+      {
+         return ( s.strength == "missing" ) ? "<span style='color:#ff5555'>" + s.text + "</span>" : s.text;
+      } );
       return "<b>" + this.selectedNight.target + "</b> &mdash; " +
              this.selectedNight.date + ", " + this.selectedNight.count +
              " frames in " + this.selectedNight.filters.join( ", " ) +
              ".<br/>" + flats.length + " flat" + ( flats.length == 1 ? "" : "s" ) +
-             " in this observing session.";
+             " in this observing session: " + perFilter.join( ", " ) + ".";
    }
 
    /* Detached before teardown, like every other dialog here. */
