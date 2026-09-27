@@ -81,6 +81,15 @@
 #define RESULT_FILE "/tmp/agent-scratch/lhso-selftest.txt"
 
 /*
+ * Every folder and file the suite makes lives under this one, unique to
+ * the run and removed when it ends, so two runs at once -- node suites in
+ * parallel, or node beside PixInsight -- never share or delete each
+ * other's fixtures. The result, progress and filter files above and below
+ * stay where the harnesses look for them.
+ */
+var TEST_SCRATCH = "/tmp/agent-scratch/loom-suite-" + Date.now() + "-" + Math.floor( Math.random()*1e6 );
+
+/*
  * This script's own directory, so the source-level checks below do not
  * carry a hardcoded personal path.
  */
@@ -449,9 +458,29 @@ function testBlur3( a, w, h, r )
    return a;
 }
 
+/*
+ * Removes a folder and everything in it. Only ever called on folders under
+ * TEST_SCRATCH, and on TEST_SCRATCH itself when the run ends.
+ */
+function removeTestFolder( d )
+{
+   if ( !File.directoryExists( d ) ) return;
+   var f = new FileFind, files = [], dirs = [];
+   if ( f.begin( d + "/*" ) )
+      do
+      {
+         if ( f.name == "." || f.name == ".." ) continue;
+         ( f.isDirectory ? dirs : files ).push( d + "/" + f.name );
+      }
+      while ( f.next() );
+   files.forEach( function( p ) { try { File.remove( p ); } catch ( e ) {} } );
+   dirs.forEach( removeTestFolder );
+   try { File.removeDirectory( d ); } catch ( e ) {}
+}
+
 function synthDir( name )
 {
-   var dir = "/tmp/agent-scratch/" + name;
+   var dir = TEST_SCRATCH + "/" + name;
    if ( File.directoryExists( dir ) )
       FrameSelector.emptyDirectory( dir );
    else
@@ -2063,25 +2092,9 @@ function runTests()
     */
    ( function()
    {
-      // unique per run, so two suites running at once cannot share it; removed below
-      var dir = File.systemTempDirectory + "/loom-selftest-update-tag-" + Date.now() + "-" +
-                Math.floor( Math.random()*1e6 ), state = dir + "/state";
+      // under the run's own folder, and removed below
+      var dir = TEST_SCRATCH + "/update-tag", state = dir + "/state";
       File.createDirectory( state, true );
-      function removeFolder( d )
-      {
-         if ( !File.directoryExists( d ) ) return;
-         var f = new FileFind, files = [], dirs = [];
-         if ( f.begin( d + "/*" ) )
-            do
-            {
-               if ( f.name == "." || f.name == ".." ) continue;
-               ( f.isDirectory ? dirs : files ).push( d + "/" + f.name );
-            }
-            while ( f.next() );
-         files.forEach( function( p ) { File.remove( p ); } );
-         dirs.forEach( removeFolder );
-         File.removeDirectory( d );
-      }
       function runShell( path )
       {
          if ( !IN_PIXINSIGHT )
@@ -2118,7 +2131,7 @@ function runTests()
                    [ "nightly", "0.3.0" ], [ "v0.4.0", "not-a-version" ] ];
       var decided;
       try { decided = rows.map( function( r ) { return r[0] + " over " + r[1] + ": " + decides( r[0], r[1] ); } ); }
-      finally { removeFolder( dir ); }
+      finally { removeTestFolder( dir ); }
       check( "the release helper installs a tag only when it is newer, as Update.isNewerTag says",
              decided,
              rows.map( function( r ) { return r[0] + " over " + r[1] + ": " +
@@ -2323,7 +2336,7 @@ function runTests()
     * FileFind applies are kept out of it: the node shim lists everything,
     * so each folder holds only names its pattern would match.
     */
-   var lsRoot = "/tmp/agent-scratch/loom-listing-" + ( IN_PIXINSIGHT ? "pi" : "node" );
+   var lsRoot = TEST_SCRATCH + "/loom-listing-" + ( IN_PIXINSIGHT ? "pi" : "node" );
    var lsClear = function( d )
    {
       Util.directoryEntries( d ).forEach( function( n )
@@ -4497,7 +4510,7 @@ function runTests()
    {
       var realVerify = Cache.verifyStoredFile;
       var realDir = Cache.overrideDir;
-      var dir = "/tmp/agent-scratch/loom-cache-verify";
+      var dir = TEST_SCRATCH + "/loom-cache-verify";
       try
       {
          if ( !File.directoryExists( dir ) )
@@ -6352,7 +6365,7 @@ function runTests()
 
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var tmp = "/tmp/agent-scratch/digest-test.txt";
+      var tmp = TEST_SCRATCH + "/digest-test.txt";
       File.writeTextFile( tmp, "one" );
       var a = FrameSelector.digest( tmp );
       check( "a digest is produced", typeof a, "string" );
@@ -6367,12 +6380,12 @@ function runTests()
              FrameSelector.digest( tmp ) != a, true );
       File.remove( tmp );
       check( "a missing file has no digest",
-             FrameSelector.digest( "/tmp/agent-scratch/not-there.xisf" ), null );
+             FrameSelector.digest( TEST_SCRATCH + "/not-there.xisf" ), null );
    } )();
 
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var dir = "/tmp/agent-scratch/fs-scan-test";
+      var dir = TEST_SCRATCH + "/fs-scan-test";
       if ( !File.directoryExists( dir ) )
          File.createDirectory( dir, true );
       var p = dir + "/unstable.txt";
@@ -6407,7 +6420,7 @@ function runTests()
     */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var dir = "/tmp/agent-scratch/fs-delete-test";
+      var dir = TEST_SCRATCH + "/fs-delete-test";
       if ( !File.directoryExists( dir ) )
          File.createDirectory( dir, true );
       var keep = dir + "/keep.txt", drop = dir + "/drop.txt",
@@ -7179,7 +7192,7 @@ function runTests()
           * paths, and is tested there -- this dialog has no frames, so
           * there is nothing here for that test to compare against.
           */
-         dlg.state.destination = "/tmp/agent-scratch/elsewhere";
+         dlg.state.destination = TEST_SCRATCH + "/elsewhere";
          ok = ok && ( dlg.copyingOut() === true );
          dlg.state.destination = null;
          ok = ok && ( dlg.copyingOut() === false );
@@ -7943,7 +7956,7 @@ function runTests()
     */
    ( function()
    {
-      var dir = "/tmp/agent-scratch/loom-ui-master-scan";
+      var dir = TEST_SCRATCH + "/loom-ui-master-scan";
       ensureDir( dir );
       ensureDir( dir + "/sub.xisf" );   // a directory with a master's extension
       var drizzled = "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-L_mono_drizzle_2x_(1)_autocrop.xisf";
@@ -8048,7 +8061,7 @@ function runTests()
     */
    ( function()
    {
-      var root = "/tmp/agent-scratch/loom-ui-masters-folder";
+      var root = TEST_SCRATCH + "/loom-ui-masters-folder";
       var PRE = "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-";
       var named = root + "/named", unnamed = root + "/unnamed";
       ensureDir( root );
@@ -8219,9 +8232,9 @@ function runTests()
    function syqonOpts( correctAberration, starReduction, sharpen )
    {
       return {
-         inputFilePath:  "/tmp/agent-scratch/in.fits",
-         outputFilePath: "/tmp/agent-scratch/out.fits",
-         jsonInfoPath:   "/tmp/agent-scratch/out.json",
+         inputFilePath:  TEST_SCRATCH + "/in.fits",
+         outputFilePath: TEST_SCRATCH + "/out.fits",
+         jsonInfoPath:   TEST_SCRATCH + "/out.json",
          correctAberration: correctAberration,
          starReduction:     starReduction,
          sharpen:            sharpen,
@@ -8962,7 +8975,7 @@ function runTests()
       };
       try
       {
-         var psbDir = "/tmp/agent-scratch/psb-characterization";
+         var psbDir = TEST_SCRATCH + "/psb-characterization";
          ensureDir( psbDir );
          var psbDocChar = Steps.buildPsbDocument( {
             HSO_starless: psbPlate( "psbc_hso", 3, 21 ), RGB: psbPlate( "psbc_rgb", 3, 22 ),
@@ -9032,7 +9045,7 @@ function runTests()
       var saved = {}, said = [], realWarn = Util.warn, realLog = Util.log;
       for ( var ni = 0; ni < names.length; ++ni )
          saved[names[ni]] = Steps[names[ni]];
-      var dir = "/tmp/agent-scratch/syqon-characterization";
+      var dir = TEST_SCRATCH + "/syqon-characterization";
       ensureDir( dir );
       var paths = { inputFilePath: dir + "/in.fits", outputFilePath: dir + "/out.fits",
                     jsonInfoPath: dir + "/info.json" };
@@ -9092,7 +9105,7 @@ function runTests()
           [ "paths sq",
             "stretch sqwin 0.12 true",
             "save tmp",
-            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "star reduction sq: /opt/parallax_cli --i " + TEST_SCRATCH + "/syqon-characterization/in.fits --o " + TEST_SCRATCH + "/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info " + TEST_SCRATCH + "/syqon-characterization/info.json",
             "run 1200000",
             "import sqwin SI",
             "star reduction sq complete",
@@ -9103,7 +9116,7 @@ function runTests()
           [ "paths sq",
             "stretch sqwin 0.12 true",
             "save tmp",
-            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "star reduction sq: /opt/parallax_cli --i " + TEST_SCRATCH + "/syqon-characterization/in.fits --o " + TEST_SCRATCH + "/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info " + TEST_SCRATCH + "/syqon-characterization/info.json",
             "run 1200000",
             "warn star reduction on sq: output not ready yet (attempt 1/5): Error: not flushed 1",
             "import sqwin SI",
@@ -9115,7 +9128,7 @@ function runTests()
           [ "paths sq",
             "stretch sqwin 0.12 true",
             "save tmp",
-            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "star reduction sq: /opt/parallax_cli --i " + TEST_SCRATCH + "/syqon-characterization/in.fits --o " + TEST_SCRATCH + "/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info " + TEST_SCRATCH + "/syqon-characterization/info.json",
             "run 1200000",
             "close tmp",
             "error SyQon Parallax star reduction failed on sq: no output file was produced. stderr: boom",
@@ -9125,7 +9138,7 @@ function runTests()
           [ "paths sq",
             "stretch sqwin 0.12 true",
             "save tmp",
-            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "star reduction sq: /opt/parallax_cli --i " + TEST_SCRATCH + "/syqon-characterization/in.fits --o " + TEST_SCRATCH + "/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info " + TEST_SCRATCH + "/syqon-characterization/info.json",
             "run 1200000",
             "close tmp",
             "error SyQon Parallax star reduction failed on sq: no output file was produced. (process reported error code(s) 3,4)",
@@ -9135,7 +9148,7 @@ function runTests()
           [ "paths sq",
             "stretch sqwin 0.12 true",
             "save tmp",
-            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "star reduction sq: /opt/parallax_cli --i " + TEST_SCRATCH + "/syqon-characterization/in.fits --o " + TEST_SCRATCH + "/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info " + TEST_SCRATCH + "/syqon-characterization/info.json",
             "run 1200000",
             "close tmp",
             "error SyQon Parallax star reduction failed on sq: no output file was produced.",
@@ -9147,7 +9160,7 @@ function runTests()
     * missing databases warned about, repeats kept once. Sorted, because
     * directory order is the platform's.
     */
-   var marsDir = "/tmp/agent-scratch/mars-characterization";
+   var marsDir = TEST_SCRATCH + "/mars-characterization";
    ensureDir( marsDir );
    File.writeTextFile( marsDir + "/db-a.xmars", "a" );
    File.writeTextFile( marsDir + "/db-b.xmars", "b" );
@@ -9166,11 +9179,11 @@ function runTests()
       Steps.CORE_SETTINGS_DIR = marsDir;
       check( "marsDatabasesFromCoreSettings: each database once, missing ones dropped",
              Steps.marsDatabasesFromCoreSettings().sort(),
-          [ "/tmp/agent-scratch/mars-characterization/db-a.xmars",
-            "/tmp/agent-scratch/mars-characterization/db-b.xmars" ] );
+          [ TEST_SCRATCH + "/mars-characterization/db-a.xmars",
+            TEST_SCRATCH + "/mars-characterization/db-b.xmars" ] );
       check( "marsDatabasesFromCoreSettings: the missing one is warned about",
              marsSaid,
-          [ "MARS database listed in PixInsight settings does not exist: /tmp/agent-scratch/mars-characterization/gone.xmars" ] );
+          [ "MARS database listed in PixInsight settings does not exist: " + TEST_SCRATCH + "/mars-characterization/gone.xmars" ] );
       Steps.CORE_SETTINGS_DIR = marsDir + "/nowhere";
       check( "marsDatabasesFromCoreSettings: no settings, no databases",
              Steps.marsDatabasesFromCoreSettings(), [] );
@@ -11115,7 +11128,7 @@ function runTests()
     */
    ( function()
    {
-      var base = "/tmp/agent-scratch/asiair";
+      var base = TEST_SCRATCH + "/asiair";
       ensureDir( base + "/detect-plan/Plan/Light" );
       check( "a Plan/Light tree is a card",
              Asiair.looksLikeCard( base + "/detect-plan" ), true );
@@ -11177,7 +11190,7 @@ function runTests()
             File.remove( doomed[i] );
       }
 
-      var root = "/tmp/agent-scratch/asiair/card";
+      var root = TEST_SCRATCH + "/asiair/card";
       ensureDir( root + "/Plan/Light/IC 1396A" );
       ensureDir( root + "/Autorun/Flat" );
       emptyDir( root + "/Plan/Light/IC 1396A" );
@@ -11221,7 +11234,7 @@ function runTests()
        * key, and clustering drops null keys without a word. It is
        * reported as unreadable, which is what it is.
        */
-      var bad = "/tmp/agent-scratch/asiair/card-bad";
+      var bad = TEST_SCRATCH + "/asiair/card-bad";
       ensureDir( bad + "/Plan/Light/M42" );
       emptyDir( bad + "/Plan/Light/M42" );
       File.writeTextFile( bad + "/Plan/Light/M42/" +
@@ -11231,7 +11244,7 @@ function runTests()
       check( "and is not passed on as a frame", rb.lights.length, 0 );
 
       check( "a card that is not there reads as removed",
-             Asiair.scanCard( "/tmp/agent-scratch/asiair/no-card" ).removed, true );
+             Asiair.scanCard( TEST_SCRATCH + "/asiair/no-card" ).removed, true );
 
       /*
        * A card pulled out MID-walk must read as removed, not as a short
@@ -11244,7 +11257,7 @@ function runTests()
        * Asserting `removed != null` would prove nothing; the field is
        * always set.
        */
-      var pull = "/tmp/agent-scratch/asiair/card-pull";
+      var pull = TEST_SCRATCH + "/asiair/card-pull";
       ensureDir( pull + "/Plan/Light/M42" );
       emptyDir( pull + "/Plan/Light/M42" );
       for ( var n = 1; n <= 3; ++n )
@@ -11281,7 +11294,7 @@ function runTests()
        * indistinguishable from an empty card, and exactly how a night
        * appears to have vanished.
        */
-      var vanish = "/tmp/agent-scratch/asiair/card-vanish";
+      var vanish = TEST_SCRATCH + "/asiair/card-vanish";
       ensureDir( vanish + "/Plan/Light/M42" );
       check( "an empty card still reads as present",
              Asiair.scanCard( vanish, function() {} ).removed, false );
@@ -11395,7 +11408,7 @@ function runTests()
        * every OUTPUT path is resolved and checked, not just the one the
        * user picked.
        */
-      var card = "/tmp/agent-scratch/asiair/guard-card";
+      var card = TEST_SCRATCH + "/asiair/guard-card";
       ensureDir( card + "/Plan/Light/M42" );
 
       check( "the card root is refused",
@@ -11403,7 +11416,7 @@ function runTests()
       check( "a folder inside the card is refused",
              FrameSelector.outputsAreSafe( card + "/export", card ), false );
       check( "somewhere else is allowed",
-             FrameSelector.outputsAreSafe( "/tmp/agent-scratch/asiair/dest", card ), true );
+             FrameSelector.outputsAreSafe( TEST_SCRATCH + "/asiair/dest", card ), true );
       /*
        * A sibling that merely shares a prefix must NOT be mistaken for a
        * child -- containment is on path components, not characters.
@@ -13271,7 +13284,7 @@ function runFlyTestsClean()
          var line = "Fly-Through render: " + Math.round( ms ) + " ms/frame (SDR), " + Math.round( msHlg ) + " (HDR HLG), " +
                     Math.round( msPq ) + " (HDR PQ) at 3840x2160 RGB with colour conversion, " + sp.sprites.length +
                     " sprites on an 8 MP backdrop; sprite extraction " + tSprites + " ms";
-         try { File.writeTextFile( "/tmp/agent-scratch/fly-benchmark.txt", line + "\n" ); } catch ( e ) {}
+         try { File.writeTextFile( TEST_SCRATCH + "/fly-benchmark.txt", line + "\n" ); } catch ( e ) {}
          check( line, ms > 0, true );
       }
       finally { Iwin.forceClose(); Swin.forceClose(); if ( Twin ) Twin.forceClose(); }
@@ -18357,7 +18370,7 @@ function runPipeTests()
     */
    ( function()
    {
-      var dir = "/tmp/agent-scratch/loom-pipe-preflight";
+      var dir = TEST_SCRATCH + "/loom-pipe-preflight";
       ensureDir( dir );
       var noFilter = dir + "/L.xisf", withFilter = dir + "/G.xisf", narrow = dir + "/H.xisf";
       [ noFilter, withFilter, narrow ].forEach( function( p ) { File.writeTextFile( p, "x" ); } );
@@ -18441,7 +18454,7 @@ function runPipeTests()
     */
    ( function()
    {
-      var dir = "/tmp/agent-scratch/loom-pipe-cleanwb";
+      var dir = TEST_SCRATCH + "/loom-pipe-cleanwb";
       ensureDir( dir );
       var calls, factors, lastKey;
       function win( id ) { return { mainView: { id: id }, isNull: false, forceClose: function() { calls.push( "close " + id ); } }; }
@@ -19258,7 +19271,7 @@ function runPipeTests()
    /* The same reader on a real file, in PixInsight: the real FileFormat and FileInfo. */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var dir = "/tmp/agent-scratch/loom-imageinfo";
+      var dir = TEST_SCRATCH + "/loom-imageinfo";
       ensureDir( dir );
       var path = synthFrame( dir + "/header.xisf", { width: 64, height: 48, stars: 0, fwhm: 3,
                                                    background: 0.1, noise: 0.01, filter: "Ha" } );
@@ -19271,7 +19284,7 @@ function runPipeTests()
              [ info.width, info.height, Util.keywordValue( info.keywords, "FILTER" ) ], [ 64, 48, "Ha" ] );
       var key = Util.imageInfoCacheKey( path );
       check( "readImageInfo (real file): keyed on path, size and an ISO mtime",
-             /^\/tmp\/agent-scratch\/loom-imageinfo\/header\.xisf\|\d+\|\d{4}-\d\d-\d\dT[0-9:.]+Z$/.test( key ), true );
+             key.indexOf( path + "|" ) == 0 && /^\|\d+\|\d{4}-\d\d-\d\dT[0-9:.]+Z$/.test( key.substring( path.length ) ), true );
       check( "readImageInfo (real file): the second call is the cached object",
              [ Util.readImageInfo( path ) === info, cache[key] === info ], [ true, true ] );
       delete cache[key];
@@ -19561,7 +19574,7 @@ function runPipeTests()
     */
    ( function()
    {
-      var base = "/tmp/agent-scratch/loom-pipe-export";
+      var base = TEST_SCRATCH + "/loom-pipe-export";
       ensureDir( base );
       var blocker = base + "/a-file";
       File.writeTextFile( blocker, "x" );
@@ -20694,7 +20707,7 @@ function runFailurePathTests()
    /* An empty folder of its own under the platform's temp folder. */
    function tempDir( name )
    {
-      var dir = File.systemTempDirectory + "/loom-selftest-" + name;
+      var dir = TEST_SCRATCH + "/" + name;
       if ( File.directoryExists( dir ) )
       {
          var f = new FileFind, doomed = [];
@@ -21102,6 +21115,7 @@ function main()
        */
       releaseDialogs();
       restoreLogging();
+      removeTestFolder( TEST_SCRATCH );
    }
 
    var status = ( FAILURES.length == 0 ? "PASS" : "FAIL" );
