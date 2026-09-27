@@ -35,7 +35,6 @@ Psb.COLOR_MODE_RGB = 3;
 Psb.COMPRESSION_RAW = 0;
 
 /* Section-divider types for the 'lsct' tagged block. */
-Psb.DIVIDER_OTHER   = 0;
 Psb.DIVIDER_OPEN    = 1;   // group header, expanded
 Psb.DIVIDER_CLOSED  = 2;   // group header, collapsed
 Psb.DIVIDER_BOUNDING = 3;  // the hidden marker that closes a group
@@ -328,7 +327,7 @@ Psb.layerExtraBlocks = function( layer )
        * opens as Pass Through.
        */
       if ( layer.divider == Psb.DIVIDER_OPEN || layer.divider == Psb.DIVIDER_CLOSED )
-         lsct.ascii( "8BIM" ).ascii( layer.blend || "norm" );
+         lsct.ascii( "8BIM" ).ascii( layer.blend || Psb.BLEND_NORMAL );
       b.append( Psb.taggedBlock( "lsct", lsct ) );
    }
 
@@ -405,7 +404,7 @@ Psb.layerRecord = function( layer, width, height, channelLengths )
    }
 
    b.ascii( "8BIM" );
-   b.ascii( layer.blend || "norm" );
+   b.ascii( layer.blend || Psb.BLEND_NORMAL );
    b.u8( layer.opacity == null ? 255 : layer.opacity );
    /*
     * Clipping: 0 is a base layer, 1 clips to the layer BELOW. A clipped
@@ -488,13 +487,13 @@ Psb.flatten = function( entries )
 Psb.flattenGroup = function( e )
 {
    var bounding = { name: "</Layer group>", divider: Psb.DIVIDER_BOUNDING,
-                    visible: true, blend: "norm", opacity: 255,
+                    visible: true, blend: Psb.BLEND_NORMAL, opacity: 255,
                     channelIds: [ 0, 1, 2, -1 ], window: null };
    var header = { name: e.name,
                   divider: ( e.open === false ) ? Psb.DIVIDER_CLOSED
                                                 : Psb.DIVIDER_OPEN,
                   visible: ( e.visible !== false ),
-                  blend: e.blend || "pass",
+                  blend: e.blend || Psb.BLEND_PASS_THROUGH,
                   opacity: ( e.opacity == null ) ? 255 : e.opacity,
                   channelIds: [ 0, 1, 2, -1 ], window: null };
    return [ bounding ].concat( Psb.flatten( e.group ), [ header ] );
@@ -504,7 +503,7 @@ Psb.flatLayer = function( e )
 {
    return { name: e.name, divider: null,
             visible: ( e.visible !== false ),
-            blend: e.blend || "norm",
+            blend: e.blend || Psb.BLEND_NORMAL,
             opacity: ( e.opacity == null ) ? 255 : e.opacity,
             channelIds: [ -1, 0, 1, 2 ],
             curves: ( e.curves != null ) ? e.curves : null,
@@ -801,7 +800,6 @@ Psb.writeChannelData = function( file, image, channel, sampleCount )
 Psb.BLEND_NORMAL       = "norm";
 Psb.BLEND_SCREEN       = "scrn";
 Psb.BLEND_LUMINOSITY   = "lum ";   // the trailing space is part of the key
-Psb.BLEND_LINEAR_LIGHT = "lLit";
 Psb.BLEND_SOFT_LIGHT   = "sLit";
 Psb.BLEND_PASS_THROUGH = "pass";
 
