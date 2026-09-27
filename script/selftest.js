@@ -16734,6 +16734,287 @@ function runPipeTests()
                                          show: function() { throw new Error( "shown" ); } } ),
                 true );
    } )();
+   } if ( testGroup( "pipeline.run" ) ) {
+   /*
+    * TG-2 (T9, T12, T16, T23): what Pipeline.run, exportResults,
+    * preflightView and sweepNewWindows do today, messages and order
+    * included. PJSR's own classes are replaced in node only; the export
+    * checks, which need nothing but Loom's own functions stubbed, run in
+    * PixInsight as well.
+    */
+
+   /*
+    * Pipeline.run: the phases in order, what each hands the next, and the
+    * cleanup when one throws.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var savedWindows = ImageWindow.windows;
+      function runWith( config, failAt )
+      {
+         var t = [];
+         var boom = new Error( "boom" );
+         var chans = { L: { key: "L" }, G: { key: "G" } };
+         var ref = { refKey: "G", refView: { id: "refV" }, refFingerprint: "fpG" };
+         var common = { x0: 1 }, rgb = { window: "rgbWin" };
+         var wins = { L: { id: "wL" }, RGB: { id: "wRGB" }, X: { id: "wX", dead: true } };
+         function phase( name, body )
+         {
+            return function()
+            {
+               var r = body ? body.apply( null, arguments ) : undefined;
+               t.push( typeof r == "string" ? name + " " + r : name );
+               if ( failAt == name )
+                  throw boom;
+               return ( r && r.value !== undefined ) ? r.value : r;
+            };
+         }
+         function FakeRegistry() { this.closeAll = function() { t.push( "closeAll" ); }; }
+         ImageWindow.windows = [ { mainView: { id: "mine" } } ];
+         var restore = stub( [
+            [ Cache, "disableIfDirMissing", phase( "disableIfDirMissing",
+              function( c ) { return c === config ? "config" : "other"; } ) ],
+            [ Util, "Registry", FakeRegistry ],
+            [ Util, "error", function( tag, msg ) { t.push( "error " + tag + " " + msg ); } ],
+            [ Pipeline, "loadChannels", function( c, reg )
+              {
+                 t.push( "loadChannels" + ( reg instanceof FakeRegistry ? " reg" : "" ) );
+                 if ( failAt == "loadChannels" )
+                    throw boom;
+                 return chans;
+              } ],
+            [ Pipeline, "inheritInstrument", phase( "inheritInstrument",
+              function( c ) { return c === chans ? "chans" : "other"; } ) ],
+            [ Pipeline, "correctBroadband", phase( "correctBroadband" ) ],
+            [ Pipeline, "correctNarrowband", phase( "correctNarrowband" ) ],
+            [ Pipeline, "registerToReference", function()
+              { t.push( "registerToReference" ); return ref; } ],
+            [ Pipeline, "cropToCommonArea", function( c, refKey )
+              { t.push( "cropToCommonArea " + refKey ); return common; } ],
+            [ Pipeline, "matchHalos", phase( "matchHalos" ) ],
+            [ Pipeline, "balanceNarrowband", phase( "balanceNarrowband" ) ],
+            [ Pipeline, "compositeInstrument", function( c, refKey )
+              { t.push( "compositeInstrument " + refKey ); return "CAM"; } ],
+            [ Pipeline, "cleanWhiteBalance", function( c, cfg, reg, cm, lum, refView, fp )
+              {
+                 t.push( "cleanWhiteBalance " + ( cm === common ) + " " + lum + " " + refView.id + " " + fp );
+                 return [ 1, 2, 3 ];
+              } ],
+            [ Pipeline, "buildRGB", function( c, cfg, reg, cm, lum, factors )
+              {
+                 t.push( "buildRGB " + ( cm === common ) + " " + lum + " " + factors.join( "," ) );
+                 if ( failAt == "buildRGB" )
+                    throw boom;
+                 return rgb;
+              } ],
+            [ Pipeline, "buildPalette", function( pal, c, cfg, reg, cm )
+              { t.push( "buildPalette " + pal + " " + ( cm === common ) ); return { name: pal }; } ],
+            [ Pipeline, "splitLuminance", function( c, cfg, reg, cm )
+              { t.push( "splitLuminance " + ( cm === common ) ); } ],
+            [ Pipeline, "retainResults", function( results, c, r, paletteWins )
+              {
+                 t.push( "retainResults " + ( r === rgb ) + " " +
+                         paletteWins.map( function( p ) { return p.name; } ).join( "," ) );
+                 results.L = wins.L;
+                 results.RGB = wins.RGB;
+                 results.X = wins.X;
+                 return [ "L" ];
+              } ],
+            [ Pipeline, "publishOutputs", function( results, c, r, paletteWins, keep, cfg )
+              {
+                 t.push( "publishOutputs " + keep.join( "," ) + " " + ( cfg === config ) );
+                 return [ "L", "RGB" ];
+              } ],
+            [ Pipeline, "windowIsUsable", function( w ) { return w != null && !w.dead; } ],
+            [ Steps, "assignProfile", function( w, key ) { t.push( "assignProfile " + key + " " + w.id ); } ],
+            [ Pipeline, "sweepNewWindows", function( pre, keepIds )
+              { t.push( "sweepNewWindows " + JSON.stringify( pre ) + " " + JSON.stringify( keepIds ) ); } ],
+            [ Pipeline, "exportResults", function( results, cfg )
+              { t.push( "exportResults " + Object.keys( results ).join( "," ) + " " + ( cfg === config ) ); } ],
+            [ Pipeline, "arrangeOutputs", function( results )
+              { t.push( "arrangeOutputs " + Object.keys( results ).join( "," ) ); } ] ] );
+         var out = { transcript: t };
+         try { out.results = Object.keys( Pipeline.run( config ) ); }
+         catch ( e ) { out.rethrown = ( e === boom ) ? "the same error" : String( e ); }
+         finally
+         {
+            restore();
+            ImageWindow.windows = savedWindows;
+         }
+         return out;
+      }
+
+      check( "run: every phase in order, each handed what the one before produced",
+             runWith( { palettes: [ "SHO", "HOO" ] } ),
+             { transcript: [
+                  "disableIfDirMissing config", "loadChannels reg", "inheritInstrument chans",
+                  "correctBroadband", "correctNarrowband", "registerToReference",
+                  "cropToCommonArea G", "matchHalos", "balanceNarrowband", "compositeInstrument G",
+                  "cleanWhiteBalance true CAM refV fpG", "buildRGB true CAM 1,2,3",
+                  "buildPalette SHO true", "buildPalette HOO true", "splitLuminance true",
+                  "retainResults true SHO,HOO", "publishOutputs L true",
+                  "assignProfile L wL", "assignProfile RGB wRGB",
+                  "sweepNewWindows {\"mine\":true} [\"L\",\"RGB\"]",
+                  "exportResults L,RGB,X true", "arrangeOutputs L,RGB,X" ],
+               results: [ "L", "RGB", "X" ] } );
+      check( "run: no palettes asked for builds none",
+             runWith( {} ).transcript.filter( function( s ) { return s.indexOf( "buildPalette" ) == 0 ||
+                                                                     s.indexOf( "retainResults" ) == 0; } ),
+             [ "retainResults true " ] );
+      check( "run: a failure is reported, every window it made is closed, and it is rethrown",
+             runWith( {}, "loadChannels" ),
+             { transcript: [ "disableIfDirMissing config", "loadChannels reg",
+                             "error pipeline Error: boom", "closeAll",
+                             "sweepNewWindows {\"mine\":true} []" ],
+               rethrown: "the same error" } );
+      check( "run: a failure late in the run cleans up the same way",
+             runWith( {}, "buildRGB" ).transcript.slice( -4 ),
+             [ "buildRGB true CAM 1,2,3", "error pipeline Error: boom", "closeAll",
+               "sweepNewWindows {\"mine\":true} []" ] );
+      check( "run: keepWindowsOnError leaves every window for debugging, and still rethrows",
+             runWith( { keepWindowsOnError: true }, "loadChannels" ),
+             { transcript: [ "disableIfDirMissing config", "loadChannels reg",
+                             "error pipeline Error: boom" ],
+               rethrown: "the same error" } );
+   } )();
+
+   /*
+    * Pipeline.exportResults: the refusals, the PSB failing without costing
+    * the TIFFs, unusable windows skipped, names sorted, and the count.
+    */
+   ( function()
+   {
+      var base = "/tmp/agent-scratch/loom-pipe-export";
+      ensureDir( base );
+      var blocker = base + "/a-file";
+      File.writeTextFile( blocker, "x" );
+      function exportWith( config, results )
+      {
+         var t = [];
+         function rec( kind ) { return function( tag, msg ) { t.push( kind + " " + tag + " " + msg ); }; }
+         var restore = stub( [
+            [ Util, "log", rec( "log" ) ],
+            [ Util, "warn", rec( "warn" ) ],
+            [ Util, "error", rec( "error" ) ],
+            [ Util, "operation", function( tag, what, how, id ) { t.push( "operation " + tag + " " + what + " " + how + " " + id ); } ],
+            [ Pipeline, "windowIsUsable", function( w ) { return w != null && !w.dead; } ],
+            [ Steps, "exportPsb", function( res, dir, name )
+              {
+                 t.push( "psb " + name + " " + ( dir == config.exportDir ) );
+                 throw new Error( "psb boom" );
+              } ],
+            [ Steps, "exportTiff16", function( w, dir, id )
+              {
+                 t.push( "tiff " + id + " " + w.id + " " + ( dir == config.exportDir ) );
+                 if ( w.fail )
+                    throw new Error( "tiff boom" );
+                 return dir + "/" + id + ".tif";
+              } ] ] );
+         try { Pipeline.exportResults( results, config ); }
+         finally { restore(); }
+         return t;
+      }
+      var results = { RGB: { id: "w1" }, L: { id: "w2" }, X: { id: "w3", dead: true },
+                      S: { id: "w4", fail: true }, N: null };
+
+      check( "export: no folder, nothing at all",
+             [ exportWith( { exportDir: "", stretch: true, exportPsb: true }, results ),
+               exportWith( { stretch: true, exportPsb: true }, results ) ],
+             [ [], [] ] );
+      check( "export: linear results are refused, not posterised",
+             exportWith( { exportDir: base + "/linear", stretch: false, exportPsb: true }, results ),
+             [ "warn export not exporting: the results are linear, and 16-bit TIFF would posterise " +
+               "them. Enable the stretch, or save from PixInsight in a format that holds floating point." ] );
+      var noDir = exportWith( { exportDir: blocker + "/sub", stretch: true, exportPsb: true }, results );
+      check( "export: a folder that cannot be made is an error, and nothing is written",
+             [ noDir.length, noDir[0].indexOf( "error export could not create " + blocker + "/sub: " ) ],
+             [ 1, 0 ] );
+
+      var dir = base + "/out-" + Date.now();
+      var full = exportWith( { exportDir: dir, stretch: true, exportPsb: true, projectName: " M31 " }, results );
+      check( "export: the PSB failing costs only the PSB; every usable plate is written, sorted, and counted",
+             full,
+             [ "psb M31 true",
+               "error export the layered PSB was not written (Error: psb boom); the individual TIFFs are unaffected",
+               "tiff L w2 true", "operation export 16-bit TIFF null L", "log export " + dir + "/L.tif",
+               "tiff RGB w1 true", "operation export 16-bit TIFF null RGB", "log export " + dir + "/RGB.tif",
+               "tiff S w4 true", "warn export S could not be exported (Error: tiff boom)",
+               "log export 2 of 3 result(s) written to " + dir ] );
+      check( "export: the folder was created", File.directoryExists( dir ), true );
+      check( "export: no PSB unless asked for",
+             exportWith( { exportDir: dir, stretch: true, exportPsb: false }, { L: { id: "w2" } } ),
+             [ "tiff L w2 true", "operation export 16-bit TIFF null L", "log export " + dir + "/L.tif",
+               "log export 1 of 1 result(s) written to " + dir ] );
+      try { File.remove( blocker ); } catch ( e ) {}
+      try { File.removeDirectory( dir ); } catch ( e ) {}
+   } )();
+
+   /*
+    * Pipeline.preflightView: each way a chosen view can be unusable.
+    * Whether preflight should also refuse a missing MARS database (the
+    * comment in Pipeline.preflight says it is "never optional", and no
+    * check follows) is a question for Francesco; today there is none, and
+    * the preflight checks in pipeline.characterization pin that.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var views = {
+         open_R:  { isNull: false, keywords: [ { name: "FILTER", value: "'Red'" } ] },
+         bare_R:  { isNull: false, keywords: [] },
+         closed:  { isNull: true, keywords: [] }
+      };
+      var restore = stub( [ [ ImageWindow, "windowById", function( id ) { return views[id] || null; } ] ] );
+      try
+      {
+         check( "preflightView: gone, closed, no FILTER on broadband, no FILTER on narrowband, fine",
+                [ Pipeline.preflightView( "R", "gone" ),
+                  Pipeline.preflightView( "G", "closed" ),
+                  Pipeline.preflightView( "R", "bare_R" ),
+                  Pipeline.preflightView( "H", "bare_R" ),
+                  Pipeline.preflightView( "R", "open_R" ) ],
+                [ [ "View no longer open for R: gone" ],
+                  [ "Selected view no longer open for G: closed" ],
+                  [ "No FILTER keyword in R (view bare_R) (SPFC cannot proceed; the script will not guess a filter)" ],
+                  [], [] ] );
+      }
+      finally { restore(); }
+   } )();
+
+   /*
+    * Pipeline.sweepNewWindows: only windows that are new AND not kept are
+    * closed; a window that will not close is reported and the sweep goes on.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var savedWindows = ImageWindow.windows;
+      function sweep( ids, preexisting, keepIds )
+      {
+         var t = [];
+         ImageWindow.windows = ids.map( function( id )
+         {
+            return { mainView: { id: id },
+                     forceClose: function()
+                     {
+                        if ( id == "stuck" )
+                           throw new Error( "nope" );
+                        t.push( "closed " + id );
+                     } };
+         } );
+         var restore = stub( [
+            [ Util, "log", function( tag, msg ) { t.push( "log " + tag + " " + msg ); } ],
+            [ Util, "warn", function( tag, msg ) { t.push( "warn " + tag + " " + msg ); } ] ] );
+         try { t.push( "returned " + Pipeline.sweepNewWindows( preexisting, keepIds ) ); }
+         finally { restore(); ImageWindow.windows = savedWindows; }
+         return t;
+      }
+      check( "sweep: the user's windows and the results survive; new working windows go",
+             sweep( [ "pre", "kept", "temp", "stuck", "temp2" ], { pre: true }, [ "kept", null ] ),
+             [ "closed temp", "warn cleanup could not close stuck: Error: nope", "closed temp2",
+               "log cleanup closed 2 working window(s): temp, temp2", "returned 2" ] );
+      check( "sweep: nothing new, nothing said",
+             sweep( [ "pre", "kept" ], { pre: true }, [ "kept" ] ),
+             [ "returned 0" ] );
+   } )();
    }
 }
 
