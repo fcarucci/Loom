@@ -16523,6 +16523,192 @@ function runPipeTests()
    } )();
 
    /*
+    * Pipeline.correctBroadband, field by field (the digest above says
+    * that something changed; these say what): the stage list, each
+    * stage's cache params, the key chain seeded by sourceKey, and the
+    * currentKey and cleanKey it leaves on the channel.
+    */
+   ( function()
+   {
+      var captured = {}, calls = [];
+      var restore = stub( [
+         [ Pipeline, "processChain", function( holder, chain, cfg, reg, runners )
+           {
+              captured[holder.key] = { chain: chain, runners: runners };
+           } ],
+         [ Pipeline, "checkAbort", function() {} ],
+         [ Steps, "deviceCurveForImage", function( i ) { return i == "CAM" ? { name: "QE-A" } : null; } ],
+         [ Steps, "configuredMGC", function( p ) { return p == "/m" ? { marsDatabaseFiles: [ "b.xmars", "a.xmars" ] } : null; } ],
+         [ Steps, "studioAvailable", function() { return false; } ],
+         [ Steps, "aberration", function( v, tool, linked, ch ) { calls.push( [ v, tool, linked, ch ] ); } ] ] );
+      try
+      {
+         var chans = { L: { key: "L", sourceKey: "src-L", instrume: "CAM" },
+                       R: { key: "R", sourceKey: "src-R", instrume: "CAM" } };
+         var config = { filters: { R: "Antlia R" }, marsPath: "/m", gradientTool: "GraXpert",
+                        smoothing: 0.5, sharpenTool: "none" };
+         Pipeline.correctBroadband( chans, config, "REG" );
+         var rc = captured.R.chain, lc = captured.L.chain;
+         function byStage( chain, s ) { return chain.filter( function( e ) { return e.stage == s; } )[0]; }
+         check( "correctBroadband keys: the broadband stage list, in order",
+                rc.map( function( e ) { return e.stage; } ),
+                [ "solve", "spfc", "mgc", "graxpert", "aberration" ] );
+         check( "correctBroadband keys: spfc carries channel, chosen filter and QE curve name",
+                [ byStage( rc, "spfc" ).params, byStage( lc, "spfc" ).params ],
+                [ { channel: "R", filter: "Antlia R", qe: "QE-A" },
+                  { channel: "L", filter: undefined, qe: "QE-A" } ] );
+         check( "correctBroadband keys: mgc carries the MARS files, sorted",
+                byStage( rc, "mgc" ).params, { marsFiles: [ "a.xmars", "b.xmars" ] } );
+         check( "correctBroadband keys: solve, graxpert and aberration params",
+                [ byStage( rc, "solve" ).params, byStage( rc, "graxpert" ).params,
+                  byStage( rc, "aberration" ).params ],
+                [ {}, { enabled: true, smoothing: 0.5 },
+                  { tool: "none", photometry: "linearfit-v1" } ] );
+         check( "correctBroadband keys: the chain is seeded by the channel's sourceKey",
+                [ rc[0].key == Cache.chainKey( "src-R", "solve", {} ),
+                  lc[0].key == Cache.chainKey( "src-L", "solve", {} ) ],
+                [ true, true ] );
+         check( "correctBroadband keys: currentKey is the last stage's key, cleanKey the graxpert key",
+                [ chans.R.currentKey == rc[rc.length - 1].key,
+                  chans.R.cleanKey == byStage( rc, "graxpert" ).key,
+                  chans.L.cleanKey == byStage( lc, "graxpert" ).key,
+                  chans.R.cleanKey != chans.L.cleanKey ],
+                [ true, true, true, true ] );
+         captured.R.runners.aberration( { view: "vR" } );
+         check( "correctBroadband: the aberration runner does nothing with sharpenTool none",
+                calls, [] );
+         config.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+         captured.R.runners.aberration( { view: "vR" } );
+         check( "correctBroadband: with a tool, aberration runs unlinked on that channel",
+                calls, [ [ "vR", Steps.SHARPEN_TOOL_BXT, false, "R" ] ] );
+      }
+      finally
+      {
+         restore();
+      }
+   } )();
+
+   /*
+    * Pipeline.processChain: the companion paths. A stage that produced a
+    * companion stores it with the stage; a SKIP_CACHE stage stores
+    * neither; a superseded extraction stage still brings its stars frame
+    * back, and says so when that frame is missing.
+    */
+   ( function()
+   {
+      var log = [];
+      var restore = stub( [
+         [ Cache, "store", function( k ) { log.push( "store " + k ); } ],
+         [ Cache, "storeCompanion", function( k, n, w ) { log.push( "storeCompanion " + k + "." + n + " " + ( w && w.id ) ); } ],
+         [ Util, "log", function( m, s ) { log.push( m + ": " + s ); } ],
+         [ Util, "warn", function( m, s ) { log.push( "warn " + m + ": " + s ); } ] ] );
+      function reg() { return { add: function( w ) { log.push( "add " + w.id ); }, forget: function() {} }; }
+      function srcChan()
+      {
+         return { key: "L", view: null,
+                  window: { id: "SRC", mainView: { id: "SRC" }, forceClose: function() {} } };
+      }
+      try
+      {
+         // uncached extraction: the runner makes a stars frame
+         var extract = [ { stage: "extractL", key: "kx", params: {}, companion: "stars" } ];
+         function runExtract( result )
+         {
+            log.length = 0;
+            Pipeline.processChain( srcChan(), extract, { useCache: true, ignoreCache: true }, reg(),
+               { extractL: function( c ) { c.stars = { id: "STARS" }; return result; } } );
+            return log.filter( function( l ) { return l.indexOf( "store" ) == 0 || l.indexOf( "not cached" ) >= 0; } );
+         }
+         check( "processChain: an extraction stage stores its companion with the stage",
+                runExtract( undefined ), [ "store kx", "storeCompanion kx.stars STARS" ] );
+         check( "processChain: a SKIP_CACHE extraction stores neither half",
+                runExtract( Pipeline.SKIP_CACHE ),
+                [ "cache: L extractL not cached (the step did not complete)" ] );
+
+         // superseded extraction: mgc (the later stage) is the hit
+         var chain = [ { stage: "extractL", key: "k1aaaaaaaaaaaaa", params: {}, companion: "stars" },
+                       { stage: "mgc", key: "k2bbbbbbbbbbbbb", params: {} } ];
+         function superseded( found, companion )
+         {
+            log.length = 0;
+            var r = stub( [
+               [ Cache, "lookup", function( k ) { return ( found || k == chain[1].key ) ? "/c/" + k : null; } ],
+               [ Cache, "lookupCompanion", function() { return "/c/stars"; } ],
+               [ Cache, "load", function( k ) { return { id: "from_" + k.substring( 0, 2 ), mainView: { id: "m" },
+                                                         hasAstrometricSolution: true, forceClose: function() {} }; } ],
+               [ Cache, "loadCompanion", function( k, n ) { log.push( "loadCompanion " + k.substring( 0, 2 ) + "." + n ); return companion; } ] ] );
+            try
+            {
+               var chan = srcChan();
+               Pipeline.processChain( chan, chain, { useCache: true }, reg(),
+                  { extractL: function() { log.push( "ran extractL" ); }, mgc: function() { log.push( "ran mgc" ); } } );
+               return [ log, chan.stars ? chan.stars.id : "no stars" ];
+            }
+            finally { r(); }
+         }
+         check( "processChain: a superseded extraction stage still loads its stars frame",
+                superseded( true, { id: "STARS" } ),
+                [ [ "cache: L extractL HIT k1aaaaaaaaaa... (superseded by later cached stage mgc)",
+                    "loadCompanion k1.stars", "add STARS",
+                    "add from_k2", "cache: L mgc HIT k2bbbbbbbbbb..." ], "STARS" ] );
+         check( "processChain: a superseded extraction whose stars frame is missing says so",
+                superseded( true, null ),
+                [ [ "cache: L extractL HIT k1aaaaaaaaaa... (superseded by later cached stage mgc)",
+                    "loadCompanion k1.stars",
+                    "warn cache: L extractL superseded and its stars companion is missing; " +
+                    "this run produces no stars frame for L",
+                    "add from_k2", "cache: L mgc HIT k2bbbbbbbbbb..." ], "no stars" ] );
+         check( "processChain: a superseded stage with no entry loads no companion",
+                superseded( false, { id: "STARS" } ),
+                [ [ "cache: L extractL MISS (no entry; skipped -- mgc is cached)",
+                    "add from_k2", "cache: L mgc HIT k2bbbbbbbbbb..." ], "no stars" ] );
+      }
+      finally
+      {
+         restore();
+      }
+   } )();
+
+   /*
+    * Pipeline.chooseKeepers / collectResults: the inputs forgetKeepers
+    * works from.
+    */
+   ( function()
+   {
+      var log = [];
+      var restore = stub( [ [ Util, "log", function( m, s ) { log.push( m + ": " + s ); } ] ] );
+      try
+      {
+         check( "chooseKeepers: with a palette only L is kept, the narrowband named as consumed",
+                [ Pipeline.chooseKeepers( { L: {}, H: {}, O: {} }, [ {} ] ), log ],
+                [ [ "L" ], [ "cleanup: narrowband consumed by the palette, not kept: H, O" ] ] );
+         log.length = 0;
+         check( "chooseKeepers: a palette and no narrowband logs nothing",
+                [ Pipeline.chooseKeepers( { L: {}, R: {} }, [ {} ] ), log ], [ [ "L" ], [] ] );
+         check( "chooseKeepers: without a palette L, H, S and O are kept",
+                [ Pipeline.chooseKeepers( { L: {}, H: {}, O: {} }, [] ), log ],
+                [ [ "L", "H", "S", "O" ], [] ] );
+      }
+      finally
+      {
+         restore();
+      }
+      function collect( chans, rgb )
+      {
+         var r = {};
+         Pipeline.collectResults( r, chans, rgb );
+         return Object.keys( r ).map( function( k ) { return k + "=" + r[k]; } );
+      }
+      check( "collectResults: every present channel's window, in channel order, then RGB",
+             collect( { O: { window: "wO" }, R: { window: "wR" }, L: { window: "wL" } },
+                      { window: "wRGB" } ),
+             [ "L=wL", "R=wR", "O=wO", "RGB=wRGB" ] );
+      check( "collectResults: no RGB entry without a composite window",
+             [ collect( { R: { window: "wR" } }, null ), collect( { R: { window: "wR" } }, { window: null } ) ],
+             [ [ "R=wR" ], [ "R=wR" ] ] );
+   } )();
+
+   /*
     * Pipeline.publishPalettes: names, the stars kept or dropped, and a
     * lost window reported without stopping the rest.
     */
