@@ -179,18 +179,11 @@ Config.defaults = function()
    };
 };
 
-/*
- * Reads the named Parameters, in the order given, into config: each pair
- * is a name and the Parameters getter its type needs.
- */
-Config.loadParameterFields = function( config, store, pairs )
+/* Reads one Parameter into config, with the getter its type needs, when the icon has it. */
+Config.loadParameter = function( config, parameters, name, get )
 {
-   for ( var i = 0; i < pairs.length; ++i )
-   {
-      var name = pairs[i][0];
-      if ( store.parameters.has( name ) )
-         config[name] = store.parameters[pairs[i][1]]( name );
-   }
+   if ( parameters.has( name ) )
+      config[name] = get.call( parameters, name );
 };
 
 /*
@@ -199,32 +192,34 @@ Config.loadParameterFields = function( config, store, pairs )
  */
 Config.loadParameters = function( config, store )
 {
+   var p = store.parameters;
    for ( var i = 0; i < Util.CHANNELS.length; ++i )
    {
       var key = Util.CHANNELS[i];
-      if ( store.parameters.has( "path_" + key ) )
-         config.paths[key] = store.parameters.getString( "path_" + key );
+      if ( p.has( "path_" + key ) )
+         config.paths[key] = p.getString( "path_" + key );
       // Views are not saveable process-instance state -- an open view id
       // from a previous session/run has no guaranteed meaning now, so
       // only file paths round-trip through Parameters.
    }
-   Config.loadParameterFields( config, store, [ [ "savedList", "getString" ], [ "smoothing", "getReal" ] ] );
+   Config.loadParameter( config, p, "savedList", p.getString );
+   Config.loadParameter( config, p, "smoothing", p.getReal );
    /*
     * A process icon saved before the gradient dropdown carries only
     * useGraXpert. Loaded into the legacy field and cleared from the new
     * one, so Steps.migrateConfig maps it: true is GraXpert, false is
     * none.
     */
-   if ( store.parameters.has( "gradientTool" ) )
-      config.gradientTool = store.parameters.getString( "gradientTool" );
-   else if ( store.parameters.has( "useGraXpert" ) )
+   if ( p.has( "gradientTool" ) )
+      config.gradientTool = p.getString( "gradientTool" );
+   else if ( p.has( "useGraXpert" ) )
    {
-      config.useGraXpert = store.parameters.getBoolean( "useGraXpert" );
+      config.useGraXpert = p.getBoolean( "useGraXpert" );
       config.gradientTool = "";
    }
-   Config.loadParameterFields( config, store, [ [ "graxpertNarrowband", "getBoolean" ],
-                                                [ "useCache", "getBoolean" ],
-                                                [ "autoUpdate", "getBoolean" ] ] );
+   Config.loadParameter( config, p, "graxpertNarrowband", p.getBoolean );
+   Config.loadParameter( config, p, "useCache", p.getBoolean );
+   Config.loadParameter( config, p, "autoUpdate", p.getBoolean );
 };
 
 /*
