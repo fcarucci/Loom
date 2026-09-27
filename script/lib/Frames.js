@@ -452,6 +452,7 @@ Frames.score = function( metrics, medians, weights )
  * thing and leave the loose end unnamed.
  */
 Frames.PRESETS = { lenient: 3.0, balanced: 2.5, strict: 2.0 };
+Frames.PRESET_NAMES = [ "lenient", "balanced", "strict" ];   // the dialog's order, widest first
 Frames.DEFAULT_PRESET = "balanced";
 
 /*

@@ -1670,7 +1670,6 @@ FrameSelector.Dialog = class extends Dialog
 
       this.windowTitle = "Loom Frame Selector";
 
-
       this.buildChannelTree();
       this.buildFrameTable();
       this.buildPreviewPane();
@@ -1678,7 +1677,6 @@ FrameSelector.Dialog = class extends Dialog
       this.buildPlotPane();
       this.buildFilmstrip();
       this.buildActionRow();
-      this.wireBehaviour();
       this.layOut();
    }
    catch ( e )
@@ -1713,7 +1711,6 @@ FrameSelector.Dialog = class extends Dialog
       };
    }
 
-   /* The frame table for the selected channel. */
    /*
     * The measurement plot, with the metric it shows chosen by a combo --
     * four metrics is too many for a button that cycles, and the combo says
@@ -1755,13 +1752,6 @@ FrameSelector.Dialog = class extends Dialog
       this.plotPane.add( this.plot );
    }
 
-   /*
-    * Move the table's selection to a row, as though it had been clicked.
-    *
-    * Assigning currentNode does not fire onNodeSelectionUpdated, so the
-    * preview and the plot's ring are updated here rather than left to a
-    * handler that will not run.
-    */
    /* Which row the table has selected, or -1. */
    selectedRowIndex()
    {
@@ -1772,6 +1762,12 @@ FrameSelector.Dialog = class extends Dialog
    }
 
    /*
+    * Move the table's selection to a row, as though it had been clicked.
+    *
+    * Assigning currentNode does not fire onNodeSelectionUpdated, so the
+    * preview and the plot's ring are updated here rather than left to a
+    * handler that will not run.
+    *
     * `reload` is false when only the table was rebuilt and the same frame
     * is still selected -- re-reading a 26 MP frame to show what is already
     * on screen would make every knob cost a disk read.
@@ -1878,6 +1874,7 @@ FrameSelector.Dialog = class extends Dialog
          "</i>";
    }
 
+   /* The frame table for the selected channel. */
    buildFrameTable()
    {
       var self = this;
@@ -1949,7 +1946,7 @@ FrameSelector.Dialog = class extends Dialog
       var box = this.criteriaGroup;
 
       this.presetCombo = new ComboBox( box );
-      var presetNames = [ "lenient", "balanced", "strict" ];
+      var presetNames = Frames.PRESET_NAMES;
       for ( var p = 0; p < presetNames.length; ++p )
          this.presetCombo.addItem( presetNames[p] );
       this.presetCombo.currentItem = presetNames.indexOf( Frames.DEFAULT_PRESET );
@@ -2325,9 +2322,7 @@ FrameSelector.Dialog = class extends Dialog
          {
             try
             {
-               ( new MessageBox( "The run failed:\n\n" + e,
-                                 "Loom Frame Selector", StdIcon_Error,
-                                 StdButton_Ok ) ).execute();
+               FrameSelector.tell( "The run failed:\n\n" + e, StdIcon_Error );
             }
             catch ( e2 ) {}
          }
@@ -2351,104 +2346,73 @@ FrameSelector.Dialog = class extends Dialog
       this.onClose = function() { self.release(); return true; };
    }
 
-   /* What every control does, and how the table is refreshed. */
-   wireBehaviour()
-   {
-      var self = this;
-
-
-
-
-
-
-
-      /*
-       * Recompute every verdict FROM THE COHORT. Never from survivors: that
-       * would tighten the MAD after each deletion and condemn a frame nobody
-       * looked at.
-       */
-
-
-      /*
-       * Build the manifest and run it. The manifest is a snapshot: once this
-       * returns the review is locked, so no knob change can alter what is
-       * already deleting files, and pressing Apply twice cannot run two
-       * manifests over one cohort.
-       */
-   }
-
    editable()
    {
-      var self = this;
-            // locked once an import or a copy has run, as a deletion locks it
-            return Frames.canEdit( self.state.phase ) && !self.state.locked;
+      // locked once an import or a copy has run, as a deletion locks it
+      return Frames.canEdit( this.state.phase ) && !this.state.locked;
    }
 
    channel()
    {
-      var self = this;
-            return ( self.current != null ) ? self.state.channels[self.current] : null;
+      return ( this.current != null ) ? this.state.channels[this.current] : null;
    }
 
    toggleOverride()
    {
-      var self = this;
-            var ch = self.channel();
-            if ( ch == null || !self.editable() )
-               return;
-            var n = self.frameTree.selectedNodes;
-            if ( !n.length || !n[0].rowRef )
-               return;
-            var row = n[0].rowRef;
-            /*
-             * An unmeasurable frame may be condemned by hand but never approved:
-             * there is no measurement to approve. finalState enforces that; here
-             * the toggle simply offers the two states that mean anything.
-             */
-            if ( row.override != null )
-               row.override = null;
-            else
-               row.override = ( row.state == Frames.STATE.REJECTED )
-                              ? Frames.OVERRIDE.RESCUED : Frames.OVERRIDE.CONDEMNED;
-            self.refresh();
+      var ch = this.channel();
+      if ( ch == null || !this.editable() )
+         return;
+      var n = this.frameTree.selectedNodes;
+      if ( !n.length || !n[0].rowRef )
+         return;
+      var row = n[0].rowRef;
+      /*
+       * An unmeasurable frame may be condemned by hand but never approved:
+       * there is no measurement to approve. finalState enforces that; here
+       * the toggle simply offers the two states that mean anything.
+       */
+      if ( row.override != null )
+         row.override = null;
+      else
+         row.override = ( row.state == Frames.STATE.REJECTED )
+                        ? Frames.OVERRIDE.RESCUED : Frames.OVERRIDE.CONDEMNED;
+      this.refresh();
    }
 
    fillChannels()
    {
-      var self = this;
-            self.channelTree.clear();
-            for ( var i = 0; i < self.state.order.length; ++i )
-            {
-               var key = self.state.order[i], ch = self.state.channels[key];
-               var node = new TreeBoxNode( self.channelTree );
-               node.channelKey = key;
-               var c = Frames.counts( ch.rows );
-               node.setText( 0, Frames.summaryLine( key, c ) +
-                                ( ch.settings.enabled ? "" : "  [off]" ) );
-               if ( key == self.current )
-                  node.selected = true;
-            }
+      this.channelTree.clear();
+      for ( var i = 0; i < this.state.order.length; ++i )
+      {
+         var key = this.state.order[i], ch = this.state.channels[key];
+         var node = new TreeBoxNode( this.channelTree );
+         node.channelKey = key;
+         var c = Frames.counts( ch.rows );
+         node.setText( 0, Frames.summaryLine( key, c ) +
+                          ( ch.settings.enabled ? "" : "  [off]" ) );
+         if ( key == this.current )
+            node.selected = true;
+      }
    }
 
    fillFrames()
    {
-      var self = this;
-            self.frameTree.clear();
-            var ch = self.channel();
-            if ( ch == null )
-               return;
-            /*
-             * Names are shortened against the whole channel, not one at a
-             * time: what can be dropped is what every frame here shares.
-             */
-            var paths = [];
-            for ( var pn = 0; pn < ch.rows.length; ++pn )
-               paths.push( ch.rows[pn].path );
-            var shortNames = Frames.shortNames( paths );
+      this.frameTree.clear();
+      var ch = this.channel();
+      if ( ch == null )
+         return;
+      /*
+       * Names are shortened against the whole channel, not one at a
+       * time: what can be dropped is what every frame here shares.
+       */
+      var paths = [];
+      for ( var pn = 0; pn < ch.rows.length; ++pn )
+         paths.push( ch.rows[pn].path );
+      var shortNames = Frames.shortNames( paths );
 
-            for ( var i = 0; i < ch.rows.length; ++i )
-               self.fillRow( new TreeBoxNode( self.frameTree ), ch.rows[i], i,
-                             shortNames[i], ch.flags ? ch.flags[i] : [] );
+      for ( var i = 0; i < ch.rows.length; ++i )
+         this.fillRow( new TreeBoxNode( this.frameTree ), ch.rows[i], i,
+                       shortNames[i], ch.flags ? ch.flags[i] : [] );
    }
 
    /* One frame's row: name, measurements, score, verdict, marks. */
@@ -2510,63 +2474,59 @@ FrameSelector.Dialog = class extends Dialog
 
    syncKnobs()
    {
-      var self = this;
-            var ch = self.channel();
-            if ( ch == null )
-            {
-               self.problemsLabel.text = "";
-               return;
-            }
-            self.kEdit.setValue( ch.settings.k );
-            self.enabledCheck.checked = ch.settings.enabled;
-            var names = [ "lenient", "balanced", "strict" ];
-            var pi = names.indexOf( ch.settings.preset );
-            if ( pi >= 0 )
-               self.presetCombo.currentItem = pi;
-            self.syncCriteria( ch );
-            /*
-             * A mixed channel says what is mixed. "Not comparable" without the
-             * reason leaves someone to guess whether to trust it.
-             */
-            self.problemsLabel.text = ch.problems.length
-               ? ( "Not comparable: " + ch.problems.join( ", " ) +
-                   ". The figures for this channel compare frames that are not "
-                   + "alike; look before running." )
-               : ( ch.settings.kEdited ? "k has been set by hand for this channel; a "
-                                       + "preset will not change it." : "" );
+      var ch = this.channel();
+      if ( ch == null )
+      {
+         this.problemsLabel.text = "";
+         return;
+      }
+      this.kEdit.setValue( ch.settings.k );
+      this.enabledCheck.checked = ch.settings.enabled;
+      var pi = Frames.PRESET_NAMES.indexOf( ch.settings.preset );
+      if ( pi >= 0 )
+         this.presetCombo.currentItem = pi;
+      this.syncCriteria( ch );
+      /*
+       * A mixed channel says what is mixed. "Not comparable" without the
+       * reason leaves someone to guess whether to trust it.
+       */
+      this.problemsLabel.text = ch.problems.length
+         ? ( "Not comparable: " + ch.problems.join( ", " ) +
+             ". The figures for this channel compare frames that are not "
+             + "alike; look before running." )
+         : ( ch.settings.kEdited ? "k has been set by hand for this channel; a "
+                                 + "preset will not change it." : "" );
    }
 
-         /*
-          * Which rows a Run acts on, and the per-channel tally the
-          * confirmation shows. A channel switched off contributes nothing;
-          * buildManifest then decides row by row within what is left.
-          *
-          * A channel whose frames are not comparable is NOT withheld. The
-          * mixture is reported, loudly, and the decision is the user's --
-          * a tool that measures frames and then refuses to act on its own
-          * measurements is only an obstacle.
-          *
-          * Separated from commit so that what the confirmation is counting can be
-          * asked for without putting a modal box on screen.
-          */
+   /*
+    * Which rows a Run acts on, and the per-channel tally the
+    * confirmation shows. A channel switched off contributes nothing;
+    * buildManifest then decides row by row within what is left.
+    *
+    * A channel whose frames are not comparable is NOT withheld. The
+    * mixture is reported, loudly, and the decision is the user's --
+    * a tool that measures frames and then refuses to act on its own
+    * measurements is only an obstacle.
+    *
+    * Separated from commit so that what the confirmation is counting can be
+    * asked for without putting a modal box on screen.
+    */
    committableRows()
    {
-      var self = this;
-            var rows = [], perChannel = [];
-            for ( var i = 0; i < self.state.order.length; ++i )
-            {
-               var key = self.state.order[i], ch = self.state.channels[key];
-               if ( !ch.settings.enabled )
-                  continue;                    // a channel switched off is untouched
-               var c = Frames.counts( ch.rows );
-               if ( c.rejected )
-                  perChannel.push( key + ": " + c.rejected );
-               for ( var r = 0; r < ch.rows.length; ++r )
-                  rows.push( ch.rows[r] );
-            }
-            return { rows: rows, perChannel: perChannel };
+      var rows = [], perChannel = [];
+      for ( var i = 0; i < this.state.order.length; ++i )
+      {
+         var key = this.state.order[i], ch = this.state.channels[key];
+         if ( !ch.settings.enabled )
+            continue;                    // a channel switched off is untouched
+         var c = Frames.counts( ch.rows );
+         if ( c.rejected )
+            perChannel.push( key + ": " + c.rejected );
+         for ( var r = 0; r < ch.rows.length; ++r )
+            rows.push( ch.rows[r] );
+      }
+      return { rows: rows, perChannel: perChannel };
    }
-
 
    /* Recompute every verdict from the cohort and redraw. */
    refresh()
@@ -2595,7 +2555,11 @@ FrameSelector.Dialog = class extends Dialog
       this.syncActions( t );
    }
 
-   /* Every channel's verdicts from its cohort, and the totals Run acts on. */
+   /*
+    * Every channel's verdicts from its cohort, and the totals Run acts on.
+    * FROM THE COHORT, never from survivors: that would tighten the MAD
+    * after each deletion and condemn a frame nobody looked at.
+    */
    recomputeAll()
    {
       var t = { total: 0, condemned: 0, mixed: [] };
@@ -2662,7 +2626,6 @@ FrameSelector.Dialog = class extends Dialog
                              " kept frame(s) converted to XISF in place" ) : "" ) + ".";
    }
 
-   /* Snapshot the review into a manifest and run it. */
    /* Every frame in the review, whatever its verdict. */
    allPaths()
    {
@@ -2748,11 +2711,6 @@ FrameSelector.Dialog = class extends Dialog
       return this.state.destination != null && !this.destinationIsSource();
    }
 
-   /*
-    * Write the approved frames to the chosen folder. Nothing is deleted,
-    * so this asks once and reports rather than demanding the confirmation
-    * the destructive path needs.
-    */
    /* The frames that survive, across every channel being acted on. */
    approvedPaths()
    {
@@ -2786,10 +2744,14 @@ FrameSelector.Dialog = class extends Dialog
          : ( c.converted + " frame(s) converted to XISF in place" +
              ( c.alreadyXisf ? ( "; " + c.alreadyXisf + " already were" ) : "" ) +
              ( c.failed ? ( "\n\n" + c.failed + " could not be converted." ) : "" ) );
-      ( new MessageBox( message, "Loom Frame Selector", StdIcon_Information,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( message, StdIcon_Information );
    }
 
+   /*
+    * Write the approved frames to the chosen folder. Nothing is deleted,
+    * so this asks once and reports rather than demanding the confirmation
+    * the destructive path needs.
+    */
    commitCopy()
    {
       var approved = this.approvedPaths();
@@ -2811,8 +2773,7 @@ FrameSelector.Dialog = class extends Dialog
          : ( result.written + " frame(s) written to\n" + this.state.destination +
              ( result.failed ? ( "\n\n" + result.failed + " could not be written." )
                              : "" ) );
-      ( new MessageBox( message, "Loom Frame Selector", StdIcon_Information,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( message, StdIcon_Information );
       this.refresh();
       return result;
    }
@@ -2834,27 +2795,22 @@ FrameSelector.Dialog = class extends Dialog
 
       if ( dest == null || dest == self.state.folder )
       {
-         ( new MessageBox( "Choose a destination folder first.\n\n" +
-                           "Frames are never written back to the card.",
-                           "Loom Frame Selector", StdIcon_Information,
-                           StdButton_Ok ) ).execute();
+         FrameSelector.tell( "Choose a destination folder first.\n\n" +
+                             "Frames are never written back to the card.", StdIcon_Information );
          return null;
       }
       if ( !FrameSelector.outputsAreSafe( dest, self.state.cardRoot ) )
       {
-         ( new MessageBox( "That destination is on the card.\n\n" +
-                           dest + "\n\nPick somewhere else.",
-                           "Loom Frame Selector", StdIcon_Error,
-                           StdButton_Ok ) ).execute();
+         FrameSelector.tell( "That destination is on the card.\n\n" +
+                             dest + "\n\nPick somewhere else.", StdIcon_Error );
          return null;
       }
 
       var lights = FrameSelector.approvedLightRecords( self.state );
       if ( lights.length == 0 )
       {
-         ( new MessageBox( "Every frame is rejected; there is nothing to import.",
-                           "Loom Frame Selector", StdIcon_Information,
-                           StdButton_Ok ) ).execute();
+         FrameSelector.tell( "Every frame is rejected; there is nothing to import.",
+                             StdIcon_Information );
          return null;
       }
 
@@ -2868,39 +2824,26 @@ FrameSelector.Dialog = class extends Dialog
       var manifest = AsiairNames.manifest( lights, matches, AsiairNames.importRoot( dest ).root );
       if ( manifest.collisions.length > 0 )
       {
-         ( new MessageBox(
-            "Two source frames would be written to one name, which would " +
-            "lose one of them:\n\n" + manifest.collisions[0].dst +
-            "\n\nNothing has been written.",
-            "Loom Frame Selector", StdIcon_Error, StdButton_Ok ) ).execute();
+         FrameSelector.tell( "Two source frames would be written to one name, which would " +
+                             "lose one of them:\n\n" + manifest.collisions[0].dst +
+                             "\n\nNothing has been written.", StdIcon_Error );
          return null;
       }
 
       var summary = AsiairNames.importSummary( manifest, dest );
-      if ( ( new MessageBox( summary, "Loom Frame Selector", StdIcon_Question,
-                             StdButton_Yes, StdButton_No ) ).execute() != StdButton_Yes )
+      if ( !FrameSelector.ask( summary, StdIcon_Question ) )
          return null;
 
       self.state.locked = true;
-      var result = null;
-      var progress = new FrameSelector.ScanWindow;
-      try
+      var result = FrameSelector.withProgress( null, function( w )
       {
-         progress.show();
-         CoreApplication.processEvents();
-         result = FrameSelector.writeManifest( manifest, function( done, total ) {
-            try { return progress.report( "Importing", done, total, "" ); } catch ( e ) { return true; }
+         return FrameSelector.writeManifest( manifest, function( done, total ) {
+            try { return w.report( "Importing", done, total, "" ); } catch ( e ) { return true; }
          } );
-      }
-      finally
-      {
-         try { progress.hide(); } catch ( e ) {}
-         try { progress.release(); } catch ( e ) {}
-      }
+      }, { cancellable: true } );
 
       var outcome = FrameSelector.importOutcome( result );
-      ( new MessageBox( outcome.text, "Loom Frame Selector", outcome.icon,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( outcome.text, outcome.icon );
 
       self.refresh();
       return result;
@@ -2941,78 +2884,78 @@ FrameSelector.Dialog = class extends Dialog
       return AsiairNames.matchFlats( wanted, records );
    }
 
+   /*
+    * Snapshot the review into a manifest and run it. The manifest is a
+    * snapshot: once this returns the review is locked, so no knob change
+    * can alter what is already deleting files, and pressing Run twice
+    * cannot run two manifests over one cohort.
+    */
    commit()
    {
-      var self = this;
-            if ( !self.editable() )
-               return null;
-            // A limit typed but not yet confirmed is part of what Run acts on.
-            self.commitPendingEdits();
-            /*
-             * Import mode FIRST, and gated on the mode rather than on a
-             * path comparison: the delete-in-place path below must be
-             * unreachable when the source is a card, and a mode flag
-             * cannot be defeated by a symlink.
-             */
-            if ( self.importing() )
-               return self.commitImport();
-            if ( self.copyingOut() )
-               return self.commitCopy();
-            var committable = self.committableRows();
-            var manifest = Frames.buildManifest( committable.rows );
-            if ( manifest.entries.length == 0 )
-               return null;
+      if ( !this.editable() )
+         return null;
+      // A limit typed but not yet confirmed is part of what Run acts on.
+      this.commitPendingEdits();
+      /*
+       * Import mode FIRST, and gated on the mode rather than on a
+       * path comparison: the delete-in-place path below must be
+       * unreachable when the source is a card, and a mode flag
+       * cannot be defeated by a symlink.
+       */
+      if ( this.importing() )
+         return this.commitImport();
+      if ( this.copyingOut() )
+         return this.commitCopy();
+      var committable = this.committableRows();
+      var manifest = Frames.buildManifest( committable.rows );
+      if ( manifest.entries.length == 0 )
+         return null;
 
-            var mb = new MessageBox(
-               "Delete " + manifest.entries.length + " frame(s)?\n\n" +
-               committable.perChannel.join( "\n" ) + "\n\nThis cannot be undone.",
-               "Loom Frame Selector", StdIcon_Warning,
-               StdButton_Yes, StdButton_No );
-            if ( mb.execute() != StdButton_Yes )
-               return null;
+      if ( !FrameSelector.ask( "Delete " + manifest.entries.length + " frame(s)?\n\n" +
+                               committable.perChannel.join( "\n" ) + "\n\nThis cannot be undone.",
+                               StdIcon_Warning ) )
+         return null;
 
-            self.state.phase = Frames.nextPhase( self.state.phase, "commit" );
-            self.state.locked = true;
-            self.state.manifest = manifest;
-            var result = FrameSelector.withProgress( "Loom Frame Selector - deleting", function( w )
+      this.state.phase = Frames.nextPhase( this.state.phase, "commit" );
+      this.state.locked = true;
+      this.state.manifest = manifest;
+      var result = FrameSelector.withProgress( "Loom Frame Selector - deleting", function( w )
+      {
+         return FrameSelector.execute( manifest, function( done, total, path )
+         {
+            w.report( "Deleting rejected frames", done, total, File.extractName( path ) );
+         } );
+      } );
+
+      /*
+       * Asked for the input folder as the destination: the rejected
+       * frames have just gone, and what remains is converted where it
+       * sits. A folder already in XISF is a no-op, which is the
+       * common case and costs nothing to say.
+       *
+       * After the deletion, deliberately: converting a frame that is
+       * about to be removed is work thrown away.
+       */
+      if ( this.destinationIsSource() )
+      {
+         var keep = this.approvedPaths(), todo = Frames.needingXisf( keep ).length;
+         // a folder already in XISF has nothing to convert and gets no window
+         result.converted = ( todo == 0 ) ? FrameSelector.convertInPlace( keep ) :
+            FrameSelector.withProgress( "Loom Frame Selector - converting", function( w )
             {
-               return FrameSelector.execute( manifest, function( done, total, path )
-               {
-                  w.report( "Deleting rejected frames", done, total, File.extractName( path ) );
-               } );
+               w.display( "Converting " + todo + " frame(s) to XISF where they are",
+                          "", null );
+               return FrameSelector.convertInPlace( keep );
             } );
+      }
 
-            /*
-             * Asked for the input folder as the destination: the rejected
-             * frames have just gone, and what remains is converted where it
-             * sits. A folder already in XISF is a no-op, which is the
-             * common case and costs nothing to say.
-             *
-             * After the deletion, deliberately: converting a frame that is
-             * about to be removed is work thrown away.
-             */
-            if ( self.destinationIsSource() )
-            {
-               var keep = self.approvedPaths(), todo = Frames.needingXisf( keep ).length;
-               // a folder already in XISF has nothing to convert and gets no window
-               result.converted = ( todo == 0 ) ? FrameSelector.convertInPlace( keep ) :
-                  FrameSelector.withProgress( "Loom Frame Selector - converting", function( w )
-                  {
-                     w.display( "Converting " + todo + " frame(s) to XISF where they are",
-                                "", null );
-                     return FrameSelector.convertInPlace( keep );
-                  } );
-            }
-
-            self.state.phase = Frames.nextPhase( self.state.phase,
-                                                 result.stopped ? "stop" : "finish" );
-            self.refresh();
-            self.reportOutcome( result );
-            return result;
+      this.state.phase = Frames.nextPhase( this.state.phase,
+                                           result.stopped ? "stop" : "finish" );
+      this.refresh();
+      this.reportOutcome( result );
+      return result;
    }
 
-
-   /* Sizers only: what goes where. */
    /* The Approval criteria group's two rows. */
    layOutCriteria()
    {
@@ -3049,6 +2992,7 @@ FrameSelector.Dialog = class extends Dialog
       box.sizer.add( row2 );
    }
 
+   /* Sizers only: what goes where. */
    layOut()
    {
       var self = this;
@@ -4060,18 +4004,43 @@ FrameSelector.ScanWindow = class extends Dialog
 };
 
 /*
- * Run one step under its own progress window, which is always taken down
- * again, before anything modal can open behind it. For steps that cannot
- * be stopped half way -- deleting, converting, writing -- so Cancel is
- * off: a button that does nothing is worse than none.
+ * Every message the Frame Selector shows goes through these two, under
+ * its own title: tell() informs, ask() is a Yes/No question, Yes first and
+ * the default. One place for the boxes, and the seam a test answers them
+ * through instead of a modal window nobody is there to close.
  */
-FrameSelector.withProgress = function( title, work )
+FrameSelector.tell = function( text, icon )
 {
+   ( new MessageBox( text, "Loom Frame Selector", icon, StdButton_Ok ) ).execute();
+};
+
+FrameSelector.ask = function( text, icon )
+{
+   return ( new MessageBox( text, "Loom Frame Selector", icon,
+                            StdButton_Yes, StdButton_No ) ).execute() == StdButton_Yes;
+};
+
+/*
+ * Run one step under its own progress window, which is always taken down
+ * again, before anything modal can open behind it -- and released, rather
+ * than left for the collector with JS still attached to it.
+ *
+ * Cancel is off unless opts.cancellable: steps that cannot be stopped half
+ * way -- deleting, converting, writing -- must not offer a button that does
+ * nothing. A null title keeps the window's own. opts.before( w ) runs
+ * before the window is shown, so its first paint already says something.
+ */
+FrameSelector.withProgress = function( title, work, opts )
+{
+   opts = opts || {};
    var w = new FrameSelector.ScanWindow;
    try
    {
-      w.windowTitle = title;
-      w.cancelButton.enabled = false;
+      if ( title != null )
+         w.windowTitle = title;
+      w.cancelButton.enabled = !!opts.cancellable;
+      if ( opts.before )
+         opts.before( w );
       w.show();
       CoreApplication.processEvents();
       return work( w );
@@ -4098,49 +4067,32 @@ FrameSelector.offerCard = function()
     * shown the tool looked stuck while it opened.
     */
    var cards = [];
-   var looking = new FrameSelector.ScanWindow;
    try
    {
-      looking.windowTitle = "Loom Frame Selector - starting up";
-      looking.announce( "Starting up: looking for an ASIAIR\u2026" );
-      looking.show();
-      CoreApplication.processEvents();
-      cards = Asiair.detect( function() { return looking.cancelled; },
-                             function( k, n, root ) { looking.report( "Looking for an ASIAIR", k, n, root ); } );
+      cards = FrameSelector.withProgress( "Loom Frame Selector - starting up", function( looking )
+      {
+         return Asiair.detect( function() { return looking.cancelled; },
+                               function( k, n, root ) { looking.report( "Looking for an ASIAIR", k, n, root ); } );
+      }, { cancellable: true,
+           before: function( w ) { w.announce( "Starting up: looking for an ASIAIR\u2026" ); } } );
    }
    catch ( e ) { cards = []; }
-   finally
-   {
-      try { looking.hide(); } catch ( e ) {}
-      try { looking.release(); } catch ( e ) {}
-   }
    if ( cards.length == 0 )
       return null;
 
    // no question first: a card is read straight away and every target's nights are shown (Cancel there opens the folder chooser)
    var root = cards[0];
 
-   var scan = null;
-   var progress = new FrameSelector.ScanWindow;
-   try
+   var scan = FrameSelector.withProgress( null, function( progress )
    {
-      progress.show();
-      CoreApplication.processEvents();
-      scan = Asiair.scanCard( root, function( n ) {
+      return Asiair.scanCard( root, function( n ) {
          try { progress.report( "Reading the ASIAIR card: files found", n, 0, root ); } catch ( e ) {}
       }, function() { return progress.cancelled; } );
-   }
-   finally
-   {
-      try { progress.hide(); } catch ( e ) {}
-      try { progress.release(); } catch ( e ) {}
-   }
+   }, { cancellable: true } );
 
    if ( scan == null || scan.removed )
    {
-      ( new MessageBox( "The card went away while it was being read.",
-                        "Loom Frame Selector", StdIcon_Warning,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( "The card went away while it was being read.", StdIcon_Warning );
       return null;
    }
    // a read the user stopped is no card: the folder chooser follows
@@ -4148,9 +4100,7 @@ FrameSelector.offerCard = function()
       return null;
    if ( scan.lights.length == 0 )
    {
-      ( new MessageBox( "No readable light frames on that card.",
-                        "Loom Frame Selector", StdIcon_Information,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( "No readable light frames on that card.", StdIcon_Information );
       return null;
    }
 
@@ -4167,20 +4117,10 @@ FrameSelector.offerCard = function()
    for ( var i = 0; i < night.frames.length; ++i )
       paths.push( night.frames[i].path );
 
-   var state = null;
-   var p2 = new FrameSelector.ScanWindow;
-   try
+   var state = FrameSelector.withProgress( null, function( w )
    {
-      p2.show();
-      CoreApplication.processEvents();
-      state = FrameSelector.buildStateFrom(
-         paths, night.target + " " + night.date, p2.callbacks() );
-   }
-   finally
-   {
-      try { p2.hide(); } catch ( e ) {}
-      try { p2.release(); } catch ( e ) {}
-   }
+      return FrameSelector.buildStateFrom( paths, night.target + " " + night.date, w.callbacks() );
+   }, { cancellable: true } );
 
    if ( state == null || state.cancelled )
       return null;
@@ -4216,35 +4156,17 @@ FrameSelector.main = function()
     * and warns on every run. Loom requires 1.9.5, so the new name is
     * always there.
     */
-
-   var progress = new FrameSelector.ScanWindow;
-   var state;
-   try
+   var state = FrameSelector.withProgress( null, function( w )
    {
-      progress.show();
-      CoreApplication.processEvents();
-      state = FrameSelector.buildState( gd.directoryPath, progress.callbacks() );
-   }
-   finally
-   {
-      // Always, and before anything modal: a progress window left on top
-      // of a message box is one the user cannot get past.
-      try { progress.hide(); } catch ( e ) {}
-      /*
-       * And its handlers, rather than waiting for the collector to destroy
-       * a window that still has JS attached to it.
-       */
-      try { progress.release(); } catch ( e ) {}
-   }
+      return FrameSelector.buildState( gd.directoryPath, w.callbacks() );
+   }, { cancellable: true } );
 
    if ( state.cancelled )
       return;
 
    if ( state.order.length == 0 )
    {
-      ( new MessageBox( "No readable frames in that folder.",
-                        "Loom Frame Selector", StdIcon_Information,
-                        StdButton_Ok ) ).execute();
+      FrameSelector.tell( "No readable frames in that folder.", StdIcon_Information );
       return;
    }
    /*

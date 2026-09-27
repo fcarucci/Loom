@@ -3497,6 +3497,9 @@ function runTests()
 
    check( "the opening preset is Balanced", Frames.DEFAULT_PRESET, "balanced" );
    check( "Lenient is the widest gate", Frames.PRESETS.lenient, 3.0 );
+   check( "the presets by name, widest first, as the review offers them",
+          [ Frames.PRESET_NAMES, Object.keys( Frames.PRESETS ).sort().join() ],
+          [ [ "lenient", "balanced", "strict" ], Frames.PRESET_NAMES.slice().sort().join() ] );
    check( "Strict the narrowest", Frames.PRESETS.strict, 2.0 );
 
    /*
@@ -11204,6 +11207,243 @@ function runTests()
              [ dlg.editable(), dlg.applyButton.enabled, dlg.commit(), copied, state.channels.H.settings.k ],
              [ false, false, null, 0, k0 ] );
       dlg.cancel();
+   } )();
+
+   /*
+    * Every progress window and every message box, per call site, through
+    * a recording window and scripted answers. The windows: title, Cancel
+    * on or off, shown before the work and always hidden and released after
+    * it -- even when showing or the work throws -- and the startup window
+    * says what it does BEFORE it is shown. The messages: which ones each
+    * path shows, word for word, and what a Yes or a No leads to. Import is
+    * a card's path and never deletes; delete asks first; copy asks nothing.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var log = [], windows = [], throwAt = null, told = [], asked = [], answers = [];
+      function FakeWindow()
+      {
+         var me = this, n = windows.length;
+         windows.push( me );
+         me.windowTitle = "Loom Frame Selector - scanning";
+         me.cancelButton = { enabled: true };
+         me.cancelled = false;
+         function note( what ) { log.push( n + " " + what ); if ( throwAt == what ) throw new Error( "fake " + what ); }
+         me.show = function() { me.shown = [ me.windowTitle, me.cancelButton.enabled ]; note( "show" ); };
+         me.hide = function() { note( "hide" ); };
+         me.release = function() { note( "release" ); };
+         me.announce = function( t ) { note( "announce" ); };
+         me.report = function() { note( "report" ); return !me.cancelled; };
+         me.display = function() { note( "display" ); return !me.cancelled; };
+         me.callbacks = function() { return { reading: function() { return true; }, measuring: function() { return true; } }; };
+         note( "new" );
+      }
+      function shown() { return windows.map( function( w ) { return w.shown || null; } ); }
+      function reset() { log = []; windows = []; told = []; asked = []; throwAt = null; }
+      var SCAN_TITLE = "Loom Frame Selector - scanning", E = [];
+      var real = { win: FrameSelector.ScanWindow, tell: FrameSelector.tell, ask: FrameSelector.ask,
+                   detect: Asiair.detect, scan: Asiair.scanCard, survey: NightDialog.surveyOf,
+                   flats: NightDialog.flatsForNight, dialog: NightDialog.Dialog,
+                   build: FrameSelector.buildStateFrom, buildState: FrameSelector.buildState,
+                   offer: FrameSelector.offerCard, write: FrameSelector.writeManifest,
+                   manifest: AsiairNames.manifest, summary: AsiairNames.importSummary,
+                   exportApproved: FrameSelector.exportApproved, execute: FrameSelector.execute,
+                   convert: FrameSelector.convertInPlace, events: CoreApplication.processEvents,
+                   gdd: GetDirectoryDialog };
+      try
+      {
+         FrameSelector.ScanWindow = FakeWindow;
+         FrameSelector.tell = function( text, icon ) { told.push( [ text, icon ] ); };
+         FrameSelector.ask = function( text, icon ) { asked.push( [ text, icon ] ); return answers.shift(); };
+         try { CoreApplication.processEvents = function() { log.push( "events" ); }; } catch ( e ) {}
+         if ( CoreApplication.processEvents !== real.events ) E = [ "events" ];
+
+         /* ---- withProgress itself ---- */
+         reset();
+         var r = FrameSelector.withProgress( "T", function( w ) { log.push( "work" ); return 7; } );
+         check( "T-P2a a step under its window: titled, Cancel off, shown, then the work, then hidden and released",
+                [ r, shown(), log ], [ 7, [ [ "T", false ] ], [ "0 new", "0 show" ].concat( E, [ "work", "0 hide", "0 release" ] ) ] );
+         reset();
+         var caught = null;
+         try { FrameSelector.withProgress( "T", function() { throw new Error( "boom" ); } ); }
+         catch ( e ) { caught = e.message; }
+         check( "T-P2a work that throws still hides and releases its window, and the error goes on",
+                [ caught, log ], [ "boom", [ "0 new", "0 show" ].concat( E, [ "0 hide", "0 release" ] ) ] );
+         reset(); throwAt = "show"; caught = null;
+         try { FrameSelector.withProgress( "T", function() { log.push( "work" ); } ); }
+         catch ( e ) { caught = e.message; }
+         check( "T-P2a a window that cannot show is still released, and the work never runs",
+                [ caught, log ], [ "fake show", [ "0 new", "0 show", "0 hide", "0 release" ] ] );
+
+         /* ---- the card flow's three windows, and its two messages ---- */
+         var night = { target: "M42", date: "2026-01-02", frames: [ { path: "/card/a.fit" } ] };
+         var scanned = { lights: [ 1 ], flats: [], removed: false };
+         Asiair.detect = function( stop, report ) { report( 1, 1, "/card" ); return [ "/card" ]; };
+         Asiair.scanCard = function( root, onProgress, shouldStop ) { onProgress( 3 ); return scanned; };
+         NightDialog.surveyOf = function() { return { nights: [ night ] }; };
+         NightDialog.flatsForNight = function() { return []; };
+         NightDialog.Dialog = function()
+         {
+            this.execute = function() { this.selectedNight = night; return true; };
+            this.release = function() {};
+         };
+         FrameSelector.buildStateFrom = function() { return { order: [ "R" ], channels: {} }; };
+         reset();
+         var st = FrameSelector.offerCard();
+         check( "T-P2a the card flow: starting up (announced before it shows), reading the card, reading the night",
+                [ st != null && st.cardRoot, shown(), log ],
+                [ "/card", [ [ "Loom Frame Selector - starting up", true ], [ SCAN_TITLE, true ], [ SCAN_TITLE, true ] ],
+                  [ "0 new", "0 announce", "0 show" ].concat( E, [ "0 report", "0 hide", "0 release",
+                    "1 new", "1 show" ], E, [ "1 report", "1 hide", "1 release", "2 new", "2 show" ], E,
+                    [ "2 hide", "2 release" ] ) ] );
+         check( "T-P2a and asks nothing", [ told, asked ], [ [], [] ] );
+         reset(); scanned = { lights: [ 1 ], flats: [], removed: true };
+         check( "T22 a card that goes away while it is read says so",
+                [ FrameSelector.offerCard(), told ],
+                [ null, [ [ "The card went away while it was being read.", StdIcon_Warning ] ] ] );
+         reset(); scanned = { lights: [], flats: [], removed: false };
+         check( "T22 a card with no lights says so",
+                [ FrameSelector.offerCard(), told ],
+                [ null, [ [ "No readable light frames on that card.", StdIcon_Information ] ] ] );
+
+         /* ---- the folder flow's window and its one message ---- */
+         var dirAsked = 0;
+         var FakeDirectoryDialog = function()
+         {
+            this.execute = function() { ++dirAsked; return true; };
+            this.directoryPath = "/nowhere";
+         };
+         try { GetDirectoryDialog = FakeDirectoryDialog; } catch ( e ) {}
+         if ( GetDirectoryDialog === FakeDirectoryDialog )
+         {
+            FrameSelector.offerCard = function() { return null; };
+            FrameSelector.buildState = function( folder, cb ) { return { order: [], channels: {}, cancelled: false }; };
+            reset();
+            FrameSelector.main();
+            check( "T-P2a the folder flow: one scanning window with Cancel, then an empty folder says so",
+                   [ dirAsked, shown(), log, told ],
+                   [ 1, [ [ SCAN_TITLE, true ] ], [ "0 new", "0 show" ].concat( E, [ "0 hide", "0 release" ] ),
+                     [ [ "No readable frames in that folder.", StdIcon_Information ] ] ] );
+         }
+         else
+            check( "T-P2a GetDirectoryDialog can be stood in for", false, true );
+
+         /* ---- Run: import, copy and delete, through the review ---- */
+         var entries = [], metrics = {};
+         for ( var i = 0; i < 6; ++i )
+         {
+            var p = "/nowhere/p2_" + i + "_c.xisf";
+            entries.push( { path: p, identity: { digest: "p" + i, size: 1, mtime: 1 } } );
+            metrics[p] = { psfSNR: 13 + ( i % 3 ), fwhm: 3.8 + ( i % 5 )*0.3, eccentricity: 0.6, stars: 8900 - i*40 };
+         }
+         var review = function( cardRoot, destination )
+         {
+            var s = FrameSelector.emptyState( "/nowhere" );
+            s.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+            s.order.push( "H" );
+            s.cardRoot = cardRoot;
+            s.destination = destination;
+            var d = tracked( new FrameSelector.Dialog( s ) );
+            d.matchedFlats = function() { return []; };
+            return d;
+         };
+         var written = [], manifest = { lights: [ { src: "/nowhere/p2_0_c.xisf", dst: "/elsewhere/Light/a.xisf" } ],
+                                        flats: [], collisions: [] };
+         AsiairNames.manifest = function() { return manifest; };
+         AsiairNames.importSummary = function() { return "SUMMARY"; };
+         FrameSelector.writeManifest = function( m, onProgress )
+         {
+            written.push( m === manifest, onProgress( 1, 1 ) );
+            return { written: 1, failed: [], cancelled: false };
+         };
+         var executed = [];
+         FrameSelector.execute = function( m, onProgress ) { executed.push( m.entries.length ); return { stopped: false }; };
+
+         var imp = review( "/nowhere-card", "/elsewhere" );
+         reset(); answers = [ false ];
+         check( "T-P2b import: a No to the summary writes nothing",
+                [ imp.commit(), asked, written, told, imp.state.locked ],
+                [ null, [ [ "SUMMARY", StdIcon_Question ] ], [], [], false ] );
+         reset(); answers = [ true ];
+         var impResult = imp.commit();
+         check( "T-P2b import: a Yes writes the manifest under a window with Cancel, and reports it",
+                [ impResult && impResult.written, written, told, executed, imp.state.locked ],
+                [ 1, [ true, true ], [ [ "Imported 1 frame(s).", StdIcon_Information ] ], [], true ] );
+         check( "T-P2a import's windows: reading the flats (no Cancel), then importing (Cancel)",
+                shown(), [ [ "Loom Frame Selector - flats", false ], [ SCAN_TITLE, true ] ] );
+
+         var refusals = [
+            [ review( "/nowhere-card", "/nowhere" ),
+              "Choose a destination folder first.\n\nFrames are never written back to the card.", StdIcon_Information ],
+            [ review( "/nowhere-card", "/nowhere-card/out" ),
+              "That destination is on the card.\n\n/nowhere-card/out\n\nPick somewhere else.", StdIcon_Error ] ];
+         var none = review( "/nowhere-card", "/elsewhere" );
+         none.state.channels.H.rows.forEach( function( row ) { row.override = Frames.OVERRIDE.CONDEMNED; } );
+         refusals.push( [ none, "Every frame is rejected; there is nothing to import.", StdIcon_Information ] );
+         refusals.forEach( function( c, k )
+         {
+            reset(); written = [];
+            check( "T-P2b import refusal " + k + ": said, nothing written",
+                   [ c[0].commit(), told, asked, written ], [ null, [ [ c[1], c[2] ] ], [], [] ] );
+         } );
+         manifest = { lights: [], flats: [], collisions: [ { dst: "/elsewhere/Light/x.xisf" } ] };
+         reset(); written = [];
+         check( "T-P2b import: two frames onto one name is refused before anything is asked",
+                [ review( "/nowhere-card", "/elsewhere" ).commit(), told, asked, written ],
+                [ null, [ [ "Two source frames would be written to one name, which would lose one of them:\n\n" +
+                            "/elsewhere/Light/x.xisf\n\nNothing has been written.", StdIcon_Error ] ], [], [] ] );
+
+         FrameSelector.exportApproved = function( approved, dest ) { return { written: approved.length, failed: 0, refused: null }; };
+         var copy = review( null, "/elsewhere" );
+         reset();
+         check( "T-P2b copy: nothing asked, written under a window without Cancel, and reported",
+                [ copy.commit() != null, asked, told, shown(), executed ],
+                [ true, [], [ [ "6 frame(s) written to\n/elsewhere", StdIcon_Information ] ],
+                  [ [ "Loom Frame Selector - writing", false ] ], [] ] );
+         FrameSelector.exportApproved = function() { return { written: 0, failed: 0, refused: "no reason" }; };
+         reset();
+         check( "T-P2b copy refused: said, and the review stays open",
+                [ review( null, "/elsewhere" ).commit() != null, told ],
+                [ true, [ [ "Nothing was written: no reason", StdIcon_Information ] ] ] );
+
+         FrameSelector.convertInPlace = function( keep ) { return { converted: 0, failed: 0, alreadyXisf: keep.length, refused: null }; };
+         var del = review( null, "/nowhere" );
+         del.state.channels.H.rows[0].override = Frames.OVERRIDE.CONDEMNED;
+         del.refresh();
+         reset(); answers = [ false ];
+         check( "T-P2b delete: asks first, and a No deletes nothing",
+                [ del.commit(), asked, executed ],
+                [ null, [ [ "Delete 1 frame(s)?\n\nH: 1\n\nThis cannot be undone.", StdIcon_Warning ] ], [] ] );
+         reset(); answers = [ true ];
+         del.commit();
+         check( "T-P2b delete: a Yes deletes under a window without Cancel, nothing more to say",
+                [ executed, del.state.phase, told, shown() ],
+                [ [ 1 ], Frames.PHASE.DONE, [], [ [ "Loom Frame Selector - deleting", false ] ] ] );
+
+         var failing = review( null, "/elsewhere" );
+         failing.commit = function() { throw new Error( "no disk" ); };
+         reset();
+         failing.applyButton.onClick();
+         check( "T-P2b a Run that throws is reported, not passed on to Qt",
+                told, [ [ "The run failed:\n\nError: no disk", StdIcon_Error ] ] );
+
+         check( "T-P2c the preset combo offers the three presets, in order",
+                [ 0, 1, 2 ].map( function( k ) { return failing.presetCombo.itemText( k ); } ),
+                [ "lenient", "balanced", "strict" ] );
+      }
+      finally
+      {
+         FrameSelector.ScanWindow = real.win; FrameSelector.tell = real.tell; FrameSelector.ask = real.ask;
+         Asiair.detect = real.detect; Asiair.scanCard = real.scan;
+         NightDialog.surveyOf = real.survey; NightDialog.flatsForNight = real.flats; NightDialog.Dialog = real.dialog;
+         FrameSelector.buildStateFrom = real.build; FrameSelector.buildState = real.buildState;
+         FrameSelector.offerCard = real.offer; FrameSelector.writeManifest = real.write;
+         AsiairNames.manifest = real.manifest; AsiairNames.importSummary = real.summary;
+         FrameSelector.exportApproved = real.exportApproved; FrameSelector.execute = real.execute;
+         FrameSelector.convertInPlace = real.convert;
+         try { CoreApplication.processEvents = real.events; } catch ( e ) {}
+         try { GetDirectoryDialog = real.gdd; } catch ( e ) {}
+      }
    } )();
 
    check( "an AppleDouble sidecar is not a frame",
