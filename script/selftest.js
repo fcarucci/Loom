@@ -7367,6 +7367,96 @@ function runTests()
              [ true, 2, null, 0 ] );
    } )();
 
+   /*
+    * addMastersFolder end to end on a synthetic folder, headers scripted:
+    * named candidates are ranked from their names and only the winners
+    * opened; the header's FILTER wins over the name (and is reported); a
+    * winner that is not a light, or cannot be read, is dropped; a file
+    * without a FILTER token is opened only when no name named a channel;
+    * a confirmed master displaces the entry that held its channel; and
+    * the status line says what happened. Measuring is stubbed.
+    */
+   ( function()
+   {
+      var root = "/tmp/agent-scratch/loom-ui-masters-folder";
+      var PRE = "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-";
+      var named = root + "/named", unnamed = root + "/unnamed";
+      ensureDir( root );
+      ensureDir( named );
+      ensureDir( unnamed );
+      [ PRE + "R_mono.xisf", PRE + "G_mono_drizzle_2x_autocrop.xisf", PRE + "G_mono.xisf",
+        PRE + "S_mono.xisf", PRE + "H_mono.xisf", "masterFlat_FILTER-R.xisf", "odd.xisf", "notes.txt" ]
+         .forEach( function( n ) { File.writeTextFile( named + "/" + n, "x" ); } );
+      [ "odd.xisf", "odd2.fits", "masterDark_EXPOSURE-60.00s.xisf" ]
+         .forEach( function( n ) { File.writeTextFile( unnamed + "/" + n, "x" ); } );
+      function kw( pairs ) { return pairs.map( function( p ) { return { name: p[0], value: p[1] }; } ); }
+      var headers = {};
+      headers[PRE + "R_mono.xisf"] = kw( [ [ "FILTER", "'Red'" ], [ "INSTRUME", "'CAM'" ] ] );
+      headers[PRE + "G_mono_drizzle_2x_autocrop.xisf"] = kw( [ [ "FILTER", "'Blue'" ], [ "XPIXSZ", "1.88" ] ] );
+      headers[PRE + "S_mono.xisf"] = kw( [ [ "FILTER", "'SII'" ], [ "IMAGETYP", "'Flat Field'" ] ] );
+      headers["odd.xisf"] = kw( [ [ "FILTER", "'Ha'" ], [ "IMAGETYP", "'Master Light'" ] ] );
+      headers["odd2.fits"] = kw( [ [ "OBJECT", "'M31'" ] ] );
+
+      function run( dir )
+      {
+         var d = Object.create( UI.SelectDialog.prototype ), log = [];
+         d.entries = [ { channel: "R", ref: "/old/R.xisf" }, { channel: "L", ref: "/old/L.xisf" } ];
+         d.status = { text: "before" };
+         // the "n of 4" follows the folder's listing order, which is the file system's
+         d.setBusy = function( m ) { log.push( "busy " + String( m ).replace( /\(\d+ of/, "(# of" ) ); };
+         d.rebuild = function() { log.push( "rebuild" ); };
+         var saved = [ Util.readImageInfo, Steps.measureMasterFWHM, Util.log ];
+         Util.readImageInfo = function( p )
+         {
+            var n = File.extractName( p ) + File.extractExtension( p );
+            log.push( "read " + n );
+            if ( !headers.hasOwnProperty( n ) )
+               throw new Error( "unreadable" );
+            return { keywords: headers[n], width: 100, height: 80 };
+         };
+         Steps.measureMasterFWHM = function( p ) { log.push( "measure " + File.extractName( p ) ); return { fwhm: 2.5 }; };
+         Util.log = function( m, t ) { log.push( "log " + m + ": " + t ); };
+         try { d.addMastersFolder( dir ); }
+         finally { Util.readImageInfo = saved[0]; Steps.measureMasterFWHM = saved[1]; Util.log = saved[2]; }
+         return { log: log, status: d.status.text, entries: d.entries.map( function( e )
+         {
+            return [ e.channel, e.ref.replace( root, "<root>" ), e.label, e.filter, e.instrume, e.drizzle,
+                     e.autocrop, e.width, e.height, e.quality && e.quality.fwhm, e.delta ].join( " | " );
+         } ).sort() };
+      }
+
+      var M = "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-", N = "<root>/named/", U = "<root>/unnamed/";
+      var OLD_L = "L | /old/L.xisf |  |  |  |  |  |  |  |  | ", OLD_R = "R | /old/R.xisf |  |  |  |  |  |  |  |  | ";
+      var got = run( named );
+      got.log.sort();   // winners are opened in the listing's order
+      check( "addMastersFolder: named masters, only the winners opened, the header's filter wins", got, {
+         log: [ "busy Measuring masters", "busy Measuring masters: B (# of 4)", "busy Measuring masters: R (# of 4)",
+                "busy null", "measure " + M + "G_mono_drizzle_2x_autocrop", "measure " + M + "R_mono",
+                "read " + M + "G_mono_drizzle_2x_autocrop.xisf", "read " + M + "H_mono.xisf",
+                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "rebuild" ],
+         status: "<b>Loaded 2 masters:</b> B (2x autocrop), R (full)  " +
+                 "<i>(7 files, 5 named candidates, 4 opened, 2 skipped)</i>" +
+                 "<br/><b>Filter from header, not name:</b> " + M + "G_mono_drizzle_2x_autocrop.xisf: " +
+                 "name says G, header says B",
+         entries: [ "B | " + N + M + "G_mono_drizzle_2x_autocrop.xisf | " + M + "G_mono_drizzle_2x_autocrop.xisf" +
+                    " | Blue |  | 2x | true | 100 | 80 | 2.5 | ",
+                    OLD_L,
+                    "R | " + N + M + "R_mono.xisf | " + M + "R_mono.xisf | Red | CAM |  | false | 100 | 80 | 2.5 | " ] } );
+      var u = run( unnamed );
+      check( "addMastersFolder: only files without a FILTER token, opened because no name named a channel",
+             [ u.log.slice( 0, 2 ).sort(), u.log.slice( 2 ), u.status, u.entries ], [
+         [ "read odd.xisf", "read odd2.fits" ],
+         [ "busy Measuring masters", "read odd.xisf", "busy Measuring masters: H (# of 1)", "measure odd",
+           "busy null", "rebuild" ],
+         "<b>Loaded 1 master:</b> H (full)  <i>(3 files, 1 named candidates, 1 opened, 1 skipped)</i>",
+         [ "H | " + U + "odd.xisf | odd.xisf | Ha |  |  | false | 100 | 80 | 2.5 | ", OLD_L, OLD_R ] ] );
+      var untouched = { log: [], status: "before", entries: [ OLD_L, OLD_R ] };
+      check( "addMastersFolder: a folder that cannot be listed, and no folder at all",
+             [ run( root + "/no-such-folder" ), run( "" ), run( null ) ],
+             [ { log: [], status: "<b>Nothing readable in that folder.</b>", entries: [ OLD_L, OLD_R ] },
+               untouched, untouched ] );
+   } )();
+
    } if ( testGroup( "pipeline.keys" ) ) {
    check( "companion path is distinct from the stage path",
           Cache.companionPathFor( "abc", "stars" ) != Cache.pathFor( "abc" ), true );
@@ -15983,6 +16073,63 @@ function runSolveTests()
    } )();
 
    /*
+    * Every key of defaultConfig is either persisted or deliberately
+    * per-run. Each key in turn is set to a non-default sentinel, saved and
+    * loaded through one fake store, and must come back as the sentinel;
+    * the per-run keys must come back as their defaults. A new option that
+    * saveConfig or loadConfig forgets fails here by name, rather than
+    * round-tripping silently as its default in the hand-built case above.
+    */
+   ( function()
+   {
+      var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache" ];
+      var SPECIAL = {
+         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "" },
+         palettes: [ "SHO" ],
+         filters: { L: "F" }
+      };
+      function sentinel( k, d )
+      {
+         if ( SPECIAL.hasOwnProperty( k ) )
+            return SPECIAL[k];
+         if ( typeof d == "boolean" )
+            return !d;
+         if ( typeof d == "number" )
+            return d + 1.25;
+         if ( typeof d == "string" )
+            return "x-" + k;
+         return Array.isArray( d ) ? [ "x-" + k ] : { x: "x-" + k };
+      }
+      var defaults = defaultConfig(), lost = [], kept = [], swapped = true;
+      for ( var k in defaults )
+      {
+         var c = defaultConfig();
+         c[k] = sentinel( k, defaults[k] );
+         var want = JSON.stringify( c[k] );
+         var saved = withConfigStore( {}, {}, function() { saveConfig( c ); } );
+         var back = withConfigStore( saved.stored, saved.paramsSet, function() { return loadConfig(); } );
+         if ( !saved.swapped || !back.swapped )
+         {
+            swapped = false;
+            break;
+         }
+         var got = JSON.stringify( back.result[k] );
+         if ( PER_RUN.indexOf( k ) >= 0 )
+         {
+            if ( got != JSON.stringify( defaults[k] ) )
+               kept.push( k + " = " + got );
+         }
+         else if ( got != want )
+            lost.push( k + ": " + want + " came back " + got );
+      }
+      check( "config: the fakes were in place for every key's round trip", swapped, true );
+      check( "config: every defaultConfig key not on the per-run list survives save then load", lost, [] );
+      check( "config: the per-run keys come back as their defaults", kept, [] );
+      check( "config: the per-run list names only keys of defaultConfig",
+             PER_RUN.filter( function( p ) { return !defaults.hasOwnProperty( p ); } ), [] );
+   } )();
+
+   /*
     * Loom.js main, as a transcript: every collaborator it reaches, in
     * order, for each way a launch can end -- refused core, relaunch after
     * an update, dialog cancelled, preflight failed, validate only, a run
@@ -16134,6 +16281,108 @@ function runSolveTests()
                                           "log done: Finished in 1 s. Nothing produced." ], after( false, F, null ) ),
          runThrows: START.concat( UPDATE, DIALOG, PREFLIGHT, RUN, END_LOG, after( true, F, "run failed" ) )
       } );
+   } )();
+
+   /*
+    * Loom.js main's helpers, on the paths the transcript above does not
+    * take: a validate-only report naming views as well as files, the
+    * too-old-core message, a result whose view id cannot be read, and
+    * the Cancel window's hooks -- live while it is up, inert once it is
+    * closed, and silent when the window or the log fails under them.
+    */
+   ( function()
+   {
+      var logged = [], realLog = Util.log;
+      try
+      {
+         Util.log = function( m, t ) { logged.push( m + ": " + t ); };
+         reportValidateOnly( { views: { L: "L_view", G: "G_view" },
+                               paths: { L: "/m/L.xisf", R: "/m/R.xisf", G: "", B: "", H: "/m/H.xisf", S: "", O: "" } } );
+      }
+      finally { Util.log = realLog; }
+      check( "Loom main: validate only names each channel's view before its file, in channel order", logged, [
+         "validate: All checks passed. Nothing executed.",
+         "validate: L <- view L_view", "validate: R <- /m/R.xisf", "validate: G <- view G_view",
+         "validate: H <- /m/H.xisf", "validate: Results stay as open windows" ] );
+      check( "Loom main: the too-old-core refusal", [ LOOM_CORE_CHECK.title,
+             LOOM_CORE_CHECK.message( { major: 1, minor: 8, release: 9, build: 1601 } ) ], [
+         "Loom: PixInsight is too old",
+         "Loom needs PixInsight 1.9.4 or later.\n\nThis is PixInsight 1.8.9 (build 1601).\n\n" +
+         "Loom uses the ImageSolver and AstrometricResiduals sources that ship with 1.9.4, and " +
+         "astrometric solutions written by it are not readable by earlier versions. " +
+         "Please update PixInsight and run Loom again." ] );
+      var unreadable = { mainView: {} };
+      Object.defineProperty( unreadable.mainView, "id", { get: function() { throw new Error( "closed" ); } } );
+      check( "Loom main: a result whose view id throws is left out of what was produced",
+             [ describeProduced( { a: unreadable, b: { mainView: { id: "RGB" } } } ),
+               describeProduced( { a: unreadable } ) ],
+             [ ". Produced: RGB.", ". Nothing produced." ] );
+   } )();
+
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var G = ( function() { return this; } )();
+      var log = [];
+      function rec( what ) { log.push( what ); }
+      var saved = [
+         [ console, [ "show", "writeln", "endLog", "abortEnabled" ] ],
+         [ Util, [ "warn", "cancelRequested", "reportProgress", "reportStage" ] ],
+         [ UI, [ "CancelWindow" ] ],
+         [ Pipeline, [ "cancelWindow" ] ],
+         [ G.CoreApplication, [ "processEvents" ] ]
+      ].map( function( e ) { return [ e[0], e[1], e[1].map( function( k ) { return e[0][k]; } ) ]; } );
+      var win = null;
+      try
+      {
+         console.show = function() { rec( "console.show" ); };
+         console.writeln = function( t ) { rec( "console.writeln " + t ); };
+         console.endLog = function() { rec( "console.endLog" ); throw new Error( "disk full" ); };
+         console.abortEnabled = false;
+         Util.warn = function( m, t ) { rec( "warn " + m + ": " + t ); };
+         G.CoreApplication.processEvents = function() { rec( "processEvents" ); };
+         UI.CancelWindow = function()
+         {
+            this.cancelled = false;
+            this.show = function() { rec( "show" ); };
+            this.setProgress = function( p, t ) { rec( "setProgress " + p + " " + t ); if ( t == "boom" ) throw new Error( t ); };
+            this.setStage = function( t ) { rec( "setStage " + t ); if ( t == "boom" ) throw new Error( t ); };
+            this.cancel = function() { rec( "cancel" ); throw new Error( "gone" ); };
+         };
+         win = showCancelWindow();
+         rec( "up: cancelWindow is it " + ( Pipeline.cancelWindow === win ) + ", abortEnabled " + console.abortEnabled +
+              ", cancelRequested " + Util.cancelRequested() );
+         win.cancelled = true;
+         rec( "pressed: cancelRequested " + Util.cancelRequested() );
+         Util.reportProgress( 10, "a" );
+         Util.reportProgress( 20, "boom" );
+         Util.reportStage( "s" );
+         Util.reportStage( "boom" );
+         closeCancelWindow( win );
+         rec( "closed: cancelWindow " + Pipeline.cancelWindow + ", cancelRequested " + Util.cancelRequested() );
+         Util.reportProgress( 30, "late" );
+         Util.reportStage( "late" );
+         closeCancelWindow( null );
+         rec( "closed again: cancelWindow " + Pipeline.cancelWindow );
+         endRunLog( null );
+         endRunLog( "/cache/logs/run.log" );
+         rec( "log ended" );
+      }
+      catch ( e ) { rec( "threw " + e.message ); }
+      finally
+      {
+         saved.forEach( function( e ) { e[1].forEach( function( k, i ) { e[0][k] = e[2][i]; } ); } );
+      }
+      check( "Loom main: the Cancel window's hooks while it is up, after it closes, and a log that fails to close", log, [
+         "show", "console.show",
+         "up: cancelWindow is it true, abortEnabled true, cancelRequested false",
+         "pressed: cancelRequested true",
+         "setProgress 10 a", "processEvents", "setProgress 20 boom",
+         "setStage s", "processEvents", "setStage boom",
+         "cancel",
+         "closed: cancelWindow null, cancelRequested false",
+         "closed again: cancelWindow null",
+         "console.endLog",
+         "log ended" ] );
    } )();
    }
 }
