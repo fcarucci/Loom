@@ -10961,7 +10961,7 @@ function runTests()
            flats: [ { src: "/nonexistent/x.fits", dst: dst + "/Flat/x.xisf" } ] },
          function( done, total ) { progress.push( done + "/" + total ); } );
       check( "T6 one frame written, the missing source failed with its reason", res,
-             { written: 1, failed: [ { src: "/nonexistent/x.fits", reason: "source is gone" } ] } );
+             { written: 1, failed: [ { src: "/nonexistent/x.fits", reason: "source is gone" } ], cancelled: false } );
       check( "T6 progress after every file", progress, [ "1/2", "2/2" ] );
       check( "T6 Light/ and Flat/ are made, and the copy is there",
              [ File.directoryExists( dst + "/Light" ), File.directoryExists( dst + "/Flat" ),
@@ -11116,6 +11116,21 @@ function runTests()
          picked = false; asked = [];
          check( "T22 the picker left with Cancel falls back, reading nothing",
                 [ FrameSelector.offerCard(), asked.length ], [ null, 0 ] );
+         /*
+          * BF-1 (B2): the card read is handed the window's Cancel, and a read
+          * the user stopped is no card -- the folder chooser follows -- rather
+          * than a picker over whatever had been found by then.
+          */
+         picked = true; asked = [];
+         var stopArg = null;
+         Asiair.scanCard = function( root, onProgress, shouldStop )
+         {
+            stopArg = shouldStop;
+            return { lights: [ 1 ], flats: [], removed: false, cancelled: true };
+         };
+         check( "BF-1 the card read can be cancelled, and a cancelled read is no card",
+                [ FrameSelector.offerCard(), typeof stopArg, stopArg ? stopArg() : null, asked.length ],
+                [ null, "function", false, 0 ] );
          detected = [];
          check( "T22 no card falls back", FrameSelector.offerCard(), null );
          detected = null;
@@ -11127,6 +11142,68 @@ function runTests()
          NightDialog.surveyOf = real.survey; NightDialog.flatsForNight = real.flats;
          NightDialog.Dialog = real.dialog; FrameSelector.buildStateFrom = real.build;
       }
+   } )();
+
+   /*
+    * BF-1 (B1): Cancel stops an import at the next file, and the report
+    * says how many were written and that it was cancelled. (B3): after an
+    * import or a copy the review is locked, as after a deletion -- Run is
+    * off and the knobs do nothing -- so one import cannot run twice.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var src = synthDir( "fs-bf1-src" ), dst = synthDir( "fs-bf1-dst" ), lights = [];
+      for ( var i = 0; i < 3; ++i )
+         lights.push( { src: synthFrame( src + "/l" + i + ".xisf", { width: 32, height: 24, stars: 0, fwhm: 3,
+                                                                     background: 0.02, noise: 0.002, seed: 90 + i } ),
+                        dst: dst + "/Light/l" + i + ".xisf" } );
+      var calls = 0;
+      var res = FrameSelector.writeManifest( { lights: lights, flats: [] },
+                                             function( done, total ) { ++calls; return done < 1; } );
+      check( "BF-1 Cancel stops the import after the file being written",
+             [ res.written, res.failed.length, res.cancelled, calls,
+               File.exists( lights[0].dst ), File.exists( lights[1].dst ) ],
+             [ 1, 0, true, 1, true, false ] );
+      var whole = FrameSelector.writeManifest( { lights: [ lights[2] ], flats: [] },
+                                               function() { return undefined; } );
+      check( "BF-1 a callback that says nothing does not stop it",
+             [ whole.written, whole.cancelled ], [ 1, false ] );
+
+      // a missing helper fails these three checks rather than stopping the suite
+      var importOutcome = FrameSelector.importOutcome || function() { return "no importOutcome"; };
+      check( "BF-1 the import report, finished", importOutcome( { written: 3, failed: [], cancelled: false } ),
+             { text: "Imported 3 frame(s).", icon: StdIcon_Information } );
+      check( "BF-1 the import report, with a failure",
+             importOutcome( { written: 2, failed: [ { src: "/c/x.fit", reason: "could not open" } ], cancelled: false } ),
+             { text: "Imported 2 frame(s); 1 failed:\n\n/c/x.fit\ncould not open", icon: StdIcon_Warning } );
+      check( "BF-1 the import report, cancelled",
+             importOutcome( { written: 1, failed: [], cancelled: true } ),
+             { text: "Import cancelled after 1 frame(s) were imported. The rest were not written.", icon: StdIcon_Warning } );
+
+      var entries = [], metrics = {};
+      for ( var k = 0; k < 6; ++k )
+      {
+         var p = "/nowhere/lock_" + k + "_c.xisf";
+         entries.push( { path: p, identity: { digest: "k" + k, size: 1, mtime: 1 } } );
+         metrics[p] = { psfSNR: 13 + ( k % 3 ), fwhm: 3.8 + ( k % 5 )*0.3, eccentricity: 0.6, stars: 8900 - k*40 };
+      }
+      var state = FrameSelector.emptyState( "/nowhere" );
+      state.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+      state.order.push( "H" );
+      state.destination = "/elsewhere";
+      var dlg = tracked( new FrameSelector.Dialog( state ) );
+      check( "BF-1 an unlocked copy review can run", [ dlg.editable(), dlg.applyButton.enabled ], [ true, true ] );
+      state.locked = true;               // what an import or a copy leaves behind
+      dlg.refresh();
+      // a copy that did run would end in a message box: recorded instead
+      var copied = 0;
+      dlg.commitCopy = function() { ++copied; return "copied"; };
+      var k0 = state.channels.H.settings.k;
+      dlg.kEdit.onValueUpdated( k0 + 1 );
+      check( "BF-1 a locked review cannot run again, and its knobs do nothing",
+             [ dlg.editable(), dlg.applyButton.enabled, dlg.commit(), copied, state.channels.H.settings.k ],
+             [ false, false, null, 0, k0 ] );
+      dlg.cancel();
    } )();
 
    check( "an AppleDouble sidecar is not a frame",

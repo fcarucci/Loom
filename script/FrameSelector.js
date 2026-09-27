@@ -1548,12 +1548,13 @@ FrameSelector.verifyImported = function( src, dst )
 };
 
 /*
- * Write a whole manifest, verifying each file as it lands.
+ * Write a whole manifest, verifying each file as it lands. onProgress
+ * returning false (Cancel) stops it after the file just written.
  */
 FrameSelector.writeManifest = function( manifest, onProgress )
 {
    var all = manifest.lights.concat( manifest.flats );
-   var written = 0, failed = [];
+   var written = 0, failed = [], cancelled = false;
    for ( var i = 0; i < all.length; ++i )
    {
       var dir = all[i].dst.substring( 0, all[i].dst.lastIndexOf( "/" ) );
@@ -1567,10 +1568,34 @@ FrameSelector.writeManifest = function( manifest, onProgress )
       else
          failed.push( { src: all[i].src, reason: good.reason } );
 
-      if ( onProgress )
-         onProgress( i + 1, all.length );
+      if ( onProgress && onProgress( i + 1, all.length ) === false )
+      {
+         cancelled = true;
+         break;
+      }
    }
-   return { written: written, failed: failed };
+   return { written: written, failed: failed, cancelled: cancelled };
+};
+
+/*
+ * What a finished import says: how many were written, what failed, and
+ * whether it was cancelled -- in which case the rest were never written,
+ * and the card should not be wiped on the strength of it.
+ */
+FrameSelector.importOutcome = function( result )
+{
+   var head = result.cancelled
+      ? "Import cancelled after " + result.written + " frame(s) were imported"
+      : "Imported " + result.written + " frame(s)";
+   var text = ( result.failed.length == 0 )
+      ? head + "."
+      : head + "; " + result.failed.length + " failed:\n\n" +
+        result.failed[0].src + "\n" + result.failed[0].reason;
+   if ( result.cancelled )
+      text += ( result.failed.length == 0 ? " " : "\n\n" ) + "The rest were not written.";
+   return { text: text,
+            icon: ( result.failed.length == 0 && !result.cancelled ) ? StdIcon_Information
+                                                                     : StdIcon_Warning };
 };
 
 /*
@@ -2355,7 +2380,8 @@ FrameSelector.Dialog = class extends Dialog
    editable()
    {
       var self = this;
-            return Frames.canEdit( self.state.phase );
+            // locked once an import or a copy has run, as a deletion locks it
+            return Frames.canEdit( self.state.phase ) && !self.state.locked;
    }
 
    channel()
@@ -2777,6 +2803,9 @@ FrameSelector.Dialog = class extends Dialog
          w.display( "Writing " + approved.length + " approved frame(s) as XISF", dest, null );
          return FrameSelector.exportApproved( approved, dest );
       } );
+      // written: the review is done, as after a deletion -- Run is off
+      if ( result.refused == null )
+         this.state.locked = true;
       var message = ( result.refused != null )
          ? ( "Nothing was written: " + result.refused )
          : ( result.written + " frame(s) written to\n" + this.state.destination +
@@ -2784,6 +2813,7 @@ FrameSelector.Dialog = class extends Dialog
                              : "" ) );
       ( new MessageBox( message, "Loom Frame Selector", StdIcon_Information,
                         StdButton_Ok ) ).execute();
+      this.refresh();
       return result;
    }
 
@@ -2859,7 +2889,7 @@ FrameSelector.Dialog = class extends Dialog
          progress.show();
          CoreApplication.processEvents();
          result = FrameSelector.writeManifest( manifest, function( done, total ) {
-            try { progress.report( "Importing", done, total, "" ); } catch ( e ) {}
+            try { return progress.report( "Importing", done, total, "" ); } catch ( e ) { return true; }
          } );
       }
       finally
@@ -2868,15 +2898,9 @@ FrameSelector.Dialog = class extends Dialog
          try { progress.release(); } catch ( e ) {}
       }
 
-      ( new MessageBox(
-         result.failed.length == 0
-            ? "Imported " + result.written + " frame(s)."
-            : "Imported " + result.written + " frame(s); " +
-              result.failed.length + " failed:\n\n" +
-              result.failed[0].src + "\n" + result.failed[0].reason,
-         "Loom Frame Selector",
-         result.failed.length == 0 ? StdIcon_Information : StdIcon_Warning,
-         StdButton_Ok ) ).execute();
+      var outcome = FrameSelector.importOutcome( result );
+      ( new MessageBox( outcome.text, "Loom Frame Selector", outcome.icon,
+                        StdButton_Ok ) ).execute();
 
       self.refresh();
       return result;
@@ -4104,7 +4128,7 @@ FrameSelector.offerCard = function()
       CoreApplication.processEvents();
       scan = Asiair.scanCard( root, function( n ) {
          try { progress.report( "Reading the ASIAIR card: files found", n, 0, root ); } catch ( e ) {}
-      } );
+      }, function() { return progress.cancelled; } );
    }
    finally
    {
@@ -4119,6 +4143,9 @@ FrameSelector.offerCard = function()
                         StdButton_Ok ) ).execute();
       return null;
    }
+   // a read the user stopped is no card: the folder chooser follows
+   if ( scan.cancelled )
+      return null;
    if ( scan.lights.length == 0 )
    {
       ( new MessageBox( "No readable light frames on that card.",
