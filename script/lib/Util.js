@@ -409,15 +409,6 @@ Util.CHANNELS   = [ "L", "R", "G", "B", "H", "S", "O" ];
 Util.BROADBAND  = [ "L", "R", "G", "B" ];
 Util.RGB_GROUP  = [ "R", "G", "B" ];
 Util.NARROWBAND = [ "H", "S", "O" ];
-/*
- * No channel is required on its own. L used to be, only because it was
- * the hard-wired registration reference; without it Loom now registers to
- * the best channel it has (Pipeline.registrationReference), so RGB-only
- * and narrowband-only sets are valid. The "nothing to do" check below
- * still demands something to combine.
- */
-Util.REQUIRED   = [];
-
 Util.isBroadband = function( key )
 {
    return Util.BROADBAND.indexOf( key ) >= 0;
@@ -552,13 +543,15 @@ Util.error = function( stage, message )
 /*
  * Structural problems with a channel selection, independent of the
  * filesystem. Returns a list of human-readable problems; empty is valid.
+ * No channel is required on its own: without L Loom registers to the best
+ * channel it has (Pipeline.registrationReference), so RGB-only and
+ * narrowband-only sets are valid; there must be something to combine.
  */
 Util.validateSelection = function( paths, views )
 {
    views = views || {};
-   return Util.requiredChannelProblems( paths, views )
-      .concat( Util.channelGroupProblems( paths, views ),
-               Util.duplicateFileProblems( paths ) );
+   return Util.channelGroupProblems( paths, views )
+      .concat( Util.duplicateFileProblems( paths ) );
 };
 
 /*
@@ -569,15 +562,6 @@ Util.channelSupplied = function( paths, views, k )
 {
    return ( paths[k] != undefined && paths[k].length > 0 )
        || ( views[k] != undefined && String( views[k] ).length > 0 );
-};
-
-Util.requiredChannelProblems = function( paths, views )
-{
-   var problems = [];
-   for ( var i = 0; i < Util.REQUIRED.length; ++i )
-      if ( !Util.channelSupplied( paths, views, Util.REQUIRED[i] ) )
-         problems.push( "Missing required channel: " + Util.REQUIRED[i] );
-   return problems;
 };
 
 /*

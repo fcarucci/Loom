@@ -1046,6 +1046,15 @@ function runTests()
                                     G: "/a/X.xisf", B: "/a/B.xisf" } ),
           [ "Same file selected for R and G: /a/X.xisf" ] );
 
+   // Nothing supplied at all: one problem, and no channel is reported missing on its own
+   check( "validate an empty selection",
+          Util.validateSelection( {} ),
+          [ "Nothing to do: supply R, G and B, or at least one of H, S, O" ] );
+   // Several problems at once come out group problems first, then duplicates
+   check( "validate partial RGB with a duplicate, in order",
+          Util.validateSelection( { L: "/a/X.xisf", R: "/a/X.xisf", G: "/a/G.xisf" } ),
+          [ "Incomplete RGB set: missing B. Supply all three or none.", "Same file selected for L and R: /a/X.xisf" ] );
+
    } if ( testGroup( "steps.chain" ) ) {
    // Availability checks use real process constructors
    if ( IN_PIXINSIGHT )
