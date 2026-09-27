@@ -1,5 +1,5 @@
 {
-  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models; filterCurveByName and deviceCurveForImage when lookupDeviceCurve was folded into filterCurveByName( name, \"Q\" ).",
+  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models; filterCurveByName and deviceCurveForImage when lookupDeviceCurve was folded into filterCurveByName( name, \"Q\" ). denoise, and the new denoiseOperationDetail, when the console's operation line began naming Prism 2.0's pass.",
   "core5": {
     "ASSIGN_NEW_PROFILE": "number 383fcd42bad63d548eecefb5fe3f55821e43011f",
     "CORE_SETTINGS_DIR": "string c39c0158e3907d2180b56d38378156e9fc11c734",
@@ -105,10 +105,11 @@
     "cropTo": "function 88091cd74d719ce7530465f2b2dadfa0c5ce64f0",
     "currentProfilePlan": "function a82b07f1bb445bacca13c6a66928501ee92413cd",
     "curveLayerName": "function 1f93e5778079040fc816abdf27a58ef420ebe4d6",
-    "denoise": "function 852a1b307547ea5fc5af247512efe2ab8859a119",
+    "denoise": "function 39e584156c3ef0e371276fbd81c69920d3223e66",
     "denoiseIsLinear": "function 452da6273fde758fe562a62f90f55bbc2cdf0e9d",
     "denoiseMLDenoise": "function fcf6b889f18639640df00761024eb6e039ba438f",
     "denoiseNXT": "function cfa6d5246cbac1385bea82c39b5ad2777e900bc5",
+    "denoiseOperationDetail": "function 9d508fa12f8a964ca33d27b4ecedf8ee6a2a16b2",
     "denoisePrism": "function 03ffd6a8c35eced474d708229df5ab8e0c1d6f0f",
     "denoiseStudio": "function b64ed13980f247370cb39827f35d29b836e96bd6",
     "denoiseStudio2": "function e11d24f86d9e96237fe9b04f83ddc74db23c58cd",

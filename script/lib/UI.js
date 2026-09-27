@@ -194,6 +194,62 @@ UI.autoUpdateToolTip = function()
 };
 
 /*
+ * The noise tool dropdown's tooltip: where each tool runs, the strength
+ * ladder, and Prism 2.0's account check.
+ */
+UI.noiseToolToolTip = function()
+{
+   return "<p>Where each tool runs, on the finished RGB, L and palettes (never on " +
+          "the stars plate or single channels):</p>" +
+          "<p><b>NoiseXTerminator</b>, <b>MLDenoise</b>: linear, before the stretch.<br/>" +
+          "<b>SyQon Prism</b>: after the stretch.<br/>" +
+          "<b>SyQon Studio Prism Essential</b>: linear, before the stretch.<br/>" +
+          "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
+          "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
+          "stretch off, only Advanced runs. Max is very slow: about 20 minutes a " +
+          "plate where Ultra took 30 seconds, on the same image.</p>" +
+          "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
+          "High pushes past it (Essential\'s High is its Medium).</p>" +
+          "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
+          "Advanced, Ultra and Max; if it cannot, Loom offers Prism Essential " +
+          "(included) instead until a check succeeds.</p>";
+};
+
+/*
+ * What each strength runs for Prism 2.0, read from its ladder in
+ * Steps.NOISE_LEVELS, and what High costs. Measured in the maintainer's
+ * runs of 2026-09-27 on the same image (Advanced 33 s in both): Ultra
+ * 32 s on the RGB, Max 22 min on the RGB and 20 min on the palette.
+ */
+UI.prism2LevelsToolTip = function()
+{
+   function name( p ) { return Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" ); }
+   var ladder = Steps.NOISE_LEVELS.studio2, parts = [];
+   for ( var level in ladder )
+   {
+      var step = ladder[level];
+      parts.push( level.charAt( 0 ).toUpperCase() + level.slice( 1 ) + ": " + name( step.linear ) +
+                  ( step.stretched ? ", then " + name( step.stretched ) + " after the stretch" : " only" ) + "." );
+   }
+   return "<p>SyQon Studio Prism 2.0 at each strength: " + parts.join( " " ) +
+          " High is very slow: Max takes about 40 times as long as Ultra.</p>";
+};
+
+/* The Colour ("colour") and L ("L") strength tooltips. */
+UI.noiseLevelToolTip = function( which )
+{
+   var own = {
+      colour: "<p>Strength for the RGB composite and the narrowband palettes.</p>" +
+              "<p>Lighter than L is usually right: denoising colour costs saturation, " +
+              "and a three-channel composite is already less noisy than any one " +
+              "channel of it.</p>",
+      L: "<p>Strength for the luminance plate, set separately from the colour " +
+         "composites.</p>"
+   };
+   return own[which] + UI.prism2LevelsToolTip();
+};
+
+/*
  * A row of controls `spacing` apart. In `items` a number is a gap of that
  * many pixels, "stretch" a stretch, and [control, factor] a control with
  * a stretch factor.
@@ -1034,29 +1090,7 @@ UI.SelectDialog = class extends Dialog
          self.config.noiseTool = tool;
          self.updateNoiseEnabled();
       } );
-      this.noiseCombo.toolTip =
-         "<p>Applied to the finished RGB and any narrowband palette, after " +
-         "colour calibration -- never to the individual channels, and never " +
-         "to the stars plate.</p>" +
-         "<p><b>Where it runs is decided by the tool, not by you.</b> " +
-         "NoiseXTerminator and MLDenoise run on the <i>linear</i> starless " +
-         "plate, after star extraction and before the stretch, which is what " +
-         "their authors ask for: noise reduced before the stretch amplifies " +
-         "it. SyQon Prism runs <i>after</i> the stretch, which is the data it " +
-         "is built for. SyQon Studio\'s Prism is linear again, so it runs " +
-         "where NoiseXTerminator does.</p>" +
-         "<p><b>Strength</b> is the same ladder for every tool: Medium is the " +
-         "tool\'s own default, Low backs off, High pushes past it.</p>" +
-         "<p><b>SyQon Studio Prism 2.0</b> is Studio\'s paid Deep Prism, run " +
-         "in two passes: Advanced on the <i>linear</i> plate, where it keeps " +
-         "faint detail, then a stronger model <i>after</i> the stretch for " +
-         "the noise that is left. Low is Advanced alone, Medium adds Ultra " +
-         "after the stretch, High adds Max. With the stretch off only " +
-         "Advanced runs. Loom checks " +
-         "that your SyQon account can run them before it starts. If it " +
-         "cannot, Loom offers <b>SyQon Studio Prism Essential</b> (included) " +
-         "in its place until a later check succeeds; Essential\'s High is " +
-         "the same as its Medium, its default being already full strength.</p>";
+      this.noiseCombo.toolTip = UI.noiseToolToolTip();
 
       this.noiseLevelLabel = UI.label( this.noiseGroup, "Colour:" );
 
@@ -1064,11 +1098,7 @@ UI.SelectDialog = class extends Dialog
       var nlevels = [ "low", "medium", "high" ];
       UI.fillLevelCombo( this.noiseLevelCombo, nlevels, config.noiseLevel || "medium",
                          function( level ) { self.config.noiseLevel = level; } );
-      this.noiseLevelCombo.toolTip =
-         "<p>Strength for the RGB and narrowband composites.</p>" +
-         "<p>Lighter than L is usually right: denoising colour costs " +
-         "saturation, and a three-channel composite is already less noisy " +
-         "than any one channel of it.</p>";
+      this.noiseLevelCombo.toolTip = UI.noiseLevelToolTip( "colour" );
 
       /*
        * L gets its own strength. It is one channel, usually the shortest
@@ -1082,9 +1112,7 @@ UI.SelectDialog = class extends Dialog
       UI.fillLevelCombo( this.noiseLevelLCombo, nlevels,
                          config.noiseLevelL || config.noiseLevel || "medium",
                          function( level ) { self.config.noiseLevelL = level; } );
-      this.noiseLevelLCombo.toolTip =
-         "<p>Strength for the luminance plate, set separately from the " +
-         "colour composites.</p>";
+      this.noiseLevelLCombo.toolTip = UI.noiseLevelToolTip( "L" );
 
       this.noiseGroup.sizer = UI.row( 6, [ this.noiseLabel, this.noiseCombo, 12,
                                            this.noiseLevelLabel, this.noiseLevelCombo, 8,

@@ -1703,12 +1703,34 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched, pass )
    if ( !Steps.toolChosen( tool ) || !level || level == "none" )
       return;
 
-   Util.operation( "noise reduction", tool, level, label || view.id );
+   Util.operation( "noise reduction", tool,
+                   Steps.denoiseOperationDetail( tool, level, alreadyStretched, pass ),
+                   label || view.id );
 
    var t = Steps.noiseTool( tool );
    if ( t == null )
       throw new Error( "Unknown noise reduction tool: " + tool );
    t.run( view, level, alreadyStretched, pass );
+};
+
+/*
+ * What the console's operation line says in brackets: the level, and for
+ * Prism 2.0, which of its passes this call runs -- "medium, Advanced,
+ * before stretch", "medium, Ultra, after stretch", or with the stretch off
+ * "high, Advanced, no stretch" -- so the log says which model is running.
+ */
+Steps.denoiseOperationDetail = function( tool, level, alreadyStretched, pass )
+{
+   var step = ( tool == Steps.NR_TOOL_STUDIO2 ) ? Steps.NOISE_LEVELS.studio2[level] : null;
+   if ( step == null )
+      return level;
+   function named( p, where )
+   {
+      return level + ", " + Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" ) + ", " + where;
+   }
+   if ( pass == "stretched" || ( alreadyStretched && step.stretched ) )
+      return step.stretched ? named( step.stretched, "after stretch" ) : level;
+   return named( step.linear, ( pass == "linear" ) ? "before stretch" : "no stretch" );
 };
 
 // A tool's setting for `level`, refusing a level the tool has no entry for.

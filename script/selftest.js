@@ -864,7 +864,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 294 );
+      check( "Steps: the member count", Object.keys( have ).length, 295 );
    }
 
    /*
@@ -2572,6 +2572,38 @@ function runTests()
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
                                    stretch: true } ),
           [ "prism-advanced", "prism-ultra", "prism-max" ] );
+   /*
+    * The console's operation line names Prism 2.0's pass: which model,
+    * and whether it is the one before or after the stretch. Other tools
+    * show the level alone, as before.
+    */
+   ( function()
+   {
+      function opLine( tool, level, stretched, pass )
+      {
+         var real = Util.operation, got = null;
+         Util.operation = function( kind, t, detail, target ) { got = [ kind, t, detail, target ]; throw "stop"; };
+         try { Steps.denoise( { id: "v" }, tool, level, "RGB", stretched, pass ); }
+         catch ( e ) { if ( e !== "stop" ) got = String( e ); }
+         finally { Util.operation = real; }
+         return got;
+      }
+      var S2 = Steps.NR_TOOL_STUDIO2;
+      check( "the operation line names Prism 2.0's pass",
+             [ opLine( S2, "medium", false, "linear" ), opLine( S2, "medium", true, "stretched" ),
+               opLine( S2, "high", true, "stretched" ), opLine( S2, "low", false, "linear" ),
+               opLine( S2, "high", false, "all" ) ],
+             [ [ "noise reduction", S2, "medium, Advanced, before stretch", "RGB" ],
+               [ "noise reduction", S2, "medium, Ultra, after stretch", "RGB" ],
+               [ "noise reduction", S2, "high, Max, after stretch", "RGB" ],
+               [ "noise reduction", S2, "low, Advanced, before stretch", "RGB" ],
+               [ "noise reduction", S2, "high, Advanced, no stretch", "RGB" ] ] );
+      check( "every other tool's operation line shows the level alone",
+             [ opLine( Steps.NR_TOOL_NXT, "high", false, "linear" ),
+               opLine( Steps.NR_TOOL_STUDIO, "low", false, "linear" ) ],
+             [ [ "noise reduction", Steps.NR_TOOL_NXT, "high", "RGB" ],
+               [ "noise reduction", Steps.NR_TOOL_STUDIO, "low", "RGB" ] ] );
+   } )();
    check( "a run with no Studio tool uses no Studio model",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium",
                                    sharpenTool: Steps.SHARPEN_TOOL_BXT,
@@ -4609,8 +4641,9 @@ function runTests()
    check( "the README states Prism 2.0's two passes",
           readmeSrc.indexOf( "Medium: Advanced then Ultra, High: Advanced then Max" ) >= 0, true );
    check( "the dialog's help states them",
-          uiSrc.indexOf( "Low is Advanced alone, Medium adds Ultra " ) >= 0 &&
-          uiSrc.indexOf( "after the stretch, High adds Max." ) >= 0, true );
+          UI.noiseToolToolTip().indexOf( "Ultra (Medium) or Max (High) after it. Low is Advanced only" ) >= 0 &&
+          UI.prism2LevelsToolTip().indexOf( "Medium: Advanced, then Ultra after the stretch. " +
+                                            "High: Advanced, then Max after the stretch." ) >= 0, true );
    check( "neither still states one model per level",
           [ readmeSrc.indexOf( "Medium: Max" ), uiSrc.indexOf( "Medium is Max" ) ], [ -1, -1 ] );
 
@@ -7498,11 +7531,11 @@ function runTests()
          "#30 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #26",
          "#31 Control enabled=true at 8,416,640x20 / 8,416,940x20 in dialog",
          "#32 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #31",
-         "#33 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#1311:afa91acc at 87,0,127x20 / 87,0,127x20 in #31",
+         "#33 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#881:d6cff24 at 87,0,127x20 / 87,0,127x20 in #31",
          "#34 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #31",
-         "#35 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#208:d8ec7a7f at 274,0,79x20 / 274,0,79x20 in #31",
+         "#35 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#441:1c06dc49 at 274,0,79x20 / 274,0,79x20 in #31",
          "#36 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #31",
-         "#37 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#83:34911b0a at 382,0,79x20 / 382,0,79x20 in #31",
+         "#37 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#304:ad6f28d8 at 382,0,79x20 / 382,0,79x20 in #31",
          "#38 Control enabled=true at 8,442,640x20 / 8,442,940x20 in dialog",
          "#39 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #38",
          "#40 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #38",
@@ -16908,6 +16941,41 @@ function runPixInsightGapTests()
    } )();
 
    } if ( testGroup( "ui" ) ) {
+   /*
+    * The noise-reduction tooltips say where each tool runs, and what each
+    * strength runs for Prism 2.0 -- which is two passes, Advanced before
+    * the stretch and Ultra or Max after it, not "linear, like NXT".
+    */
+   check( "the noise tool tooltip: one line per tool on where it runs, strength, account check",
+          UI.noiseToolToolTip(),
+          "<p>Where each tool runs, on the finished RGB, L and palettes (never on " +
+          "the stars plate or single channels):</p>" +
+          "<p><b>NoiseXTerminator</b>, <b>MLDenoise</b>: linear, before the stretch.<br/>" +
+          "<b>SyQon Prism</b>: after the stretch.<br/>" +
+          "<b>SyQon Studio Prism Essential</b>: linear, before the stretch.<br/>" +
+          "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
+          "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
+          "stretch off, only Advanced runs. Max is very slow: about 20 minutes a " +
+          "plate where Ultra took 30 seconds, on the same image.</p>" +
+          "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
+          "High pushes past it (Essential\'s High is its Medium).</p>" +
+          "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
+          "Advanced, Ultra and Max; if it cannot, Loom offers Prism Essential " +
+          "(included) instead until a check succeeds.</p>" );
+   var PRISM2_LEVELS = "<p>SyQon Studio Prism 2.0 at each strength: Low: Advanced only. " +
+                       "Medium: Advanced, then Ultra after the stretch. " +
+                       "High: Advanced, then Max after the stretch. High is very slow: Max " +
+                       "takes about 40 times as long as Ultra.</p>";
+   check( "the Colour and L tooltips: what each is for, and Prism 2.0's passes per strength",
+          [ UI.noiseLevelToolTip( "colour" ), UI.noiseLevelToolTip( "L" ) ],
+          [ "<p>Strength for the RGB composite and the narrowband palettes.</p>" +
+            "<p>Lighter than L is usually right: denoising colour costs saturation, " +
+            "and a three-channel composite is already less noisy than any one " +
+            "channel of it.</p>" + PRISM2_LEVELS,
+            "<p>Strength for the luminance plate, set separately from the colour " +
+            "composites.</p>" + PRISM2_LEVELS ] );
+   check( "no noise tooltip says Studio's Prism runs where NoiseXTerminator does",
+          /linear again|where NoiseXTerminator does/.test( UI.noiseToolToolTip() ), false );
    /*
     * "Update Loom automatically" is offered only where Loom updates
     * itself, a git checkout. A release install is updated by PixInsight's
