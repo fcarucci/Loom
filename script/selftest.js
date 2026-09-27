@@ -17967,6 +17967,24 @@ function runSolveTests()
 
    } if ( testGroup( "config" ) ) {
    /*
+    * A plain setting's `load` mode is enforced, not just documented:
+    * Config.loadFields reads only fields marked "set" or "text", and
+    * refuses any other (savedList's null: it has its own rule in
+    * Config.load). Before, every mode but "text" loaded alike, so a field
+    * marked null by mistake was read anyway and no test could tell.
+    */
+   ( function()
+   {
+      var store = { settings: { read: function() { return "x"; } } }, threw = null;
+      try { Config.loadFields( {}, store, [ "savedList" ] ); }
+      catch ( e ) { threw = String( e ); }
+      check( "config: loadFields refuses a field whose load mode is not \"set\" or \"text\"",
+             threw != null && threw.indexOf( "savedList" ) >= 0, true );
+      var every = Object.keys( Config.FIELDS ).filter( function( k )
+                  { var m = Config.FIELDS[k].load; return m !== "set" && m !== "text" && m !== null; } );
+      check( "config: every plain setting's load mode is \"set\", \"text\" or null", every, [] );
+   } )();
+   /*
     * Loom.js config: the L denoise strength is remembered across launches.
     * saveConfig has always written Loom/noiseLevelL; loadConfig must read
     * it back, or L resets to "follow the colour level" on every launch.

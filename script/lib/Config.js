@@ -53,6 +53,7 @@ Config.pixinsightStore = function()
  *   type  the DataType read and written.
  *   load  "set": a stored value replaces the default unless it is null.
  *         "text": the same, but an empty string is ignored too.
+ *         null: never read by Config.loadFields, which refuses it.
  *   save  "bool": written as !!value. "as is": written unchanged.
  *         { or: d }: written as value || d.
  *
@@ -98,6 +99,8 @@ Config.loadFields = function( config, store, names )
    for ( var i = 0; i < names.length; ++i )
    {
       var f = Config.FIELDS[names[i]];
+      if ( f.load != "set" && f.load != "text" )
+         throw new Error( "Config: " + names[i] + " is not loaded as a plain setting" );
       var v = store.settings.read( Config.SETTINGS_PREFIX + names[i], f.type );
       if ( v != null && ( f.load != "text" || v.length > 0 ) )
          config[names[i]] = v;
