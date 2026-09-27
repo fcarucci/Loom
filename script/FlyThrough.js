@@ -673,65 +673,6 @@ FlyThrough.Player = class extends Control
    }
 };
 
-/*
- * A progress bar: filled to the fraction done, with the stage, count,
- * percentage and time left written across it (Fly.progressText). A stage
- * with no count (a star tool that reports nothing) shows a pulse instead.
- * set() repaints and pumps events, so it moves while work runs; the one
- * thing it cannot do is move during a single PixInsight process, which
- * holds the thread until it returns.
- */
-FlyThrough.ProgressBar = class extends Control
-{
-   constructor( parent )
-   {
-      super( parent );
-      var self = this;
-      this.fraction = null;
-      this.text = "";
-      this.setScaledMinHeight( 22 );
-      this.setScaledMinWidth( 420 );
-      this.onPaint = function()
-      {
-         var g = new Graphics( self );
-         try { self.paintOn( g, self.width, self.height ); }
-         finally { g.end(); }
-      };
-   }
-
-   set( fraction, text )
-   {
-      this.fraction = ( fraction == null ) ? null : Math.max( 0, Math.min( 1, fraction ) );
-      this.text = text || "";
-      this.update();
-      processEvents();
-   }
-
-   paintOn( g, w, h )
-   {
-      var P = FlyThrough.ProgressBar;
-      g.fillRect( new Rect( 0, 0, w, h ), new Brush( P.TRACK ) );
-      if ( this.fraction != null )
-         g.fillRect( new Rect( 0, 0, Math.round( w*this.fraction ), h ), new Brush( P.FILL ) );
-      else if ( this.text )
-      {
-         var bw = Math.round( w/5 ), x = Math.round( ( ( Date.now()/1500 ) % 1 )*( w - bw ) );
-         g.fillRect( new Rect( x, 0, x + bw, h ), new Brush( P.PULSE ) );
-      }
-      g.pen = new Pen( P.TEXT );
-      g.drawTextRect( new Rect( 6, 0, w - 6, h ), this.text, TextAlign_Center | TextAlign_VertCenter );
-   }
-
-   release()
-   {
-      this.onPaint = null;
-   }
-};
-FlyThrough.ProgressBar.TRACK = 0xff2b2b2b;
-FlyThrough.ProgressBar.FILL  = 0xff3a7bd5;
-FlyThrough.ProgressBar.PULSE = 0xff4f6f9a;
-FlyThrough.ProgressBar.TEXT  = 0xffffffff;
-
 /* ---------------------------------------------------------------------------
  * The dialog.
  * ------------------------------------------------------------------------ */
@@ -1586,7 +1527,7 @@ FlyThrough.Dialog = class extends Dialog
       this.closeButton = new PushButton( this );
       this.closeButton.text = "Close";
       this.closeButton.onClick = function() { if ( !self.busy && self.closing() ) self.cancel(); };
-      this.bar = new FlyThrough.ProgressBar( this );
+      this.bar = new Util.ProgressBar( this );   // it moves by itself while a step has no count
       this.buttons = new VerticalSizer;
       this.buttons.spacing = 6;
       this.buttons.add( this.row( [ this.estimateLabel, "stretch", this.draftButton, this.renderButton, this.closeButton ] ) );
@@ -1759,25 +1700,8 @@ FlyThrough.Dialog = class extends Dialog
       this.playButton.enabled = !inAnalysis;
       this.starsLabel.enabled = !inAnalysis;
       this.imageList.enabled = this.openButton.enabled = !inAnalysis;   // another image cannot be taken until this one's analysis ends
-      // the bar's pulse keeps moving while a PixInsight process runs (it lets timers through)
-      if ( inAnalysis && !this.pulseTimer )
-      {
-         var self = this;
-         this.pulseTimer = new Timer;
-         this.pulseTimer.interval = 0.25;
-         this.pulseTimer.periodic = true;
-         this.pulseTimer.onTimeout = function() { if ( self.bar ) self.bar.update(); };
-         this.pulseTimer.start();
-      }
-      else if ( !inAnalysis && this.pulseTimer ) this.stopPulse();
-   }
-
-   stopPulse()
-   {
-      if ( !this.pulseTimer ) return;
-      this.pulseTimer.stop();
-      this.pulseTimer.onTimeout = null;
-      this.pulseTimer = null;
+      // a job that ended on a stage with no count leaves its line, not a block still moving
+      if ( !this.busy && this.bar ) this.bar.animate( false );
    }
 
    number( edit ) { var v = parseFloat( edit.text ); return isFinite( v ) ? v : null; }
@@ -2310,7 +2234,6 @@ FlyThrough.Dialog = class extends Dialog
          if ( this.logoOpacity ) this.logoOpacity.onValueUpdated = null;
          if ( this.saturationSlider ) this.saturationSlider.onValueUpdated = null;
          if ( this.autoTimer ) { this.autoTimer.stop(); this.autoTimer.onTimeout = null; this.autoTimer = null; }
-         this.stopPulse();
          if ( this.scrubber ) this.scrubber.onValueUpdated = null;
          [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit", "folderEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
          this.onClose = null;

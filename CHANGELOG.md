@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Scan Masters Folder and Add Files:** a progress bar now shows how far through the masters the scan is, with the master being measured marked by a moving block, and each master appears in the table as soon as it is measured instead of all of them at the end. The bar is hidden when nothing is being scanned. The block pauses while PixInsight measures a master, because PixInsight does not let the dialog repaint during that step, and moves on as soon as the step ends.
 - **Frame Selector, import from an ASIAIR:** Cancel now stops an import and a card read. Before, Cancel said it was stopping and the import went on. After an import or a copy the review is locked, so the same night can't be imported twice by pressing Run again.
 - **Updates:** a release install no longer updates itself; PixInsight's update repository (Resources → Updates) keeps it current. A git checkout still updates itself at startup, and only a checkout shows **Update Loom automatically**.
 - **Frame Selector, import from an ASIAIR:** the chosen night's description now lists its flats filter by filter, and a filter with no flats is shown in red, so a night missing some flats is noticed before it is imported. Before, it gave only the total number of flats in the session.

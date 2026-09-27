@@ -567,6 +567,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.info );
    this.sizer.add( this.tree, 100 );
    this.sizer.add( listButtons );
+   this.sizer.add( this.progress );
    this.sizer.add( this.status );
    this.sizer.add( this.camera );
    this.sizer.add( this.sharpenGroup );
@@ -802,6 +803,15 @@ UI.SelectDialog = class extends Dialog
       this.status = new Label( this );
       this.status.useRichText = true;
       this.status.wordWrapping = true;
+      /*
+       * Over the status line while masters are read or measured, hidden
+       * otherwise. The line says which master; the bar says how far
+       * through the folder, and marks the master under way with a moving
+       * block (Util.ProgressBar says when that block can move).
+       */
+      this.progress = new Util.ProgressBar( this );
+      this.progress.setScaledFixedHeight( 14 );
+      this.progress.visible = false;
 
       /*
        * The session's camera, and the QE curve it resolves to. This is the
@@ -1723,8 +1733,10 @@ UI.SelectDialog = class extends Dialog
     * A null message means no longer busy, and deliberately leaves
     * status.text alone -- the caller replaces it with its own summary, and
     * blanking it here would flash the label empty in between.
+    *
+    * `progress` places the bar (Util.stepProgress); without one it pulses.
     */
-   setBusy( message )
+   setBusy( message, progress )
    {
       var busy = message != null;
       this.busy = busy;
@@ -1752,7 +1764,20 @@ UI.SelectDialog = class extends Dialog
 
       if ( busy )
          this.status.text = "<b>" + message + "</b>";
+      this.showProgress( busy ? ( progress || Util.stepProgress() ) : null );
       CoreApplication.processEvents();
+   }
+
+   /* The bar at `p` ({ fraction, span }), or hidden and still for null. */
+   showProgress( p )
+   {
+      if ( this.progress == null )
+         return;
+      this.progress.visible = ( p != null );
+      if ( p != null )
+         this.progress.set( p.fraction, "", p.span );
+      else
+         this.progress.set( 0, "" );
    }
 
    /*
@@ -1881,7 +1906,8 @@ UI.SelectDialog = class extends Dialog
        * what keeps a failed read from leaving the dialog permanently
        * disabled.
        */
-      this.setBusy( Util.scanProgressMessage( "Measuring masters", null, null, null ) );
+      this.setBusy( Util.scanProgressMessage( "Measuring masters", null, null, null ),
+                    Util.stepProgress( 1, keys.length, 0, 1 ) );
       try
       {
          for ( var i = 0; i < keys.length; ++i )
@@ -1916,7 +1942,10 @@ UI.SelectDialog = class extends Dialog
             if ( prev == null ||
                  Util.masterVariantRank( entry.drizzle, entry.autocrop ) >
                  Util.masterVariantRank( prev.drizzle, prev.autocrop ) )
+            {
                confirmed[channel] = entry;
+               this.showMaster( entry );
+            }
          }
       }
       finally
@@ -1934,8 +1963,12 @@ UI.SelectDialog = class extends Dialog
     */
    measureMaster( p, info, channel, filter, named, index, count )
    {
+      // one step per SubframeSelector call: this stack, and the one it displaces
+      var others = Util.sameChannelAlternatives( named, p, 1 );
+      var steps = others.length ? 2 : 1;
       this.setBusy( Util.scanProgressMessage( "Measuring masters", channel,
-                                              index, count ) );
+                                              index, count ),
+                    Util.stepProgress( index, count, 0, steps ) );
       var entry = {
          source: "file",
          ref: p.path,
@@ -1959,7 +1992,6 @@ UI.SelectDialog = class extends Dialog
          delta: null
       };
 
-      var others = Util.sameChannelAlternatives( named, p, 1 );
       if ( others.length == 0 )
          return entry;
 
@@ -1967,7 +1999,8 @@ UI.SelectDialog = class extends Dialog
       // line would otherwise sit unchanged for twice as long as the
       // count implies.
       this.setBusy( Util.scanProgressMessage( "Measuring masters",
-                       channel + " vs the previous stack", index, count ) );
+                       channel + " vs the previous stack", index, count ),
+                    Util.stepProgress( index, count, 1, steps ) );
       var prev = Steps.measureMasterFWHM( others[0].path );
       entry.delta = Util.qualityDelta( entry.quality, prev );
       if ( entry.delta != null )
@@ -1976,6 +2009,19 @@ UI.SelectDialog = class extends Dialog
             " px (" + ( Util.formatDelta( entry.delta.fwhm ) || "no change" ) +
             " vs " + File.extractName( others[0].path ) + ")" );
       return entry;
+   }
+
+   /*
+    * A master in the table as soon as it is measured, rather than all of
+    * them at the end of a two-minute scan. adoptMasters takes the whole
+    * set again afterwards, which changes nothing for the ones shown here.
+    */
+   showMaster( entry )
+   {
+      var one = {};
+      one[entry.channel] = entry;
+      this.adoptMasters( one );
+      this.rebuild();
    }
 
    /*
@@ -2027,8 +2073,12 @@ UI.SelectDialog = class extends Dialog
          {
             if ( report )
                this.setBusy( Util.scanProgressMessage( "Reading masters", UI.fileLabel( paths[i] ),
-                                                       i+1, paths.length ) );
+                                                       i+1, paths.length ),
+                             Util.stepProgress( i+1, paths.length, 0, 1 ) );
             this.entries.push( UI.fileEntry( paths[i] ) );
+            // each row as it is read, not all of them at the end
+            if ( report )
+               this.rebuild();
          }
       }
       finally
@@ -2200,7 +2250,9 @@ UI.SelectDialog = class extends Dialog
             node.setText( 5 + c, cells[c] );
          UI.colourRow( node, e, counts );
       }
-      this.updateStatus( counts );
+      // a scan's progress line stays until the scan writes its own summary
+      if ( !this.busy )
+         this.updateStatus( counts );
       this.updatePaletteVisibility();
    }
 

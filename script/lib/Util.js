@@ -1,9 +1,11 @@
 /*
- * Util.checkCoreVersion shows its refusal in a message box, whichever
- * entry point included this file.
+ * Util.checkCoreVersion shows its refusal in a message box, and
+ * Util.ProgressBar writes across itself, whichever entry point included
+ * this file.
  */
 #include <pjsr/StdButton.jsh>
 #include <pjsr/StdIcon.jsh>
+#include <pjsr/TextAlign.jsh>
 
 var Util = {};
 
@@ -827,15 +829,6 @@ Util.formatDelta = function( pct )
 };
 
 /*
- * "Measuring masters: G (3 of 7)".
- *
- * A count, not a spinner. Each master costs a SubframeSelector execution
- * of around sixteen seconds, so a folder of seven holds the dialog for two
- * minutes; the only thing worth saying during that is how much of the wait
- * is left. The count is per master rather than per folder, because a
- * per-folder message never changes and so answers nothing.
- */
-/*
  * How many entries could actually be processed.
  *
  * A view that has since been closed is listed so its absence is visible,
@@ -893,6 +886,150 @@ Util.pulseBlock = function( elapsedMs, width )
    return { x: Math.round( along*travel ), width: w };
 };
 
+/*
+ * Where a bar stands at step `step` (from 0) of `steps` inside item `done`
+ * (from 1) of `total`: `fraction` is the part finished, `span` the part now
+ * being worked on, which the bar marks with a moving block -- so the item
+ * under way shows as under way, not as not started. No usable total is no
+ * fraction at all: the whole bar pulses instead.
+ */
+Util.stepProgress = function( done, total, step, steps )
+{
+   var t = Number( total ), m = Math.max( 1, Number( steps ) || 1 );
+   if ( !isFinite( t ) || t <= 0 )
+      return { fraction: null, span: 0 };
+   var k = Math.min( t, Math.max( 1, Number( done ) || 1 ) );
+   var s = Math.min( m - 1, Math.max( 0, Number( step ) || 0 ) );
+   return { fraction: ( k - 1 + s/m )/t, span: 1/( t*m ) };
+};
+
+/*
+ * The pixels of a bar `width` wide: `fill` is the solid part, `block` the
+ * moving one (Util.pulseBlock), placed inside the span after the fill, or
+ * across the whole bar when there is no fraction. Null when nothing moves.
+ */
+Util.progressGeometry = function( fraction, span, width, elapsedMs )
+{
+   var w = Math.max( 0, Math.round( Number( width ) || 0 ) );
+   if ( fraction == null )
+      return { fill: 0, block: Util.pulseBlock( elapsedMs, w ) };
+   var fill = Math.round( w*Math.max( 0, Math.min( 1, fraction ) ) );
+   var slot = Math.min( w - fill, Math.round( w*( Number( span ) || 0 ) ) );
+   if ( !( slot > 0 ) )
+      return { fill: fill, block: null };
+   var b = Util.pulseBlock( elapsedMs, slot );
+   return { fill: fill, block: { x: fill + b.x, width: Math.min( b.width, slot ) } };
+};
+
+/*
+ * A progress bar: filled to the fraction done, with an optional line of
+ * text across it. A step with no count shows a block going back and
+ * forth; a count whose current item is still running (set with a span)
+ * shows the block moving inside that item's share of the bar.
+ *
+ * It animates itself: while anything moves, a Timer repaints it whenever
+ * events are processed, and set() pumps them. What it cannot do is move
+ * inside a PixInsight process that lets no events through. SubframeSelector
+ * is one: measured in slot 2, a 3.5 s measurement let a 100 ms timer fire
+ * once. So during one master's measurement the block holds, and it moves
+ * on at the next step -- which is why a master measured twice is two.
+ *
+ * Shared by the Loom dialog and the Fly-Through, which include different
+ * libraries but both include this one.
+ */
+Util.ProgressBar = class extends Control
+{
+   constructor( parent )
+   {
+      super( parent );
+      var self = this;
+      this.fraction = null;
+      this.span = 0;
+      this.text = "";
+      this.moving = false;
+      this.movingSince = 0;
+      this.timer = null;
+      this.setScaledMinHeight( 22 );
+      this.setScaledMinWidth( 420 );
+      this.onPaint = function()
+      {
+         var g = new Graphics( self );
+         try { self.paintOn( g, self.width, self.height ); }
+         finally { g.end(); }
+      };
+   }
+
+   set( fraction, text, span )
+   {
+      var f = ( fraction == null ) ? null : Math.max( 0, Math.min( 1, fraction ) );
+      var moving = ( f == null ) || span > 0;
+      // the block starts again at the left of each new item
+      if ( moving && ( !this.moving || f !== this.fraction ) )
+         this.movingSince = Date.now();
+      this.fraction = f;
+      this.span = moving ? ( span || 0 ) : 0;
+      this.text = text || "";
+      this.animate( moving );
+      this.update();
+      processEvents();
+   }
+
+   animate( on )
+   {
+      this.moving = on;
+      if ( on && this.timer == null )
+      {
+         var self = this;
+         this.timer = new Timer;
+         this.timer.interval = 0.1;
+         this.timer.periodic = true;
+         this.timer.onTimeout = function() { self.update(); };
+      }
+      if ( this.timer == null || this.timer.isRunning == on )
+         return;
+      if ( on )
+         this.timer.start();
+      else
+         this.timer.stop();
+   }
+
+   paintOn( g, w, h )
+   {
+      var P = Util.ProgressBar;
+      g.fillRect( new Rect( 0, 0, w, h ), new Brush( P.TRACK ) );
+      var geo = Util.progressGeometry( this.fraction, this.span, w, Date.now() - this.movingSince );
+      if ( geo.fill > 0 )
+         g.fillRect( new Rect( 0, 0, geo.fill, h ), new Brush( P.FILL ) );
+      if ( this.moving && geo.block != null )
+         g.fillRect( new Rect( geo.block.x, 0, geo.block.x + geo.block.width, h ), new Brush( P.PULSE ) );
+      g.pen = new Pen( P.TEXT );
+      g.drawTextRect( new Rect( 6, 0, w - 6, h ), this.text, TextAlign_Center | TextAlign_VertCenter );
+   }
+
+   /* Stopped and detached before teardown: a timer left running repaints a control that is gone. */
+   release()
+   {
+      this.animate( false );
+      if ( this.timer != null )
+         this.timer.onTimeout = null;
+      this.timer = null;
+      this.onPaint = null;
+   }
+};
+Util.ProgressBar.TRACK = 0xff2b2b2b;
+Util.ProgressBar.FILL  = 0xff3a7bd5;
+Util.ProgressBar.PULSE = 0xff4f6f9a;
+Util.ProgressBar.TEXT  = 0xffffffff;
+
+/*
+ * "Measuring masters: G (3 of 7)".
+ *
+ * A count, not a spinner. Each master costs a SubframeSelector execution
+ * of around sixteen seconds, so a folder of seven holds the dialog for two
+ * minutes; the only thing worth saying during that is how much of the wait
+ * is left. The count is per master rather than per folder, because a
+ * per-folder message never changes and so answers nothing.
+ */
 Util.scanProgressMessage = function( action, label, done, total )
 {
    var text = String( action );

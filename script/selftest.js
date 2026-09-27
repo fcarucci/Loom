@@ -3285,6 +3285,35 @@ function runTests()
           "Measuring masters: G (7 of 7)" );
 
    /*
+    * The bar under that line. Master k of n has the first k-1 filled and
+    * its own share moving; a master measured twice (against the stack it
+    * displaces) is two steps, and the second starts half way through its
+    * share. No total is no fraction: the whole bar pulses.
+    */
+   check( "the bar at master 3 of 7: two done, the third moving",
+          Util.stepProgress( 3, 7, 0, 1 ), { fraction: 2/7, span: 1/7 } );
+   check( "the second measurement of a master starts half way through its share",
+          Util.stepProgress( 3, 7, 1, 2 ), { fraction: 2.5/7, span: 0.5/7 } );
+   check( "before the first master, nothing is filled",
+          Util.stepProgress( 1, 4, 0, 1 ), { fraction: 0, span: 0.25 } );
+   check( "a count past its total, or a step past its steps, stays inside the bar",
+          [ Util.stepProgress( 9, 7, 0, 1 ).fraction, Util.stepProgress( 1, 2, 5, 2 ).fraction ],
+          [ 6/7, 0.25 ] );
+   check( "no total, no fraction",
+          [ Util.stepProgress( 1, 0, 0, 1 ), Util.stepProgress() ],
+          [ { fraction: null, span: 0 }, { fraction: null, span: 0 } ] );
+   check( "in pixels: the finished part filled, the block inside the running master's share",
+          Util.progressGeometry( 2/7, 1/7, 700, 0 ), { fill: 200, block: { x: 200, width: 25 } } );
+   check( "the block moves across that share and no further",
+          Util.progressGeometry( 2/7, 1/7, 700, Util.PULSE_PERIOD_MS/2 ).block, { x: 275, width: 25 } );
+   check( "no fraction: the block goes across the whole bar",
+          Util.progressGeometry( null, 0, 400, Util.PULSE_PERIOD_MS/2 ), { fill: 0, block: { x: 300, width: 100 } } );
+   check( "a fraction with no span is a plain bar, with nothing moving",
+          Util.progressGeometry( 0.5, 0, 400, 0 ), { fill: 200, block: null } );
+   check( "a share narrower than a block is filled by it, not overrun",
+          Util.progressGeometry( 0.5, 0.01, 400, 0 ), { fill: 200, block: { x: 200, width: 4 } } );
+
+   /*
     * Alternatives are same channel AND same variant class: a drizzled
     * autocrop master is not comparable with a plain one, and ranking has
     * already decided which class is in play.
@@ -7336,18 +7365,32 @@ function runTests()
        */
       var busyOK = true, busyErr = "";
       var runDuring = null, runAfter = null, statusDuring = "";
+      var barIdle = null, barDuring = null, barAfter = null, runAfterWithEntries = null;
       try
       {
          var s = tracked( new UI.SelectDialog( cfg() ) );
+         /*
+          * What the dialog asks of the bar, recorded on its way to the real
+          * one: a control in a dialog that is not on screen reads
+          * visible = false whatever it was told, and will not be redefined.
+          */
+         var bar = s.progress;
+         s.progress = { visible: null, set: function( f, t, sp ) { bar.set( f, t, sp ); } };
+         s.setBusy( null );
+         barIdle = s.progress.visible;
          try
          {
-            s.setBusy( Util.scanProgressMessage( "Measuring masters", "G", 1, 3 ) );
+            s.setBusy( Util.scanProgressMessage( "Measuring masters", "G", 3, 7 ),
+                       Util.stepProgress( 3, 7, 0, 1 ) );
             runDuring = s.runButton.enabled;
             statusDuring = s.status.text;
+            barDuring = [ s.progress.visible, Math.round( bar.fraction*7 ), bar.moving, bar.timer.isRunning ];
             throw new Error( "scan failed" );
          }
          catch ( eScan ) {}
          finally { s.setBusy( null ); }
+         barAfter = [ s.progress.visible, bar.moving, bar.timer.isRunning ];
+         s.progress = bar;
          runAfter = s.runButton.enabled;
          busyOK = ( s.addMastersButton.enabled === true &&
                     s.clearButton.enabled === true );
@@ -7374,7 +7417,12 @@ function runTests()
    check( "and comes back once there is something to run",
           runAfterWithEntries, true );
       check( "and the progress line is on screen meanwhile",
-             statusDuring.indexOf( "1 of 3" ) >= 0, true );
+             statusDuring.indexOf( "3 of 7" ) >= 0, true );
+      check( "the progress bar is hidden while nothing is being measured", barIdle, false );
+      check( "shown during a scan: two of seven done, the third moving on its timer",
+             barDuring, [ true, 2, true, true ] );
+      check( "and hidden and still again once the scan ends, even one that threw",
+             barAfter, [ false, false, false ] );
 
       var cwOK = true, cwErr = "";
       try
@@ -7519,7 +7567,7 @@ function runTests()
          "HorizontalSizer spacing=6 margin=0 items=9",
          "VerticalSizer spacing=4 margin=0 items=2",
          "VerticalSizer spacing=4 margin=0 items=4",
-         "VerticalSizer spacing=6 margin=8 items=27" ];
+         "VerticalSizer spacing=6 margin=8 items=28" ];
 
       function sum( s )
       {
@@ -7818,9 +7866,9 @@ function runTests()
    {
       function dialog()
       {
-         var d = { entries: [], busy: [], rebuilt: 0 };
-         d.setBusy = function( m ) { d.busy.push( m ); };
-         d.rebuild = function() { ++d.rebuilt; };
+         var d = { entries: [], busy: [], bars: [], rows: [], rebuilt: 0 };
+         d.setBusy = function( m, p ) { d.busy.push( m ); if ( m != null ) d.bars.push( p ); };
+         d.rebuild = function() { ++d.rebuilt; d.rows.push( d.entries.length ); };
          return d;
       }
       var headers = {
@@ -7863,7 +7911,10 @@ function runTests()
                    drizzle: "", created: 12 } ],
                [ Util.scanProgressMessage( "Reading masters", "b.fits", 1, 2 ),
                  Util.scanProgressMessage( "Reading masters", "gone.xisf", 2, 2 ),
-                 null ], 1 ] );
+                 null ], 3 ] );
+      check( "addFiles: the bar advances a file at a time, and each row shows as it is read",
+             [ many.bars, many.rows ],
+             [ [ Util.stepProgress( 1, 2, 0, 1 ), Util.stepProgress( 2, 2, 0, 1 ) ], [ 1, 2, 2 ] ] );
 
       var broken = dialog(), threw = false;
       try { add( broken, [ "/m/a.xisf", "/m/b.fits" ], function() { throw new Error( "stat" ); } ); }
@@ -7905,12 +7956,20 @@ function runTests()
 
       function run( dir )
       {
-         var d = Object.create( UI.SelectDialog.prototype ), log = [];
+         var d = Object.create( UI.SelectDialog.prototype ), log = [], bars = [];
          d.entries = [ { channel: "R", ref: "/old/R.xisf" }, { channel: "L", ref: "/old/L.xisf" } ];
          d.status = { text: "before" };
          // the "n of 4" follows the folder's listing order, which is the file system's
-         d.setBusy = function( m ) { log.push( "busy " + String( m ).replace( /\(\d+ of/, "(# of" ) ); };
-         d.rebuild = function() { log.push( "rebuild" ); };
+         d.setBusy = function( m, p )
+         {
+            log.push( "busy " + String( m ).replace( /\(\d+ of/, "(# of" ) );
+            if ( m != null ) bars.push( { m: m, p: p } );
+         };
+         // how many of the folder's masters the table holds each time it is drawn
+         d.rebuild = function()
+         {
+            log.push( "rebuild " + d.entries.filter( function( e ) { return e.ref.indexOf( root ) == 0; } ).length );
+         };
          var saved = [ Util.readImageInfo, Steps.measureMasterFWHM, Util.log ];
          Util.readImageInfo = function( p )
          {
@@ -7924,7 +7983,7 @@ function runTests()
          Util.log = function( m, t ) { log.push( "log " + m + ": " + t ); };
          try { d.addMastersFolder( dir ); }
          finally { Util.readImageInfo = saved[0]; Steps.measureMasterFWHM = saved[1]; Util.log = saved[2]; }
-         return { log: log, status: d.status.text, entries: d.entries.map( function( e )
+         return { log: log, bars: bars, status: d.status.text, entries: d.entries.map( function( e )
          {
             return [ e.channel, e.ref.replace( root, "<root>" ), e.label, e.filter, e.instrume, e.drizzle,
                      e.autocrop, e.width, e.height, e.quality && e.quality.fwhm, e.delta ].join( " | " );
@@ -7934,12 +7993,26 @@ function runTests()
       var M = "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-", N = "<root>/named/", U = "<root>/unnamed/";
       var OLD_L = "L | /old/L.xisf |  |  |  |  |  |  |  |  | ", OLD_R = "R | /old/R.xisf |  |  |  |  |  |  |  |  | ";
       var got = run( named );
+      /*
+       * The bar: nothing filled before the first master, and master k of 4
+       * with k-1 filled and its own quarter moving. Measured one at a time,
+       * so each master is in the table as soon as it is measured (the
+       * rebuilds above: one, then two, then the final one).
+       */
+      check( "addMastersFolder: the bar advances master by master, k of n",
+             got.bars.map( function( b )
+             {
+                var k = /\((\d+) of (\d+)\)/.exec( b.m );
+                return k ? [ Math.abs( b.p.fraction - ( k[1] - 1 )/k[2] ) < 1e-9, b.p.span ]
+                         : [ b.m, b.p.fraction, b.p.span ];
+             } ), [ [ "Measuring masters", 0, 0.25 ], [ true, 0.25 ], [ true, 0.25 ] ] );
+      delete got.bars;
       got.log.sort();   // winners are opened in the listing's order
       check( "addMastersFolder: named masters, only the winners opened, the header's filter wins", got, {
          log: [ "busy Measuring masters", "busy Measuring masters: B (# of 4)", "busy Measuring masters: R (# of 4)",
                 "busy null", "measure " + M + "G_mono_drizzle_2x_autocrop", "measure " + M + "R_mono",
                 "read " + M + "G_mono_drizzle_2x_autocrop.xisf", "read " + M + "H_mono.xisf",
-                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "rebuild" ],
+                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "rebuild 1", "rebuild 2", "rebuild 2" ],
          status: "<b>Loaded 2 masters:</b> B (2x autocrop), R (full)  " +
                  "<i>(7 files, 5 named candidates, 4 opened, 2 skipped)</i>" +
                  "<br/><b>Filter from header, not name:</b> " + M + "G_mono_drizzle_2x_autocrop.xisf: " +
@@ -7953,13 +8026,34 @@ function runTests()
              [ u.log.slice( 0, 2 ).sort(), u.log.slice( 2 ), u.status, u.entries ], [
          [ "read odd.xisf", "read odd2.fits" ],
          [ "busy Measuring masters", "read odd.xisf", "busy Measuring masters: H (# of 1)", "measure odd",
-           "busy null", "rebuild" ],
+           "rebuild 1", "busy null", "rebuild 1" ],
          "<b>Loaded 1 master:</b> H (full)  <i>(3 files, 1 named candidates, 1 opened, 1 skipped)</i>",
          [ "H | " + U + "odd.xisf | odd.xisf | Ha |  |  | false | 100 | 80 | 2.5 | ", OLD_L, OLD_R ] ] );
-      var untouched = { log: [], status: "before", entries: [ OLD_L, OLD_R ] };
+      /*
+       * A master with an earlier stack of its own kind is measured twice,
+       * so its share of the bar is two steps: the second call starts half
+       * way through it, and says which measurement it is.
+       */
+      ( function()
+      {
+         var d = Object.create( UI.SelectDialog.prototype ), seen = [];
+         d.setBusy = function( m, p ) { seen.push( [ m, p ] ); };
+         var pick = { path: "/m/G_new.xisf", name: "G_new.xisf", channel: "G", drizzle: "", autocrop: false, mtime: 2 };
+         var older = { path: "/m/G_old.xisf", name: "G_old.xisf", channel: "G", drizzle: "", autocrop: false, mtime: 1 };
+         var saved = [ Steps.measureMasterFWHM, Util.log ];
+         Steps.measureMasterFWHM = function() { return { fwhm: 2 }; };
+         Util.log = function() {};
+         try { d.measureMaster( pick, { keywords: [], width: 1, height: 1 }, "G", "Green", [ pick, older ], 3, 7 ); }
+         finally { Steps.measureMasterFWHM = saved[0]; Util.log = saved[1]; }
+         check( "measureMaster: two measurements are two steps of the master's share",
+                seen, [ [ "Measuring masters: G (3 of 7)", Util.stepProgress( 3, 7, 0, 2 ) ],
+                        [ "Measuring masters: G vs the previous stack (3 of 7)", Util.stepProgress( 3, 7, 1, 2 ) ] ] );
+      } )();
+
+      var untouched = { log: [], bars: [], status: "before", entries: [ OLD_L, OLD_R ] };
       check( "addMastersFolder: a folder that cannot be listed, and no folder at all",
              [ run( root + "/no-such-folder" ), run( "" ), run( null ) ],
-             [ { log: [], status: "<b>Nothing readable in that folder.</b>", entries: [ OLD_L, OLD_R ] },
+             [ { log: [], bars: [], status: "<b>Nothing readable in that folder.</b>", entries: [ OLD_L, OLD_R ] },
                untouched, untouched ] );
    } )();
 
@@ -13826,16 +13920,26 @@ function runFlyTestsClean()
    /* ---- The progress bar ------------------------------------------------ */
    if ( IN_PIXINSIGHT ) ( function()
    {
-      var host = new Dialog, bar = new FlyThrough.ProgressBar( host ), bmp = new Bitmap( 200, 20 );
+      var host = new Dialog, bar = new Util.ProgressBar( host ), bmp = new Bitmap( 200, 20 ), P = Util.ProgressBar;
+      function paint() { var g = new Graphics( bmp ); try { bar.paintOn( g, 200, 20 ); } finally { g.end(); } }
       try
       {
          bar.set( 0.5, "half" );
-         var g = new Graphics( bmp );
-         try { bar.paintOn( g, 200, 20 ); } finally { g.end(); }
-         check( "the bar fills to its fraction", [ bmp.pixel( 50, 2 ) == FlyThrough.ProgressBar.FILL, bmp.pixel( 150, 2 ) == FlyThrough.ProgressBar.TRACK ], [ true, true ] );
+         paint();
+         check( "the bar fills to its fraction", [ bmp.pixel( 50, 2 ) == P.FILL, bmp.pixel( 150, 2 ) == P.TRACK ], [ true, true ] );
          check( "and keeps its text", bar.text, "half" );
+         check( "a plain fraction moves nothing", [ bar.moving, bar.timer == null || !bar.timer.isRunning ], [ false, true ] );
          bar.set( null, "waiting for the star tool" );
          check( "no fraction: a stage with no count", bar.fraction, null );
+         check( "and the bar moves by itself, on a timer", [ bar.moving, bar.timer != null && bar.timer.isRunning ], [ true, true ] );
+         // a master of four still running: one quarter filled, a block moving in the second
+         bar.set( 0.25, "", 0.25 );
+         paint();
+         check( "an item still running: done part filled, its own share moving",
+                [ bmp.pixel( 20, 2 ) == P.FILL, bmp.pixel( 52, 2 ) == P.PULSE, bmp.pixel( 150, 2 ) == P.TRACK,
+                  bar.timer.isRunning ], [ true, true, true, true ] );
+         bar.set( 1, "done" );
+         check( "and it stops once there is nothing left to wait for", bar.timer.isRunning, false );
       }
       finally { bar.release(); }
 
