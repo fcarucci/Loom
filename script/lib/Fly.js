@@ -783,26 +783,6 @@ Fly.catalogueBlend = function( det, placed, neighbours )
    } );
 };
 
-Fly.HALO_FRACTION = 0.0005;  // a ring below this fraction of the peak is no longer the star
-Fly.BLEND_FLUX_RATIO = 0.25; // a neighbour at least this bright relative to the star is a blend
-
-/*
- * The half-width that holds a star's halo: the first ring radius, from
- * `minR`, whose value (profile[r], the ring's median in the stars layer)
- * is at or below max( noise, HALO_FRACTION x peak ). What lies beyond is
- * under the noise or under 0.05% of the core, so nothing visible is left
- * behind when the star moves. Measured: core + 1 FWHM left up to 62% of a
- * Moffat star's light behind.
- */
-Fly.haloRadius = function( profile, peak, noise, minR )
-{
-   var limit = Math.max( noise, Fly.HALO_FRACTION*peak );
-   for ( var r = minR; r < profile.length; ++r )
-      if ( profile[r] <= limit )
-         return r;
-   return profile.length;
-};
-
 /* A square footprint of half-width r around (x, y), clipped; x1/y1 exclusive. */
 Fly.squareRect = function( x, y, r, w, h )
 {
@@ -812,7 +792,7 @@ Fly.squareRect = function( x, y, r, w, h )
 
 /*
  * A blend: several maxima, or another detection's core inside the
- * footprint that is at least BLEND_FLUX_RATIO as bright. Fainter ones stay
+ * footprint that is at least as bright. Fainter ones stay
  * behind in the backdrop (their cores are never owned by the sprite).
  * Without fluxes, any neighbour counts.
  */
@@ -1639,12 +1619,6 @@ Fly.parseAngle = function( text, isRA )
       return null;
    var v = parseInt( m[2], 10 ) + parseInt( m[3], 10 )/60 + ( m[4] ? parseFloat( m[4] ) : 0 )/3600;
    return ( m[1] == "-" ? -1 : 1 )*v*( isRA ? 15 : 1 );
-};
-
-/* Is pixel p inside a w x h image, clear of an outer margin (a fraction of each side)? */
-Fly.insideImage = function( p, w, h, margin )
-{
-   return p != null && p.x >= margin*w && p.x <= ( 1 - margin )*w && p.y >= margin*h && p.y <= ( 1 - margin )*h;
 };
 
 /* ---------------------------------------------------------------------------

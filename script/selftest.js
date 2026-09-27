@@ -12686,19 +12686,12 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * Halo-sized footprints. The radius grows ring by ring until the ring's
-    * mean falls below max( noise, 0.2% of the peak ); fainter stars inside
-    * a bright star's halo are left in the backdrop rather than making it a
-    * blend; brighter stars own contested pixels.
+    * Halo-sized footprints: fainter stars inside a bright star's halo are
+    * left in the backdrop rather than making it a blend; brighter stars own
+    * contested pixels.
     */
    ( function()
    {
-      var prof = [ 1, 0.5, 0.2, 0.05, 0.01, 0.003, 0.0015, 0.001, 0.0004 ];
-      check( "halo radius: first ring under 0.05% of the peak", Fly.haloRadius( prof, 1, 0, 2 ), 8 );
-      check( "halo radius: or under the noise, whichever is higher", Fly.haloRadius( prof, 1, 0.02, 2 ), 4 );
-      check( "halo radius: never below the core", Fly.haloRadius( prof, 1, 0.5, 3 ), 3 );
-      check( "halo radius: capped at the profile's length", Fly.haloRadius( [ 1, 1, 1 ], 1, 0, 1 ), 3 );
-
       function det( x, y, flux ) { return { x: x, y: y, nmax: 0, flux: flux, rect: Fly.detectionRect( x, y, 5 ) }; }
       var bright = det( 30, 30, 10 ), faint = det( 36, 30, 1 ), twin = det( 60, 30, 10 ), twin2 = det( 66, 30, 6 );
       var dets = [ bright, faint, twin, twin2 ];
@@ -12872,6 +12865,9 @@ function runFlyTestsClean()
    check( "only our own frame files are cleared from a preset folder",
           [ "frame_00000.tif", "frame_12345.tif", "notes.txt", "frame_1.tif", "frame_00001.tif.bak" ]
              .filter( Fly.isFrameFile ), [ "frame_00000.tif", "frame_12345.tif" ] );
+   check( "frame i is written as a five-digit frame file",
+          [ Fly.framePath( "/f", 7 ), Fly.isFrameFile( Fly.framePath( "/f", 12345 ).slice( 3 ) ) ],
+          [ "/f/frame_00007.tif", true ] );
 
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -13430,16 +13426,6 @@ function runFlyTestsClean()
       }
    } )();
 
-   /*
-    * Where the camera aims. Heading for a catalogued centre that lies
-    * outside the image (IC 1396's, in a frame of the Elephant's Trunk) put
-    * the vanishing point off-frame and the whole view streamed sideways
-    * (seen on a real image). The target is aimed at only when it is inside
-    * the image; otherwise the image centre is, and the dialog says so.
-    */
-   check( "a target inside the image is aimed at", Fly.insideImage( { x: 400, y: 300 }, 800, 600, 0.05 ), true );
-   check( "one beyond the frame is not", Fly.insideImage( { x: 400, y: -50 }, 800, 600, 0.05 ), false );
-   check( "nor one in the outer 5% margin", Fly.insideImage( { x: 790, y: 300 }, 800, 600, 0.05 ), false );
 
    if ( IN_PIXINSIGHT ) ( function()
    {
