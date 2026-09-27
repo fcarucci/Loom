@@ -7921,9 +7921,8 @@ function runTests()
       return out;
    }
    /*
-    * MLDenoise answers null at every level (L1 in the patterns decision):
-    * its stages key on the level label only. Giving it an amount would
-    * re-key every cached MLDenoise stage, so null is pinned, not fixed.
+    * MLDenoise keys on its amount like every other tool: a remap of its
+    * ladder must re-key its stages rather than serve them from cache.
     */
    // per name in catNames order; each level's row is the four passes in catPasses order
    var catAmountGold = [
@@ -7939,9 +7938,9 @@ function runTests()
         "none": [null, null, null, null],
         "null": [null, null, null, null],
         "extreme": [null, null, null, null] },
-      { "low": [null, null, null, null],
-        "medium": [null, null, null, null],
-        "high": [null, null, null, null],
+      { "low": [0.6, 0.6, 0.6, 0.6],
+        "medium": [0.9, 0.9, 0.9, 0.9],
+        "high": [1, 1, 1, 1],
         "none": [null, null, null, null],
         "null": [null, null, null, null],
         "extreme": [null, null, null, null] },
@@ -8031,18 +8030,18 @@ function runTests()
         ["high", true, "L", {"tool": "SyQon Prism", "level": "low", "stretched": true, "amount": 0.5}, null, {"tool": "SyQon Prism", "level": "low", "stretched": true, "amount": 0.5}],
         ["high", false, "undefined", {"tool": "SyQon Prism", "level": "high", "stretched": false, "amount": 0.95}, null, {"tool": "SyQon Prism", "level": "high", "stretched": false, "amount": 0.95}],
         ["high", false, "L", {"tool": "SyQon Prism", "level": "low", "stretched": false, "amount": 0.5}, null, {"tool": "SyQon Prism", "level": "low", "stretched": false, "amount": 0.5}] ],
-      [ ["low", true, "undefined", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, null],
-        ["low", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, null],
-        ["low", false, "undefined", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, null],
-        ["low", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, null],
-        ["medium", true, "undefined", {"tool": "MLDenoise", "level": "medium", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "medium", "stretched": true, "amount": null}, null],
-        ["medium", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, null],
-        ["medium", false, "undefined", {"tool": "MLDenoise", "level": "medium", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "medium", "stretched": false, "amount": null}, null],
-        ["medium", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, null],
-        ["high", true, "undefined", {"tool": "MLDenoise", "level": "high", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "high", "stretched": true, "amount": null}, null],
-        ["high", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": null}, null],
-        ["high", false, "undefined", {"tool": "MLDenoise", "level": "high", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "high", "stretched": false, "amount": null}, null],
-        ["high", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": null}, null] ],
+      [ ["low", true, "undefined", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, null],
+        ["low", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, null],
+        ["low", false, "undefined", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, null],
+        ["low", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, null],
+        ["medium", true, "undefined", {"tool": "MLDenoise", "level": "medium", "stretched": true, "amount": 0.9}, {"tool": "MLDenoise", "level": "medium", "stretched": true, "amount": 0.9}, null],
+        ["medium", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, null],
+        ["medium", false, "undefined", {"tool": "MLDenoise", "level": "medium", "stretched": false, "amount": 0.9}, {"tool": "MLDenoise", "level": "medium", "stretched": false, "amount": 0.9}, null],
+        ["medium", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, null],
+        ["high", true, "undefined", {"tool": "MLDenoise", "level": "high", "stretched": true, "amount": 1}, {"tool": "MLDenoise", "level": "high", "stretched": true, "amount": 1}, null],
+        ["high", true, "L", {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": true, "amount": 0.6}, null],
+        ["high", false, "undefined", {"tool": "MLDenoise", "level": "high", "stretched": false, "amount": 1}, {"tool": "MLDenoise", "level": "high", "stretched": false, "amount": 1}, null],
+        ["high", false, "L", {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "MLDenoise", "level": "low", "stretched": false, "amount": 0.6}, null] ],
       [ ["low", true, "undefined", {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, null],
         ["low", true, "L", {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, null],
         ["low", false, "undefined", {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": false, "amount": 0.6}, null],
@@ -8082,6 +8081,20 @@ function runTests()
    for ( var cp = 0; cp < catParamsGold.length; ++cp )
       check( "denoise params golden: " + JSON.stringify( catNames[cp] ),
              denoiseParamsTable( catNames[cp] ), catParamsGold[cp] );
+
+   // Every tool that can be offered keys on a real amount at every level it offers.
+   var keyless = [];
+   Steps.noiseToolsFrom( { mldenoise: true, nxt: true, prism: true, studio: true } )
+      .concat( Steps.noiseToolsFrom( { studio: true, prism2Unavailable: true } ) )
+      .forEach( function( tool )
+      {
+         [ "low", "medium", "high" ].forEach( function( level )
+         {
+            if ( Steps.noiseAmountFor( tool, level ) == null )
+               keyless.push( tool + " " + level );
+         } );
+      } );
+   check( "every offered denoise tool keys on an amount at every level", keyless, [] );
 
    // Every combination of what was found, Essential XOR 2.0 included.
    var foundFlags = [ "mldenoise", "nxt", "prism", "studio", "prism2Unavailable" ];

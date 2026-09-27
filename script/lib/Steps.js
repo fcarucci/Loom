@@ -1861,9 +1861,6 @@ Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
  * (Steps.denoiseIsLinear says why), its runner, and the ladder whose value
  * its cache key carries (Steps.noiseAmountFor), mapped by `amount` where
  * the key wants something other than the level's own value.
- *
- * MLDenoise has no ladder here ON PURPOSE: its stages key on the level
- * label alone. Giving it one would re-key every cached MLDenoise stage.
  */
 Steps.NOISE_TOOLS = {};
 Steps.NOISE_TOOLS[Steps.NR_TOOL_NXT] = { linear: true, run: Steps.denoiseNXT,
@@ -1871,7 +1868,8 @@ Steps.NOISE_TOOLS[Steps.NR_TOOL_NXT] = { linear: true, run: Steps.denoiseNXT,
    // an array, not the object: paramsString serialises it verbatim, and
    // the order here is fixed by this line rather than by key insertion
    amount: function( lv ) { return [ lv.denoise, lv.detail ]; } };
-Steps.NOISE_TOOLS[Steps.NR_TOOL_MLDENOISE] = { linear: true, run: Steps.denoiseMLDenoise };
+Steps.NOISE_TOOLS[Steps.NR_TOOL_MLDENOISE] = { linear: true, run: Steps.denoiseMLDenoise,
+   levels: Steps.NOISE_LEVELS.mldenoise };
 Steps.NOISE_TOOLS[Steps.NR_TOOL_PRISM] = { linear: false, run: Steps.denoisePrism,
    levels: Steps.NOISE_LEVELS.prism };
 Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO] = { linear: true, run: Steps.denoiseStudio,
