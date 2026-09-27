@@ -835,7 +835,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 290 );
+      check( "Steps: the member count", Object.keys( have ).length, 294 );
    }
 
    /*
@@ -9470,6 +9470,80 @@ function runTests()
           studioCase( { model: "char-model", view: { id: "st", isMainView: true, window: null } } ),
           [ "error SyQon Studio noise reduction failed on st: no valid image window",
             "entitled undefined" ] );
+   /*
+    * The stretch's PixelMath, as numbers: each builder undoes its partner,
+    * evaluated in plain JS over a few samples, and the texts are pinned.
+    */
+   ( function()
+   {
+      var run = function( expr, t ) { return Function( "$T", "return " + expr + ";" )( t ); };
+      var fmt = Steps.syqonFormatStretch( [ 0.012, 0.034, 0.25 ] ), worst = 0;
+      [ 0.02, 0.1, 0.5, 0.9 ].forEach( function( t )
+      {
+         var n = run( Steps.syqonNormalizeExpression( fmt[0] ), t );
+         var s = run( Steps.syqonMtfExpression( fmt[1], fmt[2] ), n );
+         var back = run( Steps.syqonDenormalizeExpression( fmt[0] ),
+                         run( Steps.syqonInverseMtfExpression( fmt[1], fmt[2] ), s ) );
+         worst = Math.max( worst, Math.abs( back - t ) );
+      } );
+      check( "the stretch expressions invert exactly", worst < 1e-12, true );
+      check( "the stretch numbers are written with 16 decimals", fmt[0], "0.0120000000000000" );
+      check( "the reverse expressions' text",
+             [ Steps.syqonInverseMtfExpression( "a", "b" ), Steps.syqonDenormalizeExpression( "m" ) ],
+             [ "(a*$T*(b-1))/(a*b-a*$T+b*$T-b)", "($T*(1-m)+m)" ] );
+      var win = function( id, colour ) { return { mainView: { id: id, image: { isColor: colour } } }; };
+      check( "a mono target takes channel 0 of a colour result, otherwise the whole result",
+             [ Steps.syqonResultSource( win( "t", false ), win( "o", true ) ),
+               Steps.syqonResultSource( win( "t", true ), win( "o", true ) ),
+               Steps.syqonResultSource( win( "t", false ), win( "o", false ) ) ],
+             [ "o[0]", "o", "o" ] );
+      var realDelete = Steps.syqonDeleteFileIfExists, gone = [], closed = 0;
+      try
+      {
+         Steps.syqonDeleteFileIfExists = function( p ) { gone.push( p ); };
+         Steps.syqonCleanUp( { isNull: false, forceClose: function() { ++closed; } }, [ "a", null, "b" ] );
+         Steps.syqonCleanUp( { isNull: true, forceClose: function() { ++closed; } }, [] );
+         Steps.syqonCleanUp( { isNull: false, forceClose: function() { throw new Error( "gone" ); } }, [ "c" ] );
+         Steps.syqonCleanUp( null, [ "d" ] );
+      }
+      finally { Steps.syqonDeleteFileIfExists = realDelete; }
+      check( "SyQon clean-up: the window closed once, a closed one left alone, every path deleted",
+             [ closed, gone ], [ 1, [ "a", null, "b", "c", "d" ] ] );
+   } )();
+   /*
+    * Steps.pixelMath sets what its callers used to set by hand -- one
+    * expression or three, no new image, no rescale, a 64-bit working image,
+    * [0,1] truncation only when asked -- plus the settings PixelMath ignores
+    * in those modes (the unused expressions, the bounds when not
+    * truncating). Node only: a recording PixelMath.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var seen = [], hadPM = ( typeof PixelMath != "undefined" ), realPM = hadPM ? PixelMath : null;
+      try
+      {
+         PixelMath = function() {};
+         PixelMath.prototype.executeOn = function( v )
+         {
+            var own = {};
+            for ( var k in this ) if ( Object.prototype.hasOwnProperty.call( this, k ) ) own[k] = this[k];
+            seen.push( [ v.id, own ] );
+            return v.ok;
+         };
+         var r1 = Steps.pixelMath( { id: "a", ok: true }, "$T+1" );
+         var r2 = Steps.pixelMath( { id: "b", ok: false }, [ "r", "g", "b" ], true );
+         check( "Steps.pixelMath: one expression, untruncated; three, truncated to [0,1]; PixelMath's answer returned",
+                [ r1, r2, seen ],
+                [ true, false,
+                  [ [ "a", { useSingleExpression: true, expression: "$T+1", expression1: "", expression2: "",
+                             createNewImage: false, rescale: false, truncate: false, truncateLower: 0,
+                             truncateUpper: 1, use64BitWorkingImage: true } ],
+                    [ "b", { useSingleExpression: false, expression: "r", expression1: "g", expression2: "b",
+                             createNewImage: false, rescale: false, truncate: true, truncateLower: 0,
+                             truncateUpper: 1, use64BitWorkingImage: true } ] ] ] );
+      }
+      finally { if ( hadPM ) PixelMath = realPM; else PixelMath = undefined; }
+   } )();
    if ( IN_PIXINSIGHT )
    {
       var studioTarget = function( level, peak )
@@ -9595,6 +9669,167 @@ function runTests()
           [ "error SyQon: invalid linked normalized median 0 for W" ] );
       check( "syqonCreateStretchedTempWindow: a flat unlinked image is refused", stretchCase( 3, false, true ),
           [ "error SyQon Parallax: invalid normalized median 0 for channel 0 of W" ] );
+
+      /*
+       * syqonReverseStretch is the exact inverse of the temp stretch: a
+       * stretched copy, reversed, is the original again -- mono, linked and
+       * unlinked colour -- and a stretch that was not used changes nothing.
+       */
+      var roundTrip = function( nch, linked )
+      {
+         var w = new ImageWindow( 9, 7, nch, 32, true, nch == 3, Util.freeWindowId( "stretch_rt" ) );
+         var rnd = synthRandom( 41 + nch ), t = null, worst = 0;
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < nch; ++c )
+            for ( var y = 0; y < 7; ++y )
+               for ( var x = 0; x < 9; ++x )
+                  w.mainView.image.setSample( 0.01*( c + 1 ) + 0.2*Math.pow( rnd(), 3 ), x, y, c );
+         w.mainView.endProcess();
+         try
+         {
+            t = Steps.syqonCreateStretchedTempWindow( w, 0.25, linked );
+            var stretched = t.tempWindow.mainView.image.sample( 4, 3, 0 );
+            Steps.syqonReverseStretch( t.tempWindow, t.stretchInfo );
+            var a = w.mainView.image, b = t.tempWindow.mainView.image;
+            for ( var c2 = 0; c2 < nch; ++c2 )
+               for ( var y2 = 0; y2 < 7; ++y2 )
+                  for ( var x2 = 0; x2 < 9; ++x2 )
+                     worst = Math.max( worst, Math.abs( a.sample( x2, y2, c2 ) - b.sample( x2, y2, c2 ) ) );
+            Steps.syqonReverseStretch( t.tempWindow, { used: false } );
+            return [ stretched != a.sample( 4, 3, 0 ), worst < 1e-6,
+                     b.sample( 4, 3, 0 ) == a.sample( 4, 3, 0 ) || Math.abs( b.sample( 4, 3, 0 ) - a.sample( 4, 3, 0 ) ) < 1e-6 ];
+         }
+         finally
+         {
+            if ( t != null ) t.tempWindow.forceClose();
+            w.forceClose();
+         }
+      };
+      check( "syqonReverseStretch undoes the temp stretch (stretched, restored, unused is a no-op): mono",
+             roundTrip( 1, false ), [ true, true, true ] );
+      check( "syqonReverseStretch undoes the temp stretch: colour, linked", roundTrip( 3, true ), [ true, true, true ] );
+      check( "syqonReverseStretch undoes the temp stretch: colour, unlinked", roundTrip( 3, false ), [ true, true, true ] );
+
+      /*
+       * Writing a CLI's result over the target: a mono target takes channel
+       * 0 of a colour result. The SyQon copy is not truncated; Studio's is,
+       * and multiplies the input scale back on first.
+       */
+      var filled = function( nch, values )
+      {
+         var w = new ImageWindow( 4, 3, nch, 32, true, nch == 3, Util.freeWindowId( "result_src" ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < nch; ++c )
+            for ( var y = 0; y < 3; ++y )
+               for ( var x = 0; x < 4; ++x )
+                  w.mainView.image.setSample( values[c], x, y, c );
+         w.mainView.endProcess();
+         return w;
+      };
+      var samples = function( w )
+      {
+         var img = w.mainView.image, out = [];
+         for ( var c = 0; c < img.numberOfChannels; ++c )
+            out.push( Math.round( img.sample( 2, 1, c )*1e6 )/1e6 );
+         return out;
+      };
+      var resultCase = function( targetCh, outCh, outValues, apply )
+      {
+         var target = filled( targetCh, [ 0, 0, 0 ] ), out = filled( outCh, outValues );
+         try { apply( target, out ); return samples( target ); }
+         finally { target.forceClose(); out.forceClose(); }
+      };
+      var overwrite = function( t, o ) { Steps.syqonOverwriteTargetWithOutput( t, o ); };
+      check( "a mono target takes channel 0 of a colour result, untruncated",
+             resultCase( 1, 3, [ 1.5, 0.2, 0.3 ], overwrite ), [ 1.5 ] );
+      check( "a colour target takes the colour result", resultCase( 3, 3, [ 0.1, 0.2, 0.3 ], overwrite ), [ 0.1, 0.2, 0.3 ] );
+      check( "a mono target takes a mono result", resultCase( 1, 1, [ 0.7 ], overwrite ), [ 0.7 ] );
+
+      var studioDir = synthDir( "studio-apply" );
+      var studio = function( scale )
+      {
+         return function( t, o )
+         {
+            var path = studioDir + "/produced_" + String( scale ).replace( ".", "_" ) + "_" +
+                       o.mainView.image.numberOfChannels + ".xisf";
+            o.saveAs( path, false, false, false, false );
+            Steps.studioApplyResult( path, t, scale, "test", t.mainView.id );
+         };
+      };
+      check( "Studio: a mono target takes channel 0, the scale goes back on, truncated at 1",
+             [ resultCase( 1, 3, [ 0.2, 0.9, 0.9 ], studio( 2 ) ), resultCase( 1, 3, [ 0.7, 0.1, 0.1 ], studio( 2 ) ) ],
+             [ [ 0.4 ], [ 1 ] ] );
+      check( "Studio: a scale near 1 is left off, and colour stays colour",
+             resultCase( 3, 3, [ 0.1, 0.2, 0.3 ], studio( 1.005 ) ), [ 0.1, 0.2, 0.3 ] );
+
+      /*
+       * The Steps PixelMath sites that write in place: matchBackgroundOffset
+       * moves a view's centre median onto the reference's and does NOT
+       * truncate (a pixel may go below 0); frequency separation's high
+       * layer is (original - low)/FS_SCALE + FS_PEDESTAL, clipped to [0,1].
+       */
+      var ramp = function( id, base )
+      {
+         var w = new ImageWindow( 10, 10, 1, 32, true, false, Util.freeWindowId( id ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var y = 0; y < 10; ++y )
+            for ( var x = 0; x < 10; ++x )
+               w.mainView.image.setSample( base + 0.002*x + 0.001*y, x, y, 0 );
+         w.mainView.endProcess();
+         return w;
+      };
+      var ref = ramp( "bg_ref", 0.01 ), moved = ramp( "bg_moved", 0.05 );
+      try
+      {
+         var before = Steps.medianOfCentre( moved.mainView, 0.6 );
+         Steps.matchBackgroundOffset( [ ref.mainView, moved.mainView ], ref.mainView );
+         check( "matchBackgroundOffset: the centre median lands on the reference's, the reference is untouched",
+                [ Math.abs( Steps.medianOfCentre( moved.mainView, 0.6 ) - Steps.medianOfCentre( ref.mainView, 0.6 ) ) < 1e-7,
+                  Math.abs( ref.mainView.image.sample( 0, 0, 0 ) - 0.01 ) < 1e-7, before > 0.05 ],
+                [ true, true, true ] );
+      }
+      finally { ref.forceClose(); moved.forceClose(); }
+      var neg = ramp( "bg_neg", 0.05 ), refLow = ramp( "bg_ref2", 0.0 );
+      try
+      {
+         neg.mainView.beginProcess( UndoFlag_NoSwapFile );
+         neg.mainView.image.setSample( 0.01, 0, 0, 0 );   // a corner below the offset to come (-0.05)
+         neg.mainView.endProcess();
+         Steps.matchBackgroundOffset( [ neg.mainView ], refLow.mainView );
+         check( "matchBackgroundOffset is not truncated: an offset can take a pixel below 0",
+                Math.round( neg.mainView.image.sample( 0, 0, 0 )*1e6 )/1e6, -0.04 );
+      }
+      finally { neg.forceClose(); refLow.forceClose(); }
+
+      var realPSF = Steps.measurePSF, fsIn = null, fs = null;
+      try
+      {
+         Steps.measurePSF = function() { return { sigma: 1.0, n: 12 }; };
+         fsIn = new ImageWindow( 16, 12, 1, 32, true, false, Util.freeWindowId( "fs_in" ) );
+         var rnd2 = synthRandom( 77 );
+         fsIn.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var fy = 0; fy < 12; ++fy )
+            for ( var fx = 0; fx < 16; ++fx )
+               fsIn.mainView.image.setSample( ( fx == 8 && fy == 6 ) ? 1 : 0.05 + 0.3*rnd2(), fx, fy, 0 );
+         fsIn.mainView.endProcess();
+         fs = Steps.frequencySeparate( fsIn, "fs_in" );
+         var worstFs = 0, o = fsIn.mainView.image, lo = fs.low.mainView.image, hi = fs.high.mainView.image;
+         for ( var gy = 0; gy < 12; ++gy )
+            for ( var gx = 0; gx < 16; ++gx )
+            {
+               var want = Math.max( 0, Math.min( 1, ( o.sample( gx, gy, 0 ) - lo.sample( gx, gy, 0 ) )/Steps.FS_SCALE +
+                                                    Steps.FS_PEDESTAL ) );
+               worstFs = Math.max( worstFs, Math.abs( hi.sample( gx, gy, 0 ) - want ) );
+            }
+         check( "frequency separation: high = (original - low)/scale + pedestal, low blurred at 2 sigma",
+                [ worstFs < 1e-6, fs.sigma, lo.sample( 8, 6, 0 ) < 0.9 ], [ true, 2, true ] );
+      }
+      finally
+      {
+         Steps.measurePSF = realPSF;
+         if ( fs ) { fs.low.forceClose(); fs.high.forceClose(); }
+         if ( fsIn ) fsIn.forceClose();
+      }
 
       /*
        * Characterization of Steps.syqonRunProcessBlocking's progress

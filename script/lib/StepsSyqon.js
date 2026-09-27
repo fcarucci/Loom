@@ -271,6 +271,15 @@ Steps.syqonDeleteFileIfExists = function( filePath )
    catch ( e ) { Util.warn( "syqon", "could not delete " + filePath + ": " + e ); }
 };
 
+/* After a CLI round trip, success or not: the working window closed, the temp files gone. */
+Steps.syqonCleanUp = function( window, paths )
+{
+   if ( window && !window.isNull )
+      try { window.forceClose(); } catch ( e ) {}
+   for ( var i = 0; i < paths.length; ++i )
+      Steps.syqonDeleteFileIfExists( paths[i] );
+};
+
 /*
  * CLI argument construction, faithful to buildParallaxArgs() in the
  * reference script. Pure and side-effect-free so selftest.js can assert
@@ -321,40 +330,23 @@ Steps.syqonBuildArgs = function( opts )
 
 /* ---- PI-side temp stretch / destretch, ported from the reference ---- */
 
-Steps.syqonApplyPixelMath = function( view, expr )
+/*
+ * PixelMath in place, truncated to [0,1] on a 64-bit working image. One
+ * expression for every channel, or an array of three: one per channel
+ * (expression/expression1/expression2), where $T is that channel's own
+ * value. An array of one is the single expression.
+ */
+Steps.syqonApplyPixelMath = function( view, exprs )
 {
+   var e = [].concat( exprs );
    var pm = new PixelMath;
-   pm.useSingleExpression    = true;
-   pm.expression             = expr;
-   pm.symbols                = "";
-   pm.clearImageCacheAndExit = false;
-   pm.cacheGeneratedImages   = false;
-   pm.generateOutput         = true;
-   pm.singleThreaded         = false;
-   pm.optimization           = true;
-   pm.use64BitWorkingImage   = true;
-   pm.rescale                = false;
-   pm.rescaleLower           = 0;
-   pm.rescaleUpper           = 1;
-   pm.truncate                = true;
-   pm.truncateLower          = 0;
-   pm.truncateUpper          = 1;
-   pm.createNewImage         = false;
-   pm.showNewImage           = false;
-   pm.newImageColorSpace     = PixelMath.SameAsTarget;
-   pm.newImageSampleFormat   = PixelMath.SameAsTarget;
-   pm.executeOn( view );
-};
-
-/* Per-channel unlinked PixelMath -- expression/expression1/expression2 are
- * the R/G/B slots; $T refers to that channel's own pixel value in each. */
-Steps.syqonApplyPixelMathUnlinked = function( view, exprR, exprG, exprB )
-{
-   var pm = new PixelMath;
-   pm.useSingleExpression    = false;
-   pm.expression             = exprR;
-   pm.expression1            = exprG;
-   pm.expression2            = exprB;
+   pm.useSingleExpression    = ( e.length == 1 );
+   pm.expression             = e[0];
+   if ( e.length > 1 )
+   {
+      pm.expression1         = e[1];
+      pm.expression2         = e[2];
+   }
    pm.symbols                = "";
    pm.clearImageCacheAndExit = false;
    pm.cacheGeneratedImages   = false;
@@ -414,9 +406,7 @@ Steps.syqonCreateStretchedTempWindow = function( sourceWindow, targetMedian, lin
       stretchInfo.originalMin.push( img.minimum( new Rect( 0, 0, img.width, img.height ), c, c ) );
 
    var sourceId = sourceWindow.mainView.id;
-   if ( !img.isColor )
-      Steps.syqonStretchMono( tempWindow.mainView, stretchInfo, targetMedian, sourceId );
-   else if ( linked )
+   if ( img.isColor && linked )
       Steps.syqonStretchLinked( tempWindow.mainView, stretchInfo, targetMedian, sourceId );
    else
       Steps.syqonStretchUnlinked( tempWindow.mainView, stretchInfo, targetMedian, sourceId );
@@ -436,19 +426,22 @@ Steps.syqonMtfExpression = function( om, tm )
    return "((" + om + "-1)*" + tm + "*$T)/(" + om + "*(" + tm + "+$T-1)-" + tm + "*$T)";
 };
 
-Steps.syqonStretchMono = function( view, stretchInfo, targetMedian, sourceId )
+// The inverse of syqonMtfExpression: median `tm` back to `om`.
+Steps.syqonInverseMtfExpression = function( om, tm )
 {
-   var mn = format( "%.16f", stretchInfo.originalMin[0] );
-   Steps.syqonApplyPixelMath( view, Steps.syqonNormalizeExpression( mn ) );
+   return "(" + om + "*$T*(" + tm + "-1))/(" + om + "*" + tm + "-" + om + "*$T+" + tm + "*$T-" + tm + ")";
+};
 
-   var om = view.image.median();
-   if ( !isFinite( om ) || om <= 0 || om >= 1 )
-      throw new Error( "SyQon Parallax: invalid normalized median " + om +
-                       " for " + sourceId );
-   stretchInfo.originalMedian.push( om );
+// The inverse of syqonNormalizeExpression: 0 back to `min`.
+Steps.syqonDenormalizeExpression = function( min )
+{
+   return "($T*(1-" + min + ")+" + min + ")";
+};
 
-   Steps.syqonApplyPixelMath( view,
-      Steps.syqonMtfExpression( format( "%.16f", om ), format( "%.16f", targetMedian ) ) );
+// Numbers as the stretch writes them into PixelMath: 16 decimals, for a bit-exact reverse.
+Steps.syqonFormatStretch = function( values )
+{
+   return values.map( function( v ) { return format( "%.16f", v ); } );
 };
 
 /*
@@ -493,32 +486,26 @@ Steps.syqonStretchLinked = function( view, stretchInfo, targetMedian, sourceId )
 /*
  * Per-channel unlinked path -- matches the reference's own default
  * (linkedStretch = false), used for mono channels and anything
- * not yet colour-calibrated.
+ * not yet colour-calibrated. One channel is the mono stretch.
  */
 Steps.syqonStretchUnlinked = function( view, stretchInfo, targetMedian, sourceId )
 {
-   var mins = stretchInfo.originalMin.map( function( v ) { return format( "%.16f", v ); } );
-   Steps.syqonApplyPixelMathUnlinked( view,
-      Steps.syqonNormalizeExpression( mins[0] ),
-      Steps.syqonNormalizeExpression( mins[1] ),
-      Steps.syqonNormalizeExpression( mins[2] ) );
+   Steps.syqonApplyPixelMath( view,
+      Steps.syqonFormatStretch( stretchInfo.originalMin ).map( Steps.syqonNormalizeExpression ) );
 
-   var normImg = view.image;
-   for ( var c2 = 0; c2 < 3; ++c2 )
+   var img = view.image, n = stretchInfo.originalMin.length;
+   for ( var c = 0; c < n; ++c )
    {
-      var omc = normImg.median( new Rect( 0, 0, normImg.width, normImg.height ), c2, c2 );
-      if ( !isFinite( omc ) || omc <= 0 || omc >= 1 )
-         throw new Error( "SyQon Parallax: invalid normalized median " + omc +
-                          " for channel " + c2 + " of " + sourceId );
-      stretchInfo.originalMedian.push( omc );
+      var om = img.median( new Rect( 0, 0, img.width, img.height ), c, c );
+      if ( !isFinite( om ) || om <= 0 || om >= 1 )
+         throw new Error( "SyQon Parallax: invalid normalized median " + om + " for " +
+                          ( n > 1 ? "channel " + c + " of " : "" ) + sourceId );
+      stretchInfo.originalMedian.push( om );
    }
 
-   var oms = stretchInfo.originalMedian.map( function( v ) { return format( "%.16f", v ); } );
-   var tm  = format( "%.16f", targetMedian );
-   Steps.syqonApplyPixelMathUnlinked( view,
-      Steps.syqonMtfExpression( oms[0], tm ),
-      Steps.syqonMtfExpression( oms[1], tm ),
-      Steps.syqonMtfExpression( oms[2], tm ) );
+   var tm = format( "%.16f", targetMedian );
+   Steps.syqonApplyPixelMath( view, Steps.syqonFormatStretch( stretchInfo.originalMedian ).map(
+      function( om ) { return Steps.syqonMtfExpression( om, tm ); } ) );
 };
 
 /* Exact algebraic inverse of syqonCreateStretchedTempWindow, applied in
@@ -529,36 +516,11 @@ Steps.syqonReverseStretch = function( outputWindow, stretchInfo )
       return;
 
    var tm = format( "%.16f", stretchInfo.targetMedian );
-
-   if ( !stretchInfo.wasColor )
-   {
-      var om = format( "%.16f", stretchInfo.originalMedian[0] );
-      var mn = format( "%.16f", stretchInfo.originalMin[0] );
-      Steps.syqonApplyPixelMath( outputWindow.mainView,
-         "(" + om + "*$T*(" + tm + "-1))/(" +
-         om + "*" + tm + " - " + om + "*$T + " + tm + "*$T - " + tm + ")" );
-      Steps.syqonApplyPixelMath( outputWindow.mainView,
-         "($T*(1-" + mn + ")+" + mn + ")" );
-   }
-   else
-   {
-      var om0 = format( "%.16f", stretchInfo.originalMedian[0] );
-      var om1 = format( "%.16f", stretchInfo.originalMedian[1] );
-      var om2 = format( "%.16f", stretchInfo.originalMedian[2] );
-      var mn0 = format( "%.16f", stretchInfo.originalMin[0] );
-      var mn1 = format( "%.16f", stretchInfo.originalMin[1] );
-      var mn2 = format( "%.16f", stretchInfo.originalMin[2] );
-
-      Steps.syqonApplyPixelMathUnlinked( outputWindow.mainView,
-         "(" + om0 + "*$T*(" + tm + "-1))/(" + om0 + "*" + tm + "-" + om0 + "*$T+" + tm + "*$T-" + tm + ")",
-         "(" + om1 + "*$T*(" + tm + "-1))/(" + om1 + "*" + tm + "-" + om1 + "*$T+" + tm + "*$T-" + tm + ")",
-         "(" + om2 + "*$T*(" + tm + "-1))/(" + om2 + "*" + tm + "-" + om2 + "*$T+" + tm + "*$T-" + tm + ")" );
-
-      Steps.syqonApplyPixelMathUnlinked( outputWindow.mainView,
-         "($T*(1-" + mn0 + ")+" + mn0 + ")",
-         "($T*(1-" + mn1 + ")+" + mn1 + ")",
-         "($T*(1-" + mn2 + ")+" + mn2 + ")" );
-   }
+   Steps.syqonApplyPixelMath( outputWindow.mainView,
+      Steps.syqonFormatStretch( stretchInfo.originalMedian ).map(
+         function( om ) { return Steps.syqonInverseMtfExpression( om, tm ); } ) );
+   Steps.syqonApplyPixelMath( outputWindow.mainView,
+      Steps.syqonFormatStretch( stretchInfo.originalMin ).map( Steps.syqonDenormalizeExpression ) );
 };
 
 /* ---- FITS save / load / overwrite, ported from the reference ---- */
@@ -572,19 +534,27 @@ Steps.syqonSaveImageAsFits = function( filePath, view )
       throw new Error( "SyQon Parallax: failed to save temp FITS: " + filePath );
 };
 
+/*
+ * A CLI result as a PixelMath source for the target: a mono target takes
+ * channel 0 of a colour result (the CLIs return three channels even for a
+ * mono input).
+ */
+Steps.syqonResultSource = function( targetWindow, outputWindow )
+{
+   var id = outputWindow.mainView.id;
+   return ( !targetWindow.mainView.image.isColor && outputWindow.mainView.image.isColor ) ? id + "[0]" : id;
+};
+
+/* The result written over the target as it is, untruncated. False when PixelMath refused. */
 Steps.syqonOverwriteTargetWithOutput = function( targetWindow, outputWindow )
 {
-   var expr = outputWindow.mainView.id;
-   if ( !targetWindow.mainView.image.isColor && outputWindow.mainView.image.isColor )
-      expr = outputWindow.mainView.id + "[0]";
-
    var pm = new PixelMath;
    pm.useSingleExpression = true;
-   pm.expression          = expr;
+   pm.expression          = Steps.syqonResultSource( targetWindow, outputWindow );
    pm.createNewImage      = false;
    pm.rescale             = false;
    pm.truncate            = false;
-   pm.executeOn( targetWindow.mainView );
+   return pm.executeOn( targetWindow.mainView );
 };
 
 Steps.syqonProcessOutput = function( outputFilePath, targetWindow, stretchInfo )
@@ -906,11 +876,8 @@ Steps.syqonExecuteStage = function( view, opLabel, stageOpts, linked )
    }
    finally
    {
-      if ( tempStretchWindow && !tempStretchWindow.isNull )
-         try { tempStretchWindow.forceClose(); } catch ( e ) {}
-      Steps.syqonDeleteFileIfExists( runPaths.inputFilePath );
-      Steps.syqonDeleteFileIfExists( runPaths.outputFilePath );
-      Steps.syqonDeleteFileIfExists( runPaths.jsonInfoPath );
+      Steps.syqonCleanUp( tempStretchWindow,
+         [ runPaths.inputFilePath, runPaths.outputFilePath, runPaths.jsonInfoPath ] );
    }
 };
 
@@ -1240,10 +1207,7 @@ Steps.prismExecuteStage = function( view, strength, alreadyStretched )
    }
    finally
    {
-      if ( tempStretchWindow && !tempStretchWindow.isNull )
-         try { tempStretchWindow.forceClose(); } catch ( e ) {}
-      Steps.syqonDeleteFileIfExists( inPath );
-      Steps.syqonDeleteFileIfExists( outPath );
+      Steps.syqonCleanUp( tempStretchWindow, [ inPath, outPath ] );
    }
 };
 
@@ -1366,24 +1330,14 @@ Steps.syqonStarlessRun = function( window, label )
           * takes channel 0 -- the same correction SyQon_Starless.js makes
           * in overwriteTargetWithStarless().
           */
-         var srcId = ow.mainView.id;
-         if ( !window.mainView.image.isColor && ow.mainView.image.isColor )
-            srcId = srcId + "[0]";
-         var pm = new PixelMath;
-         pm.useSingleExpression = true;
-         pm.expression          = srcId;
-         pm.createNewImage      = false;
-         pm.rescale             = false;
-         pm.truncate            = false;
-         if ( !pm.executeOn( window.mainView ) )
+         if ( !Steps.syqonOverwriteTargetWithOutput( window, ow ) )
             throw new Error( "SyQon Starless: could not apply the starless result" );
       }
       finally { try { ow.forceClose(); } catch ( e ) {} }
    }
    finally
    {
-      Steps.syqonDeleteFileIfExists( inPath );
-      Steps.syqonDeleteFileIfExists( outPath );
+      Steps.syqonCleanUp( null, [ inPath, outPath ] );
    }
 };
 
@@ -1815,10 +1769,7 @@ Steps.studioProbe = function( model )
    }
    finally
    {
-      if ( w != null )
-         try { w.forceClose(); } catch ( e ) {}
-      Steps.syqonDeleteFileIfExists( inPath );
-      Steps.syqonDeleteFileIfExists( outPath );
+      Steps.syqonCleanUp( w, [ inPath, outPath ] );
    }
 };
 
@@ -2121,12 +2072,7 @@ Steps.studioRun = function( view, opLabel, opts )
    }
    finally
    {
-      if ( clone != null )
-         try { clone.forceClose(); } catch ( e2 ) {}
-      Steps.syqonDeleteFileIfExists( inPath );
-      Steps.syqonDeleteFileIfExists( outPath );
-      if ( declared != null && declared != outPath )
-         Steps.syqonDeleteFileIfExists( declared );
+      Steps.syqonCleanUp( clone, [ inPath, outPath, declared != outPath ? declared : null ] );
    }
 };
 
@@ -2163,9 +2109,7 @@ Steps.studioApplyResult = function( produced, targetWindow, scale, opLabel, view
    var ow = opened[0];
    try
    {
-      var src = ow.mainView.id;
-      if ( !targetWindow.mainView.image.isColor && ow.mainView.image.isColor )
-         src += "[0]";
+      var src = Steps.syqonResultSource( targetWindow, ow );
       var pm = new PixelMath;
       pm.useSingleExpression = true;
       pm.expression          = ( scale > 1.01 ) ? "(" + src + ")*" + format( "%.10f", scale )

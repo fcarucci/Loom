@@ -236,6 +236,29 @@ Steps.markAsOutput = function( window, label )
    catch ( e ) { Util.warn( "output", "could not mark " + label + ": " + e ); }
 };
 
+/*
+ * PixelMath in place on a 64-bit working image: one expression, or an array
+ * of three, one per channel. Not rescaled; truncated to [0,1] only when
+ * asked. Returns whether PixelMath ran. (expression1/2 are ignored for a
+ * single expression, and the bounds when not truncating.)
+ */
+Steps.pixelMath = function( view, exprs, truncate )
+{
+   var e = [].concat( exprs, "", "" );
+   var pm = new PixelMath;
+   pm.useSingleExpression = !Array.isArray( exprs );
+   pm.expression = e[0];
+   pm.expression1 = e[1];
+   pm.expression2 = e[2];
+   pm.createNewImage = false;
+   pm.rescale = false;
+   pm.truncate = !!truncate;
+   pm.truncateLower = 0;
+   pm.truncateUpper = 1;
+   pm.use64BitWorkingImage = true;
+   return pm.executeOn( view );
+};
+
 Steps.medianOfCentre = function( view, fraction )
 {
    var img = view.image;
@@ -1141,16 +1164,7 @@ Steps.applyWhiteBalance = function( view, factors )
                              factors[1].toFixed( 6 ) + " / " +
                              factors[2].toFixed( 6 ) );
 
-   var pm = new PixelMath;
-   pm.useSingleExpression = false;
-   pm.expression  = "$T*" + format( "%.10f", factors[0] );
-   pm.expression1 = "$T*" + format( "%.10f", factors[1] );
-   pm.expression2 = "$T*" + format( "%.10f", factors[2] );
-   pm.createNewImage = false;
-   pm.rescale = false;
-   pm.truncate = false;
-   pm.use64BitWorkingImage = true;
-   if ( !pm.executeOn( view ) )
+   if ( !Steps.pixelMath( view, factors.map( function( f ) { return "$T*" + format( "%.10f", f ); } ) ) )
       throw new Error( "applyWhiteBalance: gain stage failed on " + view.id );
 
    // Background neutralisation: bring all three channel backgrounds to a
@@ -1170,16 +1184,7 @@ Steps.applyWhiteBalance = function( view, factors )
                              med[2].toExponential( 4 ) +
                              " -> " + target.toExponential( 4 ) );
 
-   var pm2 = new PixelMath;
-   pm2.useSingleExpression = false;
-   pm2.expression  = "$T+" + format( "%.12f", target - med[0] );
-   pm2.expression1 = "$T+" + format( "%.12f", target - med[1] );
-   pm2.expression2 = "$T+" + format( "%.12f", target - med[2] );
-   pm2.createNewImage = false;
-   pm2.rescale = false;
-   pm2.truncate = false;
-   pm2.use64BitWorkingImage = true;
-   if ( !pm2.executeOn( view ) )
+   if ( !Steps.pixelMath( view, med.map( function( m ) { return "$T+" + format( "%.12f", target - m ); } ) ) )
       throw new Error( "applyWhiteBalance: background stage failed on " + view.id );
 };
 
@@ -1408,14 +1413,7 @@ Steps.matchBackgroundOffset = function( views, refView )
       var delta = target - here;
       Util.log( "background", views[i].id + ": offset " + delta.toExponential( 4 ) +
                               " to match " + refView.id );
-      var pm = new PixelMath;
-      pm.useSingleExpression = true;
-      pm.expression = "$T+" + format( "%.12f", delta );
-      pm.createNewImage = false;
-      pm.rescale = false;
-      pm.truncate = false;
-      pm.use64BitWorkingImage = true;
-      if ( !pm.executeOn( views[i] ) )
+      if ( !Steps.pixelMath( views[i], "$T+" + format( "%.12f", delta ) ) )
          throw new Error( "background offset failed on " + views[i].id );
    }
 };
@@ -3350,20 +3348,11 @@ Steps.frequencySeparate = function( window, label )
       try { if ( window.hasAstrometricSolution ) high.copyAstrometricSolution( window ); }
       catch ( e2 ) {}
 
-      var pm = new PixelMath;
-      pm.useSingleExpression = true;
-      pm.expression = "($T - " + low.mainView.id + ")/" +
-                      format( "%.8f", Steps.FS_SCALE ) + " + " +
-                      format( "%.8f", Steps.FS_PEDESTAL );
-      pm.createNewImage = false;
-      pm.rescale        = false;
       // clipped deliberately: a 16-bit TIFF cannot store what falls outside
       // [0,1] anyway, and silently rescaling would break the recombination
-      pm.truncate       = true;
-      pm.truncateLower  = 0;
-      pm.truncateUpper  = 1;
-      pm.use64BitWorkingImage = true;
-      if ( !pm.executeOn( high.mainView ) )
+      if ( !Steps.pixelMath( high.mainView,
+                             "($T - " + low.mainView.id + ")/" + format( "%.8f", Steps.FS_SCALE ) +
+                             " + " + format( "%.8f", Steps.FS_PEDESTAL ), true ) )
          throw new Error( "frequency separation: could not build the high layer for " + name );
    }
    catch ( e3 )
