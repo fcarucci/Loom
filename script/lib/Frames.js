@@ -159,12 +159,6 @@ Frames.PLAUSIBLE = {
    stars:        { lo: 200,  hi: 500000 }      // counts
 };
 
-/*
- * Ascending by measured value on real frames. The spec had stars below
- * psfSNR; both frames measured here put psfSNR below stars.
- */
-Frames.METRIC_RANGE_ORDER = [ "eccentricity", "fwhm", "psfSNR", "stars" ];
-
 Frames.metricInRange = function( name, value )
 {
    var r = Frames.PLAUSIBLE[name];

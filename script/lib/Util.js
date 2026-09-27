@@ -802,27 +802,6 @@ Util.qualityDelta = function( chosen, other )
 };
 
 /*
- * The sharpest alternative, so the comparison is against the best thing
- * available for that channel rather than an arbitrary one. SMALLER IS
- * BETTER for FWHM, which is the opposite of the SNR this replaced -- a
- * comparison left pointing the wrong way would quietly flatter every new
- * stack.
- */
-Util.bestAlternative = function( others )
-{
-   var best = null;
-   for ( var i = 0; i < others.length; ++i )
-   {
-      var o = others[i];
-      if ( o == null || !( o.fwhm > 0 ) )
-         continue;
-      if ( best == null || o.fwhm < best.fwhm )
-         best = o;
-   }
-   return best;
-};
-
-/*
  * "+5%" / "-13%" / "" -- a sign is always shown, because the sign IS the
  * message, and nothing is shown below 1% where the difference is noise in
  * the measurement rather than in the data.

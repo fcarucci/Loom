@@ -2258,6 +2258,17 @@ function runTests()
    check( "a root that is not there enumerates as empty, not as an error",
           Util.directoryEntries( "/nonexistent/loom-selftest-root" ), [] );
 
+   // A file's creation time, falling back to its modification time; 0 when neither can be read.
+   function FakeInfo( p )
+   {
+      if ( p == "throws" ) throw new Error( "no such file" );
+      this.timeCreated = ( p == "born" ) ? new Date( 5000 ) : null;
+      this.lastModified = ( p == "none" ) ? null : new Date( 7000 );
+   }
+   check( "fileCreatedMs: the birth time, else the modification time, else 0",
+          [ "born", "modified", "none", "throws" ].map( function( p ) { return Util.fileCreatedMs( p, FakeInfo ); } ),
+          [ 5000, 7000, 0, 0 ] );
+
    /*
     * Picking a binary out of a candidate list. First match wins, and a
     * path that cannot be tested counts as absent rather than aborting the
@@ -3264,16 +3275,6 @@ function runTests()
           Util.qualityDelta( { fwhm: 0 }, SHARP ).fwhm, null );
 
    /*
-    * Smaller is better, so the sharpest alternative is the one to beat.
-    */
-   check( "the sharpest alternative is the one compared against",
-          Util.bestAlternative( [ { fwhm: 9.5 }, { fwhm: 8.06 }, { fwhm: 12 } ] ).fwhm, 8.06 );
-   check( "unmeasurable alternatives are ignored",
-          Util.bestAlternative( [ { fwhm: 0 }, null, { fwhm: 8.9 } ] ).fwhm, 8.9 );
-   check( "and no alternatives at all answers nothing",
-          Util.bestAlternative( [] ), null );
-
-   /*
     * The sign IS the message, so it is always shown; below 1% nothing is,
     * because that is the measurement moving rather than the data.
     */
@@ -3482,10 +3483,12 @@ function runTests()
              Frames.meaningProblems( { path: 5, eccentricity: 0.5, fwhm: 4,
                                        psfSNR: 8.8, stars: 100 } ).length > 0, true );
 
+      // ascending by measured value on real frames: psfSNR sits below stars
+      var metricNames = [ "eccentricity", "fwhm", "psfSNR", "stars" ];
       var bad = [];
-      for ( var i = 0; i < Frames.METRIC_RANGE_ORDER.length; ++i )
+      for ( var i = 0; i < metricNames.length; ++i )
       {
-         var n = Frames.METRIC_RANGE_ORDER[i];
+         var n = metricNames[i];
          if ( !Frames.metricInRange( n, sub[n] ) || !Frames.metricInRange( n, master[n] ) )
             bad.push( n );
       }
