@@ -40,6 +40,17 @@ jobs:
       - name: Run the suite as 1.9.4
         run: LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js
 
+      # Every check must sit in a named testGroup, or a coder running only
+      # the groups a change touches skips it without knowing. test-groups
+      # runs the suite once per group (about a minute) and fails unless the
+      # per-group counts add up to its own unfiltered run, so a check that
+      # lands outside every group fails here. No --expect: the count it
+      # compares against is that unfiltered run. (The reference gate,
+      # ci/check-refs.js, needs no step of its own: run-tests.js runs it
+      # and its tests before loading anything.)
+      - name: Check every test sits in a named group
+        run: node ci/test-groups.js
+
   package:
     needs: test
     name: Package the installable zip

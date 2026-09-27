@@ -7264,6 +7264,109 @@ function runTests()
              ( cwErr ? ": " + cwErr : "" ), cwOK, true );
    } )();
 
+   /* ---- adding masters: the folder scan and the file list --------------- */
+
+   /*
+    * Both run on the prototype against a stand-in dialog, so they are
+    * checked in node too: what they decide is filesystem and header logic,
+    * not widgets.
+    */
+   ( function()
+   {
+      var dir = "/tmp/agent-scratch/loom-ui-master-scan";
+      ensureDir( dir );
+      ensureDir( dir + "/sub.xisf" );   // a directory with a master's extension
+      var drizzled = "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-L_mono_drizzle_2x_(1)_autocrop.xisf";
+      var plain = "masterLight_BIN-1_6248x4176_EXPOSURE-180.00s_FILTER-O_mono_fastIntegration.fits";
+      [ drizzled, plain, "masterFlat_FILTER-L.xisf", "stacked_unknown.fit", "notes.txt" ]
+         .forEach( function( n ) { File.writeTextFile( dir + "/" + n, "x" ); } );
+
+      var scan = UI.SelectDialog.prototype.scanMasterFolder.call( {}, dir );
+      function byName( a, b ) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }
+      function shape( r )
+      {
+         var o = { path: r.path, name: r.name, times: typeof r.mtime + "/" + typeof r.created };
+         if ( "channel" in r )
+         {
+            o.channel = r.channel; o.drizzle = r.drizzle; o.autocrop = r.autocrop;
+         }
+         return o;
+      }
+      check( "scanMasterFolder: counts every master-typed file, skips calibration masters",
+             [ scan.total, scan.skipped ], [ 4, 1 ] );
+      check( "scanMasterFolder: named candidates carry channel, drizzle and autocrop from the name",
+             scan.named.slice().sort( byName ).map( shape ),
+             [ { path: dir + "/" + plain, name: plain, times: "number/number",
+                 channel: "O", drizzle: "", autocrop: false },
+               { path: dir + "/" + drizzled, name: drizzled, times: "number/number",
+                 channel: "L", drizzle: "2x", autocrop: true } ] );
+      check( "scanMasterFolder: a name without a FILTER token is deferred, not dropped",
+             scan.unnamed.map( shape ),
+             [ { path: dir + "/stacked_unknown.fit", name: "stacked_unknown.fit",
+                 times: "number/number" } ] );
+      check( "scanMasterFolder: a folder that cannot be listed is null",
+             UI.SelectDialog.prototype.scanMasterFolder.call( {}, dir + "/no-such-folder" ), null );
+   } )();
+
+   ( function()
+   {
+      function dialog()
+      {
+         var d = { entries: [], busy: [], rebuilt: 0 };
+         d.setBusy = function( m ) { d.busy.push( m ); };
+         d.rebuild = function() { ++d.rebuilt; };
+         return d;
+      }
+      var headers = {
+         "/m/a.xisf": { keywords: [ { name: "FILTER", value: "'Red'" },
+                                    { name: "INSTRUME", value: "'ZWO ASI2600MM Pro'" },
+                                    { name: "XPIXSZ", value: "7.52" } ],
+                        width: 6248, height: 4176 },
+         "/m/b.fits": { keywords: [], width: 10, height: 20 }
+      };
+      function add( d, paths, created )
+      {
+         var saved = [ Util.readImageInfo, Util.fileCreatedMs ];
+         Util.readImageInfo = function( p )
+         {
+            if ( !( p in headers ) ) throw new Error( "unreadable" );
+            return headers[p];
+         };
+         Util.fileCreatedMs = created || function( p ) { return p.length; };
+         try { UI.SelectDialog.prototype.addFiles.call( d, paths ); }
+         finally { Util.readImageInfo = saved[0]; Util.fileCreatedMs = saved[1]; }
+      }
+
+      var one = dialog();
+      add( one, [ "/m/a.xisf" ] );
+      check( "addFiles: one file is an entry from its header, with no busy state",
+             [ one.entries, one.busy, one.rebuilt ],
+             [ [ { source: "file", ref: "/m/a.xisf", label: "a.xisf", filter: "Red",
+                   instrume: "ZWO ASI2600MM Pro", channel: "R", width: 6248, height: 4176,
+                   drizzle: Util.drizzleLabel( "7.52" ), created: 9 } ], [], 1 ] );
+
+      var many = dialog();
+      add( many, [ "/m/b.fits", "/m/gone.xisf" ] );
+      check( "addFiles: several files report progress, and an unreadable one is still listed",
+             [ many.entries, many.busy, many.rebuilt ],
+             [ [ { source: "file", ref: "/m/b.fits", label: "b.fits", filter: null,
+                   instrume: null, channel: null, width: 10, height: 20,
+                   drizzle: Util.drizzleLabel( null ), created: 9 },
+                 { source: "file", ref: "/m/gone.xisf", label: "gone.xisf", filter: null,
+                   instrume: null, channel: null, width: 0, height: 0,
+                   drizzle: "", created: 12 } ],
+               [ Util.scanProgressMessage( "Reading masters", "b.fits", 1, 2 ),
+                 Util.scanProgressMessage( "Reading masters", "gone.xisf", 2, 2 ),
+                 null ], 1 ] );
+
+      var broken = dialog(), threw = false;
+      try { add( broken, [ "/m/a.xisf", "/m/b.fits" ], function() { throw new Error( "stat" ); } ); }
+      catch ( e ) { threw = true; }
+      check( "addFiles: a failure mid-list clears the busy state and rebuilds nothing",
+             [ threw, broken.busy.length, broken.busy[broken.busy.length - 1], broken.rebuilt ],
+             [ true, 2, null, 0 ] );
+   } )();
+
    } if ( testGroup( "pipeline.keys" ) ) {
    check( "companion path is distinct from the stage path",
           Cache.companionPathFor( "abc", "stars" ) != Cache.pathFor( "abc" ), true );

@@ -19,6 +19,7 @@
  * deliberately not part of run-tests.js, which stays a one-second full run.
  *
  * Usage: node [-r redirect.js] ci/test-groups.js [--expect N]
+ * CI runs it without --expect after both suite runs (.github/workflows/ci.yml).
  * The core release is taken from the environment as run-tests.js takes it
  * (LOOM_TEST_CORE_RELEASE=4 for the 1.9.4 build).
  */
@@ -30,9 +31,24 @@ const { spawnSync } = require( "child_process" );
 const root = path.resolve( __dirname, ".." );
 const runner = path.join( __dirname, "run-tests.js" );
 
-const argv = process.argv.slice( 2 );
-const expectAt = argv.indexOf( "--expect" );
-const expected = expectAt >= 0 ? Number( argv[expectAt + 1] ) : null;
+/*
+ * `--expect N` pins the full run's check count. Without a count it is a
+ * usage error rather than Number( undefined ): NaN never equals a count,
+ * so a bare --expect used to report a false "expected NaN" after the whole
+ * minute of group runs. Returns { expected } (null when absent) or { error }.
+ */
+function parseExpect( argv )
+{
+   const at = argv.indexOf( "--expect" );
+   if ( at < 0 )
+      return { expected: null };
+   const value = argv[at + 1];
+   if ( value === undefined || !/^\d+$/.test( value ) )
+      return { error: "--expect needs the full run's check count, e.g. --expect 2293; got " +
+                      ( value === undefined ? "nothing" : JSON.stringify( value ) ) };
+   return { expected: Number( value ) };
+}
+
 
 const problems = [];
 function fail( message ) { problems.push( message ); console.error( "FAIL  " + message ); }
@@ -58,64 +74,81 @@ function run( only )
 }
 
 /* Group names as written in selftest.js; `prelude` always runs and holds no checks. */
-const source = fs.readFileSync( path.join( root, "script", "selftest.js" ), "utf8" );
-const seams = [];
-// seam lines only: `if ( testGroup( "x" ) ) {` or `} if ( testGroup( "x" ) ) {`, not prose about them
-const seamRe = /^\s*(?:\}\s*)?if\s*\(\s*testGroup\(\s*"([^"]+)"\s*\)\s*\)\s*\{\s*$/gm;
-for ( let m; ( m = seamRe.exec( source ) ); )
-   seams.push( m[1] );
-const groups = Array.from( new Set( seams ) ).filter( g => g != "prelude" );
+function readGroups()
+{
+   const source = fs.readFileSync( path.join( root, "script", "selftest.js" ), "utf8" );
+   const seams = [];
+   // seam lines only: `if ( testGroup( "x" ) ) {` or `} if ( testGroup( "x" ) ) {`, not prose about them
+   const seamRe = /^\s*(?:\}\s*)?if\s*\(\s*testGroup\(\s*"([^"]+)"\s*\)\s*\)\s*\{\s*$/gm;
+   for ( let m; ( m = seamRe.exec( source ) ); )
+      seams.push( m[1] );
+   return Array.from( new Set( seams ) ).filter( g => g != "prelude" );
+}
 
 // 1. the full run, unchanged
-const full = run( undefined );
-if ( !full.line )
-   fail( "full run printed no result line:\n" + full.out );
-else if ( full.filtered !== null )
-   fail( "an unfiltered run says FILTERED: " + full.line );
-else if ( !full.pass || full.status !== 0 )
-   fail( "full run: " + full.line );
-else if ( expected !== null && full.count !== expected )
-   fail( "full run has " + full.count + " checks, expected " + expected );
-else
-   ok( "full run: " + full.line );
-
-// 2. every group on its own, and the counts add up
-if ( groups.length == 0 )
-   fail( "selftest.js has no testGroup( \"...\" ) seams" );
-for ( const g of groups )
-   if ( !/^[a-z0-9]+(\.[a-z0-9]+)*$/.test( g ) )
-      fail( "group name is not lower-case dotted: \"" + g + "\"" );
-const leaves = groups.filter( g => !groups.some( h => h.startsWith( g + "." ) ) );
-if ( leaves.length != groups.length )
-   fail( "groups nest (" + groups.filter( g => !leaves.includes( g ) ).join( ", " ) +
-         "); a group must not be a prefix of another" );
-let sum = 0;
-const counts = {};
-for ( const g of groups )
+function checkFullRun( expected )
 {
-   const r = run( g );
-   counts[g] = r.count;
-   // a group can be all PixInsight-only checks, which node skips: 0 here is not a failure
-   if ( r.pass && r.status === 0 && r.filtered == g && r.count >= 0 )
-   {
-      ok( g + ": " + r.count + ( r.count == 0 ? " (PixInsight only)" : "" ) );
-      sum += r.count;
-   }
+   const full = run( undefined );
+   if ( !full.line )
+      fail( "full run printed no result line:\n" + full.out );
+   else if ( full.filtered !== null )
+      fail( "an unfiltered run says FILTERED: " + full.line );
+   else if ( !full.pass || full.status !== 0 )
+      fail( "full run: " + full.line );
+   else if ( expected !== null && full.count !== expected )
+      fail( "full run has " + full.count + " checks, expected " + expected );
    else
-      fail( g + ": " + ( r.line || "no result line" ) + ( r.pass ? "" : "\n" + r.out.split( "\n" ).slice( 0, 12 ).join( "\n" ) ) );
+      ok( "full run: " + full.line );
+   return full;
 }
-if ( groups.length )
+
+// 2a. the names: lower-case dotted, and none a prefix of another
+function checkGroupNames( groups )
 {
+   if ( groups.length == 0 )
+      fail( "selftest.js has no testGroup( \"...\" ) seams" );
+   for ( const g of groups )
+      if ( !/^[a-z0-9]+(\.[a-z0-9]+)*$/.test( g ) )
+         fail( "group name is not lower-case dotted: \"" + g + "\"" );
+   const leaves = groups.filter( g => !groups.some( h => h.startsWith( g + "." ) ) );
+   if ( leaves.length != groups.length )
+      fail( "groups nest (" + groups.filter( g => !leaves.includes( g ) ).join( ", " ) +
+            "); a group must not be a prefix of another" );
+}
+
+// 2b. every group on its own, and the counts add up; returns each group's count
+function checkEachGroup( groups, full )
+{
+   let sum = 0;
+   const counts = {};
+   for ( const g of groups )
+   {
+      const r = run( g );
+      counts[g] = r.count;
+      // a group can be all PixInsight-only checks, which node skips: 0 here is not a failure
+      if ( r.pass && r.status === 0 && r.filtered == g && r.count >= 0 )
+      {
+         ok( g + ": " + r.count + ( r.count == 0 ? " (PixInsight only)" : "" ) );
+         sum += r.count;
+      }
+      else
+         fail( g + ": " + ( r.line || "no result line" ) + ( r.pass ? "" : "\n" + r.out.split( "\n" ).slice( 0, 12 ).join( "\n" ) ) );
+   }
+   if ( groups.length == 0 )
+      return counts;
    if ( sum === full.count )
       ok( "per-group counts sum to the full count: " + sum );
    else
       fail( "per-group counts sum to " + sum + ", the full run has " + full.count );
+   return counts;
 }
 
 // 3. prefixes: a namespace runs all its groups; a prefix not ending at a dot is unknown
-const dotted = groups.filter( g => g.includes( "." ) );
-if ( dotted.length )
+function checkPrefixes( groups, counts )
 {
+   const dotted = groups.filter( g => g.includes( "." ) );
+   if ( !dotted.length )
+      return;
    const ns = dotted[0].split( "." )[0];
    const members = groups.filter( g => g == ns || g.startsWith( ns + "." ) );
    const want = members.reduce( ( s, g ) => s + counts[g], 0 );
@@ -126,27 +159,25 @@ if ( dotted.length )
       fail( "prefix \"" + ns + "\" ran " + ( r.line || "nothing" ) + ", expected " + want + " checks" );
    const short = ns.slice( 0, -1 );
    if ( short && !groups.some( g => g == short || g.startsWith( short + "." ) ) )
-   {
-      const s = run( short );
-      if ( !s.pass && s.status !== 0 && s.out.includes( "unknown test group: " + short ) )
-         ok( "\"" + short + "\" does not match \"" + ns + ".*\"" );
-      else
-         fail( "\"" + short + "\" should be an unknown group: " + ( s.line || s.out.slice( 0, 400 ) ) );
-   }
+      checkUnknown( short, "\"" + short + "\" does not match \"" + ns + ".*\"",
+                    "\"" + short + "\" should be an unknown group: " );
 }
 
 // 4. an unknown entry is a failure, not an empty green run
+function checkUnknown( entry, passMessage, failMessage )
 {
-   const r = run( "no.such.group" );
-   if ( !r.pass && r.status !== 0 && r.out.includes( "unknown test group: no.such.group" ) )
-      ok( "unknown entry fails: " + r.line );
+   const r = run( entry );
+   if ( !r.pass && r.status !== 0 && r.out.includes( "unknown test group: " + entry ) )
+      ok( passMessage || "unknown entry fails: " + r.line );
    else
-      fail( "unknown entry did not fail: " + ( r.line || r.out.slice( 0, 400 ) ) );
+      fail( ( failMessage || "unknown entry did not fail: " ) + ( r.line || r.out.slice( 0, 400 ) ) );
 }
 
 // 5. two entries run the union
-if ( groups.length >= 2 )
+function checkUnion( groups, counts )
 {
+   if ( groups.length < 2 )
+      return;
    const a = groups[0], b = groups[groups.length - 1];
    const r = run( a + "," + b );
    if ( r.pass && r.count === counts[a] + counts[b] && r.filtered == a + "," + b )
@@ -155,6 +186,28 @@ if ( groups.length >= 2 )
       fail( "\"" + a + "," + b + "\" ran " + ( r.line || "nothing" ) + ", expected " + ( counts[a] + counts[b] ) );
 }
 
-console.error( "\n" + groups.length + " groups; " +
-               ( problems.length ? problems.length + " problem(s)" : "all group checks passed" ) );
-process.exit( problems.length ? 1 : 0 );
+function main( argv )
+{
+   const args = parseExpect( argv );
+   if ( args.error )
+   {
+      console.error( "test-groups: " + args.error );
+      process.exit( 2 );
+   }
+   const groups = readGroups();
+   const full = checkFullRun( args.expected );
+   checkGroupNames( groups );
+   const counts = checkEachGroup( groups, full );
+   checkPrefixes( groups, counts );
+   checkUnknown( "no.such.group" );
+   checkUnion( groups, counts );
+
+   console.error( "\n" + groups.length + " groups; " +
+                  ( problems.length ? problems.length + " problem(s)" : "all group checks passed" ) );
+   process.exit( problems.length ? 1 : 0 );
+}
+
+module.exports = { parseExpect };
+
+if ( require.main === module )
+   main( process.argv.slice( 2 ) );

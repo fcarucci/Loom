@@ -52,7 +52,8 @@ const { preprocess, defines } = require( "./preprocess.js" ).createPreprocessor(
 {
    const gatePassed = require( "./check-refs.js" ).main( root ) === 0;
    const gateTestsPassed = require( "./check-refs.test.js" ).run( { quiet: true, inSuite: true } );
-   if ( !gatePassed || !gateTestsPassed )
+   const groupArgsPassed = require( "./test-groups.test.js" ).run( { quiet: true } );
+   if ( !gatePassed || !gateTestsPassed || !groupArgsPassed )
       process.exit( 1 );
 }
 

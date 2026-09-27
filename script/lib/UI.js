@@ -239,6 +239,80 @@ UI.foldEntries = function( entries )
 };
 
 /*
+ * One entry of a folder scan into `scan`: anything that is not a master
+ * image is ignored, calibration masters are counted and skipped, and the
+ * rest are ranked from their filename alone -- named when it carries a
+ * FILTER token, deferred to `unnamed` when it does not.
+ */
+UI.classifyMasterFile = function( scan, dir, found )
+{
+   var name = found.name;
+   if ( found.isDirectory || name == "." || name == ".." )
+      return;
+   if ( !/\.(xisf|fits?|fit)$/i.test( name ) )
+      return;
+   ++scan.total;
+   if ( /^master(Flat|Dark|Bias)/i.test( name ) )
+   {
+      ++scan.skipped;
+      return;
+   }
+
+   var rec = UI.masterFileRecord( dir, found );
+   var parsed = Util.parseMasterName( name );
+   if ( parsed != null && parsed.channel != null )
+   {
+      rec.channel  = parsed.channel;
+      rec.drizzle  = parsed.drizzle;
+      rec.autocrop = parsed.autocrop;
+      scan.named.push( rec );
+   }
+   else
+      scan.unnamed.push( rec );
+};
+
+/* A scanned file's record, with its times where the file system reports them. */
+UI.masterFileRecord = function( dir, found )
+{
+   var mtime = 0;
+   try { mtime = found.lastModified.getTime(); } catch ( e ) { mtime = 0; }
+   var ctime = 0;
+   try { ctime = found.created.getTime(); } catch ( e ) { ctime = mtime; }
+   return { path: dir + "/" + found.name, name: found.name,
+            mtime: mtime, created: ctime };
+};
+
+/* The masters list's name for a file: its name and extension, no folder. */
+UI.fileLabel = function( path )
+{
+   return File.extractName( path ) + File.extractExtension( path );
+};
+
+/*
+ * A masters-list entry for a file, from its header. An unreadable file is
+ * still listed -- with no filter, so the list shows it as a problem.
+ */
+UI.fileEntry = function( path )
+{
+   var info = null;
+   try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
+   var kws = info ? info.keywords : null;
+   var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
+   return {
+      source: "file",
+      ref: path,
+      label: UI.fileLabel( path ),
+      filter: filter,
+      instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
+      channel: Util.channelFromFilter( filter ),
+      width: info ? info.width : 0,
+      height: info ? info.height : 0,
+      drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
+      created: Util.fileCreatedMs( path )
+   };
+};
+
+/*
  * A modal Dialog. A top-level Control reports isModal = false, but a
  * script owns PixInsight's main thread while it runs, so pumping
  * processEvents() in a loop still blocks the application -- the window is
@@ -1843,45 +1917,15 @@ UI.SelectDialog = class extends Dialog
     */
    scanMasterFolder( dir )
    {
-      var named = [], unnamed = [], total = 0, skipped = 0;
+      var scan = { named: [], unnamed: [], total: 0, skipped: 0 };
       var found = new FileFind;
       if ( !found.begin( dir + "/*" ) )
          return null;
       do
-      {
-         var name = found.name;
-         if ( found.isDirectory || name == "." || name == ".." )
-            continue;
-         if ( !/\.(xisf|fits?|fit)$/i.test( name ) )
-            continue;
-         ++total;
-         if ( /^master(Flat|Dark|Bias)/i.test( name ) )
-         {
-            ++skipped;
-            continue;
-         }
-
-         var mtime = 0;
-         try { mtime = found.lastModified.getTime(); } catch ( e ) { mtime = 0; }
-         var ctime = 0;
-         try { ctime = found.created.getTime(); } catch ( e ) { ctime = mtime; }
-         var rec = { path: dir + "/" + name, name: name,
-                     mtime: mtime, created: ctime };
-
-         var parsed = Util.parseMasterName( name );
-         if ( parsed != null && parsed.channel != null )
-         {
-            rec.channel  = parsed.channel;
-            rec.drizzle  = parsed.drizzle;
-            rec.autocrop = parsed.autocrop;
-            named.push( rec );
-         }
-         else
-            unnamed.push( rec );
-      }
+         UI.classifyMasterFile( scan, dir, found );
       while ( found.next() );
 
-      return { named: named, unnamed: unnamed, total: total, skipped: skipped };
+      return scan;
    }
 
    /*
@@ -2067,25 +2111,9 @@ UI.SelectDialog = class extends Dialog
          for ( var i = 0; i < paths.length; ++i )
          {
             if ( report )
-               this.setBusy( Util.scanProgressMessage( "Reading masters",
-                                File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
-                                i+1, paths.length ) );
-            var info = null;
-            try { info = Util.readImageInfo( paths[i] ); } catch ( e ) { info = null; }
-            var kws = info ? info.keywords : null;
-            var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
-            this.entries.push( {
-               source: "file",
-               ref: paths[i],
-               label: File.extractName( paths[i] ) + File.extractExtension( paths[i] ),
-               filter: filter,
-               instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
-               channel: Util.channelFromFilter( filter ),
-               width: info ? info.width : 0,
-               height: info ? info.height : 0,
-               drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
-               created: Util.fileCreatedMs( paths[i] )
-            } );
+               this.setBusy( Util.scanProgressMessage( "Reading masters", UI.fileLabel( paths[i] ),
+                                                       i+1, paths.length ) );
+            this.entries.push( UI.fileEntry( paths[i] ) );
          }
       }
       finally
