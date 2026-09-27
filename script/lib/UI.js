@@ -602,6 +602,12 @@ UI.SelectDialog = class extends Dialog
    // ---- options ----
 
    var filterRows = this.buildFilterRows( config );
+   /*
+    * The processing options in the order they run: gradient removal
+    * (per channel, before combining), then sharpening, noise reduction,
+    * star extraction and the stretch.
+    */
+   this.buildGradientControls( config );
    this.buildSharpenGroup( config );
    this.buildPaletteGroup( config );
    this.buildNoiseGroup( config );
@@ -610,7 +616,6 @@ UI.SelectDialog = class extends Dialog
    this.buildExportGroup( config );
    this.buildMarsGroup( config );
    var nbRow = this.buildNarrowbandRow( config );
-   this.buildGradientControls( config );
    var cacheRow = this.buildCacheRow( config );
    this.buildCacheDirGroup( config );
 
@@ -626,6 +631,9 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.progress );
    this.sizer.add( this.status );
    this.sizer.add( this.camera );
+   this.sizer.add( this.gradientRow );
+   this.sizer.add( this.graxpertNarrowband );
+   this.sizer.add( this.smoothing );
    this.sizer.add( this.sharpenGroup );
    this.sizer.add( this.paletteGroup );
    this.sizer.add( nbRow );
@@ -639,9 +647,6 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.exportGroup );
    this.sizer.add( this.marsGroup );
    this.sizer.add( this.reduceHalos );
-   this.sizer.add( this.gradientRow );
-   this.sizer.add( this.graxpertNarrowband );
-   this.sizer.add( this.smoothing );
    this.sizer.add( this.validateOnly );
    this.sizer.add( cacheRow );
    this.sizer.add( this.cacheDirGroup );
