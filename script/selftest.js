@@ -14771,6 +14771,7 @@ function runFlyTestsClean()
    runSolveTests();
    runPipeTests();
    runFinishingTests();
+   runFailurePathTests();
 }
 
 /* Loom's blind solver. Solve.js is pure and runs under node. */
@@ -17291,6 +17292,415 @@ function runFinishingTests()
                 transcript( kind, s[1], s[2], s[3] ), runnerExpected[kind + " " + s[0]] );
       } );
    } );
+   }
+}
+
+/*
+ * Failure paths and process plumbing with no other test: the SyQon process
+ * loop against a scripted ExternalProcess, Studio's entitlement flag,
+ * the Starless and Prism CLI arguments and refusals, the updater's
+ * timeout and last-outcome reports, the filters.xspd curve lookups and
+ * the cache folder's counts. All of it on fakes and synthetic files in
+ * the platform's temp folder, so it runs under node and in PixInsight.
+ */
+function runFailurePathTests()
+{
+   /* Replaces members for the duration of fn, and puts them back whatever happens. */
+   function withStubs( list, fn )
+   {
+      var saved = list.map( function( s ) { return [ s[0], s[1], s[0][s[1]] ]; } );
+      list.forEach( function( s ) { s[0][s[1]] = s[2]; } );
+      try { return fn(); }
+      finally { saved.forEach( function( s ) { s[0][s[1]] = s[2]; } ); }
+   }
+   /* An empty folder of its own under the platform's temp folder. */
+   function tempDir( name )
+   {
+      var dir = File.systemTempDirectory + "/loom-selftest-" + name;
+      if ( File.directoryExists( dir ) )
+      {
+         var f = new FileFind, doomed = [];
+         if ( f.begin( dir + "/*" ) )
+            do { if ( !f.isDirectory ) doomed.push( dir + "/" + f.name ); } while ( f.next() );
+         doomed.forEach( function( p ) { File.remove( p ); } );
+      }
+      else
+         File.createDirectory( dir, true );
+      return dir;
+   }
+   /* Util.log / warn / reportProgress / reportStage as one transcript. */
+   function recorder()
+   {
+      var said = [];
+      return {
+         said: said,
+         stubs: [ [ Util, "log", function( s, m ) { said.push( "log " + s + ": " + m ); } ],
+                  [ Util, "warn", function( s, m ) { said.push( "warn " + s + ": " + m ); } ],
+                  [ Util, "reportProgress", function( p, t ) { said.push( "progress " + p + " " + t ); } ],
+                  [ Util, "reportStage", function( t ) { said.push( "stage " + t ); } ] ]
+      };
+   }
+
+   if ( testGroup( "steps.syqon" ) ) {
+   /*
+    * Steps.syqonRunProcessBlocking, the loop every SyQon CLI runs through,
+    * against a scripted ExternalProcess: each read of isRunning plays the
+    * next event (output on either stream, an error code), and the list
+    * running out ends the process -- or never does, with `forever`.
+    */
+   function scriptedProcess( o )
+   {
+      var made = { started: null, terminated: 0 };
+      function Fake()
+      {
+         var self = this, reads = 0;
+         this.start = function( exe, args ) { made.started = exe + " " + args.join( " " ); return o.start !== false; };
+         this.terminate = function() { made.terminated++; };
+         Object.defineProperty( this, "isStarting", { get: function() { return !!o.starting; } } );
+         Object.defineProperty( this, "isRunning", { get: function()
+         {
+            var ev = ( o.events || [] )[reads++];
+            if ( ev === undefined )
+               return !!o.forever;
+            if ( ev.out != null ) { self.stdout = ev.out; self.onStandardOutputDataAvailable(); }
+            if ( ev.err != null ) { self.stderr = ev.err; self.onStandardErrorDataAvailable(); }
+            if ( ev.error != null ) self.onError( ev.error );
+            return true;
+         } } );
+         Object.defineProperty( this, "exitCode", { get: function() { return o.exitCode; } } );
+      }
+      return { Fake: Fake, made: made };
+   }
+   function runScripted( o, timeoutMs, wait )
+   {
+      var p = scriptedProcess( o ), rec = recorder(), out;
+      var RealProcess = ExternalProcess;
+      ExternalProcess = p.Fake;
+      try
+      {
+         out = withStubs( rec.stubs.concat( [ [ Util, "cancelRequested", function() { return !!o.cancel; } ] ] ),
+                          function() { return Steps.syqonRunProcessBlocking( "/x/cli", [ "-a", "b" ],
+                                                                              timeoutMs == null ? 60000 : timeoutMs, wait ); } );
+      }
+      catch ( e ) { out = "threw " + e.message; }
+      finally { ExternalProcess = RealProcess; }
+      return { out: out, said: rec.said, made: p.made };
+   }
+
+   var run1 = runScripted( { events: [ { out: "[ 10%] Deno" }, { out: "ise (1/10)\n" }, { err: "model 30%\r" },
+                                       { out: "[ 50%] Denoise (5/10)\n[ 50%] Denoise (6/10)\n" } ],
+                             exitCode: 4 } );
+   check( "syqonRunProcessBlocking: what it returns, both streams kept whole",
+          run1.out, { stdout: "[ 10%] Denoise (1/10)\n[ 50%] Denoise (5/10)\n[ 50%] Denoise (6/10)\n",
+                      stderr: "model 30%\r", sawError: false, errorCodes: [], exitCode: 4 } );
+   check( "syqonRunProcessBlocking: a line split across chunks is read once it is whole; one report a percent, a log line every 25%",
+          run1.said, [ "progress 10 Denoise", "progress 30 model", "log cli: 25% - model",
+                       "progress 50 Denoise", "log cli: 50% - Denoise (5/10)" ] );
+   check( "syqonRunProcessBlocking: the CLI is started with the arguments given",
+          run1.made.started, "/x/cli -a b" );
+
+   var run2 = runScripted( { events: [ { error: 2 } ] } );
+   check( "syqonRunProcessBlocking: an error code is kept, warned, and waited past; no exit code reads as null",
+          [ run2.out.sawError, run2.out.errorCodes, run2.out.exitCode, run2.said ],
+          [ true, [ 2 ], null, [ "warn syqon: ExternalProcess reported code 2 (continuing to wait for output)" ] ] );
+   check( "syqonRunProcessBlocking: a CLI that will not start",
+          runScripted( { start: false } ).out, "threw SyQon Parallax CLI failed to start: /x/cli" );
+   var run3 = runScripted( { forever: true, cancel: true } );
+   check( "syqonRunProcessBlocking: Cancel terminates the CLI and says so",
+          [ run3.out, run3.made.terminated ], [ "threw Cancelled by user", 1 ] );
+   check( "syqonRunProcessBlocking: a CLI that never finishes starting times out",
+          runScripted( { starting: true }, -1 ).out, "threw SyQon Parallax CLI timed out while starting: /x/cli" );
+   check( "syqonRunProcessBlocking: a CLI that never finishes times out",
+          runScripted( { forever: true }, -1 ).out, "threw SyQon Parallax CLI timed out after 0 minute(s): /x/cli" );
+   var asked = [];
+   var run4 = runScripted( { events: [ {}, {}, { out: "hello\n" } ] }, null,
+                           { text: function( ms, saw ) { asked.push( saw ); return asked.length < 2 ? null : "Waiting for sign-in"; },
+                             stage: "Stage X" } );
+   check( "syqonRunProcessBlocking: the wait text goes up once, while nothing has been said, and the stage comes back with output",
+          [ run4.said, asked ], [ [ "stage Waiting for sign-in", "log studio: Waiting for sign-in", "stage Stage X" ],
+                                  [ false, false ] ] );
+
+   /*
+    * Steps.studioCheckEntitlement: the problems it returns, and the
+    * remembered Prism 2.0 refusal it writes -- only on a clear answer, and
+    * only when the answer differs from what is remembered.
+    */
+   function entitlement( probes, flagged )
+   {
+      var rec = recorder(), writes = [], problems;
+      problems = withStubs( rec.stubs.concat( [
+         [ Steps, "studioModelsFor", function() { return Object.keys( probes ); } ],
+         [ Steps, "studioProbe", function( m ) { return probes[m]; } ],
+         [ Steps, "studioPrism2Unavailable", function() { return flagged; } ],
+         [ Steps, "setStudioPrism2Unavailable", function( on ) { writes.push( on ); } ] ] ),
+         function() { return Steps.studioCheckEntitlement( {} ); } );
+      return { problems: problems, writes: writes, said: rec.said };
+   }
+   var e1 = entitlement( { "prism-advanced": { exitCode: 0, stderr: "" },
+                           "prism-max": { exitCode: 4, stderr: "" } }, false );
+   check( "studioCheckEntitlement: a refused Prism 2.0 model is a problem and is remembered",
+          [ e1.problems, e1.writes, e1.said ],
+          [ [ "SyQon Studio: Prism Deep Max (prism-max) is not available to your SyQon account " +
+              "(syqon-cli exit 4). Sign in through SyQon Studio, or choose another noise reduction " +
+              "tool. Until a check succeeds, Loom offers SyQon Studio Prism Essential (included) " +
+              "in place of Prism 2.0." ],
+            [ true ],
+            [ "stage Checking SyQon Studio prism-advanced",
+              "log studio: prism-advanced: available to this account",
+              "stage Checking SyQon Studio prism-max",
+              "log studio: Prism 2.0 is not available to this account: Loom offers SyQon Studio " +
+              "Prism Essential in its place until a check succeeds" ] ] );
+   var e2 = entitlement( { "prism-advanced": { exitCode: 5, stderr: "" },
+                           "prism-max": { exitCode: 5, stderr: "" } }, false );
+   check( "studioCheckEntitlement: an inconclusive test run changes nothing",
+          [ e2.problems, e2.writes, e2.said ],
+          [ [], [],
+            [ "stage Checking SyQon Studio prism-advanced",
+              "log studio: prism-advanced: test run inconclusive (Inference failed; no output was produced.)",
+              "stage Checking SyQon Studio prism-max",
+              "log studio: prism-max: test run inconclusive (Inference failed; no output was produced.)" ] ] );
+   var e3 = entitlement( { "prism-advanced": { exitCode: 0, stderr: "" } }, true );
+   check( "studioCheckEntitlement: a Prism 2.0 model that runs clears the remembered refusal",
+          [ e3.problems, e3.writes, e3.said ],
+          [ [], [ false ],
+            [ "stage Checking SyQon Studio prism-advanced",
+              "log studio: prism-advanced: available to this account",
+              "log studio: Prism 2.0 is available to this account again" ] ] );
+   var e4 = entitlement( { "prism-max": { exitCode: 4, stderr: "" } }, true );
+   check( "studioCheckEntitlement: a refusal already remembered is not written again",
+          [ e4.problems.length, e4.writes ], [ 1, [] ] );
+
+   /*
+    * SyQon Starless: -d Auto and an explicit -m are mandatory (the
+    * binary's own GPU default segfaults headless), and every way it can
+    * fail names the channel and leaves no temporary file behind.
+    */
+   function starless( o )
+   {
+      var files = {}, calls = [];
+      var win = { mainView: { id: "L_view", image: { isColor: false } },
+                  saveAs: function( p ) { files.input = p; File.writeTextFile( p, "x" ); return true; } };
+      var out = withStubs( [
+         [ Steps, "starlessExecutable", function() { return o.noExe ? null : "/x/starless"; } ],
+         [ Steps, "starlessModelPath", function() { return o.noModel ? null : "/x/model"; } ],
+         [ Steps, "syqonRunProcessBlocking", function( exe, args, timeout )
+           {
+              files.output = args[3];
+              calls.push( [ exe ].concat( args.map( function( a )
+                 { return a == files.input ? "IN" : a == files.output ? "OUT" : a; } ) ).join( " " ) );
+              if ( o.throws ) throw new Error( "boom" );
+              return { stderr: o.stderr || "" };
+           } ] ],
+         function()
+         {
+            try { Steps.syqonStarlessRun( win, o.label ); return "done"; }
+            catch ( e ) { return String( e.message ).replace( files.output, "OUT" ); }
+         } );
+      return [ out, calls, files.input ? File.exists( files.input ) : null ];
+   }
+   check( "syqonStarlessRun: no executable",
+          starless( { noExe: true } ), [ "SyQon Starless executable not found", [], null ] );
+   check( "syqonStarlessRun: no model",
+          starless( { noModel: true } ), [ "SyQon Starless model not found", [], null ] );
+   check( "syqonStarlessRun: the arguments, and no output names the label and carries stderr",
+          starless( { label: "L stars", stderr: "bad model\n" } ),
+          [ "SyQon Starless produced no output for L stars stderr: bad model",
+            [ "/x/starless -i IN -o OUT -c pixinsight -m /x/model -d Auto" ], false ] );
+   check( "syqonStarlessRun: a CLI that throws is no output too, named by the view",
+          starless( { throws: true } ),
+          [ "SyQon Starless produced no output for L_view",
+            [ "/x/starless -i IN -o OUT -c pixinsight -m /x/model -d Auto" ], false ] );
+
+   /*
+    * The standalone SyQon Prism denoiser: its refusals, and the arguments
+    * it hands prism_cli, with the temporary stretch window always closed.
+    */
+   function prism( o )
+   {
+      var closed = 0, calls = [], deleted = [];
+      var target = { isNull: false, mainView: { image: { numberOfChannels: 3 } } };
+      var view = { id: "RGB", isMainView: true, window: o.noWindow ? null : target };
+      var out = withStubs( [
+         [ Steps, "prismExecutable", function() { return o.noExe ? null : "/x/prism_cli"; } ],
+         [ Steps, "prismMtfTarget", function() { return 0.25; } ],
+         [ Steps, "syqonCreateStretchedTempWindow", function( w, t, linked )
+           {
+              calls.push( "stretch " + t + " " + linked );
+              return { tempWindow: { isNull: false, mainView: {}, forceClose: function() { closed++; } }, stretchInfo: {} };
+           } ],
+         [ Steps, "syqonSaveImageAsFits", function() {} ],
+         [ Steps, "syqonDeleteFileIfExists", function( p )
+           { deleted.push( /_input\.fits$/.test( p ) ? "IN" : /_prism\.fits$/.test( p ) ? "OUT" : p ); } ],
+         [ Steps, "syqonRunProcessBlocking", function( exe, args )
+           {
+              calls.push( [ exe ].concat( args.map( function( a )
+                 { return /_input\.fits$/.test( a ) ? "IN" : /_prism\.fits$/.test( a ) ? "OUT" : a; } ) ).join( " " ) );
+              return { stderr: "no GPU" };
+           } ] ],
+         function()
+         {
+            try { Steps.prismExecuteStage( view, 0.6, !!o.stretched ); return "done"; }
+            catch ( e ) { return e.message; }
+         } );
+      return [ out, calls, closed, deleted ];
+   }
+   check( "prismExecuteStage: no executable",
+          prism( { noExe: true } ),
+          [ "SyQon Prism denoise failed on RGB: prism_cli executable not found (see Steps.prismConfigPath()).", [], 0, [] ] );
+   check( "prismExecuteStage: no window",
+          prism( { noWindow: true } ),
+          [ "SyQon Prism denoise failed on RGB: no valid image window.", [], 0, [] ] );
+   check( "prismExecuteStage: linear input, the measured target and the arguments; no output carries stderr",
+          prism( {} ),
+          [ "SyQon Prism produced no output for RGB stderr: no GPU",
+            [ "stretch 0.25 true",
+              "/x/prism_cli --input IN --output OUT --model-kind prism_deep --tile 512 --overlap 128 --pad 512 --strength 0.60 --use-amp --amp-dtype fp16" ],
+            1, [ "IN", "OUT" ] ] );
+   check( "prismExecuteStage: stretched input takes SyQon's fixed target",
+          prism( { stretched: true } )[1][0], "stretch " + Steps.PRISM_DEFAULT_TARGET + " true" );
+
+   } if ( testGroup( "update" ) ) {
+   /*
+    * The updater's unhappy paths: a check that runs out of time, the
+    * previous launch's record in each state it can be in, and a relaunch
+    * that cannot be dispatched.
+    */
+   function updateIo( o )
+   {
+      var outcome = Update.stateDir() + "/" + Update.OUTCOME_FILE;
+      return {
+         fileExists:      function( p ) { return p == outcome ? o.record != null : p == "/opt/homebrew/bin/git"; },
+         directoryExists: function( p ) { return p == "/x/Loom/.git"; },
+         readText:        function() { return o.record; },
+         writeText:       function() {},
+         remove:          function() {},
+         rename:          function() {},
+         makeDirectory:   function() {},
+         platform:        function() { return Util.PLATFORM_MACOS; },
+         execute:         function( program, args )
+         {
+            if ( args && args.length && String( args[0] ).indexOf( "--version" ) >= 0 )
+               return { exitCode: 0, output: "git version 2.39.5 (Apple Git-154)" };
+            return { exitCode: o.exitCode, output: "" };
+         },
+         spawnDetached:   function() { throw new Error( "no dispatch" ); }
+      };
+   }
+   function updateSays( fn )
+   {
+      var rec = recorder(), r;
+      r = withStubs( rec.stubs.concat( [ [ Update, "installDir", function() { return "/x/Loom"; } ] ] ), fn );
+      return [ r, rec.said.filter( function( l ) { return !/checking \/x\/Loom/.test( l ); } ) ];
+   }
+   var record = function( status ) { return Update.formatOutcome( { status: status, exitCode: status == "failed" ? 1 : 0,
+                                          from: "aaaaaaa", to: "bbbbbbb", when: "-", message: status == "failed" ? "fetch refused" : "" } ); };
+   check( "checkNow: a check that runs out of time is abandoned, and nothing restarts",
+          updateSays( function() { return Update.checkNow( { autoUpdate: true }, updateIo( { exitCode: -1, record: record( "updated" ) } ) ); } ),
+          [ null, [ "warn update: the check did not finish within 15s and was abandoned; continuing on this version" ] ] );
+   check( "checkNow: a failed update is returned and warned",
+          updateSays( function()
+          { return Update.checkNow( { autoUpdate: true }, updateIo( { exitCode: 1, record: record( "failed" ) } ) ).status; } ),
+          [ "failed", [ "warn update: update failed (1): fetch refused" ] ] );
+   check( "reportLast: no record, nothing said",
+          updateSays( function() { return Update.reportLast( updateIo( {} ) ); } ), [ null, [] ] );
+   check( "reportLast: an unreadable record is an interrupted update",
+          updateSays( function() { return Update.reportLast( updateIo( { record: "garbage" } ) ); } ),
+          [ null, [ "warn update: the last update left an incomplete record; it may have been interrupted" ] ] );
+   check( "reportLast: up to date is said, not kept quiet",
+          updateSays( function() { return Update.reportLast( updateIo( { record: record( "unchanged" ) } ) ).status; } ),
+          [ "unchanged", [ "log update: last check: already up to date" ] ] );
+   check( "reportLast: an update is logged",
+          updateSays( function() { return Update.reportLast( updateIo( { record: record( "updated" ) } ) ).status; } ),
+          [ "updated", [ "log update: updated aaaaaaa -> bbbbbbb" ] ] );
+   check( "reportLast: a failure is warned",
+          updateSays( function() { return Update.reportLast( updateIo( { record: record( "failed" ) } ) ).status; } ),
+          [ "failed", [ "warn update: update failed (1): fetch refused" ] ] );
+   var savedScript = Update.SCRIPT_FILE;
+   Update.SCRIPT_FILE = "/x/Loom/script/Loom.js";
+   try
+   {
+      check( "relaunch: a dispatch that fails says so and lets the run carry on",
+             updateSays( function() { return Update.relaunch( updateIo( {} ) ); } ),
+             [ false, [ "warn update: could not restart Loom automatically (Error: no dispatch); " +
+                         "start it again to use the new version" ] ] );
+   }
+   finally { Update.SCRIPT_FILE = savedScript; }
+
+   } if ( testGroup( "steps.characterization" ) ) {
+   /*
+    * The filters.xspd lookups, against a synthetic library: names match
+    * whatever their case, a device curve is a channel "Q" curve and
+    * nothing else, and an unknown camera gets the Ideal QE curve rather
+    * than another sensor's.
+    */
+   var xspdDir = tempDir( "xspd" ), savedXspd = Steps.FILTERS_XSPD_PATH;
+   File.writeTextFile( xspdDir + "/filters.xspd",
+      '<xspd>\n' +
+      '<Filter name="Sony IMX411/455/461/533/571" channel="Q" data="1,2"/>\n' +
+      '<Filter name="Antlia R" channel="R" data="3,4"/>\n' +
+      '<Filter name="Antlia Red Pro" channel="R" data="5,6"/>\n' +
+      '<Filter name="' + Util.IDEAL_QE_CURVE_NAME + '" channel="Q" data="7"/>\n' +
+      '</xspd>\n' );
+   Steps.FILTERS_XSPD_PATH = xspdDir + "/filters.xspd";
+   try
+   {
+      var xrec = recorder(), said = xrec.said;
+      withStubs( xrec.stubs, function()
+      {
+         check( "lookupDeviceCurve: case does not matter",
+                Steps.lookupDeviceCurve( "sony imx411/455/461/533/571" ), { name: "Sony IMX411/455/461/533/571", data: "1,2" } );
+         check( "lookupDeviceCurve: a filter curve is not a device curve",
+                Steps.lookupDeviceCurve( "Antlia R" ), null );
+         check( "lookupDeviceCurve: nothing asked, nothing found",
+                [ Steps.lookupDeviceCurve( "" ), Steps.lookupDeviceCurve( null ) ], [ null, null ] );
+         check( "filterCurveByName: any channel, whole name, any case",
+                [ Steps.filterCurveByName( "antlia r" ), Steps.filterCurveByName( "Antlia" ), Steps.filterCurveByName( "" ) ],
+                [ { name: "Antlia R", data: "3,4" }, null, null ] );
+         check( "listFilterCurves: every curve of one channel, in file order",
+                Steps.listFilterCurves( "R" ).map( function( c ) { return c.name; } ), [ "Antlia R", "Antlia Red Pro" ] );
+         check( "deviceCurveForImage: the camera's own curve",
+                Steps.deviceCurveForImage( "ZWO ASI2600MM Pro" ).name, "Sony IMX411/455/461/533/571" );
+         check( "deviceCurveForImage: an unknown camera gets the Ideal QE curve",
+                Steps.deviceCurveForImage( "Mystery Cam" ).name, Util.IDEAL_QE_CURVE_NAME );
+         check( "deviceCurveForImage: no camera at all gets it too",
+                Steps.deviceCurveForImage( null ).name, Util.IDEAL_QE_CURVE_NAME );
+         check( "deviceCurveForImage: a known camera whose curve is missing warns, then falls back",
+                [ Steps.deviceCurveForImage( "ASI1600MM" ).name, said.slice( -2 ) ], [ Util.IDEAL_QE_CURVE_NAME,
+                  [ "warn qe: curve 'Panasonic MN34230 (ASI1600MM)' not found in filters.xspd",
+                    "log qe: camera 'ASI1600MM' unrecognised -> Ideal QE curve" ] ] );
+      } );
+   }
+   finally { Steps.FILTERS_XSPD_PATH = savedXspd; }
+
+   } if ( testGroup( "cache" ) ) {
+   /*
+    * The cache folder's own bookkeeping, on a synthetic folder: entries
+    * are counted without their companions, sizes and clearing skip the
+    * logs folder, and the logs folder is made on demand.
+    */
+   var cacheDir = tempDir( "cache" ), savedDir = Cache.overrideDir;
+   var K1 = "0123456789abcdef0123456789abcdef01234567", K2 = "89abcdef0123456789abcdef0123456789abcdef";
+   Cache.setDir( cacheDir );
+   try
+   {
+      File.writeTextFile( cacheDir + "/" + K1 + ".xisf", "1234" );
+      File.writeTextFile( cacheDir + "/" + K1 + ".stars.xisf", "12" );
+      File.writeTextFile( cacheDir + "/" + K2 + ".xisf", "123456" );
+      var logs = Cache.ensureLogDir();
+      File.writeTextFile( logs + "/loom-run.log", "a log that is not the cache's" );
+      check( "ensureLogDir: a logs folder inside the cache, made on demand, and made only once",
+             [ logs, File.directoryExists( logs ), Cache.ensureLogDir() ], [ cacheDir + "/logs", true, cacheDir + "/logs" ] );
+      check( "entryCount: entries, not their companions", Cache.entryCount(), 2 );
+      check( "totalBytes: every loose file, not the logs", Cache.totalBytes(), 12 );
+      check( "clear: frees what it reports and keeps the logs",
+             [ Cache.clear(), Cache.entryCount(), File.exists( logs + "/loom-run.log" ) ], [ 12, 0, true ] );
+      File.remove( logs + "/loom-run.log" );
+      File.removeDirectory( logs );
+      check( "a cache folder that is not there counts nothing",
+             ( function() { Cache.setDir( cacheDir + "/gone" ); return [ Cache.entryCount(), Cache.totalBytes(), Cache.clear() ]; } )(),
+             [ 0, 0, 0 ] );
+   }
+   finally { Cache.setDir( savedDir ); }
    }
 }
 
