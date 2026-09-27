@@ -7148,8 +7148,8 @@ function runTests()
                              eccentricity: 0.6, stars: 8900 - pf*40 };
          }
          var pState = FrameSelector.emptyState( "/nowhere" );
-         pState.channels.H = FrameSelector.recompute(
-            FrameSelector.newChannel( "H", pEntries, pMetrics,
+         pState.channels.H = Frames.recompute(
+            Frames.newChannel( "H", pEntries, pMetrics,
                                       [ "calibration state unknown for every frame" ] ) );
          pState.order.push( "H" );
 
@@ -7356,7 +7356,7 @@ function runTests()
       try
       {
          var st = FrameSelector.emptyState( "/tmp/agent-scratch" );
-         st.channels.H = FrameSelector.newChannel( "H",
+         st.channels.H = Frames.newChannel( "H",
             [ { path: "/m/h1.xisf", filter: "H", exposure: 180, binning: 1,
                 width: 10, height: 10, calibrated: "yes",
                 identity: { digest: "d1", size: 1, mtime: 0 } },
@@ -10770,6 +10770,50 @@ function runTests()
    } )();
 
    } if ( testGroup( "asiair.card" ) ) {
+   /*
+    * Asiair.describe reads the header once: filter and binning from it,
+    * the camera from INSTRUME or else the name, rotation always from the
+    * name -- and an unreadable file gives nulls, not an exception.
+    */
+   ( function()
+   {
+      var realRead = Util.readImageInfo;
+      var kw = function( name, value ) { return { name: name, value: value }; };
+      try
+      {
+         Util.readImageInfo = function( path )
+         {
+            if ( path == "/bad" ) throw new Error( "unreadable" );
+            return { width: 8, height: 6,
+                     keywords: [ kw( "FILTER", "'Ha'" ), kw( "XBINNING", "2" ), kw( "INSTRUME", "'Cam'" ) ] };
+         };
+         check( "Asiair.describe from a readable header",
+                Asiair.describe( { path: "/ok", camera: "NameCam", rotation: "90deg", filter: "S" } ),
+                { path: "/ok", filter: "Ha", binning: "2", camera: "Cam", rotation: "90deg" } );
+         check( "Asiair.describe of an unreadable file: nulls, the name's camera and rotation",
+                Asiair.describe( { path: "/bad", camera: "NameCam", rotation: "90deg", filter: "S" } ),
+                { path: "/bad", filter: null, binning: null, camera: "NameCam", rotation: "90deg" } );
+      }
+      finally { Util.readImageInfo = realRead; }
+   } )();
+
+   /* Cancel between volumes: nothing more is looked at, even if the answer changes. */
+   ( function()
+   {
+      var realMounts = Asiair.MOUNTS, seen = [], answers = [ true ];
+      try
+      {
+         Asiair.MOUNTS = LOOM_DIR + "/..";       // the checkout, whose sub-folders stand in for /Volumes
+         check( "Asiair.detect stops at Cancel and looks at nothing after it",
+                [ Asiair.detect( function() { return answers.length ? answers.shift() : false; },
+                                 function( k ) { seen.push( k ); } ), seen ], [ [], [] ] );
+         Asiair.MOUNTS = LOOM_DIR + "/no-such-folder";
+         check( "no mount folder, no cards; no folder, no entries",
+                [ Asiair.detect(), Asiair.entriesIn( LOOM_DIR + "/no-such-folder", true ) ], [ [], [] ] );
+      }
+      finally { Asiair.MOUNTS = realMounts; }
+   } )();
+
    /* ---- ASIAIR detection ---------------------------------------------------- */
 
    /*
@@ -11090,7 +11134,7 @@ function runTests()
        * appear at all -- its flats would be clutter.
        */
       var st = FrameSelector.emptyState( "/card" );
-      st.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H",
+      st.channels.H = Frames.recompute( Frames.newChannel( "H",
          [ { path: "/c/h1.xisf", identity: { digest: "d1", size: 1, mtime: 0 } },
            { path: "/c/h2.xisf", identity: { digest: "d2", size: 1, mtime: 0 } } ],
          { "/c/h1.xisf": { psfSNR: 10, fwhm: 3.5, eccentricity: 0.5, stars: 9000 },
@@ -11574,7 +11618,7 @@ function runTests()
                         eccentricity: 0.6, stars: 8900 - i*40 };
       }
       var state = FrameSelector.emptyState( "/nowhere" );
-      state.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+      state.channels.H = Frames.recompute( Frames.newChannel( "H", entries, metrics, [] ) );
       state.order.push( "H" );
       state.cardRoot = "/nowhere-card";
       var realExecute = FrameSelector.execute, executed = 0;
@@ -11620,7 +11664,7 @@ function runTests()
 
          /* Delete-in-place with nothing to delete asks nothing and runs nothing. */
          var own = FrameSelector.emptyState( "/nowhere" );
-         own.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+         own.channels.H = Frames.recompute( Frames.newChannel( "H", entries, metrics, [] ) );
          own.order.push( "H" );
          var d2 = tracked( new FrameSelector.Dialog( own ) );
          var rowsAsked = 0, realRows = d2.committableRows;
@@ -11715,6 +11759,28 @@ function runTests()
                   /Abandoning this channel/.test( errors[0] || "" ) ], [ null, 1, true ] );
       }
       finally { Util.error = realError; }
+
+      /*
+       * entryFor: one header read gives the grouping fields; an unreadable
+       * path gives nulls and no size rather than an exception.
+       */
+      var efDir = synthDir( "fs-entry" );
+      var ef = FrameSelector.entryFor( synthFrame( efDir + "/sub_c.xisf", { width: 24, height: 16, stars: 0, fwhm: 3,
+                                                                            background: 0.02, noise: 0.002, filter: "R" } ) );
+      check( "entryFor reads the grouping fields from the header",
+             [ ef.filter, ef.exposure, ef.imageType, ef.time, ef.width, ef.height, ef.calibrated ],
+             [ "R", "60", "Light Frame", "2026-01-01T00:00:00", 24, 16, "yes" ] );
+      // unreadable, without asking PixInsight to open a file that is not there
+      var realRead = Util.readImageInfo, none = null;
+      try
+      {
+         Util.readImageInfo = function() { throw new Error( "unreadable" ); };
+         none = FrameSelector.entryFor( "/nowhere/x.fit" );
+      }
+      finally { Util.readImageInfo = realRead; }
+      check( "entryFor of an unreadable path: nulls and no size",
+             [ none.filter, none.exposure, none.binning, none.width, none.height, none.calibrated ],
+             [ null, null, null, 0, 0, "unknown" ] );
 
       check( "T19 a path nobody asked for is refused",
              /unexpected path \(x\)/.test( FrameSelector.pathProblem( { path: "x" }, { a: true }, {} ) ), true );
@@ -11876,7 +11942,7 @@ function runTests()
          metrics[p] = { psfSNR: 13 + ( k % 3 ), fwhm: 3.8 + ( k % 5 )*0.3, eccentricity: 0.6, stars: 8900 - k*40 };
       }
       var state = FrameSelector.emptyState( "/nowhere" );
-      state.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+      state.channels.H = Frames.recompute( Frames.newChannel( "H", entries, metrics, [] ) );
       state.order.push( "H" );
       state.destination = "/elsewhere";
       var dlg = tracked( new FrameSelector.Dialog( state ) );
@@ -12024,7 +12090,7 @@ function runTests()
          var review = function( cardRoot, destination )
          {
             var s = FrameSelector.emptyState( "/nowhere" );
-            s.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+            s.channels.H = Frames.recompute( Frames.newChannel( "H", entries, metrics, [] ) );
             s.order.push( "H" );
             s.cardRoot = cardRoot;
             s.destination = destination;

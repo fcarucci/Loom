@@ -434,6 +434,19 @@ Util.keywordValue = function( keywords, name )
 };
 
 /*
+ * A file's header, read once: `info` from Util.readImageInfo (null when the
+ * file cannot be read) and keyword( name ), the value or null.
+ */
+Util.readHeader = function( path )
+{
+   var info = null;
+   try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
+   var kw = info ? info.keywords : null;
+   return { info: info,
+            keyword: function( name ) { return kw ? Util.keywordValue( kw, name ) : null; } };
+};
+
+/*
  * Whether the user has asked to stop. Replaced by Loom.js when a Cancel
  * window is up; a no-op otherwise, so library code can call it freely.
  *

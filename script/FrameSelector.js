@@ -348,13 +348,7 @@ FrameSelector.fileIdentity = function( path )
  */
 FrameSelector.entryFor = function( path )
 {
-   var info = null;
-   try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
-   var kw = info ? info.keywords : null;
-   function keyword( name )
-   {
-      return kw ? Util.keywordValue( kw, name ) : null;
-   }
+   var header = Util.readHeader( path ), info = header.info, keyword = header.keyword;
 
    /*
     * WBPP's calibrated frames carry a _c suffix and a calibration history.
@@ -507,9 +501,6 @@ FrameSelector.cohortFrom = function( paths, progress )
    return { entries: entries, before: before, cancelled: cancelled };
 };
 
-/* Moved to Frames, with background and SNR; kept as a name here. */
-FrameSelector.storedMetrics = function( m ) { return Frames.storedMetrics( m ); };
-
 /*
  * Frames per SubframeSelector call.
  *
@@ -594,7 +585,7 @@ FrameSelector.measureGroup = function( group, before, onBatch, split )
             }
             if ( measured[path] != null )
             {
-               var stored = FrameSelector.storedMetrics( measured[path] );
+               var stored = Frames.storedMetrics( measured[path] );
                FrameSelector.storeMeasurement( before[path], stored );
                metrics[path] = stored;
             }
@@ -1402,13 +1393,6 @@ FrameSelector.emptyState = function( folder )
             cardRoot: null, candidateFlats: [] };
 };
 
-/* Moved to Frames so the node suite can drive them; kept as names here. */
-FrameSelector.newChannel = function( key, entries, metrics, problems )
-{
-   return Frames.newChannel( key, entries, metrics, problems );
-};
-FrameSelector.recompute = function( ch ) { return Frames.recompute( ch ); };
-
 /*
  * State from an explicit list of frames -- a night off an ASIAIR card.
  *
@@ -1432,8 +1416,8 @@ FrameSelector.stateFromScan = function( state, scan )
    for ( var i = 0; i < keys.length; ++i )
    {
       var c = scan.channels[keys[i]];
-      state.channels[keys[i]] = FrameSelector.recompute(
-         FrameSelector.newChannel( keys[i], c.entries, c.metrics, c.problems ) );
+      state.channels[keys[i]] = Frames.recompute(
+         Frames.newChannel( keys[i], c.entries, c.metrics, c.problems ) );
       state.order.push( keys[i] );
    }
    return state;
@@ -2566,7 +2550,7 @@ FrameSelector.Dialog = class extends Dialog
       for ( var i = 0; i < this.state.order.length; ++i )
       {
          var key = this.state.order[i], ch = this.state.channels[key];
-         FrameSelector.recompute( ch );
+         Frames.recompute( ch );
          var c = Frames.counts( ch.rows );
          t.total += c.total;
          if ( !ch.settings.enabled )

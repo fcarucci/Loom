@@ -229,14 +229,7 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
  */
 Asiair.describe = function( frame )
 {
-   var info = null;
-   try { info = Util.readImageInfo( frame.path ); } catch ( e ) { info = null; }
-   var kw = info ? info.keywords : null;
-
-   function keyword( name )
-   {
-      return kw ? Util.keywordValue( kw, name ) : null;
-   }
+   var keyword = Util.readHeader( frame.path ).keyword;
 
    return { path:     frame.path,
             filter:   keyword( "FILTER" ),
