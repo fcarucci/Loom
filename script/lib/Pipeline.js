@@ -878,14 +878,11 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
 {
    if ( !config.useCache )
    {
-      for ( var i = 0; i < chain.length; ++i )
-         runners[ chain[i].stage ]( Pipeline.ensureLoaded( chan ) );
+      Pipeline.runChainUncached( chan, chain, runners );
       return;
    }
 
-   var lookups = [];
-   for ( var i = 0; i < chain.length; ++i )
-      lookups.push( config.ignoreCache ? null : Cache.lookup( chain[i].key ) );
+   var lookups = Pipeline.lookupChain( chain, config );
 
    /*
     * Resolved in full before the loop below skips anything: see
@@ -906,18 +903,48 @@ Pipeline.processChain = function( chan, chain, config, reg, runners )
          continue;
       }
 
-      var reason = config.ignoreCache ? "cache ignored for this run"
-                 : ( lookups[i] ? "incomplete entry" : "no entry" );
       if ( i == hitIndex )
       {
          Pipeline.reuseCachedStage( chan, entry, hit.window, hit.stars, label, reg );
          continue;
       }
 
-      Util.log( "cache", label + " MISS (" + reason + ")" );
+      Util.log( "cache", label + " MISS (" +
+                         Pipeline.missReason( config, lookups[i] ) + ")" );
       if ( !Pipeline.runAndStoreStage( chan, entry, runners ) )
          Util.log( "cache", label + " not cached (the step did not complete)" );
    }
+};
+
+/*
+ * Caching off: every stage runs, nothing is looked up or stored.
+ */
+Pipeline.runChainUncached = function( chan, chain, runners )
+{
+   for ( var i = 0; i < chain.length; ++i )
+      runners[ chain[i].stage ]( Pipeline.ensureLoaded( chan ) );
+};
+
+/*
+ * One Cache.lookup per stage, in chain order -- or all null when the run
+ * ignores the cache, so nothing is looked up at all.
+ */
+Pipeline.lookupChain = function( chain, config )
+{
+   var lookups = [];
+   for ( var i = 0; i < chain.length; ++i )
+      lookups.push( config.ignoreCache ? null : Cache.lookup( chain[i].key ) );
+   return lookups;
+};
+
+/*
+ * Why a stage that runs was not served from the cache, for its MISS line.
+ */
+Pipeline.missReason = function( config, found )
+{
+   if ( config.ignoreCache )
+      return "cache ignored for this run";
+   return found ? "incomplete entry" : "no entry";
 };
 
 
@@ -1615,42 +1642,8 @@ Pipeline.correctBroadband = function( chans, config, reg )
       if ( !chans[bk] ) continue;
       var bc = chans[bk];
 
-      var chosenFilter = config.filters ? config.filters[bk] : null;
-      var qe = Steps.deviceCurveForImage( bc.instrume );
-      var mgcCfg = Steps.configuredMGC( config.marsPath );
-      var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
-                      mgcCfg.marsDatabaseFiles.slice().sort() : [];
-
-      var bStages = {
-         solve: {},
-         // channel key + chosen filter + resolved QE curve name: anything
-         // that changes what SPFC actually calibrates against.
-         spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
-         // the MARS database file list, not just "MGC ran" -- a different
-         // database gives a different correction from the same input.
-         mgc: { marsFiles: marsFiles },
-         // enabled flag AND smoothing: toggling GraXpert off must not
-         // silently reuse a result computed with it on, and vice versa.
-         // The stage keeps its name "graxpert" whichever tool runs it --
-         // renaming it would re-key every cached channel.
-         graxpert: Steps.gradientStageParams( config ),
-         // Sharpening runs per channel on native, uninterpolated pixels
-         // -- before registration deliberately, since resampling spreads
-         // whatever aberration is already there. The tool is part of the
-         // key: the same level means different pixels under BXT vs SyQon.
-         /*
-          * Aberration correction STAYS per channel, before registration:
-          * it fixes star shape on native, uninterpolated pixels, and
-          * registration's resampling would otherwise spread whatever
-          * aberration is present.
-          *
-          * Star reduction and detail sharpening have MOVED to the
-          * finished, calibrated composite, where a linked stretch keeps
-          * the colour correction intact -- see Steps.correctComposite.
-          */
-         aberration:    Pipeline.aberrationParams( config, Steps.studioAvailable() )
-      };
-      var bChain = Pipeline.buildStageKeys( bc.sourceKey, bStages );
+      var bChain = Pipeline.buildStageKeys( bc.sourceKey,
+                                            Pipeline.broadbandStages( bk, bc, config ) );
       bc.currentKey = bChain.length ? bChain[bChain.length - 1].key : bc.sourceKey;
 
       // The last stage before any correction -- where the clean reference
@@ -1660,31 +1653,81 @@ Pipeline.correctBroadband = function( chans, config, reg )
          if ( bChain[gk].stage == "graxpert" )
             bc.cleanKey = bChain[gk].key;
 
-      ( function( channel )
-      {
-         var runners = {
-            solve: function( c ) { Steps.solve( c.view ); },
-            spfc: function( c )
-            {
-               Steps.spfc( c.view, c.filter, channel, c.instrume,
-                           config.filters ? config.filters[channel] : null );
-            },
-            mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
-            graxpert: function( c ) { Steps.removeGradient( c.view, config ); },
-            aberration: function( c )
-            {
-               // Always runs when a tool is chosen -- the safe operation,
-               // and the one that actually fixes star shape. Per channel,
-               // unlinked, on native pixels.
-               if ( config.sharpenTool && config.sharpenTool != "none" )
-                  Steps.aberration( c.view, config.sharpenTool, false, channel );
-            }
-         };
-         Pipeline.processChain( chans[channel], bChain, config, reg, runners );
-      } )( bk );
+      Pipeline.processChain( bc, bChain, config, reg,
+                             Pipeline.broadbandRunners( bk, config ) );
 
       Pipeline.checkAbort( "corrected " + bk );
    }
+};
+
+/*
+ * The stage params of broadband channel `bk` (the channel entry `bc`),
+ * in the shape Pipeline.buildStageKeys takes. Every value here is part
+ * of a cache key.
+ */
+Pipeline.broadbandStages = function( bk, bc, config )
+{
+   var chosenFilter = config.filters ? config.filters[bk] : null;
+   var qe = Steps.deviceCurveForImage( bc.instrume );
+   var mgcCfg = Steps.configuredMGC( config.marsPath );
+   var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
+                   mgcCfg.marsDatabaseFiles.slice().sort() : [];
+
+   return {
+      solve: {},
+      // channel key + chosen filter + resolved QE curve name: anything
+      // that changes what SPFC actually calibrates against.
+      spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
+      // the MARS database file list, not just "MGC ran" -- a different
+      // database gives a different correction from the same input.
+      mgc: { marsFiles: marsFiles },
+      // enabled flag AND smoothing: toggling GraXpert off must not
+      // silently reuse a result computed with it on, and vice versa.
+      // The stage keeps its name "graxpert" whichever tool runs it --
+      // renaming it would re-key every cached channel.
+      graxpert: Steps.gradientStageParams( config ),
+      // Sharpening runs per channel on native, uninterpolated pixels
+      // -- before registration deliberately, since resampling spreads
+      // whatever aberration is already there. The tool is part of the
+      // key: the same level means different pixels under BXT vs SyQon.
+      /*
+       * Aberration correction STAYS per channel, before registration:
+       * it fixes star shape on native, uninterpolated pixels, and
+       * registration's resampling would otherwise spread whatever
+       * aberration is present.
+       *
+       * Star reduction and detail sharpening have MOVED to the
+       * finished, calibrated composite, where a linked stretch keeps
+       * the colour correction intact -- see Steps.correctComposite.
+       */
+      aberration:    Pipeline.aberrationParams( config, Steps.studioAvailable() )
+   };
+};
+
+/*
+ * The runners for broadband channel `channel`, one per stage of
+ * Pipeline.broadbandStages.
+ */
+Pipeline.broadbandRunners = function( channel, config )
+{
+   return {
+      solve: function( c ) { Steps.solve( c.view ); },
+      spfc: function( c )
+      {
+         Steps.spfc( c.view, c.filter, channel, c.instrume,
+                     config.filters ? config.filters[channel] : null );
+      },
+      mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
+      graxpert: function( c ) { Steps.removeGradient( c.view, config ); },
+      aberration: function( c )
+      {
+         // Always runs when a tool is chosen -- the safe operation,
+         // and the one that actually fixes star shape. Per channel,
+         // unlinked, on native pixels.
+         if ( config.sharpenTool && config.sharpenTool != "none" )
+            Steps.aberration( c.view, config.sharpenTool, false, channel );
+      }
+   };
 };
 
 /*
@@ -2333,42 +2376,27 @@ Pipeline.chooseKeepers = function( chans, paletteWins )
 };
 
 /*
- * Release the keepers from the Registry, then close everything else
- * this run created.
+ * Swept channels must not be reported as results: their windows are
+ * about to be closed, so the entry would point at nothing.
  */
-Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
+Pipeline.dropSweptResults = function( results, paletteWins )
 {
-   var rgbWin = rgb ? rgb.window : null;
-   var rgbStars = rgb ? rgb.stars : null;
-   var rgbLinear = rgb ? rgb.linear : null;
+   if ( paletteWins.length == 0 )
+      return;
+   for ( var dr = 0; dr < Util.NARROWBAND.length; ++dr )
+      delete results[ Util.NARROWBAND[dr] ];
+};
 
-   for ( var k = 0; k < keep.length; ++k )
-      if ( chans[keep[k]] )
-         reg.forget( chans[keep[k]].window );
-
-   // Swept channels must not be reported as results: their windows are
-   // about to be closed, so the entry would point at nothing.
-   if ( paletteWins.length > 0 )
-      for ( var dr = 0; dr < Util.NARROWBAND.length; ++dr )
-         delete results[ Util.NARROWBAND[dr] ];
-   if ( rgbWin !== null )
-      reg.forget( rgbWin );
-   /*
-    * Palettes are results too, and they are registered like everything
-    * else -- so without this they are closed by closeAll() moments before
-    * the code below tries to name them. That is why every palette run
-    * ended with "its window is gone before it could be named": the
-    * registry did exactly what it was told.
-    */
-   for ( var pf = 0; pf < paletteWins.length; ++pf )
-      reg.forget( paletteWins[pf].window );
-   /*
-    * The stars frames are results as well, and they are registered like
-    * everything else -- exactly the trap the comment above describes.
-    * Missing them produced a run with every starless plate present and
-    * no stars plate at all: closeAll() closed them, and the naming pass
-    * below then found nothing to name.
-    */
+/*
+ * The stars frames are results as well, and they are registered like
+ * everything else -- exactly the trap the palette comment in
+ * Pipeline.forgetKeepers describes. Missing them produced a run with every
+ * starless plate present and no stars plate at all: closeAll() closed
+ * them, and the naming pass then found nothing to name. The kept linear
+ * frames go the same way.
+ */
+Pipeline.forgetCompanions = function( chans, rgbStars, rgbLinear, paletteWins, reg )
+{
    if ( chans.L && chans.L.stars )
       reg.forget( chans.L.stars );
    if ( rgbStars != null )
@@ -2382,6 +2410,35 @@ Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
       if ( paletteWins[ps].linear )
          reg.forget( paletteWins[ps].linear );
    }
+};
+
+/*
+ * Release the keepers from the Registry, then close everything else
+ * this run created.
+ */
+Pipeline.forgetKeepers = function( results, chans, rgb, paletteWins, keep, reg )
+{
+   var rgbWin = rgb ? rgb.window : null;
+   var rgbStars = rgb ? rgb.stars : null;
+   var rgbLinear = rgb ? rgb.linear : null;
+
+   for ( var k = 0; k < keep.length; ++k )
+      if ( chans[keep[k]] )
+         reg.forget( chans[keep[k]].window );
+
+   Pipeline.dropSweptResults( results, paletteWins );
+   if ( rgbWin !== null )
+      reg.forget( rgbWin );
+   /*
+    * Palettes are results too, and they are registered like everything
+    * else -- so without this they are closed by closeAll() moments before
+    * the code below tries to name them. That is why every palette run
+    * ended with "its window is gone before it could be named": the
+    * registry did exactly what it was told.
+    */
+   for ( var pf = 0; pf < paletteWins.length; ++pf )
+      reg.forget( paletteWins[pf].window );
+   Pipeline.forgetCompanions( chans, rgbStars, rgbLinear, paletteWins, reg );
    reg.closeAll();
 };
 

@@ -15851,6 +15851,155 @@ function runPipeTests()
       check( "forgetKeepers: no RGB, no palettes, nothing kept",
              run( { L: { window: w( "L" ) } }, null, [], [] ),
              [ [ "closeAll" ], [ "H", "S", "O", "RGB" ] ] );
+      check( "forgetKeepers: palettes without RGB, L without stars, a missing keeper",
+             run( { L: { window: w( "L" ) }, O: { window: w( "O" ) } },
+                  { window: null, stars: undefined, linear: w( "RGB_linear" ) },
+                  [ { window: w( "HOO" ), stars: null, linear: w( "HOO_linear" ) } ],
+                  [ "L", "H", "O" ] ),
+             [ [ "forget L", "forget O", "forget HOO", "forget RGB_linear",
+                 "forget HOO_linear", "closeAll" ],
+               [ "RGB" ] ] );
+   } )();
+
+   /*
+    * Pipeline.processChain: the uncached path, the ignore-cache path, and
+    * the MISS reasons and not-cached line each path logs.
+    */
+   ( function()
+   {
+      var saved = [ Cache.lookup, Cache.lookupCompanion, Cache.load, Cache.loadCompanion,
+                    Cache.store, Cache.storeCompanion, Util.log, Util.warn ];
+      function drive( config, cachedKeys, skipStage )
+      {
+         var log = [];
+         Cache.lookup = function( k ) { log.push( "lookup " + k ); return cachedKeys[k] ? "/c/" + k : null; };
+         Cache.lookupCompanion = function() { return null; };
+         Cache.load = function( k ) { return { mainView: { id: "from_" + k }, forceClose: function() {} }; };
+         Cache.loadCompanion = function() { return null; };
+         Cache.store = function( k ) { log.push( "store " + k ); };
+         Cache.storeCompanion = function( k, n ) { log.push( "storeCompanion " + k + "." + n ); };
+         Util.log = function( m, s ) { log.push( m + ": " + s ); };
+         Util.warn = function( m, s ) { log.push( "warn " + m + ": " + s ); };
+         var chan = { key: "L", window: null, view: null,
+                      load: function()
+                      {
+                         log.push( "load" );
+                         this.window = { mainView: { id: "SRC" }, forceClose: function() {} };
+                         this.view = this.window.mainView;
+                      } };
+         var chain = [ { stage: "solve", key: "k1", params: {}, companion: null },
+                       { stage: "extractL", key: "k2", params: {}, companion: "stars" },
+                       { stage: "mgc", key: "k3", params: {}, companion: null } ];
+         var runners = {};
+         chain.forEach( function( e )
+         {
+            runners[e.stage] = function( c )
+            {
+               log.push( "run " + e.stage + " on " + c.window.mainView.id );
+               return ( e.stage == skipStage ) ? Pipeline.SKIP_CACHE : undefined;
+            };
+         } );
+         Pipeline.processChain( chan, chain, config,
+                                { add: function() {}, forget: function() {} }, runners );
+         return log;
+      }
+      try
+      {
+         check( "processChain: caching off runs every stage and touches no cache",
+                drive( { useCache: false }, { k1: true } ),
+                [ "load", "run solve on SRC", "run extractL on SRC", "run mgc on SRC" ] );
+         check( "processChain: ignoreCache looks nothing up and stores every stage",
+                drive( { useCache: true, ignoreCache: true }, { k1: true, k2: true } ),
+                [ "cache: L solve MISS (cache ignored for this run)", "load",
+                  "run solve on SRC", "store k1",
+                  "cache: L extractL MISS (cache ignored for this run)",
+                  "run extractL on SRC", "store k2",
+                  "cache: L mgc MISS (cache ignored for this run)",
+                  "run mgc on SRC", "store k3" ] );
+         check( "processChain: incomplete and absent entries, and a SKIP_CACHE stage",
+                drive( { useCache: true }, { k2: true }, "mgc" ),
+                [ "lookup k1", "lookup k2", "lookup k3", "lookup k2",
+                  "cache: L solve MISS (no entry)", "load", "run solve on SRC", "store k1",
+                  "cache: L extractL MISS (incomplete entry)", "run extractL on SRC",
+                  "store k2",
+                  "cache: L mgc MISS (no entry)", "run mgc on SRC",
+                  "cache: L mgc not cached (the step did not complete)" ] );
+      }
+      finally
+      {
+         Cache.lookup = saved[0]; Cache.lookupCompanion = saved[1]; Cache.load = saved[2];
+         Cache.loadCompanion = saved[3]; Cache.store = saved[4]; Cache.storeCompanion = saved[5];
+         Util.log = saved[6]; Util.warn = saved[7];
+      }
+   } )();
+
+   /*
+    * Pipeline.correctBroadband: per present broadband channel, the chain
+    * handed to processChain, currentKey and cleanKey, and what each runner
+    * calls.
+    */
+   ( function()
+   {
+      var names = [ [ Pipeline, "processChain" ], [ Pipeline, "checkAbort" ],
+                    [ Steps, "deviceCurveForImage" ], [ Steps, "configuredMGC" ],
+                    [ Steps, "studioAvailable" ], [ Steps, "solve" ], [ Steps, "spfc" ],
+                    [ Steps, "mgc" ], [ Steps, "removeGradient" ], [ Steps, "aberration" ] ];
+      var saved = names.map( function( n ) { return n[0][n[1]]; } );
+      function drive( chans, config, mgcCfg, qeKnown )
+      {
+         var log = [];
+         function rec( name )
+         {
+            return function() { log.push( name + " " + JSON.stringify( [].slice.call( arguments ) ) ); };
+         }
+         Pipeline.processChain = function( holder, chain, cfg, reg, runners )
+         {
+            log.push( "chain " + holder.key + " " + JSON.stringify( chain ) +
+                      " current=" + holder.currentKey + " clean=" + holder.cleanKey +
+                      " sameConfig=" + ( cfg === config ) + " reg=" + reg );
+            Object.keys( runners ).forEach( function( s )
+            {
+               runners[s]( { view: "v" + holder.key, filter: "f" + holder.key,
+                             instrume: holder.instrume } );
+            } );
+         };
+         Pipeline.checkAbort = rec( "checkAbort" );
+         Steps.deviceCurveForImage = function( i ) { return qeKnown ? { name: "QE:" + i } : null; };
+         Steps.configuredMGC = function() { return mgcCfg; };
+         Steps.studioAvailable = function() { return false; };
+         Steps.solve = rec( "solve" );
+         Steps.spfc = rec( "spfc" );
+         Steps.mgc = rec( "mgc" );
+         Steps.removeGradient = function( v ) { log.push( "removeGradient " + v ); };
+         Steps.aberration = rec( "aberration" );
+         Pipeline.correctBroadband( chans, config, "REG" );
+         Object.keys( chans ).forEach( function( k )
+         {
+            log.push( k + " current=" + chans[k].currentKey + " clean=" + chans[k].cleanKey );
+         } );
+         return log;
+      }
+      function chan( k ) { return { key: k, sourceKey: "src" + k, instrume: "cam" + k }; }
+      try
+      {
+         var full = drive( { L: chan( "L" ), R: chan( "R" ), B: chan( "B" ) },
+                           { filters: { L: "Lf", R: "Rf" }, marsPath: "/mars",
+                             sharpenTool: Steps.SHARPEN_TOOL_BXT },
+                           { marsDatabaseFiles: [ "z.db", "a.db" ] }, true );
+         var bare = drive( { G: chan( "G" ) }, { sharpenTool: "none" }, null, false );
+         var noFiles = drive( { L: chan( "L" ) }, {}, {}, true );
+         check( "correctBroadband: channels corrected, in order",
+                full.filter( function( l ) { return l.indexOf( "checkAbort" ) == 0; } ),
+                [ "checkAbort [\"corrected L\"]", "checkAbort [\"corrected R\"]",
+                  "checkAbort [\"corrected B\"]" ] );
+         check( "correctBroadband: chains, keys and runner calls",
+                Cache.hash( JSON.stringify( [ full, bare, noFiles ] ) ),
+                "f4b56451b0ec61f52c38cd09f81c6aad6f1dc55e" );
+      }
+      finally
+      {
+         names.forEach( function( n, i ) { n[0][n[1]] = saved[i]; } );
+      }
    } )();
 
    /*
