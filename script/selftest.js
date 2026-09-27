@@ -7447,6 +7447,377 @@ function runTests()
              ( cwErr ? ": " + cwErr : "" ), cwOK, true );
    } )();
 
+   /* ---- the main dialog's layout, pinned control by control ------------- */
+
+   /*
+    * UI.SelectDialog as built, one line per control, so a change to how the
+    * dialog is BUILT can be shown not to change what is built.
+    *
+    * Under the V8 engine a sizer can be asked neither what it holds (indexOf
+    * and has reject every control) nor to log its add calls (its methods
+    * are read-only own properties). So the constructors are swapped, for
+    * the construction only, for functions that return the real object and
+    * remember it, and each control is pinned by its properties, its parent
+    * and its geometry: position and size with the dialog at its natural
+    * size and again 300 wider, which is where spacings, stretches and
+    * stretch factors show. The sizers follow as a sorted list.
+    * Everything installation-dependent is stubbed, so the tree is the same
+    * on every run; long strings are pinned by length and checksum.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var PINNED = [
+         "#0 Label \"Project:\" align=130 enabled=true at 8,8,38x20 / 8,8,38x20 in dialog",
+         "#1 Edit \"M31\" enabled=true tip=#209:1abf416f at 52,8,596x20 / 52,8,896x20 in dialog",
+         "#2 Label #262:218c5e5d align=129 enabled=true at 8,34,640x39 / 8,34,940x39 in dialog",
+         "#3 TreeBox minWidth=640 enabled=true at 8,79,640x240 / 8,79,940x240 in dialog",
+         "#4 PushButton \"Add Files...\" minWidth=93 enabled=true at 151,325,93x21 / 151,325,93x21 in dialog",
+         "#5 PushButton \"Scan Masters Folder...\" minWidth=93 enabled=true tip=#233:d9a7933 at 8,325,137x21 / 8,325,137x21 in dialog",
+         "#6 PushButton \"Remove\" minWidth=93 enabled=true at 456,325,93x21 / 756,325,93x21 in dialog",
+         "#7 PushButton \"Clear\" minWidth=93 enabled=true at 555,325,93x21 / 855,325,93x21 in dialog",
+         "#8 Label \"\" align=129 enabled=true at 8,352,640x13 / 8,352,940x13 in dialog",
+         "#9 Label \"\" align=129 enabled=true at 8,371,640x13 / 8,371,940x13 in dialog",
+         "#10 Label \"L filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,17,100x20 in #79",
+         "#11 ComboBox minWidth=260 items=[\"L curve A\",\"L curve B\"] current=0 enabled=true at 0,0,260x30 / 104,17,260x20 in #79",
+         "#12 Label \"R filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,41,100x20 in #79",
+         "#13 ComboBox minWidth=260 items=[\"R curve A\",\"R curve B\"] current=1 enabled=true at 0,0,260x30 / 104,41,260x20 in #79",
+         "#14 Label \"G filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,65,100x20 in #79",
+         "#15 ComboBox minWidth=260 items=[\"G curve A\",\"G curve B\"] current=0 enabled=true at 0,0,260x30 / 104,65,260x20 in #79",
+         "#16 Label \"B filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,89,100x20 in #79",
+         "#17 ComboBox minWidth=260 items=[\"B curve A\",\"B curve B\"] current=0 enabled=true at 0,0,260x30 / 104,89,260x20 in #79",
+         "#18 Label \"<b>Filters</b>\" align=129 enabled=true at 0,0,100x30 / 0,0,940x13 in #79",
+         "#19 Control enabled=true at 8,390,640x20 / 8,390,940x20 in dialog",
+         "#20 Label \"Sharpening:\" align=130 minWidth=100 enabled=true at 0,0,100x20 / 0,0,100x20 in #19",
+         "#21 ComboBox items=[\"None\",\"BlurXTerminator\",\"SyQon Parallax\"] current=2 enabled=true tip=#239:ed575898 at 104,0,119x20 / 104,0,119x20 in #19",
+         "#22 Label \"Star reduction:\" align=130 minWidth=100 enabled=true at 239,0,100x20 / 239,0,100x20 in #19",
+         "#23 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 343,0,79x20 / 343,0,79x20 in #19",
+         "#24 Label \"Detail:\" align=130 minWidth=100 enabled=true at 438,0,100x20 / 438,0,100x20 in #19",
+         "#25 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 542,0,79x20 / 542,0,79x20 in #19",
+         "#26 Control enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#27 Label \"Narrowband:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,0,100x30 in #26",
+         "#28 CheckBox \"SHO\" checked=false enabled=true tip=#152:1b221c6c at 22,8,17x14 / 22,8,17x14 in #26",
+         "#29 CheckBox \"HOO\" checked=false enabled=true tip=#152:4ac4cacc at 49,8,17x14 / 49,8,17x14 in #26",
+         "#30 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #26",
+         "#31 Control enabled=true at 8,416,640x20 / 8,416,940x20 in dialog",
+         "#32 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #31",
+         "#33 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#1311:afa91acc at 87,0,127x20 / 87,0,127x20 in #31",
+         "#34 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #31",
+         "#35 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#208:d8ec7a7f at 274,0,79x20 / 274,0,79x20 in #31",
+         "#36 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #31",
+         "#37 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#83:34911b0a at 382,0,79x20 / 382,0,79x20 in #31",
+         "#38 Control enabled=true at 8,442,640x20 / 8,442,940x20 in dialog",
+         "#39 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #38",
+         "#40 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #38",
+         "#41 CheckBox \"Stretch the results (non-linear output)\" checked=false enabled=true tip=#509:85b48972 at 8,468,640x14 / 8,468,940x14 in dialog",
+         "#42 Label \"Method:\" align=130 enabled=false at 28,488,41x20 / 28,488,41x20 in dialog",
+         "#43 ComboBox items=[\"Histogram (deterministic MTF)\",\"MultiscaleAdaptiveStretch\"] current=0 enabled=false tip=#978:2e6a1d4e at 75,488,190x20 / 75,488,190x20 in dialog",
+         "#44 CheckBox \"Also keep the unstretched RGB and palette\" checked=false enabled=false tip=#422:bec414cd at 8,514,640x14 / 8,514,940x14 in dialog",
+         "#45 CheckBox \"Frequency-separate the L stars plate\" checked=false enabled=true tip=#865:5bf00a24 at 8,534,640x14 / 8,534,940x14 in dialog",
+         "#46 CheckBox \"Also write one layered M31.psb\" checked=false enabled=false tip=#603:aa2b6f28 at 8,554,640x14 / 8,554,940x14 in dialog",
+         "#47 Control enabled=true at 8,574,640x21 / 8,574,940x21 in dialog",
+         "#48 Label \"Export 16-bit TIFFs to:\" align=130 enabled=false at 0,0,110x21 / 0,0,110x21 in #47",
+         "#49 Edit \"\" enabled=false tip=#358:62882fc5 at 116,0,425x20 / 116,0,725x20 in #47",
+         "#50 PushButton \"Browse...\" minWidth=93 enabled=false at 547,0,93x21 / 847,0,93x21 in #47",
+         "#51 Control enabled=true at 8,601,640x21 / 8,601,940x21 in dialog",
+         "#52 Label \"MARS database folder:\" align=130 enabled=true at 0,0,113x21 / 0,0,113x21 in #51",
+         "#53 Edit \"\" enabled=true tip=#294:27522a45 at 119,0,422x20 / 119,0,722x20 in #51",
+         "#54 PushButton \"Browse...\" minWidth=93 enabled=true at 547,0,93x21 / 847,0,93x21 in #51",
+         "#55 Label \"Narrowband bandwidth (nm):\" align=130 enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#56 Label \"\" align=130 enabled=true at 0,0,31x20 / 0,0,5x20 in #58",
+         "#57 Edit \"3.00\" minWidth=37 enabled=true at 35,0,37x20 / 9,0,37x20 in #58",
+         "#58 NumericEdit label=\"\" value=3 enabled=true tip=#286:cb261bfe at 0,0,46x20 / 0,0,46x20 in dialog",
+         "#59 CheckBox \"Normalise the palette\" checked=true enabled=true tip=#220:a26d728c at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#60 CheckBox \"Reduce halos (match channel PSFs)\" checked=false enabled=true tip=#304:fd83a83b at 8,628,640x14 / 8,628,940x14 in dialog",
+         "#61 Label \"Gradient removal:\" align=130 enabled=true at 8,648,90x20 / 8,648,90x20 in dialog",
+         "#62 ComboBox items=[\"Multi Gradient only\",\"GraXpert\",\"SyQon Studio Deep Gradient\"] current=1 enabled=true tip=#368:1a0cd010 at 104,648,182x20 / 104,648,182x20 in dialog",
+         "#63 CheckBox \"Also remove gradients from H, S and O\" checked=false enabled=true tip=#457:96d769eb at 8,674,640x14 / 8,674,940x14 in dialog",
+         "#64 Label \"GraXpert smoothing:\" align=130 enabled=true at 0,0,104x20 / 0,0,104x20 in #66",
+         "#65 Edit \"0.50\" minWidth=37 enabled=true at 108,0,37x20 / 108,0,37x20 in #66",
+         "#66 NumericControl label=\"GraXpert smoothing:\" value=0.5 enabled=true at 8,694,640x20 / 8,694,940x20 in dialog",
+         "#67 CheckBox \"Validate only (check everything, run nothing)\" checked=false enabled=true at 8,720,640x14 / 8,720,940x14 in dialog",
+         "#68 CheckBox \"Use cache\" checked=true enabled=true tip=#226:ade2cbc4 at 8,743,70x14 / 8,743,70x14 in dialog",
+         "#69 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,743,141x14 / 84,743,141x14 in dialog",
+         "#70 Label align=129 enabled=true tip=#88:ee3efb92 at 579,740,69x21 / 879,740,69x21 in dialog",
+         "#71 PushButton \"Clear cache\" minWidth=93 enabled=true tip=\"Delete every cached stage result.\" at 472,740,93x21 / 772,740,93x21 in dialog",
+         "#72 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#324:6cd29352 at 310,743,156x14 / 610,743,156x14 in dialog",
+         "#73 Control enabled=true at 8,767,640x21 / 8,767,940x21 in dialog",
+         "#74 Label \"Cache folder:\" align=130 enabled=true at 0,0,66x21 / 0,0,66x21 in #73",
+         "#75 Edit \"\" enabled=true tip=#325:8999df7d at 72,0,469x20 / 72,0,769x20 in #73",
+         "#76 PushButton \"Browse...\" minWidth=93 enabled=true at 547,0,93x21 / 847,0,93x21 in #73",
+         "#77 PushButton \"Run\" minWidth=93 enabled=false tip=#86:a2a3a586 at 456,909,93x21 / 756,909,93x21 in dialog",
+         "#78 PushButton \"Cancel\" minWidth=93 enabled=true at 555,909,93x21 / 855,909,93x21 in dialog",
+         "#79 Control enabled=true at 8,794,640x109 / 8,794,940x109 in dialog",
+         "HorizontalSizer spacing=4 margin=0 items=2",
+         "HorizontalSizer spacing=4 margin=0 items=3",
+         "HorizontalSizer spacing=4 margin=0 items=3",
+         "HorizontalSizer spacing=4 margin=0 items=3",
+         "HorizontalSizer spacing=4 margin=0 items=3",
+         "HorizontalSizer spacing=4 margin=0 items=3",
+         "HorizontalSizer spacing=4 margin=0 items=5",
+         "HorizontalSizer spacing=4 margin=0 items=8",
+         "HorizontalSizer spacing=4 margin=0 items=9",
+         "HorizontalSizer spacing=6 margin=0 items=2",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=3",
+         "HorizontalSizer spacing=6 margin=0 items=4",
+         "HorizontalSizer spacing=6 margin=0 items=5",
+         "HorizontalSizer spacing=6 margin=0 items=7",
+         "HorizontalSizer spacing=6 margin=0 items=9",
+         "VerticalSizer spacing=4 margin=0 items=2",
+         "VerticalSizer spacing=4 margin=0 items=4",
+         "VerticalSizer spacing=6 margin=8 items=27" ];
+
+      function sum( s )
+      {
+         var h = 5381;
+         for ( var i = 0; i < s.length; ++i )
+            h = ( ( h * 33 ) ^ s.charCodeAt( i ) ) >>> 0;
+         return h.toString( 16 );
+      }
+      function str( s )
+      {
+         s = String( s );
+         return ( s.length > 60 ) ? "#" + s.length + ":" + sum( s ) : JSON.stringify( s );
+      }
+
+      var CLASSES = [ "NumericControl", "NumericEdit", "TreeBox", "ComboBox", "CheckBox",
+                      "PushButton", "Edit", "Label", "Control", "HorizontalSizer", "VerticalSizer" ];
+      var made = [];
+      function recording( Real, type )
+      {
+         return function( parent )
+         {
+            var o = ( arguments.length > 0 ) ? new Real( parent ) : new Real;
+            made.push( { obj: o, type: type, geometry: [] } );
+            return o;
+         };
+      }
+      function recordOf( o )
+      {
+         for ( var i = 0; i < made.length; ++i )
+            if ( made[i].obj === o )
+               return made[i];
+         return null;
+      }
+      function isSizer( r ) { return /Sizer$/.test( r.type ); }
+      function measure( d )
+      {
+         made.forEach( function( r )
+         {
+            if ( !isSizer( r ) )
+            {
+               var at = r.obj.position;
+               r.geometry.push( at.x + "," + at.y + "," + r.obj.width + "x" + r.obj.height );
+            }
+         } );
+      }
+
+      function describe( r, skipText )
+      {
+         var c = r.obj, out = r.type;
+         if ( r.type == "NumericControl" || r.type == "NumericEdit" )
+            out += " label=" + str( c.label.text ) + " value=" + c.value;
+         else if ( [ "Control", "TreeBox", "ComboBox" ].indexOf( r.type ) < 0 && !skipText )
+            out += " " + str( c.text );
+         if ( r.type == "Label" )
+            out += " align=" + c.textAlignment;
+         if ( c.minWidth > 0 )
+            out += " minWidth=" + c.minWidth;
+         if ( r.type == "CheckBox" )
+            out += " checked=" + c.checked;
+         if ( r.type == "ComboBox" )
+         {
+            var items = [];
+            for ( var i = 0; i < c.numberOfItems; ++i )
+               items.push( c.itemText( i ) );
+            out += " items=" + JSON.stringify( items ) + " current=" + c.currentItem;
+         }
+         out += " enabled=" + c.enabled;
+         if ( c.toolTip )
+            out += " tip=" + str( c.toolTip );
+         return out + " at " + r.geometry.join( " / " );
+      }
+
+      function render( d, lines )
+      {
+         var controls = made.filter( function( m ) { return !isSizer( m ); } );
+         controls.forEach( function( m, i )
+         {
+            var p = m.obj.parent, owner = ( p === d ) ? "dialog" : "?";
+            controls.forEach( function( o, j ) { if ( o.obj === p ) owner = "#" + j; } );
+            lines.push( "#" + i + " " + describe( m, m.obj === d.cacheInfo ) + " in " + owner );
+         } );
+         /*
+          * Sizers only as a sorted list: which one holds what cannot be
+          * read back, and the geometry above already says where it went.
+          */
+         made.filter( isSizer ).map( function( m )
+         {
+            return m.type + " spacing=" + m.obj.spacing + " margin=" + m.obj.margin +
+                   " items=" + m.obj.numberOfItems;
+         } ).sort().forEach( function( line ) { lines.push( line ); } );
+      }
+
+      var SHARPEN = [ "BlurXTerminator", "SyQon Parallax" ];
+      var NOISE = [ "NoiseXTerminator", "MLDenoise" ];
+      var STAR = [ "StarXTerminator", "StarNet2" ];
+      var saved = [];
+      function swap( obj, name, fn ) { saved.push( [ obj, name, obj[name] ] ); obj[name] = fn; }
+      function build( config )
+      {
+         swap( Steps, "availableSharpenTools", function() { return SHARPEN.slice(); } );
+         swap( Steps, "availableNoiseTools", function() { return NOISE.slice(); } );
+         swap( Steps, "availableStarTools", function() { return STAR.slice(); } );
+         swap( Steps, "listFilterCurves", function( k ) { return [ { name: k + " curve A" }, { name: k + " curve B" } ]; } );
+         swap( Steps, "configuredSPFC", function() { return null; } );
+         swap( Steps, "configuredMGC", function() { return null; } );
+         swap( Steps, "moduleAvailable", function( n ) { return n == "GraXpert"; } );
+         swap( Steps, "studioAvailable", function() { return true; } );
+         made = [];
+         /*
+          * By direct eval: some of these classes are lexical globals, which
+          * an assignment through the global object would only shadow.
+          */
+         var real = CLASSES.map( function( name ) { return eval( name ); } );
+         try
+         {
+            CLASSES.forEach( function( name, i ) { var f = recording( real[i], name ); eval( name + " = f;" ); } );
+            return tracked( new UI.SelectDialog( config ) );
+         }
+         finally
+         {
+            CLASSES.forEach( function( name, i ) { var f = real[i]; eval( name + " = f;" ); } );
+            while ( saved.length > 0 ) { var s = saved.pop(); s[0][s[1]] = s[2]; }
+         }
+      }
+      function layoutConfig()
+      {
+         var c = Config.defaults();
+         c.sharpenTool = "SyQon Parallax";
+         c.noiseTool = "MLDenoise";
+         c.starTool = "not installed here";
+         c.filters = { R: "R curve B" };
+         c.projectName = "M31";
+         return c;
+      }
+
+      var lines = [], err = "";
+      try
+      {
+         var d = build( layoutConfig() );
+         if ( recordOf( d.sizer ) == null )
+            throw new Error( made.length + " objects recorded, the dialog's sizer not among them" );
+         measure( d );
+         d.resize( d.width + 300, d.height );
+         d.ensureLayoutUpdated();
+         measure( d );
+         render( d, lines );
+      }
+      catch ( e ) { err = String( e ); }
+      check( "the laid-out dialog serialises" + ( err ? ": " + err : "" ), err, "" );
+      var diff = null;
+      for ( var i = 0; i < Math.max( lines.length, PINNED.length ) && diff == null; ++i )
+         if ( lines[i] !== PINNED[i] )
+            diff = "line " + ( i + 1 ) + ": " + lines[i] + " | pinned: " + PINNED[i];
+      if ( diff != null )
+         try { File.writeTextFile( "/tmp/agent-scratch/p10/tree.txt", lines.join( "\n" ) + "\n" ); } catch ( e2 ) {}
+      check( "the dialog's control tree is exactly the pinned one", diff, null );
+
+      /*
+       * The three tool dropdowns: index 0 is None, and index i the (i-1)th
+       * installed tool. Called directly, because setting currentItem from a
+       * script does not fire onItemSelected.
+       */
+      var picks = {}, perr = "", p = null;
+      function pick( combo, i, field ) { combo.onItemSelected( i ); return p.config[field]; }
+      try
+      {
+         p = build( layoutConfig() );
+         picks.sharpen = [ pick( p.sharpenToolCombo, 1, "sharpenTool" ), p.starReductionCombo.enabled,
+                           pick( p.sharpenToolCombo, 0, "sharpenTool" ), p.detailCombo.enabled,
+                           pick( p.sharpenToolCombo, 2, "sharpenTool" ), p.detailCombo.enabled ];
+         picks.noise = [ pick( p.noiseCombo, 2, "noiseTool" ), p.noiseLevelLCombo.enabled,
+                         pick( p.noiseCombo, 0, "noiseTool" ), p.noiseLevelCombo.enabled,
+                         pick( p.noiseCombo, 1, "noiseTool" ), p.noiseLevelLabel.enabled ];
+         picks.star = [ pick( p.starCombo, 2, "starTool" ), pick( p.starCombo, 0, "starTool" ),
+                        pick( p.starCombo, 1, "starTool" ) ];
+      }
+      catch ( e3 ) { perr = String( e3 ); }
+      check( "the tool dropdowns can be driven" + ( perr ? ": " + perr : "" ), perr, "" );
+      check( "picking a sharpening tool sets it, and None turns the strengths off",
+             picks.sharpen, [ "BlurXTerminator", true, "none", false, "SyQon Parallax", true ] );
+      check( "picking a noise tool sets it, and None turns the strengths off",
+             picks.noise, [ "MLDenoise", true, "none", false, "NoiseXTerminator", true ] );
+      check( "picking a star tool sets it, None included",
+             picks.star, [ "StarNet2", "none", "StarXTerminator" ] );
+   } )();
+
+   /*
+    * The dropdown fillers take any object with addItem and currentItem, so
+    * what they decide is checked in node too.
+    */
+   ( function()
+   {
+      function fakeCombo() { return { items: [], currentItem: -1, addItem: function( t ) { this.items.push( t ); } }; }
+      var a = fakeCombo();
+      UI.fillToolCombo( a, [ "One", "Two" ], "Two" );
+      check( "a tool dropdown is None then the tools, on the configured one",
+             [ a.items, a.currentItem ], [ [ "None", "One", "Two" ], 2 ] );
+      var b = fakeCombo();
+      UI.fillToolCombo( b, [ "One" ], "Gone" );
+      check( "and on None when the configured tool is not installed",
+             [ b.items, b.currentItem ], [ [ "None", "One" ], 0 ] );
+      var c = fakeCombo(), got = [];
+      UI.fillLevelCombo( c, [ "low", "medium" ], "medium", function( l ) { got.push( l ); } );
+      c.onItemSelected( 0 );
+      check( "a level dropdown shows the levels capitalised and hands back the level",
+             [ c.items, c.currentItem, got ], [ [ "Low", "Medium" ], 1, [ "low" ] ] );
+      var e = fakeCombo();
+      UI.fillLevelCombo( e, [ "low" ], "unknown", function() {} );
+      check( "and starts on the first level when the configured one is unknown", e.currentItem, 0 );
+      var picked = [], f = fakeCombo();
+      UI.fillToolCombo( f, [ "One", "Two" ], "One", function( t ) { picked.push( t ); } );
+      f.onItemSelected( 2 );
+      f.onItemSelected( 0 );
+      check( "a tool dropdown hands back the tool picked, or none", picked, [ "Two", "none" ] );
+   } )();
+
+   /*
+    * The label and row creation methods, against recording stand-ins for
+    * Label and HorizontalSizer: node only, where the real classes do not
+    * exist. PixInsight builds them for real in the layout check above.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var realLabel = Label, realRow = HorizontalSizer, log = [];
+      Label = function( parent ) { this.parent = parent; };
+      HorizontalSizer = function()
+      {
+         this.add = function( c, f ) { log.push( f === undefined ? [ c.text ] : [ c.text, f ] ); };
+         this.addSpacing = function( n ) { log.push( "gap " + n ); };
+         this.addStretch = function() { log.push( "stretch" ); };
+      };
+      try
+      {
+         var parent = {}, a = UI.label( parent, "A:", 100 ), b = UI.label( parent, "B:" );
+         check( "a label is right-aligned, with its width only when given",
+                [ a.parent === parent, a.text, a.minWidth, a.textAlignment, b.text, "minWidth" in b ],
+                [ true, "A:", 100, TextAlign_Right | TextAlign_VertCenter, "B:", false ] );
+         var r = UI.row( 4, [ a, 12, [ b, 100 ], "stretch" ] );
+         check( "a row reads numbers as gaps, \"stretch\" as a stretch and a pair as a stretch factor",
+                [ r.spacing, log ], [ 4, [ [ "A:" ], "gap 12", [ "B:", 100 ], "stretch" ] ] );
+      }
+      finally
+      {
+         Label = realLabel;
+         HorizontalSizer = realRow;
+      }
+   } )();
+
    /* ---- adding masters: the folder scan and the file list --------------- */
 
    /*

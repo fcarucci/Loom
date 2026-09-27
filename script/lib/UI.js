@@ -141,17 +141,14 @@ UI.colourRow = function( node, e, counts )
 
 /*
  * Fills a tool dropdown: None, then each installed tool, with `current`
- * selected when it is one of them and None otherwise.
+ * selected when it is one of them and None otherwise; hands the chosen
+ * tool, or "none", to `pick`.
  */
-UI.fillToolCombo = function( combo, tools, current )
+UI.fillToolCombo = function( combo, tools, current, pick )
 {
-   combo.addItem( "None" );
-   for ( var i = 0; i < tools.length; ++i )
-      combo.addItem( tools[i] );
-   combo.currentItem = 0;
-   for ( var j = 0; j < tools.length; ++j )
-      if ( tools[j] == current )
-         combo.currentItem = j + 1;
+   [ "None" ].concat( tools ).forEach( function( t ) { combo.addItem( t ); } );
+   combo.currentItem = tools.indexOf( current ) + 1;
+   combo.onItemSelected = function( n ) { pick( ( n == 0 ) ? "none" : tools[n - 1] ); };
 };
 
 /*
@@ -165,6 +162,41 @@ UI.fillLevelCombo = function( combo, levels, current, pick )
       combo.addItem( levels[i].charAt( 0 ).toUpperCase() + levels[i].slice( 1 ) );
    combo.currentItem = Math.max( 0, levels.indexOf( current ) );
    combo.onItemSelected = function( n ) { pick( levels[n] ); };
+};
+
+/*
+ * A caption for the control beside it, right-aligned; `minWidth`, when
+ * given, lines a column of them up.
+ */
+UI.label = function( parent, text, minWidth )
+{
+   var l = new Label( parent );
+   l.text = text;
+   if ( minWidth )
+      l.minWidth = minWidth;
+   l.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+   return l;
+};
+
+/*
+ * A row of controls `spacing` apart. In `items` a number is a gap of that
+ * many pixels, "stretch" a stretch, and [control, factor] a control with
+ * a stretch factor.
+ */
+UI.row = function( spacing, items )
+{
+   var s = new HorizontalSizer;
+   s.spacing = spacing;
+   items.forEach( function( c )
+   {
+      if ( c === "stretch" )
+         s.addStretch();
+      else if ( typeof c == "number" )
+         s.addSpacing( c );
+      else
+         s.add.apply( s, [].concat( c ) );
+   } );
+   return s;
 };
 
 /*
@@ -582,9 +614,7 @@ UI.SelectDialog = class extends Dialog
        * default follows the file list until the moment it is typed in, after
        * which it is left alone.
        */
-      this.projectLabel = new Label( this );
-      this.projectLabel.text = "Project:";
-      this.projectLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.projectLabel = UI.label( this, "Project:" );
 
       this.projectEdit = new Edit( this );
       this.projectEdit.text = config.projectName || "";
@@ -655,11 +685,7 @@ UI.SelectDialog = class extends Dialog
          }
       };
 
-      var projectRow = new HorizontalSizer;
-      projectRow.spacing = 6;
-      projectRow.add( this.projectLabel );
-      projectRow.add( this.projectEdit, 100 );
-      return projectRow;
+      return UI.row( 6, [ this.projectLabel, [ this.projectEdit, 100 ] ] );
    }
 
    /* The masters list, its buttons and drop targets, and the status lines. */
@@ -758,19 +784,6 @@ UI.SelectDialog = class extends Dialog
       this.clearButton.text = "Clear";
       this.clearButton.onClick = function() { self.entries = []; self.rebuild(); };
 
-      var listButtons = new HorizontalSizer;
-      listButtons.spacing = 6;
-      /*
-       * Scanning a folder first, because it is what a run actually starts
-       * with: WBPP writes a masters folder and Loom picks the best variant
-       * per filter out of it. Adding files by hand is the exception.
-       */
-      listButtons.add( this.addMastersButton );
-      listButtons.add( this.addFilesButton );
-      listButtons.addStretch();
-      listButtons.add( this.removeButton );
-      listButtons.add( this.clearButton );
-
       this.status = new Label( this );
       this.status.useRichText = true;
       this.status.wordWrapping = true;
@@ -784,7 +797,13 @@ UI.SelectDialog = class extends Dialog
       this.camera = new Label( this );
       this.camera.useRichText = true;
       this.camera.wordWrapping = true;
-      return listButtons;
+      /*
+       * Scanning a folder first, because it is what a run actually starts
+       * with: WBPP writes a masters folder and Loom picks the best variant
+       * per filter out of it. Adding files by hand is the exception.
+       */
+      return UI.row( 6, [ this.addMastersButton, this.addFilesButton, "stretch",
+                          this.removeButton, this.clearButton ] );
    }
 
    /* The filter selectors, seeded from a saved SPFC icon; the rows are returned. */
@@ -817,10 +836,7 @@ UI.SelectDialog = class extends Dialog
       for ( var fi = 0; fi < bb.length; ++fi )
       {
          var fk = bb[fi];
-         var flabel = new Label( this );
-         flabel.text = fk + " filter:";
-         flabel.minWidth = 100;
-         flabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+         var flabel = UI.label( this, fk + " filter:", 100 );
 
          var fcombo = new ComboBox( this );
          fcombo.setScaledMinWidth( 260 );
@@ -850,12 +866,7 @@ UI.SelectDialog = class extends Dialog
          } )( fk, fcombo );
             this.filterCombos[fk] = fcombo;
 
-         var frow = new HorizontalSizer;
-         frow.spacing = 4;
-         frow.add( flabel );
-         frow.add( fcombo );
-         frow.addStretch();
-         filterRows.add( frow );
+         filterRows.add( UI.row( 4, [ flabel, fcombo, "stretch" ] ) );
       }
 
       this.filterHeading = new Label( this );
@@ -883,13 +894,14 @@ UI.SelectDialog = class extends Dialog
        */
       this.sharpenGroup = new Control( this );
 
-      this.sharpenToolLabel = new Label( this.sharpenGroup );
-      this.sharpenToolLabel.text = "Sharpening:";
-      this.sharpenToolLabel.minWidth = 100;
-      this.sharpenToolLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.sharpenToolLabel = UI.label( this.sharpenGroup, "Sharpening:", 100 );
 
       this.sharpenToolCombo = new ComboBox( this.sharpenGroup );
-      UI.fillToolCombo( this.sharpenToolCombo, tools, config.sharpenTool );
+      UI.fillToolCombo( this.sharpenToolCombo, tools, config.sharpenTool, function( tool )
+      {
+         self.config.sharpenTool = tool;
+         self.updateSharpenEnabled();
+      } );
       this.sharpenToolCombo.enabled = tools.length > 0;
       this.sharpenToolCombo.toolTip = tools.length
          ? "<p>Aberration correction always runs when a tool is selected.</p>" +
@@ -897,45 +909,24 @@ UI.SelectDialog = class extends Dialog
            "Parallax\'s correction automatically. BlurXTerminator then does " +
            "star reduction and detail on the composite.</p>"
          : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
-      this.sharpenToolCombo.onItemSelected = function( i )
-      {
-         self.config.sharpenTool = ( i == 0 ) ? "none" : self.sharpenToolCombo.itemText( i );
-         self.updateSharpenEnabled();
-      };
 
-      this.starReductionLabel = new Label( this.sharpenGroup );
-      this.starReductionLabel.text = "Star reduction:";
-      this.starReductionLabel.minWidth = 100;
-      this.starReductionLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.starReductionLabel = UI.label( this.sharpenGroup, "Star reduction:", 100 );
 
       this.starReductionCombo = new ComboBox( this.sharpenGroup );
       UI.fillLevelCombo( this.starReductionCombo, [ "none", "low", "medium", "high" ],
                          config.starReduction || "none",
                          function( level ) { self.config.starReduction = level; } );
 
-      this.detailLabel = new Label( this.sharpenGroup );
-      this.detailLabel.text = "Detail:";
-      this.detailLabel.minWidth = 100;
-      this.detailLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.detailLabel = UI.label( this.sharpenGroup, "Detail:", 100 );
 
       this.detailCombo = new ComboBox( this.sharpenGroup );
       UI.fillLevelCombo( this.detailCombo, [ "none", "low", "medium", "high" ],
                          config.detailLevel || "none",
                          function( level ) { self.config.detailLevel = level; } );
 
-      var sharpenRow = new HorizontalSizer;
-      sharpenRow.spacing = 4;
-      sharpenRow.add( this.sharpenToolLabel );
-      sharpenRow.add( this.sharpenToolCombo );
-      sharpenRow.addSpacing( 12 );
-      sharpenRow.add( this.starReductionLabel );
-      sharpenRow.add( this.starReductionCombo );
-      sharpenRow.addSpacing( 12 );
-      sharpenRow.add( this.detailLabel );
-      sharpenRow.add( this.detailCombo );
-      sharpenRow.addStretch();
-
-      this.sharpenGroup.sizer = sharpenRow;
+      this.sharpenGroup.sizer = UI.row( 4, [ this.sharpenToolLabel, this.sharpenToolCombo, 12,
+                                             this.starReductionLabel, this.starReductionCombo, 12,
+                                             this.detailLabel, this.detailCombo, "stretch" ] );
       if ( tools.length == 0 )
       {
          this.sharpenGroup.visible = false;
@@ -957,10 +948,7 @@ UI.SelectDialog = class extends Dialog
        */
       this.paletteGroup = new Control( this );
 
-      this.paletteLabel = new Label( this.paletteGroup );
-      this.paletteLabel.text = "Narrowband:";
-      this.paletteLabel.minWidth = 100;
-      this.paletteLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.paletteLabel = UI.label( this.paletteGroup, "Narrowband:", 100 );
 
       /*
        * Checkboxes, not a combo: more than one palette can be produced from
@@ -968,9 +956,7 @@ UI.SelectDialog = class extends Dialog
        * side by side is the usual reason to build any of them.
        */
       this.paletteChecks = {};
-      var paletteRow = new HorizontalSizer;
-      paletteRow.spacing = 4;
-      paletteRow.add( this.paletteLabel );
+      var paletteItems = [ this.paletteLabel ];
 
       var palettes = Util.paletteNames();
       for ( var pi = 0; pi < palettes.length; ++pi )
@@ -997,11 +983,9 @@ UI.SelectDialog = class extends Dialog
             };
          } )( pname, cb );
          this.paletteChecks[pname] = cb;
-         paletteRow.add( cb );
-         paletteRow.addSpacing( 6 );
+         paletteItems.push( cb, 6 );
       }
-      paletteRow.addStretch();
-      this.paletteGroup.sizer = paletteRow;
+      this.paletteGroup.sizer = UI.row( 4, paletteItems.concat( "stretch" ) );
    }
 
    /* The noise-reduction row: tool, then colour and L strengths. */
@@ -1015,14 +999,16 @@ UI.SelectDialog = class extends Dialog
        */
       this.noiseGroup = new Control( this );
 
-      this.noiseLabel = new Label( this.noiseGroup );
-      this.noiseLabel.text = "Noise reduction:";
-      this.noiseLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.noiseLabel = UI.label( this.noiseGroup, "Noise reduction:" );
 
       this.noiseCombo = new ComboBox( this.noiseGroup );
       var noiseTools = [];
       try { noiseTools = Steps.availableNoiseTools(); } catch ( e ) { noiseTools = []; }
-      UI.fillToolCombo( this.noiseCombo, noiseTools, config.noiseTool );
+      UI.fillToolCombo( this.noiseCombo, noiseTools, config.noiseTool, function( tool )
+      {
+         self.config.noiseTool = tool;
+         self.updateNoiseEnabled();
+      } );
       this.noiseCombo.toolTip =
          "<p>Applied to the finished RGB and any narrowband palette, after " +
          "colour calibration -- never to the individual channels, and never " +
@@ -1046,15 +1032,8 @@ UI.SelectDialog = class extends Dialog
          "cannot, Loom offers <b>SyQon Studio Prism Essential</b> (included) " +
          "in its place until a later check succeeds; Essential\'s High is " +
          "the same as its Medium, its default being already full strength.</p>";
-      this.noiseCombo.onItemSelected = function( i )
-      {
-         self.config.noiseTool = ( i == 0 ) ? "none" : noiseTools[i-1];
-         self.updateNoiseEnabled();
-      };
 
-      this.noiseLevelLabel = new Label( this.noiseGroup );
-      this.noiseLevelLabel.text = "Colour:";
-      this.noiseLevelLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.noiseLevelLabel = UI.label( this.noiseGroup, "Colour:" );
 
       this.noiseLevelCombo = new ComboBox( this.noiseGroup );
       var nlevels = [ "low", "medium", "high" ];
@@ -1072,9 +1051,7 @@ UI.SelectDialog = class extends Dialog
        * blended against -- so it is both the noisiest plate and the one that
        * can take the most denoising without costing colour.
        */
-      this.noiseLevelLLabel = new Label( this.noiseGroup );
-      this.noiseLevelLLabel.text = "L:";
-      this.noiseLevelLLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.noiseLevelLLabel = UI.label( this.noiseGroup, "L:" );
 
       this.noiseLevelLCombo = new ComboBox( this.noiseGroup );
       UI.fillLevelCombo( this.noiseLevelLCombo, nlevels,
@@ -1084,18 +1061,9 @@ UI.SelectDialog = class extends Dialog
          "<p>Strength for the luminance plate, set separately from the " +
          "colour composites.</p>";
 
-      var noiseRow = new HorizontalSizer;
-      noiseRow.spacing = 6;
-      noiseRow.add( this.noiseLabel );
-      noiseRow.add( this.noiseCombo );
-      noiseRow.addSpacing( 12 );
-      noiseRow.add( this.noiseLevelLabel );
-      noiseRow.add( this.noiseLevelCombo );
-      noiseRow.addSpacing( 8 );
-      noiseRow.add( this.noiseLevelLLabel );
-      noiseRow.add( this.noiseLevelLCombo );
-      noiseRow.addStretch();
-      this.noiseGroup.sizer = noiseRow;
+      this.noiseGroup.sizer = UI.row( 6, [ this.noiseLabel, this.noiseCombo, 12,
+                                           this.noiseLevelLabel, this.noiseLevelCombo, 8,
+                                           this.noiseLevelLLabel, this.noiseLevelLCombo, "stretch" ] );
       this.noiseGroup.visible = ( noiseTools.length > 0 );
    }
 
@@ -1110,14 +1078,13 @@ UI.SelectDialog = class extends Dialog
        */
       this.starGroup = new Control( this );
 
-      this.starLabel = new Label( this.starGroup );
-      this.starLabel.text = "Star extraction:";
-      this.starLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.starLabel = UI.label( this.starGroup, "Star extraction:" );
 
       this.starCombo = new ComboBox( this.starGroup );
       var starTools = [];
       try { starTools = Steps.availableStarTools(); } catch ( e ) { starTools = []; }
-      UI.fillToolCombo( this.starCombo, starTools, config.starTool );
+      UI.fillToolCombo( this.starCombo, starTools, config.starTool,
+                        function( tool ) { self.config.starTool = tool; } );
       this.starCombo.toolTip =
          "<p>Splits L, the RGB composite and any narrowband palette into a " +
          "starless frame and a stars frame, after sharpening and before noise " +
@@ -1125,17 +1092,8 @@ UI.SelectDialog = class extends Dialog
          "<p>The unsplit image is not kept: starless and stars screen back " +
          "together into it exactly. Narrowband stars are kept only when the " +
          "run produced no RGB composite.</p>";
-      this.starCombo.onItemSelected = function( i )
-      {
-         self.config.starTool = ( i == 0 ) ? "none" : starTools[i-1];
-      };
 
-      var starRow = new HorizontalSizer;
-      starRow.spacing = 6;
-      starRow.add( this.starLabel );
-      starRow.add( this.starCombo );
-      starRow.addStretch();
-      this.starGroup.sizer = starRow;
+      this.starGroup.sizer = UI.row( 6, [ this.starLabel, this.starCombo, "stretch" ] );
       this.starGroup.visible = ( starTools.length > 0 );
    }
 
@@ -1174,9 +1132,7 @@ UI.SelectDialog = class extends Dialog
        * contrast afterwards; the MTF stretch stays the default because it is
        * reproducible from three measured numbers and needs nothing set.
        */
-      this.stretchMethodLabel = new Label( this );
-      this.stretchMethodLabel.text = "Method:";
-      this.stretchMethodLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.stretchMethodLabel = UI.label( this, "Method:" );
 
       this.stretchMethodCombo = new ComboBox( this );
       this.stretchMethodCombo.addItem( "Histogram (deterministic MTF)" );
@@ -1209,13 +1165,6 @@ UI.SelectDialog = class extends Dialog
          self.config.stretchMethod = ( i == 1 ) ? Steps.STRETCH_METHOD_MAS
                                                 : Steps.STRETCH_METHOD_MTF;
       };
-
-      var stretchMethodRow = new HorizontalSizer;
-      stretchMethodRow.spacing = 6;
-      stretchMethodRow.addSpacing( 20 );
-      stretchMethodRow.add( this.stretchMethodLabel );
-      stretchMethodRow.add( this.stretchMethodCombo );
-      stretchMethodRow.addStretch();
 
       this.keepLinearCheck = new CheckBox( this );
       this.keepLinearCheck.text = "Also keep the unstretched RGB and palette";
@@ -1318,7 +1267,7 @@ UI.SelectDialog = class extends Dialog
          this.exportBrowse.enabled = on;
          this.exportPsbCheck.enabled = on;
       };
-      return stretchMethodRow;
+      return UI.row( 6, [ 20, this.stretchMethodLabel, this.stretchMethodCombo, "stretch" ] );
    }
 
    /* The TIFF export folder row. */
@@ -1331,9 +1280,7 @@ UI.SelectDialog = class extends Dialog
        */
       this.exportGroup = new Control( this );
 
-      this.exportLabel = new Label( this.exportGroup );
-      this.exportLabel.text = "Export 16-bit TIFFs to:";
-      this.exportLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.exportLabel = UI.label( this.exportGroup, "Export 16-bit TIFFs to:" );
 
       this.exportEdit = new Edit( this.exportGroup );
       this.exportEdit.text = config.exportDir || "";
@@ -1361,12 +1308,7 @@ UI.SelectDialog = class extends Dialog
          }
       };
 
-      var exportRow = new HorizontalSizer;
-      exportRow.spacing = 6;
-      exportRow.add( this.exportLabel );
-      exportRow.add( this.exportEdit, 100 );
-      exportRow.add( this.exportBrowse );
-      this.exportGroup.sizer = exportRow;
+      this.exportGroup.sizer = UI.row( 6, [ this.exportLabel, [ this.exportEdit, 100 ], this.exportBrowse ] );
    }
 
    /* The MARS folder row, shown only when PixInsight cannot find the databases itself. */
@@ -1400,9 +1342,7 @@ UI.SelectDialog = class extends Dialog
 
       this.marsGroup = new Control( this );
 
-      this.marsLabel = new Label( this.marsGroup );
-      this.marsLabel.text = "MARS database folder:";
-      this.marsLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.marsLabel = UI.label( this.marsGroup, "MARS database folder:" );
 
       this.marsEdit = new Edit( this.marsGroup );
       this.marsEdit.text = config.marsPath || "";
@@ -1442,12 +1382,7 @@ UI.SelectDialog = class extends Dialog
             Util.warn( "mgc", "No .xmars files directly inside " + dir );
       };
 
-      var marsRow = new HorizontalSizer;
-      marsRow.spacing = 6;
-      marsRow.add( this.marsLabel );
-      marsRow.add( this.marsEdit, 100 );
-      marsRow.add( this.marsBrowse );
-      this.marsGroup.sizer = marsRow;
+      this.marsGroup.sizer = UI.row( 6, [ this.marsLabel, [ this.marsEdit, 100 ], this.marsBrowse ] );
       this.marsGroup.visible = !marsKnown;
       if ( marsKnown )
          Util.log( "mgc", "MARS databases known from " + marsSource +
@@ -1458,9 +1393,7 @@ UI.SelectDialog = class extends Dialog
    buildNarrowbandRow( config )
    {
       var self = this;
-      this.nbBandwidthLabel = new Label( this );
-      this.nbBandwidthLabel.text = "Narrowband bandwidth (nm):";
-      this.nbBandwidthLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.nbBandwidthLabel = UI.label( this, "Narrowband bandwidth (nm):" );
 
       this.nbBandwidth = new NumericEdit( this );
       this.nbBandwidth.label.text = "";
@@ -1492,14 +1425,6 @@ UI.SelectDialog = class extends Dialog
       this.nbNormalize.checked = !!config.narrowbandNormalize;
       this.nbNormalize.onCheck = function( c ) { self.config.narrowbandNormalize = c; };
 
-      var nbRow = new HorizontalSizer;
-      nbRow.spacing = 4;
-      nbRow.add( this.nbBandwidthLabel );
-      nbRow.add( this.nbBandwidth );
-      nbRow.addSpacing( 12 );
-      nbRow.add( this.nbNormalize );
-      nbRow.addStretch();
-
       this.reduceHalos = new CheckBox( this );
       this.reduceHalos.text = "Reduce halos (match channel PSFs)";
       this.reduceHalos.checked = !!config.reduceHalos;
@@ -1510,7 +1435,7 @@ UI.SelectDialog = class extends Dialog
          "sharpest channel loses resolution, which is acceptable in LRGB " +
          "because L carries the detail and is left untouched.";
       this.reduceHalos.onCheck = function( c ) { self.config.reduceHalos = c; };
-      return nbRow;
+      return UI.row( 4, [ this.nbBandwidthLabel, this.nbBandwidth, 12, this.nbNormalize, "stretch" ] );
    }
 
    /* Gradient removal: the tool, its narrowband extension and GraXpert's smoothing. */
@@ -1539,9 +1464,7 @@ UI.SelectDialog = class extends Dialog
       else
          config.gradientTool = Steps.gradientToolOf( config );
 
-      this.gradientLabel = new Label( this );
-      this.gradientLabel.text = "Gradient removal:";
-      this.gradientLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.gradientLabel = UI.label( this, "Gradient removal:" );
 
       this.gradientCombo = new ComboBox( this );
       for ( var gti = 0; gti < gradientTools.length; ++gti )
@@ -1560,12 +1483,7 @@ UI.SelectDialog = class extends Dialog
          self.updateGradientEnabled();
       };
 
-      var gradientRow = new HorizontalSizer;
-      gradientRow.spacing = 6;
-      gradientRow.add( this.gradientLabel );
-      gradientRow.add( this.gradientCombo );
-      gradientRow.addStretch();
-      this.gradientRow = gradientRow;
+      this.gradientRow = UI.row( 6, [ this.gradientLabel, this.gradientCombo, "stretch" ] );
 
       /*
        * Nested under gradient removal, and only live while a tool is chosen:
@@ -1659,16 +1577,8 @@ UI.SelectDialog = class extends Dialog
          self.config.autoUpdate = c;
       };
 
-      var cacheRow = new HorizontalSizer;
-      cacheRow.spacing = 6;
-      cacheRow.add( this.useCache );
-      cacheRow.add( this.ignoreCache );
-      cacheRow.addStretch();
-      cacheRow.add( this.autoUpdate );
-      cacheRow.add( this.clearCacheButton );
-      cacheRow.addSpacing( 8 );
-      cacheRow.add( this.cacheInfo );
-      return cacheRow;
+      return UI.row( 6, [ this.useCache, this.ignoreCache, "stretch",
+                          this.autoUpdate, this.clearCacheButton, 8, this.cacheInfo ] );
    }
 
    /* The cache folder row. */
@@ -1687,9 +1597,7 @@ UI.SelectDialog = class extends Dialog
        */
       this.cacheDirGroup = new Control( this );
 
-      this.cacheDirLabel = new Label( this.cacheDirGroup );
-      this.cacheDirLabel.text = "Cache folder:";
-      this.cacheDirLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
+      this.cacheDirLabel = UI.label( this.cacheDirGroup, "Cache folder:" );
 
       this.cacheDirEdit = new Edit( this.cacheDirGroup );
       this.cacheDirEdit.text = config.cacheDir || "";
@@ -1721,12 +1629,7 @@ UI.SelectDialog = class extends Dialog
          }
       };
 
-      var cacheDirRow = new HorizontalSizer;
-      cacheDirRow.spacing = 6;
-      cacheDirRow.add( this.cacheDirLabel );
-      cacheDirRow.add( this.cacheDirEdit, 100 );
-      cacheDirRow.add( this.cacheDirBrowse );
-      this.cacheDirGroup.sizer = cacheDirRow;
+      this.cacheDirGroup.sizer = UI.row( 6, [ this.cacheDirLabel, [ this.cacheDirEdit, 100 ], this.cacheDirBrowse ] );
    }
 
    /* Run and Cancel. */
@@ -1741,12 +1644,7 @@ UI.SelectDialog = class extends Dialog
       this.cancelButton.text = "Cancel";
       this.cancelButton.onClick = function() { self.cancel(); };
 
-      var buttons = new HorizontalSizer;
-      buttons.spacing = 6;
-      buttons.addStretch();
-      buttons.add( this.runButton );
-      buttons.add( this.cancelButton );
-      return buttons;
+      return UI.row( 6, [ "stretch", this.runButton, this.cancelButton ] );
    }
 
    /*
