@@ -253,7 +253,7 @@ FlyThrough.finishPreset = function( folder, outBase, opts, res, progress, frames
 /* The ffmpeg arguments for a preset's frames: HDR tags and metadata when it is HDR, its music when there is some. */
 FlyThrough.encodeArgs = function( folder, outBase, opts, frames )
 {
-   var hdr = ( opts.transfer == "pq" || opts.transfer == "hlg" ) ?
+   var hdr = Fly.isHdr( opts.transfer ) ?
              { transfer: opts.transfer, peak: opts.peak || Fly.HDR_PEAK_DEFAULT,
                maxCll: opts.output.stats.maxCll, maxFall: opts.output.stats.maxFall } : null;
    var audio = ( opts.music && opts.music.path ) ? { path: opts.music.path, fade: opts.music.fade, duration: frames/opts.fps, loop: !!opts.loops } : null;
@@ -2018,7 +2018,7 @@ FlyThrough.Dialog = class extends Dialog
             shown = Date.now();
             self.player.setFrames( [ img.render() ], 1, false );
             // an HDR frame's PQ/HLG signal on an SDR screen looks flat: say what it is
-            self.player.setBadge( ( transfer == "pq" || transfer == "hlg" ) ? "HDR Preview" : "" );
+            self.player.setBadge( Fly.isHdr( transfer ) ? "HDR Preview" : "" );
          },
          onEncode: function( k, n ) { stage( "Encoding the video", k, n ); }
       };

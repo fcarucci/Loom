@@ -969,12 +969,13 @@ Fly.defaultFormat = function( formats, width )
 Fly.REC709_FILTER = "scale=out_color_matrix=bt709:out_range=tv," +
                     "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
 
+Fly.isHdr = function( transfer ) { return transfer == "pq" || transfer == "hlg"; };   // of an output transfer "sdr" | "pq" | "hlg"
+Fly.HDR_TRC = { pq: "smpte2084", hlg: "arib-std-b67" };   // ffmpeg's names for the HDR transfer curves
 /* The BT.2020 equivalent of REC709_FILTER, for a transfer "pq" | "hlg". */
 Fly.hdrFilter = function( transfer )
 {
-   var trc = ( transfer == "pq" ) ? "smpte2084" : "arib-std-b67";
    return "scale=out_color_matrix=bt2020:out_range=tv," +
-          "setparams=color_primaries=bt2020:color_trc=" + trc + ":colorspace=bt2020nc:range=tv";
+          "setparams=color_primaries=bt2020:color_trc=" + Fly.HDR_TRC[transfer] + ":colorspace=bt2020nc:range=tv";
 };
 
 /* HDR10 static metadata for x265: BT.2020 primaries, D65, 0.0001 nits to the peak. */
@@ -1008,7 +1009,7 @@ Fly.ffmpegArgs = function( framesDir, fps, outBase, formatId, quality, hdr, audi
 {
    var f = Fly.VIDEO_FORMATS.filter( function( x ) { return x.id == formatId; } )[0];
    var tags = hdr ? [ "-colorspace", "bt2020nc", "-color_primaries", "bt2020",
-                      "-color_trc", hdr.transfer == "pq" ? "smpte2084" : "arib-std-b67" ]
+                      "-color_trc", Fly.HDR_TRC[hdr.transfer] ]
                   : [ "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709" ];
    var music = ( audio && audio.path ) ? Fly.audioArgs( audio, formatId ) : null;
    return [ "-y", "-framerate", String( fps ), "-i", framesDir + "/frame_%05d.tif" ]
@@ -1529,7 +1530,7 @@ Fly.outputTransform = function( colour, mode, opts )
       out[0] = enc( lr ); out[1] = enc( lg ); out[2] = enc( lb );
       return out;
    }
-   if ( mode == "pq" || mode == "hlg" )
+   if ( Fly.isHdr( mode ) )
       return Fly.hdrTransform( colour, dec, mode, opts || {} );
    return {
       mode: mode,

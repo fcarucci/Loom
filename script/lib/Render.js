@@ -969,7 +969,7 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    // light past white blooms (none in the image itself, so frame 0 is untouched)
    Render.bloom( T, tw, th, { amount: opts.bloom != null ? opts.bloom : 0, seconds: clock*( opts.duration || 0 ) } );
    // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
-   var hdrOut = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
+   var hdrOut = opts.output && Fly.isHdr( opts.output.mode );
    // the map with the frame's backdrop zoom, so a catalogue star's bump follows the star the backdrop carries
    if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, tw*th, Render.headroomMap( sc, placed, Object.assign( {}, opts, { K: K } ), tw, th, cam ), tw );
    // up onto the full-size frame (Catmull-Rom, pixel centres as everywhere: output u reads (u + 0.5) tw/outW - 0.5)
@@ -996,7 +996,7 @@ Render.frameImage = function( nc, S, T, opts, outW, outH, clock )
 {
    var img = new Image( outW, outH, nc, nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
    var n = outW*outH, out = [], excess = [], c;
-   var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
+   var hdr = opts.output && Fly.isHdr( opts.output.mode );
    for ( c = 0; c < nc; ++c )
    {
       var r = Render.composite( S[c], T[c], n, hdr, outW );

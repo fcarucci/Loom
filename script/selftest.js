@@ -12733,6 +12733,56 @@ function runFlyTestsClean()
       check( "SDR arguments are unchanged by the HDR work", Fly.ffmpegArgs( "/f", 30, "/o/x", "h264", "high" ).join( " " ).indexOf( "bt709" ) > 0, true );
       check( "exhibition defaults to PQ, social and YouTube to HLG",
              [ Fly.HDR_DEFAULT_TRANSFER.exhibition, Fly.HDR_DEFAULT_TRANSFER.social_vertical, Fly.HDR_DEFAULT_TRANSFER.youtube_4k ], [ "pq", "hlg", "hlg" ] );
+
+      // the transfer's names in ffmpeg, pinned whole: SDR BT.709, PQ smpte2084 with HDR10 metadata, HLG arib-std-b67
+      check( "hdrFilter for PQ", Fly.hdrFilter( "pq" ), "scale=out_color_matrix=bt2020:out_range=tv,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" );
+      check( "hdrFilter for HLG", Fly.hdrFilter( "hlg" ), "scale=out_color_matrix=bt2020:out_range=tv,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv" );
+      check( "ffmpegArgs, HEVC SDR", Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "standard" ).join( " " ),
+             "-y -framerate 30 -i /f/frame_%05d.tif -vf scale=out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv -c:v libx265 -crf 26 -tag:v hvc1 -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 /o/x.mp4" );
+      check( "ffmpegArgs, HEVC PQ", Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "standard", hdrPq ).join( " " ),
+             "-y -framerate 30 -i /f/frame_%05d.tif -vf scale=out_color_matrix=bt2020:out_range=tv,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv -c:v libx265 -crf 26 -tag:v hvc1 -pix_fmt yuv420p10le -x265-params hdr10=1:repeat-headers=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=850,120 -colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084 /o/x.mp4" );
+      check( "ffmpegArgs, HEVC HLG", Fly.ffmpegArgs( "/f", 30, "/o/x", "hevc", "standard", hdrHlg ).join( " " ),
+             "-y -framerate 30 -i /f/frame_%05d.tif -vf scale=out_color_matrix=bt2020:out_range=tv,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv -c:v libx265 -crf 26 -tag:v hvc1 -pix_fmt yuv420p10le -colorspace bt2020nc -color_primaries bt2020 -color_trc arib-std-b67 /o/x.mp4" );
+
+      // Render's HDR branches run for PQ and HLG only: the stars' headroom (Render.frame) and the light past white (Render.frameImage)
+      var root = ( 0, eval )( "this" ), rSaved = { add: Render.addSprites, map: Render.headroomMap, head: Render.starsToHeadroom,
+                   image: Render.frameImage, comp: Render.composite }, fakes = [];
+      var headroom = [], composite = [];
+      try
+      {
+         Render.addSprites = function() { return []; };
+         Render.headroomMap = function() { return new Float32Array( 4 ); };
+         Render.starsToHeadroom = function() { headroom.push( "yes" ); };
+         Render.frameImage = function() { return null; };
+         var sc = { w: 2, h: 2, nc: 1, tp: { x: 1, y: 1 }, D: 1000, S: [ new Float32Array( 4 ) ], R: [ new Float32Array( 4 ) ], sprites: [] };
+         [ null, "sdr", "pq", "hlg" ].forEach( function( m )
+         {
+            headroom.push( String( m ) );
+            Render.frame( sc, 0, { travel: 0, easing: "linear", starHdr: true, output: m ? { mode: m } : undefined }, 2, 2, { x: 0, y: 0, w: 2, h: 2 } );
+         } );
+         Render.frameImage = rSaved.image;
+         // outside PixInsight, stand-ins for the image the frame is written into
+         if ( !IN_PIXINSIGHT )
+            [ [ "Image", function() { this.setSamples = function() {}; } ], [ "Rect", function() {} ], [ "ColorSpace_RGB", 1 ],
+              [ "ColorSpace_Gray", 0 ], [ "SampleType_Real", 1 ] ].forEach( function( g )
+            {
+               fakes.push( [ g[0], g[0] in root, root[g[0]] ] ); root[g[0]] = g[1];
+            } );
+         Render.composite = function( S, T, n, hdr ) { composite.push( String( hdr ) ); return { out: new Float32Array( n ), excess: null }; };
+         [ null, "sdr", "pq", "hlg" ].forEach( function( m )
+         {
+            Render.frameImage( 1, [ new Float32Array( 4 ) ], [ new Float32Array( 4 ) ],
+                               { output: m ? { mode: m, apply: function() {}, applyGray: function() {} } : undefined }, 2, 2, 0 );
+         } );
+      }
+      finally
+      {
+         Render.addSprites = rSaved.add; Render.headroomMap = rSaved.map; Render.starsToHeadroom = rSaved.head;
+         Render.frameImage = rSaved.image; Render.composite = rSaved.comp;
+         fakes.forEach( function( f ) { if ( f[1] ) root[f[0]] = f[2]; else delete root[f[0]]; } );
+      }
+      check( "Render.frame: the stars reach into the headroom for PQ and HLG only", headroom.join( " " ), "null sdr pq yes hlg yes" );
+      check( "Render.frameImage: the light past white is kept for PQ and HLG only", composite.join( " " ), "undefined false true true" );
    } )();
 
    /* ---- HDR rendering and encoding (PixInsight) ----------------------- */
@@ -14229,6 +14279,8 @@ function runFlyTestsClean()
       {
          keys.forEach( function( k ) { Settings.remove( k ); } );
          a = new FlyThrough.Dialog( null );
+         check( "with no saved options only the default preset is checked",
+                FlyThrough.PRESET_ORDER.filter( function( id ) { return a.presetChecks[id].checked; } ), [ "youtube_1080" ] );
          a.durationSpin.value = 37; a.orientationCombo.currentItem = 1; a.loopCombo.currentItem = 1; a.twinkleSpin.value = 7;
          a.bloomSpin.value = 150; a.blurCheck.checked = false; a.presetChecks.social_square.checked = true; a.logoOpacity.value = 60;
          a.musicEdit.text = "/music/x.mp3"; a.fadeCheck.checked = false;
