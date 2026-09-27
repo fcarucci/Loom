@@ -16,331 +16,42 @@
 #include <pjsr/StdCursor.jsh>
 #include <pjsr/StdIcon.jsh>
 
+/*
+ * selftest.js includes this file to reach defaultConfig, loadConfig and
+ * saveConfig, and it has already loaded the libraries. The preprocessor
+ * does not dedupe an #include, so re-running them here would reset every
+ * namespace the suite holds -- the same guard FrameSelector.js carries.
+ */
+#ifndef LOOM_LIBS_INCLUDED
 #include "lib/Util.js"
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
+#include "lib/StepsSyqon.js"
+#include "lib/StepsIcc.js"
+#include "lib/Config.js"
 #include "lib/Pipeline.js"
 #include "lib/Update.js"
 #include "lib/UI.js"
-
-#define SETTINGS_KEY "Loom/"
-
-function defaultConfig()
-{
-   return {
-      paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "" },
-      views: {},
-      savedList: "",
-      filters: {},
-      // None, GraXpert or SyQon Studio's Deep Gradient. Replaces the old
-      // useGraXpert checkbox, which Steps.migrateConfig still reads.
-      gradientTool: Steps.GRADIENT_TOOL_GRAXPERT,
-      // Default OFF: narrowband channels have never been through GraXpert,
-      // and an upgrade must not silently change what a repeat run
-      // produces -- nor re-key a cached H/S/O result nobody asked to redo.
-      graxpertNarrowband: false,
-      smoothing: 0.5,
-      validateOnly: false,
-      keepWindowsOnError: false,
-      palettes: [],
-      // nm. Filter-dependent, so it must be settable: SPCC's own default
-      // is 3.0, Baader narrowband is commonly 3.5 or 6.5.
-      narrowbandBandwidth: 3.0,
-      // Default ON: this ran unconditionally before there was a switch, and
-      // an upgrade must not silently change what a repeat run produces.
-      narrowbandNormalize: true,
-      reduceHalos: false,
-      sharpenTool: "none",
-      stretch: false,
-      // Loom's own deterministic MTF stretch; MultiscaleAdaptiveStretch
-      // is the alternative -- see Steps.STRETCH_METHOD_MAS.
-      stretchMethod: Steps.STRETCH_METHOD_MTF,
-      keepLinear: false,
-      // Frequency-separate the L stars plate into _low/_high on export.
-      separateLStars: false,
-      // One layered .psb beside the TIFFs -- see Steps.buildPsbDocument.
-      exportPsb: false,
-      // Names the PSB. Defaulted in the dialog from the masters' folder,
-      // since PJSR exposes nothing about the open PixInsight project.
-      projectName: "",
-      exportDir: "",
-      marsPath: "",
-      starTool: "none",
-      noiseTool: "none",
-      noiseLevel: "medium",
-      // Empty means "follow the colour level", so a configuration saved
-      // before L had its own strength behaves exactly as it did.
-      noiseLevelL: "",
-      starReduction: "none",
-      detailLevel: "none",
-      // Keep the installed copy current. See lib/Update.js: the update is
-      // spawned detached and takes effect on the NEXT launch, so this can
-      // never delay or block startup.
-      autoUpdate: true,
-      useCache: true,
-      // Empty means the system temp dir -- see Cache.dir().
-      cacheDir: "",
-      // Not persisted -- "for this run" is exactly what it means; it must
-      // not silently stay on across sessions.
-      ignoreCache: false
-   };
-}
+#endif
 
 /*
- * Restores from a saved process instance when launched from one, and
- * from Settings otherwise. This is what makes the script draggable to
- * the workspace as a reusable icon.
+ * The configuration lives in lib/Config.js; these names are kept for the
+ * callers below and for the suite.
  */
+function defaultConfig()
+{
+   return Config.defaults();
+}
+
 function loadConfig()
 {
-   var config = defaultConfig();
-
-   for ( var i = 0; i < Util.CHANNELS.length; ++i )
-   {
-      var key = Util.CHANNELS[i];
-      if ( Parameters.has( "path_" + key ) )
-         config.paths[key] = Parameters.getString( "path_" + key );
-      // Views are not saveable process-instance state -- an open view id
-      // from a previous session/run has no guaranteed meaning now, so
-      // only file paths round-trip through Parameters.
-   }
-   if ( Parameters.has( "savedList" ) )
-      config.savedList = Parameters.getString( "savedList" );
-   if ( Parameters.has( "smoothing" ) )
-      config.smoothing = Parameters.getReal( "smoothing" );
-   /*
-    * A process icon saved before the gradient dropdown carries only
-    * useGraXpert. Loaded into the legacy field and cleared from the new
-    * one, so Steps.migrateConfig below maps it: true is GraXpert, false
-    * is none.
-    */
-   if ( Parameters.has( "gradientTool" ) )
-      config.gradientTool = Parameters.getString( "gradientTool" );
-   else if ( Parameters.has( "useGraXpert" ) )
-   {
-      config.useGraXpert = Parameters.getBoolean( "useGraXpert" );
-      config.gradientTool = "";
-   }
-   if ( Parameters.has( "graxpertNarrowband" ) )
-      config.graxpertNarrowband = Parameters.getBoolean( "graxpertNarrowband" );
-   if ( Parameters.has( "useCache" ) )
-      config.useCache = Parameters.getBoolean( "useCache" );
-   if ( Parameters.has( "autoUpdate" ) )
-      config.autoUpdate = Parameters.getBoolean( "autoUpdate" );
-
-   if ( config.savedList.length == 0 )
-   {
-      var savedList = Settings.read( SETTINGS_KEY + "savedList", DataType_String );
-      if ( savedList != null )
-         config.savedList = savedList;
-   }
-
-   // Remembered filter choices. A FITS FILTER of L/R/G/B names the
-   // channel, not the physical filter, so these are the only record of
-   // which filter each channel was actually shot through.
-   config.filters = {};
-   var fkeys = [ "L", "R", "G", "B" ];
-   for ( var fi = 0; fi < fkeys.length; ++fi )
-   {
-      var fv = Settings.read( SETTINGS_KEY + "filter_" + fkeys[fi], DataType_String );
-      if ( fv != null && fv.length > 0 )
-         config.filters[fkeys[fi]] = fv;
-   }
-
-   var pal = Settings.read( SETTINGS_KEY + "palettes", DataType_String );
-   if ( pal != null && pal.length > 0 )
-      config.palettes = pal.split( "," ).filter( function( x ) { return x.length > 0; } );
-
-   var nbn = Settings.read( SETTINGS_KEY + "narrowbandNormalize", DataType_Boolean );
-   if ( nbn != null )
-      config.narrowbandNormalize = nbn;
-   var gnb = Settings.read( SETTINGS_KEY + "graxpertNarrowband", DataType_Boolean );
-   if ( gnb != null )
-      config.graxpertNarrowband = gnb;
-
-   var nbw = Settings.read( SETTINGS_KEY + "narrowbandBandwidth", DataType_Double );
-   if ( nbw != null && nbw > 0 )
-      config.narrowbandBandwidth = nbw;
-
-   var rh = Settings.read( SETTINGS_KEY + "reduceHalos", DataType_Boolean );
-   if ( rh != null )
-      config.reduceHalos = rh;
-
-   var pn = Settings.read( SETTINGS_KEY + "projectName", DataType_String );
-   if ( pn != null )
-      config.projectName = pn;
-
-   var epsb = Settings.read( SETTINGS_KEY + "exportPsb", DataType_Boolean );
-   if ( epsb != null )
-      config.exportPsb = epsb;
-
-   var sls = Settings.read( SETTINGS_KEY + "separateLStars", DataType_Boolean );
-   if ( sls != null )
-      config.separateLStars = sls;
-
-   var kl = Settings.read( SETTINGS_KEY + "keepLinear", DataType_Boolean );
-   if ( kl != null )
-      config.keepLinear = kl;
-
-   var exd = Settings.read( SETTINGS_KEY + "exportDir", DataType_String );
-   if ( exd != null )
-      config.exportDir = exd;
-
-   var sm2 = Settings.read( SETTINGS_KEY + "stretchMethod", DataType_String );
-   if ( sm2 != null && sm2.length > 0 )
-      config.stretchMethod = sm2;
-
-   var strv = Settings.read( SETTINGS_KEY + "stretch", DataType_Boolean );
-   if ( strv != null )
-      config.stretch = strv;
-
-   var mp = Settings.read( SETTINGS_KEY + "marsPath", DataType_String );
-   if ( mp != null )
-      config.marsPath = mp;
-
-   var stl = Settings.read( SETTINGS_KEY + "starTool", DataType_String );
-   if ( stl != null && stl.length > 0 )
-      config.starTool = stl;
-
-   var nt = Settings.read( SETTINGS_KEY + "noiseTool", DataType_String );
-   if ( nt != null && nt.length > 0 )
-      config.noiseTool = nt;
-
-   var nl = Settings.read( SETTINGS_KEY + "noiseLevel", DataType_String );
-   if ( nl != null && nl.length > 0 )
-      config.noiseLevel = nl;
-
-   var st = Settings.read( SETTINGS_KEY + "sharpenTool", DataType_String );
-   if ( st != null && st.length > 0 )
-      config.sharpenTool = st;
-   var sr = Settings.read( SETTINGS_KEY + "starReduction", DataType_String );
-   if ( sr != null && sr.length > 0 )
-      config.starReduction = sr;
-   var dl = Settings.read( SETTINGS_KEY + "detailLevel", DataType_String );
-   if ( dl != null && dl.length > 0 )
-      config.detailLevel = dl;
-
-   var gt = Settings.read( SETTINGS_KEY + "gradientTool", DataType_String );
-   if ( gt != null && gt.length > 0 )
-      config.gradientTool = gt;
-   else
-   {
-      // settings from before the dropdown: the checkbox's value decides
-      var gx = Settings.read( SETTINGS_KEY + "useGraXpert", DataType_Boolean );
-      if ( gx != null )
-      {
-         config.useGraXpert = gx;
-         config.gradientTool = "";
-      }
-   }
-
-   var au = Settings.read( SETTINGS_KEY + "autoUpdate", DataType_Boolean );
-   if ( au != null )
-      config.autoUpdate = au;
-   var uc = Settings.read( SETTINGS_KEY + "useCache", DataType_Boolean );
-   if ( uc != null )
-      config.useCache = uc;
-
-   var sm = Settings.read( SETTINGS_KEY + "smoothing", DataType_Double );
-   if ( sm != null )
-      config.smoothing = sm;
-
-   var cd = Settings.read( SETTINGS_KEY + "cacheDir", DataType_String );
-   if ( cd != null )
-      config.cacheDir = cd;
-
-   /*
-    * Point the cache at the restored folder before anything reads it --
-    * the dialog shows the cache's size and entry count as soon as it is
-    * constructed, and that readout has to describe the folder in use.
-    */
-   Cache.setDir( config.cacheDir );
-
-   /*
-    * The gradient dropdown from useGraXpert, SyQon Studio Prism
-    * Essential's old name, Studio's one Prism entry (2.0, or Essential
-    * while 2.0 is refused), and the retired "Studio Parallax (correct
-    * only)", so a run saved with any of them opens with what is offered.
-    */
-   var studioFound = Steps.studioAvailable();
-   Steps.migrateConfig( config, studioFound ? !Steps.studioPrism2Unavailable() : undefined );
-
-   /*
-    * A chosen cache folder that is not there disables the cache for this
-    * launch, rather than being created.
-    *
-    * The folder lives on an external volume, and an unmounted volume is
-    * indistinguishable from a missing folder. Creating it would put a
-    * decoy cache on the boot disk, fill it with tens of gigabytes, and
-    * leave the real one -- with all its entries -- ignored the next time
-    * the drive appeared. Running uncached is slower; that is the cheaper
-    * mistake by a wide margin.
-    *
-    * Not persisted: the setting still names the folder, so plugging the
-    * drive back in and relaunching restores the cache with no clicking.
-    */
-   Cache.disableIfDirMissing( config );
-
-   return config;
+   return Config.load( Config.pixinsightStore() );
 }
 
 function saveConfig( config )
 {
-   for ( var i = 0; i < Util.CHANNELS.length; ++i )
-   {
-      var key = Util.CHANNELS[i];
-      Parameters.set( "path_" + key, config.paths[key] );
-   }
-   Parameters.set( "savedList", config.savedList || "" );
-   Parameters.set( "smoothing", config.smoothing );
-   Parameters.set( "gradientTool", Steps.gradientToolOf( config ) );
-   // still written, so an older Loom opening this icon reads what it can
-   Parameters.set( "useGraXpert",
-                   Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_GRAXPERT );
-   Parameters.set( "graxpertNarrowband", !!config.graxpertNarrowband );
-   Parameters.set( "useCache", config.useCache );
-   Parameters.set( "autoUpdate", config.autoUpdate );
-
-   Settings.write( SETTINGS_KEY + "gradientTool", DataType_String, Steps.gradientToolOf( config ) );
-   Settings.write( SETTINGS_KEY + "useGraXpert", DataType_Boolean,
-                   Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_GRAXPERT );
-   Settings.write( SETTINGS_KEY + "graxpertNarrowband", DataType_Boolean,
-                   !!config.graxpertNarrowband );
-   Settings.write( SETTINGS_KEY + "narrowbandBandwidth", DataType_Double,
-                   config.narrowbandBandwidth || 3.0 );
-   Settings.write( SETTINGS_KEY + "narrowbandNormalize", DataType_Boolean,
-                   !!config.narrowbandNormalize );
-   Settings.write( SETTINGS_KEY + "reduceHalos", DataType_Boolean, !!config.reduceHalos );
-   Settings.write( SETTINGS_KEY + "palettes", DataType_String,
-                   ( config.palettes || [] ).join( "," ) );
-   Settings.write( SETTINGS_KEY + "keepLinear", DataType_Boolean, !!config.keepLinear );
-   Settings.write( SETTINGS_KEY + "separateLStars", DataType_Boolean,
-                   !!config.separateLStars );
-   Settings.write( SETTINGS_KEY + "exportPsb", DataType_Boolean, !!config.exportPsb );
-   Settings.write( SETTINGS_KEY + "projectName", DataType_String,
-                   config.projectName || "" );
-   Settings.write( SETTINGS_KEY + "exportDir", DataType_String, config.exportDir || "" );
-   Settings.write( SETTINGS_KEY + "stretch", DataType_Boolean, !!config.stretch );
-   Settings.write( SETTINGS_KEY + "stretchMethod", DataType_String,
-                   config.stretchMethod || Steps.STRETCH_METHOD_MTF );
-   Settings.write( SETTINGS_KEY + "marsPath", DataType_String, config.marsPath || "" );
-   Settings.write( SETTINGS_KEY + "starTool", DataType_String, config.starTool || "none" );
-   Settings.write( SETTINGS_KEY + "noiseTool", DataType_String, config.noiseTool || "none" );
-   Settings.write( SETTINGS_KEY + "noiseLevel", DataType_String, config.noiseLevel || "medium" );
-   Settings.write( SETTINGS_KEY + "noiseLevelL", DataType_String, config.noiseLevelL || "" );
-   Settings.write( SETTINGS_KEY + "sharpenTool", DataType_String, config.sharpenTool || "none" );
-   Settings.write( SETTINGS_KEY + "starReduction", DataType_String, config.starReduction || "none" );
-   Settings.write( SETTINGS_KEY + "detailLevel", DataType_String, config.detailLevel || "none" );
-   Settings.write( SETTINGS_KEY + "useCache", DataType_Boolean, config.useCache );
-   Settings.write( SETTINGS_KEY + "autoUpdate", DataType_Boolean, config.autoUpdate );
-   Settings.write( SETTINGS_KEY + "cacheDir", DataType_String, config.cacheDir || "" );
-   Settings.write( SETTINGS_KEY + "smoothing", DataType_Double, config.smoothing );
-   Settings.write( SETTINGS_KEY + "savedList", DataType_String, config.savedList || "" );
-   var fk = [ "L", "R", "G", "B" ];
-   for ( var i = 0; i < fk.length; ++i )
-      Settings.write( SETTINGS_KEY + "filter_" + fk[i], DataType_String,
-                      ( config.filters && config.filters[fk[i]] ) ? config.filters[fk[i]] : "" );
+   Config.save( config, Config.pixinsightStore() );
 }
 
 /*
@@ -365,47 +76,25 @@ function reportValidateOnly( config )
 }
 
 /*
- * Refuses to run on a core older than Util.MIN_CORE, and says which
- * version it found and which it needs.
- *
- * Returns true to carry on. Split out of main() so the message is written
- * once and the ordering -- before the dialog, before the updater, before
- * anything touches a process -- is visible at the call site.
- *
- * Deliberately NOT CoreApplication.ensureMinimumVersion(). Probed on
- * 1.9.5 build 1702: it returns true when the version is met, and on
- * failure it THROWS an ordinary catchable Error reading "This script
- * requires PixInsight core version 99.0.0 or higher." -- it does not
- * abort the script, so it is safe, but the message is the core's and
- * not Loom's. Loom has to name itself and say what it needs the version
- * FOR, because "Loom does nothing at all" is the symptom the user
- * actually sees on an old core: an unresolvable #include is discarded
- * silently (see Util.MIN_CORE). Doing the comparison here also makes the
- * comparison itself testable, which a core call is not.
+ * Loom's refusal on a core older than Util.MIN_CORE, checked first thing
+ * in main() -- before the dialog, before the updater, before anything
+ * touches a process. Loom names itself and says what it needs the
+ * version FOR; see Util.checkCoreVersion.
  */
-function checkCoreVersion()
-{
-   var core = { major:   CoreApplication.versionMajor,
-                minor:   CoreApplication.versionMinor,
-                release: CoreApplication.versionRelease };
-   if ( Util.coreVersionAtLeast( core, Util.MIN_CORE ) )
-      return true;
-
-   var message =
-      "Loom needs PixInsight " + Util.formatCoreVersion( Util.MIN_CORE ) +
-      " or later.\n\n" +
-      "This is PixInsight " + Util.formatCoreVersion( core ) +
-      " (build " + CoreApplication.versionBuild + ").\n\n" +
-      "Loom uses the ImageSolver and AstrometricResiduals sources that " +
-      "ship with " + Util.formatCoreVersion( Util.MIN_CORE ) + ", and " +
-      "astrometric solutions written by it are not readable by earlier " +
-      "versions. Please update PixInsight and run Loom again.";
-
-   console.criticalln( message );
-   new MessageBox( message, "Loom: PixInsight is too old",
-                   StdIcon_Error, StdButton_Ok ).execute();
-   return false;
-}
+var LOOM_CORE_CHECK = {
+   title: "Loom: PixInsight is too old",
+   message: function( core )
+   {
+      return "Loom needs PixInsight " + Util.formatCoreVersion( Util.MIN_CORE ) +
+             " or later.\n\n" +
+             "This is PixInsight " + Util.formatCoreVersion( core ) +
+             " (build " + core.build + ").\n\n" +
+             "Loom uses the ImageSolver and AstrometricResiduals sources that " +
+             "ship with " + Util.formatCoreVersion( Util.MIN_CORE ) + ", and " +
+             "astrometric solutions written by it are not readable by earlier " +
+             "versions. Please update PixInsight and run Loom again.";
+   }
+};
 
 function main()
 {
@@ -427,7 +116,7 @@ function main()
    // Before the updater, before the dialog, before anything is opened:
    // an unsupported core must name itself rather than fail obscurely
    // several minutes into a run.
-   if ( !checkCoreVersion() )
+   if ( !Util.checkCoreVersion( LOOM_CORE_CHECK ) )
       return;
 
    var config = loadConfig();
@@ -636,4 +325,10 @@ function main()
    }
 }
 
+/*
+ * selftest.js includes this file to test the config functions above, and
+ * must not open the dialog while doing it.
+ */
+#ifndef LOOM_UNDER_TEST
 main();
+#endif

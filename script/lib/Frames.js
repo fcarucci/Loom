@@ -745,12 +745,6 @@ Frames.relativeFailures = function( metrics, gates )
    return out;
 };
 
-Frames.relativeReasons = function( metrics, gates )
-{
-   return Frames.relativeFailures( metrics, gates ).map(
-      function( f ) { return f.text; } );
-};
-
 /*
  * Rejections from a hard limit: only a CONFIGURED limit on a CHECKED
  * criterion can reject. An omitted gating map means every criterion is on,
@@ -774,12 +768,6 @@ Frames.absoluteFailures = function( metrics, limits, gating )
                            " below the limit of " + Frames.round( lim.lo ) } );
    }
    return out;
-};
-
-Frames.absoluteReasons = function( metrics, limits, gating )
-{
-   return Frames.absoluteFailures( metrics, limits, gating ).map(
-      function( f ) { return f.text; } );
 };
 
 /*

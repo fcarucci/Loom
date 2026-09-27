@@ -230,7 +230,7 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
 Asiair.describe = function( frame )
 {
    var info = null;
-   try { info = Pipeline.readImageInfo( frame.path ); } catch ( e ) { info = null; }
+   try { info = Util.readImageInfo( frame.path ); } catch ( e ) { info = null; }
    var kw = info ? info.keywords : null;
 
    function keyword( name )

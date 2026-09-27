@@ -274,28 +274,38 @@ Solve.cellQuads = function( stars, band, Q, grid, cell, seen, out, sorted )
    for ( var i = 0; i < own.length && made < Q; ++i )
       for ( var j = 0, b; made < Q && ( b = nearAt( j ) ) >= 0; ++j )
       {
-         var a = own[i];
-         if ( a == b ) continue;
-         var dAB = Fly.separation( stars[a], stars[b] );
-         if ( dAB < band.lo || dAB >= band.hi ) continue;
-         var pA = Solve.toPlane( stars[a], stars[a].ra, stars[a].dec ), pB = Solve.toPlane( stars[a], stars[b].ra, stars[b].dec );
-         var mid = [ ( pA[0] + pB[0] )/2, ( pA[1] + pB[1] )/2 ], r2 = ( ( pB[0] - pA[0] )*( pB[0] - pA[0] ) + ( pB[1] - pA[1] )*( pB[1] - pA[1] ) )/4;
-         var inside = [];
-         for ( var k = 0, c; inside.length < 2 && ( c = nearAt( k ) ) >= 0; ++k )
-         {
-            if ( c == a || c == b ) continue;
-            var p = Solve.toPlane( stars[a], stars[c].ra, stars[c].dec );
-            if ( p && ( p[0] - mid[0] )*( p[0] - mid[0] ) + ( p[1] - mid[1] )*( p[1] - mid[1] ) < r2 ) inside.push( { i: c, p: p } );
-         }
-         if ( inside.length < 2 ) continue;
-         var ids = [ a, b, inside[0].i, inside[1].i ], q = Solve.quadCode( [ pA, pB, inside[0].p, inside[1].p ] );
-         if ( !q ) continue;
-         var key = ids.slice().sort().join();
+         var quad = Solve.pairQuad( stars, band, own[i], b, nearAt );
+         if ( !quad ) continue;
+         var key = quad.ids.slice().sort().join();
          if ( seen[key] ) continue;
          seen[key] = true;
-         out.push( { ids: q.order.map( function( o ) { return ids[o]; } ), code: q.code } );
+         out.push( { ids: quad.q.order.map( function( o ) { return quad.ids[o]; } ), code: quad.q.code } );
          ++made;
       }
+};
+
+/*
+ * The quad of stars a and b, a pair in the band, with the first two stars
+ * of nearAt( k ) inside their circle: { ids, q: its Solve.quadCode }, or
+ * null when there is none.
+ */
+Solve.pairQuad = function( stars, band, a, b, nearAt )
+{
+   if ( a == b ) return null;
+   var dAB = Fly.separation( stars[a], stars[b] );
+   if ( dAB < band.lo || dAB >= band.hi ) return null;
+   var pA = Solve.toPlane( stars[a], stars[a].ra, stars[a].dec ), pB = Solve.toPlane( stars[a], stars[b].ra, stars[b].dec );
+   var mid = [ ( pA[0] + pB[0] )/2, ( pA[1] + pB[1] )/2 ], r2 = ( ( pB[0] - pA[0] )*( pB[0] - pA[0] ) + ( pB[1] - pA[1] )*( pB[1] - pA[1] ) )/4;
+   var inside = [];
+   for ( var k = 0, c; inside.length < 2 && ( c = nearAt( k ) ) >= 0; ++k )
+   {
+      if ( c == a || c == b ) continue;
+      var p = Solve.toPlane( stars[a], stars[c].ra, stars[c].dec );
+      if ( p && ( p[0] - mid[0] )*( p[0] - mid[0] ) + ( p[1] - mid[1] )*( p[1] - mid[1] ) < r2 ) inside.push( { i: c, p: p } );
+   }
+   if ( inside.length < 2 ) return null;
+   var q = Solve.quadCode( [ pA, pB, inside[0].p, inside[1].p ] );
+   return q ? { ids: [ a, b, inside[0].i, inside[1].i ], q: q } : null;
 };
 
 Solve.HASH_BIN = 0.01;        // bin width; lookups search the 3^4 bins around a code (tol <= bin)
@@ -327,7 +337,15 @@ Solve.lowerBound = function( a, v )
    return lo;
 };
 
+/* The quads whose codes lie within tol of code: from a k-d tree on a 1705 core (Solve.lookupTree), else from the hash. */
 Solve.lookup = function( hash, codes, code, tol )
+{
+   var tree = Util.hasKDTree() && Solve.treeKeysExact( codes.length/4 );
+   return ( tree ? Solve.lookupTree : Solve.lookupHash )( hash, codes, code, tol );
+};
+
+/* The hash's answer: the 3^4 bins around code, each read in quad order, bins in key order (tol <= bin width, so none is missed). */
+Solve.lookupHash = function( hash, codes, code, tol )
 {
    var B = Solve.HASH_BINS, w = Solve.HASH_BIN, out = [];
    var base = code.map( function( v ) { return Math.floor( ( v + 0.25 )/w ); } );
@@ -335,15 +353,70 @@ Solve.lookup = function( hash, codes, code, tol )
    {
       var b = [ base[0] + d0, base[1] + d1, base[2] + d2, base[3] + d3 ];
       if ( b.some( function( v ) { return v < 0 || v >= B; } ) ) continue;
-      var key = ( ( b[0]*B + b[1] )*B + b[2] )*B + b[3];
-      for ( var i = Solve.lowerBound( hash.keys, key ); i < hash.keys.length && hash.keys[i] == key; ++i )
-      {
-         var q = hash.order[i], e = 0;
-         for ( var j = 0; j < 4; ++j ) e += ( codes[4*q + j] - code[j] )*( codes[4*q + j] - code[j] );
-         if ( e <= tol*tol ) out.push( q );
-      }
+      Solve.lookupBin( hash, codes, code, tol, ( ( b[0]*B + b[1] )*B + b[2] )*B + b[3], out );
    }
    return out;
+};
+
+/* The quads in one hash bin (key) within tol of code, appended to out. */
+Solve.lookupBin = function( hash, codes, code, tol, key, out )
+{
+   for ( var i = Solve.lowerBound( hash.keys, key ); i < hash.keys.length && hash.keys[i] == key; ++i )
+   {
+      var q = hash.order[i], e = 0;
+      for ( var j = 0; j < 4; ++j ) e += ( codes[4*q + j] - code[j] )*( codes[4*q + j] - code[j] );
+      if ( e <= tol*tol ) out.push( q );
+   }
+};
+
+/*
+ * Solve.lookup's answer from a k-d tree of the codes (PixInsight 1.9.5
+ * build 1705 and later, Util.hasKDTree), made on the first lookup and kept
+ * on the hash: about 7 times faster a lookup, tree included. The tree's
+ * box of half-side tol (widened a hair against rounding) holds every quad
+ * within tol; each is kept on the hash's own tests -- within tol, and in
+ * one of the 3^4 bins around the code -- and the kept ones are put in the
+ * hash's order, by bin key and then quad number, so the answer is the same
+ * one, element for element and in order.
+ */
+Solve.lookupTree = function( hash, codes, code, tol )
+{
+   if ( !hash.tree || hash.treeCodes !== codes )
+   {
+      var objs = new Array( codes.length/4 );
+      for ( var i = 0; i < objs.length; ++i ) objs[i] = { point: Array.prototype.slice.call( codes, 4*i, 4*i + 4 ) };
+      hash.tree = Util.kdTree( objs ); hash.treeCodes = codes;
+   }
+   var B = Solve.HASH_BINS, w = Solve.HASH_BIN, P = 4194304, found = hash.tree.search( code, tol*( 1 + 1e-9 ) ), keyed = [];
+   var base = [ Math.floor( ( code[0] + 0.25 )/w ), Math.floor( ( code[1] + 0.25 )/w ), Math.floor( ( code[2] + 0.25 )/w ), Math.floor( ( code[3] + 0.25 )/w ) ];
+   for ( var k = 0; k < found.length; ++k )
+   {
+      var q = found[k], e = 0;
+      for ( var j = 0; j < 4; ++j ) e += ( codes[4*q + j] - code[j] )*( codes[4*q + j] - code[j] );
+      if ( !( e <= tol*tol ) ) continue;
+      var key = Solve.hashKey( codes[4*q], codes[4*q + 1], codes[4*q + 2], codes[4*q + 3] );
+      if ( Solve.keyNear( key, base ) ) keyed.push( key*P + q );
+   }
+   keyed.sort( function( a, b ) { return a - b; } );
+   return keyed.map( function( v ) { return v % P; } );
+};
+
+/* Whether Solve.lookupTree's packed sort key (bin key*2^22 + quad number) is exact for n quads: fewer than 2^22, and every key below 2^53. */
+Solve.treeKeysExact = function( n )
+{
+   return n < 4194304 && Math.pow( Solve.HASH_BINS, 4 )*4194304 <= 9007199254740992;
+};
+
+/* Whether each of the bins of hash key `key` is within one of `base`'s: the bins Solve.lookup reads. */
+Solve.keyNear = function( key, base )
+{
+   for ( var j = 3; j >= 0; --j )
+   {
+      var b = key % Solve.HASH_BINS;
+      if ( b < base[j] - 1 || b > base[j] + 1 ) return false;
+      key = ( key - b )/Solve.HASH_BINS;
+   }
+   return true;
 };
 
 Solve.INDEX_VERSION = 1;     // bump when the index's content or format changes: a new one is built
@@ -368,21 +441,7 @@ Solve.IndexBuilder.prototype.step = function( maxCells )
    var left = maxCells;
    while ( !this.done() && left > 0 )
    {
-      if ( !this.cells )
-      {
-         // the band's star grid, GRID_CHUNK stars a step: 2.3M stars took 0.5 s in one go
-         var size = this.bands[this.k].lo, stars = this.stars;
-         if ( !this.grid ) { this.grid = {}; this.next = 0; }
-         for ( var end0 = Math.min( stars.length, this.next + Solve.GRID_CHUNK ); this.next < end0; ++this.next )
-         {
-            var c = Solve.cellOf( stars[this.next].ra, stars[this.next].dec, size );
-            ( this.grid[c] || ( this.grid[c] = [] ) ).push( this.next );
-         }
-         if ( this.next < stars.length ) return false;
-         this.cells = Object.keys( this.grid );   // the same order as bandQuads' for-in: integer keys, ascending
-         this.cursor = 0; this.seen = {}; this.sorted = {};
-         return false;
-      }
+      if ( !this.cells ) { this.gridStep(); return false; }
       var out = [], end = Math.min( this.cells.length, this.cursor + left );
       for ( ; this.cursor < end; ++this.cursor, --left )
          Solve.cellQuads( this.stars, this.bands[this.k], this.Q, this.grid, this.cells[this.cursor], this.seen, out, this.sorted );
@@ -396,6 +455,20 @@ Solve.IndexBuilder.prototype.step = function( maxCells )
       if ( this.cursor >= this.cells.length ) { ++this.k; this.grid = this.cells = this.seen = this.sorted = null; }
    }
    return this.done();
+};
+/* GRID_CHUNK more stars into the band's star grid (2.3M stars took 0.5 s in one go); when all are in, the band's cells. */
+Solve.IndexBuilder.prototype.gridStep = function()
+{
+   var size = this.bands[this.k].lo, stars = this.stars;
+   if ( !this.grid ) { this.grid = {}; this.next = 0; }
+   for ( var end0 = Math.min( stars.length, this.next + Solve.GRID_CHUNK ); this.next < end0; ++this.next )
+   {
+      var c = Solve.cellOf( stars[this.next].ra, stars[this.next].dec, size );
+      ( this.grid[c] || ( this.grid[c] = [] ) ).push( this.next );
+   }
+   if ( this.next < stars.length ) return;
+   this.cells = Object.keys( this.grid );   // the same order as bandQuads' for-in: integer keys, ascending
+   this.cursor = 0; this.seen = {}; this.sorted = {};
 };
 Solve.IndexBuilder.prototype.done = function()
 {
@@ -498,14 +571,21 @@ Solve.imageQuads = function( dets, N )
       for ( var j = i + 1; j < s.length; ++j )
       {
          var mx = ( s[i].x + s[j].x )/2, my = ( s[i].y + s[j].y )/2;
-         var r2 = ( ( s[i].x - s[j].x )*( s[i].x - s[j].x ) + ( s[i].y - s[j].y )*( s[i].y - s[j].y ) )/4, inside = [];
-         for ( var k = 0; k < s.length && inside.length < Solve.IMAGE_QUAD_INSIDE; ++k )
-            if ( k != i && k != j && ( s[k].x - mx )*( s[k].x - mx ) + ( s[k].y - my )*( s[k].y - my ) < r2 ) inside.push( k );
+         var r2 = ( ( s[i].x - s[j].x )*( s[i].x - s[j].x ) + ( s[i].y - s[j].y )*( s[i].y - s[j].y ) )/4, inside = Solve.insideCircle( s, i, j, mx, my, r2 );
          for ( var c = 0; c < inside.length; ++c )
             for ( var e = c + 1; e < inside.length; ++e )
                Solve.pushImageQuad( out, [ s[i], s[j], s[inside[c]], s[inside[e]] ], 2*Math.sqrt( r2 ) );
       }
    return out;
+};
+
+/* The first IMAGE_QUAD_INSIDE stars of s, other than i and j, inside the circle at (mx, my) of squared radius r2: their indices. */
+Solve.insideCircle = function( s, i, j, mx, my, r2 )
+{
+   var inside = [];
+   for ( var k = 0; k < s.length && inside.length < Solve.IMAGE_QUAD_INSIDE; ++k )
+      if ( k != i && k != j && ( s[k].x - mx )*( s[k].x - mx ) + ( s[k].y - my )*( s[k].y - my ) < r2 ) inside.push( k );
+   return inside;
 };
 
 Solve.pushImageQuad = function( out, pts, diameter )
@@ -534,13 +614,64 @@ Solve.BRIGHT_MIN = 0.3;          // threshold limits: never into the sky of a da
 Solve.BRIGHT_MAX = 0.9;          // and always below a saturated core
 Solve.BRIGHT_FILL = 0.4;         // of the blob's bounding square: a star is round, a spike cross still fills 0.4-0.8
 Solve.BRIGHT_SIZE = 100;         // px, the widest star core (a 4K working copy)
-Solve.brightStars = function( buf, W, H )
+/* The bright stars' threshold: the BRIGHT_QUANTILE of the n pixels of buf, within BRIGHT_MIN..BRIGHT_MAX. */
+Solve.brightThreshold = function( buf, n )
 {
-   var n = W*H, hist = new Float64Array( 1024 ), i;
+   var hist = new Float64Array( 1024 ), i;
    for ( i = 0; i < n; ++i ) ++hist[Math.max( 0, Math.min( 1023, Math.floor( buf[i]*1024 ) ) )];
    var above = n*( 1 - Solve.BRIGHT_QUANTILE ), T = 1;
    for ( i = 1023; i >= 0 && above > 0; --i ) { above -= hist[i]; T = i/1024; }
-   T = Math.max( Solve.BRIGHT_MIN, Math.min( Solve.BRIGHT_MAX, T ) );
+   return Math.max( Solve.BRIGHT_MIN, Math.min( Solve.BRIGHT_MAX, T ) );
+};
+
+/*
+ * The 4-connected pixels marked `cur` around `start` in mark (W x H), each
+ * re-marked `done`: { pixels, peak: the brightest in buf, size: the side of
+ * the bounding square }.
+ */
+Solve.brightBlob = function( buf, W, H, mark, cur, done, start )
+{
+   var n = W*H, comp = [], st = [ start ], x0 = W, x1 = 0, y0 = H, y1 = 0, peak = 0;
+   function visit( k ) { if ( mark[k] == cur ) { mark[k] = done; st.push( k ); } }
+   mark[start] = done;
+   while ( st.length )
+   {
+      var j = st.pop(), x = j % W, y = ( j - x )/W;
+      comp.push( j );
+      x0 = Math.min( x0, x ); x1 = Math.max( x1, x ); y0 = Math.min( y0, y ); y1 = Math.max( y1, y );
+      peak = Math.max( peak, buf[j] );
+      if ( x > 0 ) visit( j - 1 );
+      if ( x < W - 1 ) visit( j + 1 );
+      if ( j >= W ) visit( j - W );
+      if ( j + W < n ) visit( j + W );
+   }
+   return { pixels: comp, peak: peak, size: Math.max( x1 - x0 + 1, y1 - y0 + 1 ) };
+};
+
+/* A star's { x, y, n }: its pixels (comp) weighted by how far they are above tc, the top of its core; a flat top at exactly the peak, its middle. */
+Solve.brightCentre = function( buf, W, comp, tc, peak )
+{
+   var sx = 0, sy = 0, sw = 0;
+   comp.forEach( function( k ) { var v = buf[k] - tc; if ( v > 0 ) { var kx = k % W; sx += kx*v; sy += ( k - kx )/W*v; sw += v; } } );
+   if ( sw > 0 ) return { x: sx/sw, y: sy/sw, n: comp.length };
+   comp.forEach( function( k ) { if ( buf[k] >= peak ) { var kx = k % W; sx += kx; sy += ( k - kx )/W; sw += 1; } } );
+   return { x: sx/sw, y: sy/sw, n: comp.length };
+};
+
+/* A blob found above threshold w.t: a compact one is a star (into out), another is split at a higher threshold (into work). */
+Solve.brightTake = function( buf, W, blob, w, out, work )
+{
+   var comp = blob.pixels, peak = blob.peak, d = blob.size;
+   if ( comp.length < 4 ) return;   // a hot pixel or two
+   if ( comp.length/( d*d ) >= Solve.BRIGHT_FILL && d <= Solve.BRIGHT_SIZE )
+      out.push( Solve.brightCentre( buf, W, comp, ( w.t + peak )/2, peak ) );
+   else if ( w.depth < 6 && peak - w.t > 0.01 )
+      work.push( { pixels: comp, t: w.t + ( peak - w.t )/2, depth: w.depth + 1 } );
+};
+
+Solve.brightStars = function( buf, W, H )
+{
+   var n = W*H, i, T = Solve.brightThreshold( buf, n );
    var mark = new Int32Array( n ), stamp = 0, out = [], all = [];
    for ( i = 0; i < n; ++i ) if ( buf[i] >= T ) all.push( i );
    var work = [ { pixels: all, t: T, depth: 0 } ];
@@ -552,35 +683,7 @@ Solve.brightStars = function( buf, W, H )
       for ( var p = 0; p < w.pixels.length; ++p )
       {
          if ( mark[w.pixels[p]] != cur ) continue;
-         var comp = [], st = [ w.pixels[p] ], x0 = W, x1 = 0, y0 = H, y1 = 0, peak = 0;
-         mark[w.pixels[p]] = done;
-         while ( st.length )
-         {
-            var j = st.pop(), x = j % W, y = ( j - x )/W;
-            comp.push( j );
-            if ( x < x0 ) x0 = x; if ( x > x1 ) x1 = x; if ( y < y0 ) y0 = y; if ( y > y1 ) y1 = y;
-            if ( buf[j] > peak ) peak = buf[j];
-            if ( x > 0 && mark[j - 1] == cur ) { mark[j - 1] = done; st.push( j - 1 ); }
-            if ( x < W - 1 && mark[j + 1] == cur ) { mark[j + 1] = done; st.push( j + 1 ); }
-            if ( j >= W && mark[j - W] == cur ) { mark[j - W] = done; st.push( j - W ); }
-            if ( j + W < n && mark[j + W] == cur ) { mark[j + W] = done; st.push( j + W ); }
-         }
-         if ( comp.length < 4 ) continue;   // a hot pixel or two
-         var d = Math.max( x1 - x0 + 1, y1 - y0 + 1 );
-         if ( comp.length/( d*d ) >= Solve.BRIGHT_FILL && d <= Solve.BRIGHT_SIZE )
-         {
-            var tc = ( w.t + peak )/2, sx = 0, sy = 0, sw = 0;
-            comp.forEach( function( k ) { var v = buf[k] - tc; if ( v > 0 ) { var kx = k % W; sx += kx*v; sy += ( k - kx )/W*v; sw += v; } } );
-            if ( sw > 0 ) out.push( { x: sx/sw, y: sy/sw, n: comp.length } );
-            else
-            {
-               // a flat top at exactly the peak: its middle
-               comp.forEach( function( k ) { if ( buf[k] >= peak ) { var kx = k % W; sx += kx; sy += ( k - kx )/W; sw += 1; } } );
-               out.push( { x: sx/sw, y: sy/sw, n: comp.length } );
-            }
-         }
-         else if ( w.depth < 6 && peak - w.t > 0.01 )
-            work.push( { pixels: comp, t: w.t + ( peak - w.t )/2, depth: w.depth + 1 } );
+         Solve.brightTake( buf, W, Solve.brightBlob( buf, W, H, mark, cur, done, w.pixels[p] ), w, out, work );
       }
    }
    return out.sort( function( a, b ) { return b.n - a.n; } );

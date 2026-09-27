@@ -17,14 +17,11 @@
  * already loaded the libraries. PixInsight's preprocessor does not dedupe an
  * #include, so without this guard the suite would re-execute every library,
  * resetting each namespace object after the suite had captured references to
- * it, and re-running Steps.js's `#define VERSION`.
+ * it.
  */
 #ifndef LOOM_LIBS_INCLUDED
 #include "lib/Util.js"
 #include "lib/Cache.js"
-#include "lib/Psb.js"
-#include "lib/Steps.js"
-#include "lib/Pipeline.js"
 #include "lib/AsiairNames.js"
 #include "lib/Asiair.js"
 #include "lib/NightDialog.js"
@@ -352,7 +349,7 @@ FrameSelector.fileIdentity = function( path )
 FrameSelector.entryFor = function( path )
 {
    var info = null;
-   try { info = Pipeline.readImageInfo( path ); } catch ( e ) { info = null; }
+   try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
    var kw = info ? info.keywords : null;
    function keyword( name )
    {
@@ -1524,8 +1521,8 @@ FrameSelector.verifyImported = function( src, dst )
    var problem = null;
    try
    {
-      var a = Pipeline.readImageInfo( src );
-      var b = Pipeline.readImageInfo( dst );
+      var a = Util.readImageInfo( src );
+      var b = Util.readImageInfo( dst );
       if ( a.width != b.width || a.height != b.height )
          problem = "geometry changed";
       else
@@ -4236,38 +4233,30 @@ FrameSelector.main = function()
  * The measurement column indices were read on 1.9.5. An older core is not
  * merely untested here -- it returns a different table, so every metric
  * would be read from the wrong place and the tool would delete files on
- * numbers that mean something else.
+ * numbers that mean something else. The refusal, checked first thing in
+ * main(); see Util.checkCoreVersion.
  */
-function checkCoreVersion()
-{
-   var core = { major:   CoreApplication.versionMajor,
-                minor:   CoreApplication.versionMinor,
-                release: CoreApplication.versionRelease };
-   if ( Util.coreVersionAtLeast( core, Util.MIN_CORE ) )
-      return true;
-
-   var message =
-      "The Loom Frame Selector needs PixInsight " +
-      Util.formatCoreVersion( Util.MIN_CORE ) + " or later.\n\n" +
-      "This is PixInsight " + Util.formatCoreVersion( core ) +
-      " (build " + CoreApplication.versionBuild + ").\n\n" +
-      "SubframeSelector's measurement columns were read off " +
-      Util.formatCoreVersion( Util.MIN_CORE ) + ". An earlier version " +
-      "returns a different table, so the figures this tool deletes frames " +
-      "on would be read from the wrong columns. Please update PixInsight " +
-      "and run it again.";
-
-   console.criticalln( message );
-   new MessageBox( message, "Loom Frame Selector: PixInsight is too old",
-                   StdIcon_Error, StdButton_Ok ).execute();
-   return false;
-}
+FrameSelector.CORE_CHECK = {
+   title: "Loom Frame Selector: PixInsight is too old",
+   message: function( core )
+   {
+      return "The Loom Frame Selector needs PixInsight " +
+             Util.formatCoreVersion( Util.MIN_CORE ) + " or later.\n\n" +
+             "This is PixInsight " + Util.formatCoreVersion( core ) +
+             " (build " + core.build + ").\n\n" +
+             "SubframeSelector's measurement columns were read off " +
+             Util.formatCoreVersion( Util.MIN_CORE ) + ". An earlier version " +
+             "returns a different table, so the figures this tool deletes frames " +
+             "on would be read from the wrong columns. Please update PixInsight " +
+             "and run it again.";
+   }
+};
 
 function main()
 {
    console.show();
 
-   if ( !checkCoreVersion() )
+   if ( !Util.checkCoreVersion( FrameSelector.CORE_CHECK ) )
       return;
 
    FrameSelector.main();
@@ -4276,8 +4265,8 @@ function main()
 /*
  * selftest.js includes this file to reach the functions above, and must not
  * open a dialog while doing it: a modal window in a dispatched test run
- * holds the script queue with nobody there to dismiss it. Loom.js can end
- * with a bare main() because nothing includes Loom.js.
+ * holds the script queue with nobody there to dismiss it. Loom.js carries
+ * the same guard, LOOM_UNDER_TEST.
  */
 #ifndef LOOM_FRAME_SELECTOR_UNDER_TEST
 main();

@@ -6,12 +6,52 @@ var Sky = {};
 
 Sky.NGC_IC_RELATIVE = "/scripts/AdP/NGC-IC.csv";
 
-/* PixInsight's own NGC/IC table, from the core install; null when unreadable. */
+/*
+ * Where the core install keeps its NGC/IC table, in the order tried: under
+ * src/ until build 1705, which moved it to include/pjsr/astrometry. The old
+ * place comes first, so older cores read exactly what they always read.
+ * `dir` names the install directory the path is relative to.
+ */
+Sky.NGC_IC_CANDIDATES = [
+   { dir: "src", path: Sky.NGC_IC_RELATIVE },
+   { dir: "include", path: "/pjsr/astrometry/NGC-IC.csv" }
+];
+
+/* An install directory: the core's own property, else the src directory's sibling. */
+Sky.installDir = function( dir )
+{
+   var src = CoreApplication.srcDirPath;
+   if ( dir == "src" )
+      return src;
+   var own = CoreApplication[dir + "DirPath"];
+   return ( typeof own == "string" && own.length > 0 ) ? own : src.substring( 0, src.lastIndexOf( "/" ) ) + "/" + dir;
+};
+
+/* Whether this session already warned that no NGC/IC table was found (the suite resets it). */
+Sky.ngcIcMissingWarned = false;
+
+/*
+ * PixInsight's own NGC/IC table, from the core install; null when no
+ * candidate is readable (missing or unreadable alike), and then a warning,
+ * once per session, naming every place tried: a missing catalogue silently
+ * turns off object naming, lookup and the blind solver's target list.
+ */
 Sky.readNgcIc = function()
 {
-   var p = CoreApplication.srcDirPath + Sky.NGC_IC_RELATIVE;
-   try { return File.exists( p ) ? Fly.parseNgcIc( File.readTextFile( p ) ) : null; }
-   catch ( e ) { return null; }
+   var tried = [];
+   for ( var i = 0; i < Sky.NGC_IC_CANDIDATES.length; ++i )
+   {
+      var c = Sky.NGC_IC_CANDIDATES[i], p = Sky.installDir( c.dir ) + c.path;
+      tried.push( p );
+      try { if ( File.exists( p ) ) return Fly.parseNgcIc( File.readTextFile( p ) ); }
+      catch ( e ) {}
+   }
+   if ( !Sky.ngcIcMissingWarned )
+   {
+      Sky.ngcIcMissingWarned = true;
+      Util.warn( "fly", "NGC/IC catalogue not found (tried " + tried.join( ", " ) + "): objects can't be named or looked up" );
+   }
+   return null;
 };
 
 /*
@@ -558,16 +598,6 @@ Sky.noiseSigma = function( buf )
    return Fly.mad( sample ) == 1 ? 0 : Fly.mad( sample );
 };
 
-/* Median of the square ring of half-width r around (cx, cy); null off the image. */
-Sky.ringMedian = function( buf, w, h, cx, cy, r )
-{
-   var x0 = Math.round( cx ) - r, x1 = Math.round( cx ) + r, y0 = Math.round( cy ) - r, y1 = Math.round( cy ) + r, v = [];
-   function at( x, y ) { if ( x >= 0 && y >= 0 && x < w && y < h ) v.push( buf[y*w + x] ); }
-   for ( var x = x0; x <= x1; ++x ) { at( x, y0 ); at( x, y1 ); }
-   for ( var y = y0 + 1; y < y1; ++y ) { at( x0, y ); at( x1, y ); }
-   return v.length ? Fly.median( v ) : null;
-};
-
 /*
  * Median and brightest pixel of the round ring of radius r (|d - r| < 0.5)
  * around (cx, cy), skipping pixels that belong to another detection's
@@ -588,10 +618,8 @@ Sky.ringStats = function( buf, w, h, cx, cy, r, labels, self )
    }
    for ( var dy = -r - 1; dy <= r + 1; ++dy )
    {
-      var y = Y + dy;
-      if ( y < 0 || y >= h ) continue;
-      var outer = hi - dy*dy;
-      if ( outer <= 0 ) continue;
+      var y = Y + dy, outer = hi - dy*dy;
+      if ( y < 0 || y >= h || outer <= 0 ) continue;
       var a = ( lo - dy*dy > 0 ) ? Math.ceil( Math.sqrt( lo - dy*dy ) ) : 0, b = Math.ceil( Math.sqrt( outer ) ) - 1;
       for ( var dx = a; dx <= b; ++dx )
       {
@@ -1119,6 +1147,20 @@ Sky.solveOnce = function( window, hints )
    engine.solveImage( window );   // throws on failure, with the solver's reason
 };
 
+/* Sky.solveWithHints at 1/k of the hints' pixel size: that pixel size when it solves to a plausible scale, else throws. */
+Sky.solveAtPixel = function( window, hints, k, stage )
+{
+   if ( stage ) stage( "Solving at " + ( hints.pixel/k ).toFixed( 2 ) + " \u00b5m per pixel" + ( k > 1 ? " (drizzled " + k + "\u00d7?)" : "" ), 0, 0 );
+   Sky.solveOnce( window, Object.assign( {}, hints, { pixel: hints.pixel/k } ) );
+   // only a scale the rig can give is believed: a wider solve once put the catalogue on the wrong stars
+   var solved = Sky.solvedScale( window ), expected = 206.265*hints.pixel/hints.focal;
+   if ( !Fly.plausibleScale( solved, expected ) )
+      throw new Error( "The solve came out at " + solved.toFixed( 2 ) + "\u2033/px, which the focal length and pixel size cannot give (" +
+                       expected.toFixed( 2 ) + "\u2033/px, or half or a third of it drizzled)." );
+   if ( k > 1 ) Util.log( "fly", "solved at " + ( hints.pixel/k ).toFixed( 2 ) + " um: the image is drizzled " + k + "x" );
+   return hints.pixel/k;
+};
+
 /*
  * Solve from the hints, then -- when that fails -- at 1/2 and 1/3 of the
  * pixel size: a drizzled image's pixels are that much finer than the
@@ -1131,18 +1173,7 @@ Sky.solveWithHints = function( window, hints, stage )
    var reasons = [];
    for ( var k = 1; k <= 3; ++k )
    {
-      try
-      {
-         if ( stage ) stage( "Solving at " + ( hints.pixel/k ).toFixed( 2 ) + " \u00b5m per pixel" + ( k > 1 ? " (drizzled " + k + "\u00d7?)" : "" ), 0, 0 );
-         Sky.solveOnce( window, Object.assign( {}, hints, { pixel: hints.pixel/k } ) );
-         // only a scale the rig can give is believed: a wider solve once put the catalogue on the wrong stars
-         var solved = Sky.solvedScale( window ), expected = 206.265*hints.pixel/hints.focal;
-         if ( !Fly.plausibleScale( solved, expected ) )
-            throw new Error( "The solve came out at " + solved.toFixed( 2 ) + "\u2033/px, which the focal length and pixel size cannot give (" +
-                             expected.toFixed( 2 ) + "\u2033/px, or half or a third of it drizzled)." );
-         if ( k > 1 ) Util.log( "fly", "solved at " + ( hints.pixel/k ).toFixed( 2 ) + " um: the image is drizzled " + k + "x" );
-         return hints.pixel/k;
-      }
+      try { return Sky.solveAtPixel( window, hints, k, stage ); }
       catch ( e ) { if ( e && e.loomCancel ) throw e; reasons.push( String( e.message || e ) ); }
    }
    // what was tried, so a wrong focal length or pixel size shows (the solver's own message did not say)

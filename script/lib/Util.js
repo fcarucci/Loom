@@ -1,3 +1,10 @@
+/*
+ * Util.checkCoreVersion shows its refusal in a message box, whichever
+ * entry point included this file.
+ */
+#include <pjsr/StdButton.jsh>
+#include <pjsr/StdIcon.jsh>
+
 var Util = {};
 
 /*
@@ -107,9 +114,11 @@ Util.formatCoreVersion = function( v )
 
 /*
  * True if `found` is at least `required`, comparing (major, minor,
- * release) in that order -- the ordinary lexicographic rule, so 1.10.0 is
- * newer than 1.9.5 and not older, which a string or float comparison of
- * the same numbers gets wrong.
+ * release, build) in that order -- the ordinary lexicographic rule, so
+ * 1.10.0 is newer than 1.9.5 and not older, which a string or float
+ * comparison of the same numbers gets wrong, and 1.10.0 build 3 is newer
+ * than 1.9.5 build 1705 whatever its build number. A `required` with no
+ * build asks for none (it reads as 0, which every build meets).
  *
  * Pure on purpose: it takes both versions as arguments and reads nothing
  * from CoreApplication, so the comparison can be exercised for versions
@@ -118,14 +127,106 @@ Util.formatCoreVersion = function( v )
 Util.coreVersionAtLeast = function( found, required )
 {
    function n( x ) { return ( typeof x == "number" && isFinite( x ) ) ? x : 0; }
-   var f = [ n( found.major ), n( found.minor ), n( found.release ) ];
-   var r = [ n( required.major ), n( required.minor ), n( required.release ) ];
-   for ( var i = 0; i < 3; ++i )
+   var f = [ n( found.major ), n( found.minor ), n( found.release ), n( found.build ) ];
+   var r = [ n( required.major ), n( required.minor ), n( required.release ), n( required.build ) ];
+   for ( var i = 0; i < 4; ++i )
    {
       if ( f[i] > r[i] ) return true;
       if ( f[i] < r[i] ) return false;
    }
    return true;   // exactly equal counts as meeting the minimum
+};
+
+/*
+ * The refusal an entry point makes, before anything else, on a core older
+ * than Util.MIN_CORE. Returns true to carry on.
+ *
+ * `check` is the entry point's own wording: { title, message( core ) },
+ * where core is { major, minor, release, build }. Each script has to name
+ * itself and say what it needs the version FOR, because on an old core
+ * "the script does nothing at all" is the symptom the user actually sees
+ * -- an unresolvable #include is discarded silently (see Util.MIN_CORE).
+ *
+ * Deliberately NOT CoreApplication.ensureMinimumVersion(). Probed on
+ * 1.9.5 build 1702: it returns true when the version is met, and on
+ * failure it THROWS an ordinary catchable Error reading "This script
+ * requires PixInsight core version 99.0.0 or higher." -- it does not
+ * abort the script, so it is safe, but the message is the core's and
+ * not Loom's. Doing the comparison here also makes it testable, which a
+ * core call is not.
+ *
+ * `core` and `out` ({ criticalln, show }) are for the tests; left out,
+ * they are the running core, the console and a modal message box.
+ */
+Util.checkCoreVersion = function( check, core, out )
+{
+   core = core || { major:   CoreApplication.versionMajor,
+                    minor:   CoreApplication.versionMinor,
+                    release: CoreApplication.versionRelease,
+                    build:   CoreApplication.versionBuild };
+   if ( Util.coreVersionAtLeast( core, Util.MIN_CORE ) )
+      return true;
+
+   out = out || {
+      criticalln: function( message ) { console.criticalln( message ); },
+      show: function( message, title, icon, buttons )
+      {
+         new MessageBox( message, title, icon, buttons ).execute();
+      }
+   };
+   var message = check.message( core );
+   out.criticalln( message );
+   out.show( message, check.title, StdIcon_Error, StdButton_Ok );
+   return false;
+};
+
+/* ------------------------------------------------------------------ */
+/* What the running core offers beyond Util.MIN_CORE                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * PixInsight 1.9.5 build 1705 brought PJSR structures Loom can use for
+ * speed: KDTree (a bucket k-d tree, JavaScript in the core's bootstrap,
+ * global without an #include). Loom still runs on older cores, so every
+ * use goes through here: the build check and a check that the structure
+ * and the methods used exist, answered once. The code these replace stays
+ * as the fallback, and both give the same results (PKG-8). No other file
+ * names these structures (the selftest checks it).
+ */
+Util.PI1705_CORE = { major: 1, minor: 9, release: 5, build: 1705 };
+
+Util.native = { forced: null, kdTree: undefined };
+
+/* Whether the running core -- or `core`, for the tests -- is 1.9.5 build 1705 or later. */
+Util.pi1705 = function( core )
+{
+   core = core || { major:   CoreApplication.versionMajor,
+                    minor:   CoreApplication.versionMinor,
+                    release: CoreApplication.versionRelease,
+                    build:   CoreApplication.versionBuild };
+   return Util.coreVersionAtLeast( core, Util.PI1705_CORE );
+};
+
+/* The test seam: true or false makes every check below answer that; null goes back to the running core's answer. */
+Util.forceNative = function( on )
+{
+   Util.native.forced = ( on === true || on === false ) ? on : null;
+};
+
+/* Whether Util.kdTree can be used: a 1705 core with a KDTree that has build() and search(). */
+Util.hasKDTree = function()
+{
+   if ( Util.native.forced !== null ) return Util.native.forced;
+   if ( Util.native.kdTree === undefined )
+      Util.native.kdTree = Util.pi1705() && typeof KDTree == "function" &&
+                           typeof KDTree.prototype.build == "function" && typeof KDTree.prototype.search == "function";
+   return Util.native.kdTree;
+};
+
+/* A KDTree of `objects` ({ point: array-like }); only when Util.hasKDTree(). */
+Util.kdTree = function( objects )
+{
+   return new KDTree( objects );
 };
 
 /* ------------------------------------------------------------------ */
@@ -322,10 +423,6 @@ Util.isBroadband = function( key )
    return Util.BROADBAND.indexOf( key ) >= 0;
 };
 
-/* Output is always XISF: it is PixInsight's native format and the only
- * one that preserves the astrometric solution and image properties. */
-Util.OUTPUT_EXTENSION = "xisf";
-
 
 /*
  * FITS string values arrive single-quoted and blank-padded to a fixed
@@ -458,39 +555,59 @@ Util.error = function( stage, message )
  */
 Util.validateSelection = function( paths, views )
 {
-   var problems = [];
    views = views || {};
+   return Util.requiredChannelProblems( paths, views )
+      .concat( Util.channelGroupProblems( paths, views ),
+               Util.duplicateFileProblems( paths ) );
+};
 
-   // A channel counts as supplied if it has EITHER a file path or an open
-   // view. Checking only paths silently ignores every view the user added.
-   function have( k )
-   {
-      return ( paths[k] != undefined && paths[k].length > 0 )
-          || ( views[k] != undefined && String( views[k] ).length > 0 );
-   }
+/*
+ * A channel counts as supplied if it has EITHER a file path or an open
+ * view. Checking only paths silently ignores every view the user added.
+ */
+Util.channelSupplied = function( paths, views, k )
+{
+   return ( paths[k] != undefined && paths[k].length > 0 )
+       || ( views[k] != undefined && String( views[k] ).length > 0 );
+};
 
+Util.requiredChannelProblems = function( paths, views )
+{
+   var problems = [];
    for ( var i = 0; i < Util.REQUIRED.length; ++i )
-      if ( !have( Util.REQUIRED[i] ) )
+      if ( !Util.channelSupplied( paths, views, Util.REQUIRED[i] ) )
          problems.push( "Missing required channel: " + Util.REQUIRED[i] );
+   return problems;
+};
 
-   // The RGB group is all-or-nothing: ChannelCombination needs all three.
+/*
+ * The RGB group is all-or-nothing: ChannelCombination needs all three.
+ * Any subset of narrowband is fine, including a single channel -- but
+ * there has to be one or the other.
+ */
+Util.channelGroupProblems = function( paths, views )
+{
+   var problems = [];
    var rgbPresent = [], rgbMissing = [];
    for ( var r = 0; r < Util.RGB_GROUP.length; ++r )
-      ( have( Util.RGB_GROUP[r] ) ? rgbPresent : rgbMissing ).push( Util.RGB_GROUP[r] );
+      ( Util.channelSupplied( paths, views, Util.RGB_GROUP[r] ) ? rgbPresent : rgbMissing )
+         .push( Util.RGB_GROUP[r] );
 
    if ( rgbPresent.length > 0 && rgbMissing.length > 0 )
       problems.push( "Incomplete RGB set: missing " + rgbMissing.join( ", " ) +
                      ". Supply all three or none." );
 
-   // Any subset of narrowband is fine, including a single channel.
-   var nbCount = 0;
-   for ( var n = 0; n < Util.NARROWBAND.length; ++n )
-      if ( have( Util.NARROWBAND[n] ) )
-         nbCount++;
-
+   var nbCount = Util.NARROWBAND.filter( function( k )
+                    { return Util.channelSupplied( paths, views, k ); } ).length;
    if ( rgbPresent.length == 0 && nbCount == 0 )
       problems.push( "Nothing to do: supply R, G and B, or at least one of H, S, O" );
+   return problems;
+};
 
+// The same file named for two channels, reported once per repeat.
+Util.duplicateFileProblems = function( paths )
+{
+   var problems = [];
    var seen = {};
    for ( var j = 0; j < Util.CHANNELS.length; ++j )
    {
@@ -503,7 +620,6 @@ Util.validateSelection = function( paths, views )
       else
          seen[p] = k;
    }
-
    return problems;
 };
 
@@ -524,28 +640,33 @@ Util.channelFromFilter = function( filterValue )
       return null;
 
    // Exact single-letter channel names first: this is what WBPP writes.
-   if ( f == "l" ) return "L";
-   if ( f == "r" ) return "R";
-   if ( f == "g" ) return "G";
-   if ( f == "b" ) return "B";
-   if ( f == "h" ) return "H";
-   if ( f == "s" ) return "S";
-   if ( f == "o" ) return "O";
+   if ( Util.FILTER_LETTERS.hasOwnProperty( f ) )
+      return Util.FILTER_LETTERS[f];
 
-   // Common long forms. Narrowband is checked BEFORE broadband, because
-   // "halpha" contains no broadband token but "sii"/"oiii" would be
-   // mis-read by a naive substring test against "i".
-   if ( f.indexOf( "halpha" ) >= 0 || f == "ha" ) return "H";
-   if ( f.indexOf( "sii" ) >= 0 || f == "s2" ) return "S";
-   if ( f.indexOf( "oiii" ) >= 0 || f == "o3" ) return "O";
-
-   if ( f.indexOf( "lum" ) >= 0 ) return "L";
-   if ( f.indexOf( "red" ) >= 0 ) return "R";
-   if ( f.indexOf( "green" ) >= 0 ) return "G";
-   if ( f.indexOf( "blue" ) >= 0 ) return "B";
-
+   for ( var i = 0; i < Util.FILTER_NAMES.length; ++i )
+   {
+      var rule = Util.FILTER_NAMES[i];
+      if ( f.indexOf( rule.token ) >= 0 || f == rule.exact )
+         return rule.channel;
+   }
    return null;
 };
+
+Util.FILTER_LETTERS = { l: "L", r: "R", g: "G", b: "B", h: "H", s: "S", o: "O" };
+
+/*
+ * Common long forms, tried in order: a name containing `token`, or equal
+ * to `exact`. Narrowband is checked BEFORE broadband, because "halpha"
+ * contains no broadband token but "sii"/"oiii" would be mis-read by a
+ * naive substring test against "i".
+ */
+Util.FILTER_NAMES = [ { token: "halpha", exact: "ha", channel: "H" },
+                      { token: "sii",    exact: "s2", channel: "S" },
+                      { token: "oiii",   exact: "o3", channel: "O" },
+                      { token: "lum",    exact: null, channel: "L" },
+                      { token: "red",    exact: null, channel: "R" },
+                      { token: "green",  exact: null, channel: "G" },
+                      { token: "blue",   exact: null, channel: "B" } ];
 
 /*
  * The selection list is remembered between runs. Entries serialise as
@@ -840,6 +961,159 @@ Util.fileCreatedMs = function( path, io )
       return t ? t.getTime() : 0;
    }
    catch ( e ) { return 0; }
+};
+
+/*
+ * The immediate children of `root`, with "." and ".." dropped. One level
+ * only -- the application scan in Steps is deliberately not recursive, and
+ * this is where that stops.
+ *
+ * A root that cannot be enumerated yields the empty list rather than an
+ * error: the scan walks a list of places applications MIGHT live, and one
+ * of them being absent is the normal case, not a fault.
+ */
+Util.directoryEntries = function( root )
+{
+   var entries = [];
+   try
+   {
+      var find = new FileFind;
+      if ( find.begin( root + "/*" ) )
+         do
+         {
+            if ( find.name != "." && find.name != ".." )
+               entries.push( find.name );
+         }
+         while ( find.next() );
+   }
+   catch ( e )
+   {
+      return [];
+   }
+   return entries;
+};
+
+/* Keywords plus geometry from a single open, so the dialog can show size. */
+/*
+ * Reads keywords and geometry WITHOUT decoding pixel data.
+ *
+ * The obvious implementation -- ImageWindow.open() then read .keywords --
+ * loads and decompresses the whole image to extract a few header fields.
+ * For a master folder that is ruinous: ~51 masterLight files at 300-850 MB
+ * each is tens of gigabytes read off an external drive to learn FILTER,
+ * XPIXSZ and the dimensions.
+ *
+ * FileFormatInstance.open() returns the ImageDescription array from the
+ * header alone; pixels are only read by the separate readImage() call,
+ * which is never made here. Keywords come from the instance directly.
+ *
+ * Falls back to the old whole-image path if the format cannot be
+ * instantiated, so an exotic format still works, just slowly.
+ */
+/*
+ * Within one run the same file is asked about more than once -- preflight
+ * checks FILTER, the load loop wants FILTER and INSTRUME, the dialog lists
+ * geometry -- and re-reading a header off an external drive for each is
+ * waste. Keyed on identity, not just path, so a file replaced under the
+ * same name is not served from a stale entry.
+ */
+Util.imageInfoCache = {};
+
+Util.imageInfoCacheKey = function( path )
+{
+   try
+   {
+      var fi = new FileInfo( path );
+      if ( !fi.exists )
+         return null;
+      return path + "|" + fi.size + "|" + fi.lastModified.toISOString();
+   }
+   catch ( e ) { return null; }
+};
+
+/*
+ * Reads geometry and keywords from `path`'s header alone, without decoding
+ * a single pixel.
+ *
+ * Returns { info, why }: `info` is the header fields on success and null on
+ * failure, and `why` then carries the diagnostic string the caller prints
+ * before it falls back to a full read. Every failure point has its own
+ * reason -- the reason is the whole point of this probe, because the
+ * fallback is expensive enough that "it did not work" is not a useful
+ * thing to read in a log.
+ */
+Util.tryHeaderRead = function( path )
+{
+   try
+   {
+      var ext = File.extractExtension( path );
+      var F = new FileFormat( ext, true /*toRead*/, false /*toWrite*/ );
+      if ( F.isNull )
+         return { info: null, why: "no reader for extension '" + ext + "'" };
+
+      var f = new FileFormatInstance( F );
+      if ( f.isNull )
+         return { info: null, why: "could not instantiate the " + ext + " reader" };
+
+      var d = f.open( path, "verbosity 0" );
+      if ( d == null || d.length < 1 )
+      {
+         try { f.close(); } catch ( e ) {}
+         return { info: null, why: "the reader returned no image description" };
+      }
+
+      var info = {
+         keywords: F.canStoreKeywords ? f.keywords : [],
+         width: d[0].width,
+         height: d[0].height
+      };
+      // The header is already in hand; a close that fails now costs
+      // nothing and must not send the caller down the full-read path.
+      try { f.close(); } catch ( e1 ) {}
+      return { info: info, why: null };
+   }
+   catch ( e2 )
+   {
+      return { info: null, why: String( e2 ) };
+   }
+};
+
+Util.readImageInfo = function( path )
+{
+   var ck = Util.imageInfoCacheKey( path );
+   if ( ck != null && Util.imageInfoCache[ck] != null )
+      return Util.imageInfoCache[ck];
+
+   var probe = Util.tryHeaderRead( path );
+   var info = probe.info;
+
+   /*
+    * The fallback reads and decodes the ENTIRE image to recover a few
+    * header fields -- roughly a gigabyte per master here. It used to be
+    * reached silently whenever the reader could not be instantiated, so a
+    * run could be doing full reads on every file with nothing in the log
+    * to say so. It is always announced now.
+    */
+   if ( info == null )
+   {
+      Util.warn( "read", "header-only read unavailable for " + path +
+                         " (" + ( probe.why || "unknown reason" ) + ")" +
+                         " -- falling back to a FULL read of the image" );
+      var w = ImageWindow.open( path );
+      if ( w.length == 0 )
+         info = { keywords: [], width: 0, height: 0 };
+      else
+      {
+         info = { keywords: w[0].keywords,
+                  width: w[0].mainView.image.width,
+                  height: w[0].mainView.image.height };
+         w[0].forceClose();
+      }
+   }
+
+   if ( ck != null )
+      Util.imageInfoCache[ck] = info;
+   return info;
 };
 
 /*

@@ -84,7 +84,22 @@ Render.resample = function( buf, w, h, ax, ay )
    var rmin = Infinity, rmax = -1, k, u, v;
    for ( k = 0; k < ay.idx.length; ++k ) { rmin = Math.min( rmin, ay.idx[k] ); rmax = Math.max( rmax, ay.idx[k] ); }
    if ( rmax < 0 ) return out;
-   var rows = rmax - rmin + 1, tmp = new Float32Array( rows*outW );
+   var tmp = Render.resampleRows( buf, w, ax, rmin, rmax - rmin + 1 );
+   for ( v = 0; v < outH; ++v )
+      for ( k = ay.start[v]; k < ay.start[v + 1]; ++k )
+      {
+         var wy = ay.w[k];
+         if ( wy == 0 ) continue;
+         var t = ( ay.idx[k] - rmin )*outW, ov = v*outW;
+         for ( u = 0; u < outW; ++u ) out[ov + u] += wy*tmp[t + u];
+      }
+   return out;
+};
+
+/* Render.resample's first pass: `rows` source rows from rmin, each resampled through ax (ax.outN wide). */
+Render.resampleRows = function( buf, w, ax, rmin, rows )
+{
+   var outW = ax.outN, tmp = new Float32Array( rows*outW ), k, u;
    for ( var r = 0; r < rows; ++r )
    {
       var row = ( rmin + r )*w, o = r*outW;
@@ -95,15 +110,7 @@ Render.resample = function( buf, w, h, ax, ay )
          tmp[o + u] = s;
       }
    }
-   for ( v = 0; v < outH; ++v )
-      for ( k = ay.start[v]; k < ay.start[v + 1]; ++k )
-      {
-         var wy = ay.w[k];
-         if ( wy == 0 ) continue;
-         var t = ( ay.idx[k] - rmin )*outW, ov = v*outW;
-         for ( u = 0; u < outW; ++u ) out[ov + u] += wy*tmp[t + u];
-      }
-   return out;
+   return tmp;
 };
 
 /* Bilinear sample of a rw x rh patch, zero outside. */
@@ -172,11 +179,50 @@ Render.drawSprite = function( acc, outW, outH, patch, sp, cx, cy, g, k, cam, kOu
  */
 Render.drawSprites = function( accs, outW, outH, patches, sp, cx, cy, g, ks, cam, kOuters, rc, how )
 {
+   var sc = Render.spriteContext( patches, sp, cx, cy, g, ks, cam, kOuters, rc, how ), ctx = sc.ctx, spike = sc.spike, L = sc.L;
+   var rw = sp.rect.x1 - sp.rect.x0, rh = sp.rect.y1 - sp.rect.y0;
+   var b = Render.spriteBounds( sp, cx, cy, Math.max( g, ctx.stretch ), cam, outW, outH );
+   // most of a sprite's box is dark (the glow is a disc, the spikes are lines): only the
+   // output pixels whose samples can reach some channel's light are sampled (Render.reachTest)
+   var nc = patches.length, darks = Render.reachTests( ctx, patches, rw, rh ), all = !darks;
+   if ( !all && !darks.length ) return;                  // every channel dark
+   var sums = new Float64Array( nc ), footprint = !!( how && how.footprint ) && Render.footprintPays( ctx );
+   // and of those, only the ones whose samples land near a lit patch pixel (Render.darkMap, Render.darkReach)
+   var dm = ( Render.SKIP_DARK && !spike ) ? Render.darkMaps( ctx, patches, L ) : null, reachLevel = dm ? Render.darkReach( ctx ) : 0;
+   var row = { accs: accs, outW: outW, nc: nc, ctx: ctx, darks: all ? null : darks, dm: dm, reach: reachLevel, footprint: footprint, sums: sums };
+   for ( var v = b.v0; v <= b.v1; ++v ) Render.spriteRow( row, v, b.u0, b.u1 );
+};
+
+/*
+ * One output row v (u0..u1) of Render.drawSprites: each pixel whose samples
+ * can reach light (row.darks, then row.dm) drawn by Render.spritePixels
+ * and added into row.accs.
+ */
+Render.spriteRow = function( row, v, u0, u1 )
+{
+   var ctx = row.ctx, cam = ctx.cam, accs = row.accs, outW = row.outW, nc = row.nc, darks = row.darks, dm = row.dm, reach = row.reach, footprint = row.footprint, sums = row.sums;
+   var dy = cam.y + ( v + 0.5 )*cam.fy - 0.5 - ctx.cy;
+   for ( var u = u0; u <= u1; ++u )
+   {
+      var dx = cam.x + ( u + 0.5 )*cam.fx - 0.5 - ctx.cx;
+      if ( darks && !Render.anyLit( darks, dx, dy ) ) continue;
+      if ( dm && !Render.nearLight( ctx, dm, dx, dy, reach ) ) continue;
+      var n = footprint ? Render.glowSamples( ctx, dx, dy ) : 0;
+      Render.spritePixels( ctx, u, v, sums, n );
+      for ( var ch = 0; ch < nc; ++ch ) if ( sums[ch] != 0 ) accs[ch][v*outW + u] += sums[ch];
+   }
+};
+
+/*
+ * Render.drawSprites' context: { ctx, the one each sample is read through;
+ * spike, how.spike; L, the mip level drawn from }.
+ */
+Render.spriteContext = function( patches, sp, cx, cy, g, ks, cam, kOuters, rc, how )
+{
    var seen = ( how && how.seen != null ) ? how.seen : 1, spike = how && how.spike;
    var radial = !spike && ( rc > 0 && ( g != 1 || seen < 1 ) ), r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
    // spikes stretch along their length only (how.spike = { length, angles }): shorter for what is hidden
    var stretch = spike ? spike.length*Math.max( 0.05, seen ) : 1;
-   var b = Render.spriteBounds( sp, cx, cy, Math.max( g, stretch ), cam, outW, outH );
    /*
     * When a sprite pixel is smaller than an output pixel, the output pixel
     * averages n x n samples over its footprint, so a small, moving star
@@ -192,49 +238,59 @@ Render.drawSprites = function( accs, outW, outH, patches, sp, cx, cy, g, ks, cam
                kOs: ks.map( function( k, i ) { return spike ? k*seen : ( ( kOuters[i] != null ) ? kOuters[i] : k )*seen; } ),
                nx: Math.max( 1, Math.ceil( cam.fx/( gs*f2 ) ) ), ny: Math.max( 1, Math.ceil( cam.fy/( gs*f2 ) ) ),
                axes: spike ? spike.angles.map( function( a ) { return [ Math.cos( a ), Math.sin( a ) ]; } ) : null, stretch: stretch };
-   // most of a sprite's box is dark (the glow is a disc, the spikes are lines): only the
-   // output pixels whose samples can reach some channel's light are sampled (Render.reachTest)
-   var darks = [], nc = patches.length, ch, all = false;
-   for ( ch = 0; ch < nc; ++ch )
+   return { ctx: ctx, spike: spike, L: L };
+};
+
+/* Can some channel's samples reach light from the output pixel centred (dx, dy) from the star (darks: Render.reachTests)? */
+Render.anyLit = function( darks, dx, dy )
+{
+   for ( var j = 0; j < darks.length; ++j ) if ( !darks[j]( dx, dy ) ) return true;
+   return false;
+};
+
+/* Every lit channel's Render.reachTest, the all-dark ones left out (none: every channel dark); null when one must sample every pixel. */
+Render.reachTests = function( ctx, patches, rw, rh )
+{
+   var darks = [];
+   for ( var ch = 0; ch < patches.length; ++ch )
    {
       var t = Render.reachTest( ctx, patches[ch], rw, rh );
-      if ( t === null ) { all = true; break; }
+      if ( t === null ) return null;
       if ( t !== true ) darks.push( t );
    }
-   if ( !all && !darks.length ) return;                  // every channel dark
-   // High: a glow sampled by its footprint (Render.glowSamples) -- only when its farthest light, stretched least
-   // (1/(g seen)), could take fewer than the full count; otherwise the per-pixel test would cost time for nothing
-   var sums = new Float64Array( nc ), footprint = !!( how && how.footprint ) && radial &&
-              Math.ceil( Math.max( cam.fx, cam.fy )/( g*Math.max( 0.05, seen )*f2 ) - 1e-9 ) < ctx.nx;
-   // and of those, only the ones whose samples land near a lit patch pixel (Render.darkMap): a sample lands
-   // within lip x half the pixel's diagonal of where its centre maps (lip: the map's largest stretch), and reads
-   // the pixels within 1 of it; the centre is rounded to a pixel (0.5). Farther, every read is 0: exactly nothing
-   var dm = null, reachLevel = 0;
-   if ( Render.SKIP_DARK && !spike )
-   {
-      dm = ctx.mps.map( function( mp, i ) { return L ? ( mp._dark || ( mp._dark = Render.darkMap( mp.d, mp.w, mp.h ) ) )
-                                                     : ( patches[i]._dark || ( patches[i]._dark = Render.darkMap( patches[i], rw, rh ) ) ); } );
-      var lip = radial ? Math.max( 1, 1/( g*Math.max( 0.05, seen ) ) ) : 1/g;
-      reachLevel = lip*0.5*Math.sqrt( cam.fx*cam.fx + cam.fy*cam.fy )/f2 + 1.5 + 1e-6;
-   }
-   for ( var v = b.v0; v <= b.v1; ++v )
-   {
-      var dy = cam.y + ( v + 0.5 )*cam.fy - 0.5 - cy;
-      for ( var u = b.u0; u <= b.u1; ++u )
-      {
-         var dx = cam.x + ( u + 0.5 )*cam.fx - 0.5 - cx;
-         if ( !all )
-         {
-            var lit = false;
-            for ( var j = 0; j < darks.length && !lit; ++j ) lit = !darks[j]( dx, dy );
-            if ( !lit ) continue;
-         }
-         if ( dm && !Render.nearLight( ctx, dm, dx, dy, reachLevel ) ) continue;
-         var n = footprint ? Render.glowSamples( ctx, dx, dy ) : 0;
-         Render.spritePixels( ctx, u, v, sums, n );
-         for ( ch = 0; ch < nc; ++ch ) if ( sums[ch] != 0 ) accs[ch][v*outW + u] += sums[ch];
-      }
-   }
+   return darks;
+};
+
+/*
+ * High: is a glow worth sampling by its footprint (Render.glowSamples)?
+ * Only when its farthest light, stretched least (1/(g seen)), could take
+ * fewer than the full count; otherwise the per-pixel test would cost time
+ * for nothing.
+ */
+Render.footprintPays = function( ctx )
+{
+   var cam = ctx.cam;
+   return ctx.radial && Math.ceil( Math.max( cam.fx, cam.fy )/( ctx.g*Math.max( 0.05, ctx.seen )*ctx.f2 ) - 1e-9 ) < ctx.nx;
+};
+
+/*
+ * How far from lit patch pixels (Render.darkMap) the samples of an output
+ * pixel can read, in mip pixels: a sample lands within lip x half the
+ * pixel's diagonal of where its centre maps (lip: the map's largest
+ * stretch), and reads the pixels within 1 of it; the centre is rounded to a
+ * pixel (0.5). Farther, every read is 0: exactly nothing.
+ */
+Render.darkReach = function( ctx )
+{
+   var cam = ctx.cam, lip = ctx.radial ? Math.max( 1, 1/( ctx.g*Math.max( 0.05, ctx.seen ) ) ) : 1/ctx.g;
+   return lip*0.5*Math.sqrt( cam.fx*cam.fx + cam.fy*cam.fy )/ctx.f2 + 1.5 + 1e-6;
+};
+
+/* Each channel's Render.darkMap at the mip level L drawn from, cached on the level (L 0: on the patch). */
+Render.darkMaps = function( ctx, patches, L )
+{
+   return ctx.mps.map( function( mp, i ) { return L ? ( mp._dark || ( mp._dark = Render.darkMap( mp.d, mp.w, mp.h ) ) )
+                                                    : ( patches[i]._dark || ( patches[i]._dark = Render.darkMap( patches[i], mp.w, mp.h ) ) ); } );
 };
 
 Render.SKIP_DARK = true;   // skip output pixels whose samples can only read dark patch pixels (exact; off in the tests that compare)
@@ -246,29 +302,30 @@ Render.SKIP_DARK = true;   // skip output pixels whose samples can only read dar
  */
 Render.darkMap = function( p, w, h )
 {
-   var d = new Float32Array( w*h ), x, y, i, BIG = 1e9;
-   for ( i = 0; i < w*h; ++i ) d[i] = p[i] != 0 ? 0 : BIG;
-   for ( y = 0; y < h; ++y )
-      for ( x = 0; x < w; ++x )
-      {
-         i = y*w + x;
-         if ( d[i] == 0 ) continue;
-         var m = d[i];
-         if ( x > 0 ) m = Math.min( m, d[i - 1] + 1 );
-         if ( y > 0 ) { m = Math.min( m, d[i - w] + 1 ); if ( x > 0 ) m = Math.min( m, d[i - w - 1] + 1 ); if ( x < w - 1 ) m = Math.min( m, d[i - w + 1] + 1 ); }
-         d[i] = m;
-      }
-   for ( y = h - 1; y >= 0; --y )
-      for ( x = w - 1; x >= 0; --x )
-      {
-         i = y*w + x;
-         if ( d[i] == 0 ) continue;
-         var n = d[i];
-         if ( x < w - 1 ) n = Math.min( n, d[i + 1] + 1 );
-         if ( y < h - 1 ) { n = Math.min( n, d[i + w] + 1 ); if ( x < w - 1 ) n = Math.min( n, d[i + w + 1] + 1 ); if ( x > 0 ) n = Math.min( n, d[i + w - 1] + 1 ); }
-         d[i] = n;
-      }
+   var d = new Float32Array( w*h ), n = w*h, i, y, BIG = 1e9;
+   for ( i = 0; i < n; ++i ) d[i] = p[i] != 0 ? 0 : BIG;
+   for ( y = 0; y < h; ++y ) Render.darkRow( d, w, y*w, 1, y > 0 );                 // from the top left
+   for ( y = 0; y < h; ++y ) Render.darkRow( d, w, n - 1 - y*w, -1, y > 0 );         // from the bottom right
    return d;
+};
+
+/*
+ * One row of a Render.darkMap pass, from index i0 in steps s (1: left to
+ * right, the rows above done; -1: right to left, the rows below done): each
+ * pixel's distance lowered through the neighbour before it in the row and,
+ * with `prev`, the three in the row done before.
+ */
+Render.darkRow = function( d, w, i0, s, prev )
+{
+   for ( var x = 0; x < w; ++x )
+   {
+      var i = i0 + s*x;
+      if ( d[i] == 0 ) continue;
+      var m = d[i];
+      if ( x > 0 ) m = Math.min( m, d[i - s] + 1 );
+      if ( prev ) { m = Math.min( m, d[i - s*w] + 1 ); if ( x > 0 ) m = Math.min( m, d[i - s*w - s] + 1 ); if ( x < w - 1 ) m = Math.min( m, d[i - s*w + s] + 1 ); }
+      d[i] = m;
+   }
 };
 
 /* Does the output pixel centred (dx, dy) from the star map near light in some channel (Render.drawSprites' dark skipping)? */
@@ -278,7 +335,7 @@ Render.nearLight = function( c, dm, dx, dy, reach )
    var ix = Math.round( ( c.ox + dx*f + 0.5 )/c.f2 - 0.5 ), iy = Math.round( ( c.oy + dy*f + 0.5 )/c.f2 - 0.5 );
    for ( var ch = 0; ch < dm.length; ++ch )
    {
-      var mp = c.mps[ch], ex = ix < 0 ? -ix : ( ix >= mp.w ? ix - mp.w + 1 : 0 ), ey = iy < 0 ? -iy : ( iy >= mp.h ? iy - mp.h + 1 : 0 );
+      var mp = c.mps[ch], ex = Math.max( 0, -ix, ix - mp.w + 1 ), ey = Math.max( 0, -iy, iy - mp.h + 1 );   // how far outside the map
       if ( ( ex || ey ? Math.max( ex, ey ) : dm[ch][iy*mp.w + ix] ) <= reach ) return true;
    }
    return false;
@@ -390,41 +447,63 @@ Render.spriteBounds = function( sp, cx, cy, g, cam, outW, outH )
 Render.spritePixels = function( c, u, v, sums, n )
 {
    // n samples a side (Render.glowSamples), never more than the full count; 0 or missing: the full count
-   var cam = c.cam, nc = c.mps.length, ch, mp, nx = n ? Math.min( n, c.nx ) : c.nx, ny = n ? Math.min( n, c.ny ) : c.ny;
+   var nc = c.mps.length, ch, nx = n ? Math.min( n, c.nx ) : c.nx, ny = n ? Math.min( n, c.ny ) : c.ny;
    for ( ch = 0; ch < nc; ++ch ) sums[ch] = 0;
+   if ( c.axes ) Render.spikeSums( c, u, v, sums, nx, ny );
+   else Render.glowSums( c, u, v, sums, nx, ny );
+   for ( ch = 0; ch < nc; ++ch ) sums[ch] /= nx*ny;
+};
+
+/* Render.spritePixels for a spike: the nx x ny samples' sums, each read along its axis (Render.spikeSource). */
+Render.spikeSums = function( c, u, v, sums, nx, ny )
+{
+   var cam = c.cam, nc = c.mps.length, ch, mp;
+   for ( var sy = 0; sy < ny; ++sy )
+   {
+      var dy = cam.y + ( v + ( sy + 0.5 )/ny )*cam.fy - 0.5 - c.cy;
+      for ( var sx = 0; sx < nx; ++sx )
+      {
+         var dx = cam.x + ( u + ( sx + 0.5 )/nx )*cam.fx - 0.5 - c.cx;
+         var at = Render.spikeSource( c, dx, dy );
+         if ( !at ) continue;
+         for ( ch = 0; ch < nc; ++ch )
+         {
+            mp = c.mps[ch];
+            sums[ch] += c.ks[ch]*Render.patchSample( mp.d, mp.w, mp.h, ( c.ox + at.x + 0.5 )/c.f2 - 0.5, ( c.oy + at.y + 0.5 )/c.f2 - 0.5 );
+         }
+      }
+   }
+};
+
+/* Render.spritePixels for a glow: the nx x ny samples' sums, each read where Fly.radialSource puts it and weighted from k to kO. */
+Render.glowSums = function( c, u, v, sums, nx, ny )
+{
+   var cam = c.cam;
    for ( var sy = 0; sy < ny; ++sy )
    {
       var dy = cam.y + ( v + ( sy + 0.5 )/ny )*cam.fy - 0.5 - c.cy;
       for ( var sx = 0; sx < nx; ++sx )
       {
          var dx = cam.x + ( u + ( sx + 0.5 )/nx )*cam.fx - 0.5 - c.cx, f = 1/c.g, sm = -1;
-         if ( c.axes )
-         {
-            var at = Render.spikeSource( c, dx, dy );
-            if ( !at ) continue;
-            for ( ch = 0; ch < nc; ++ch )
-            {
-               mp = c.mps[ch];
-               sums[ch] += c.ks[ch]*Render.patchSample( mp.d, mp.w, mp.h, ( c.ox + at.x + 0.5 )/c.f2 - 0.5, ( c.oy + at.y + 0.5 )/c.f2 - 0.5 );
-            }
-            continue;
-         }
          if ( c.radial )
          {
             var ro = Math.sqrt( dx*dx + dy*dy );
             f = ro > 0 ? Fly.radialSource( ro, c.rc, c.g, c.seen )/ro : 1;
             sm = Fly.smoothstep( 0, c.rc, ro );   // core to glow smoothly: no edge at rc
          }
-         var px = ( c.ox + dx*f + 0.5 )/c.f2 - 0.5, py = ( c.oy + dy*f + 0.5 )/c.f2 - 0.5;
-         for ( ch = 0; ch < nc; ++ch )
-         {
-            mp = c.mps[ch];
-            var w = sm < 0 ? c.ks[ch] : c.ks[ch] + ( c.kOs[ch] - c.ks[ch] )*sm;
-            sums[ch] += w*Render.patchSample( mp.d, mp.w, mp.h, px, py );
-         }
+         Render.addGlowSample( c, sums, ( c.ox + dx*f + 0.5 )/c.f2 - 0.5, ( c.oy + dy*f + 0.5 )/c.f2 - 0.5, sm );
       }
    }
-   for ( ch = 0; ch < nc; ++ch ) sums[ch] /= nx*ny;
+};
+
+/* One glow sample, read at (px, py) of each channel's mip level, into sums: weighted k, or k to kO by sm (-1: k). */
+Render.addGlowSample = function( c, sums, px, py, sm )
+{
+   for ( var ch = 0; ch < c.mps.length; ++ch )
+   {
+      var mp = c.mps[ch], w = sm < 0 ? c.ks[ch] : c.ks[ch] + ( c.kOs[ch] - c.ks[ch] )*sm;
+      sums[ch] += w*Render.patchSample( mp.d, mp.w, mp.h, px, py );
+   }
 };
 
 /*
@@ -873,7 +952,7 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    var ax = Render.axisWeights( outW, crop.x, crop.w, sc.tp.x, K, sc.w, kernel );
    var ay = Render.axisWeights( outH, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
    // the stars layer at starRes of the video (Medium: half), the nebula always at full size
-   var sr = Fly.starQuality( opts.starQuality ).starRes || 1, tw = sr < 1 ? Math.max( 1, Math.round( outW*sr ) ) : outW, th = sr < 1 ? Math.max( 1, Math.round( outH*sr ) ) : outH;
+   var sr = Fly.starQuality( opts.starQuality ).starRes || 1, tw = Render.starSide( outW, sr ), th = Render.starSide( outH, sr );
    var cam = { x: crop.x, y: crop.y, fx: crop.w/tw, fy: crop.h/th };
    var tax = tw == outW ? ax : Render.axisWeights( tw, crop.x, crop.w, sc.tp.x, K, sc.w, kernel ), tay = th == outH ? ay : Render.axisWeights( th, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
    var S = [], T = [], c;
@@ -899,10 +978,26 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
       var ux = Render.axisWeights( outW, 0, tw, 0, 1, tw, "bicubic" ), uy = Render.axisWeights( outH, 0, th, 0, 1, th, "bicubic" );
       T = T.map( function( b ) { return Render.resample( b, tw, th, ux, uy ); } );
    }
-   var img = new Image( outW, outH, sc.nc, sc.nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
-   var n = outW*outH, out = [], excess = [];
+   return Render.frameImage( sc.nc, S, T, opts, outW, outH, clock );
+};
+
+/* The stars layer's side for a video side of n at starRes sr (Medium: half, at least 1 px). */
+Render.starSide = function( n, sr )
+{
+   return sr < 1 ? Math.max( 1, Math.round( n*sr ) ) : n;
+};
+
+/*
+ * Render.frame's last step: the nebula S and the stars T (nc channels,
+ * outW x outH) screened together, the logo added, through the output
+ * transform, into a new Image.
+ */
+Render.frameImage = function( nc, S, T, opts, outW, outH, clock )
+{
+   var img = new Image( outW, outH, nc, nc >= 3 ? ColorSpace_RGB : ColorSpace_Gray, 32, SampleType_Real );
+   var n = outW*outH, out = [], excess = [], c;
    var hdr = opts.output && ( opts.output.mode == "pq" || opts.output.mode == "hlg" );
-   for ( c = 0; c < sc.nc; ++c )
+   for ( c = 0; c < nc; ++c )
    {
       var r = Render.composite( S[c], T[c], n, hdr, outW );
       out.push( r.out );
@@ -913,10 +1008,10 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    // converts it to the video's colour space (Fly.outputTransform)
    if ( opts.output )
    {
-      if ( sc.nc >= 3 ) opts.output.apply( out[0], out[1], out[2], n, excess[0], excess[1], excess[2] );
+      if ( nc >= 3 ) opts.output.apply( out[0], out[1], out[2], n, excess[0], excess[1], excess[2] );
       else opts.output.applyGray( out[0], n, excess[0] );
    }
-   for ( c = 0; c < sc.nc; ++c )
+   for ( c = 0; c < nc; ++c )
       img.setSamples( out[c], new Rect( 0, 0, outW, outH ), c );
    return img;
 };
@@ -1407,15 +1502,18 @@ Render.shrinkAxis = function( i0, n, d, N )
       }
       // a new pixel reaching past the image (N old pixels: its last row or column) is the mean of what it covers;
       // one cut by a patch's edge keeps just its share, as the whole image's pixel there has the rest from outside the patch
-      if ( N > 0 && ( j + 1 )/d > N )
-      {
-         var sum = 0, k;
-         for ( k = start[start.length - 1]; k < idx.length; ++k ) sum += w[k];
-         if ( sum > 0 ) for ( k = start[start.length - 1]; k < idx.length; ++k ) w[k] /= sum;
-      }
+      if ( N > 0 && ( j + 1 )/d > N ) Render.normaliseWeights( w, start[start.length - 1], idx.length );
       start.push( idx.length );
    }
    return { j0: j0, m: m, start: start, idx: idx, w: w };
+};
+
+/* w[from..to) scaled to sum to 1 (left as they are when they sum to 0). */
+Render.normaliseWeights = function( w, from, to )
+{
+   var sum = 0, k;
+   for ( k = from; k < to; ++k ) sum += w[k];
+   if ( sum > 0 ) for ( k = from; k < to; ++k ) w[k] /= sum;
 };
 
 /* A w x h patch whose top-left pixel is (x0, y0) of an imgW x imgH image (optional: its edges), area-averaged by d (Render.shrinkAxis): { buf, x0, y0, w, h }. */

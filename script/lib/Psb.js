@@ -486,36 +486,41 @@ Psb.flatten = function( entries )
    {
       var e = entries[i];
       if ( e.group != null )
-      {
-         out.push( { name: "</Layer group>", divider: Psb.DIVIDER_BOUNDING,
-                     visible: true, blend: "norm", opacity: 255,
-                     channelIds: [ 0, 1, 2, -1 ], window: null } );
-         var inner = Psb.flatten( e.group );
-         for ( var j = 0; j < inner.length; ++j )
-            out.push( inner[j] );
-         out.push( { name: e.name,
-                     divider: ( e.open === false ) ? Psb.DIVIDER_CLOSED
-                                                   : Psb.DIVIDER_OPEN,
-                     visible: ( e.visible !== false ),
-                     blend: e.blend || "pass",
-                     opacity: ( e.opacity == null ) ? 255 : e.opacity,
-                     channelIds: [ 0, 1, 2, -1 ], window: null } );
-      }
+         out = out.concat( Psb.flattenGroup( e ) );
       else
-      {
-         out.push( { name: e.name, divider: null,
-                     visible: ( e.visible !== false ),
-                     blend: e.blend || "norm",
-                     opacity: ( e.opacity == null ) ? 255 : e.opacity,
-                     channelIds: [ -1, 0, 1, 2 ],
-                     curves: ( e.curves != null ) ? e.curves : null,
-                     hueSaturation: ( e.hueSaturation === true ),
-                     clipping: ( e.clipping === true ),
-                     mask: ( e.mask === true ),
-                     window: e.window } );
-      }
+         out.push( Psb.flatLayer( e ) );
    }
    return out;
+};
+
+// A group: its bounding divider, its contents flattened, then its header.
+Psb.flattenGroup = function( e )
+{
+   var bounding = { name: "</Layer group>", divider: Psb.DIVIDER_BOUNDING,
+                    visible: true, blend: "norm", opacity: 255,
+                    channelIds: [ 0, 1, 2, -1 ], window: null };
+   var header = { name: e.name,
+                  divider: ( e.open === false ) ? Psb.DIVIDER_CLOSED
+                                                : Psb.DIVIDER_OPEN,
+                  visible: ( e.visible !== false ),
+                  blend: e.blend || "pass",
+                  opacity: ( e.opacity == null ) ? 255 : e.opacity,
+                  channelIds: [ 0, 1, 2, -1 ], window: null };
+   return [ bounding ].concat( Psb.flatten( e.group ), [ header ] );
+};
+
+Psb.flatLayer = function( e )
+{
+   return { name: e.name, divider: null,
+            visible: ( e.visible !== false ),
+            blend: e.blend || "norm",
+            opacity: ( e.opacity == null ) ? 255 : e.opacity,
+            channelIds: [ -1, 0, 1, 2 ],
+            curves: ( e.curves != null ) ? e.curves : null,
+            hueSaturation: ( e.hueSaturation === true ),
+            clipping: ( e.clipping === true ),
+            mask: ( e.mask === true ),
+            window: e.window };
 };
 
 /*
@@ -713,34 +718,10 @@ Psb.writeChannelDataParallel = function( file, src, sampleCount, threads )
          var n = Math.min( chunk, sampleCount - i );
          sv.set( src.subarray( i, i + n ) );
 
-         var group = [];
-         var base = Math.floor( n/threads );
-         var rem = n - base*threads;
-         var begin = 0;
-         for ( var t = 0; t < threads; ++t )
-         {
-            var count = base + ( ( t < rem ) ? 1 : 0 );
-            if ( count > 0 )
-               group.push( new Thread( body,
-                                       { src: sdesc, dst: ddesc,
-                                         begin: begin, end: begin + count },
-                                       { pooled: true } ) );
-            begin += count;
-         }
+         var group = Psb.swapThreads( body, sdesc, ddesc, n, threads );
          for ( var a = 0; a < group.length; ++a )
             group[a].start();
-
-         /*
-          * Every thread is joined before an error is raised: a script must
-          * never be left with threads still running.
-          */
-         var failure = "";
-         for ( var b = 0; b < group.length; ++b )
-         {
-            group[b].wait();
-            if ( group[b].error.length > 0 && failure.length == 0 )
-               failure = group[b].error;
-         }
+         var failure = Psb.joinThreads( group );
          if ( failure.length > 0 )
             throw new Error( "Psb: parallel byte swap failed: " + failure );
 
@@ -761,6 +742,45 @@ Psb.writeChannelDataParallel = function( file, src, sampleCount, threads )
       Thread.releaseBuffer( sdesc );
       Thread.releaseBuffer( ddesc );
    }
+};
+
+/*
+ * One pooled thread per slice of an `n`-sample chunk, the slices as even
+ * as integer division allows. Created, not started.
+ */
+Psb.swapThreads = function( body, sdesc, ddesc, n, threads )
+{
+   var group = [];
+   var base = Math.floor( n/threads );
+   var rem = n - base*threads;
+   var begin = 0;
+   for ( var t = 0; t < threads; ++t )
+   {
+      var count = base + ( ( t < rem ) ? 1 : 0 );
+      if ( count > 0 )
+         group.push( new Thread( body,
+                                 { src: sdesc, dst: ddesc,
+                                   begin: begin, end: begin + count },
+                                 { pooled: true } ) );
+      begin += count;
+   }
+   return group;
+};
+
+/*
+ * Every thread is joined before an error is raised: a script must never
+ * be left with threads still running. Returns the first error, or "".
+ */
+Psb.joinThreads = function( group )
+{
+   var failure = "";
+   for ( var b = 0; b < group.length; ++b )
+   {
+      group[b].wait();
+      if ( group[b].error.length > 0 && failure.length == 0 )
+         failure = group[b].error;
+   }
+   return failure;
 };
 
 Psb.writeChannelData = function( file, image, channel, sampleCount )
@@ -829,28 +849,10 @@ Psb.write = function( path, entries, width, height, iccProfile )
    // bottom-first, straight through: see the note above Psb.flatten
    var layers = Psb.flatten( entries );
    var samples = width * height;
-   var pixelBytes = 2 + samples * 2;        // compression word + raw samples
-   var markerBytes = 2;                     // compression word, zero area
-
-   // every layer declares three channels: R, G, B
-   var channelLengths = [];
-   for ( var i = 0; i < layers.length; ++i )
-   {
-      var isEmpty = ( layers[i].divider != null ) || Psb.isAdjustment( layers[i] );
-      var per = isEmpty ? markerBytes : pixelBytes;
-      channelLengths.push( [ per, per, per ] );
-      layers[i].channelIds = [ 0, 1, 2 ];
-   }
+   var channelLengths = Psb.declareChannels( layers, samples );
 
    // --- the layer records, which must be sized before anything is written
-   var records = new Psb.Buffer;
-   records.u16( layers.length );
-   for ( var r = 0; r < layers.length; ++r )
-   {
-      var rec = Psb.layerRecord( layers[r], width, height, channelLengths[r] );
-      for ( var b = 0; b < rec.bytes.length; ++b )
-         records.bytes.push( rec.bytes[b] );
-   }
+   var records = Psb.layerRecords( layers, width, height, channelLengths );
 
    var channelDataBytes = 0;
    for ( var c = 0; c < layers.length; ++c )
@@ -865,40 +867,7 @@ Psb.write = function( path, entries, width, height, iccProfile )
    file.createForWriting( path );
    try
    {
-      // --- file header
-      var h = new Psb.Buffer;
-      h.ascii( Psb.SIGNATURE );
-      h.u16( Psb.VERSION_PSB );
-      h.zeros( 6 );
-      h.u16( 3 );                            // channels in the composite
-      h.u32( height );
-      h.u32( width );
-      h.u16( 16 );                           // bits per sample
-      h.u16( Psb.COLOR_MODE_RGB );
-      h.u32( 0 );                            // colour mode data: none
-
-      /*
-       * Image resources: the ICC profile, or nothing.
-       *
-       * Without it Photoshop opens the document untagged and applies
-       * whatever its policy says, which for ProPhoto data is a visible
-       * shift. The rest of Loom's outputs carry their profile because
-       * PixInsight embeds it on save; this file is written by hand, so it
-       * has to be put here deliberately.
-       */
-      if ( iccProfile != null && iccProfile.length > 0 )
-      {
-         var icc = [], byteAt = Util.byteReader( iccProfile );
-         for ( var ib = 0; ib < iccProfile.length; ++ib )
-            icc.push( byteAt( ib ) );
-         var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, icc );
-         h.u32( res.length() );
-         for ( var rb = 0; rb < res.bytes.length; ++rb )
-            h.bytes.push( res.bytes[rb] );
-      }
-      else
-         h.u32( 0 );
-
+      var h = Psb.fileHeader( width, height, iccProfile );
       h.u64( layerAndMaskLength );
       h.u64( layerInfoLength + layerInfoPad );
       file.write( h.toByteArray() );
@@ -906,30 +875,7 @@ Psb.write = function( path, entries, width, height, iccProfile )
       // --- layer records
       file.write( records.toByteArray() );
 
-      // --- channel data, in the same order the records declared
-      for ( var L = 0; L < layers.length; ++L )
-      {
-         var layer = layers[L];
-         if ( layer.divider != null || Psb.isAdjustment( layer ) )
-         {
-            // zero-area: the compression word and nothing else
-            var empty = new Psb.Buffer;
-            empty.u16( Psb.COMPRESSION_RAW ).u16( Psb.COMPRESSION_RAW )
-                 .u16( Psb.COMPRESSION_RAW );
-            file.write( empty.toByteArray() );
-            continue;
-         }
-         var img = layer.window.mainView.image;
-         for ( var ch = 0; ch < 3; ++ch )
-         {
-            var cw = new Psb.Buffer;
-            cw.u16( Psb.COMPRESSION_RAW );
-            file.write( cw.toByteArray() );
-            // a mono plate fills all three channels from its only one
-            Psb.writeChannelData( file, img,
-                                  ( img.numberOfChannels > 1 ) ? ch : 0, samples );
-         }
-      }
+      Psb.writeLayerChannels( file, layers, samples );
 
       if ( layerInfoPad )
       {
@@ -941,34 +887,158 @@ Psb.write = function( path, entries, width, height, iccProfile )
       var g = new Psb.Buffer; g.u32( 0 );
       file.write( g.toByteArray() );
 
-      /*
-       * --- the flattened composite.
-       *
-       * Photoshop rebuilds its view from the layers and uses this only as a
-       * preview, but the section is mandatory and other readers show it.
-       * See Psb.compositeBaseLayer for which layer's pixels go here.
-       */
-      var base = Psb.compositeBaseLayer( layers );
-
-      var ch0 = new Psb.Buffer; ch0.u16( Psb.COMPRESSION_RAW );
-      file.write( ch0.toByteArray() );
-      var bimg = base.window.mainView.image;
-      for ( var cc = 0; cc < 3; ++cc )
-         Psb.writeChannelData( file, bimg,
-                               ( bimg.numberOfChannels > 1 ) ? cc : 0, samples );
+      Psb.writeComposite( file, layers, samples );
    }
    finally
    {
       try { file.close(); } catch ( e ) {}
-      /*
-       * Give back the warm thread runtimes the swap left behind. Each is a
-       * whole V8 isolate, and Loom is a long-lived script holding several
-       * full-size images; there is no reason to keep eight of them alive
-       * between exports for the sake of a few milliseconds at the next one.
-       */
-      if ( Psb.parallelReady === true && typeof Thread != "undefined"
-        && typeof Thread.releasePool == "function" )
-         try { Thread.releasePool(); } catch ( e2 ) {}
+      Psb.releaseSwapThreads();
    }
    return path;
+};
+
+/*
+ * Every layer declares three channels, R, G and B; returns their byte
+ * lengths per layer. A divider or an adjustment has no pixels, only the
+ * compression word.
+ */
+Psb.declareChannels = function( layers, samples )
+{
+   var pixelBytes = 2 + samples * 2;        // compression word + raw samples
+   var markerBytes = 2;                     // compression word, zero area
+   var channelLengths = [];
+   for ( var i = 0; i < layers.length; ++i )
+   {
+      var isEmpty = ( layers[i].divider != null ) || Psb.isAdjustment( layers[i] );
+      var per = isEmpty ? markerBytes : pixelBytes;
+      channelLengths.push( [ per, per, per ] );
+      layers[i].channelIds = [ 0, 1, 2 ];
+   }
+   return channelLengths;
+};
+
+// The layer count and every layer record, as one buffer.
+Psb.layerRecords = function( layers, width, height, channelLengths )
+{
+   var records = new Psb.Buffer;
+   records.u16( layers.length );
+   for ( var r = 0; r < layers.length; ++r )
+   {
+      var rec = Psb.layerRecord( layers[r], width, height, channelLengths[r] );
+      for ( var b = 0; b < rec.bytes.length; ++b )
+         records.bytes.push( rec.bytes[b] );
+   }
+   return records;
+};
+
+/*
+ * The file header, colour mode data and image resources: everything up
+ * to the layer and mask section's lengths, which the caller appends.
+ */
+Psb.fileHeader = function( width, height, iccProfile )
+{
+   var h = new Psb.Buffer;
+   h.ascii( Psb.SIGNATURE );
+   h.u16( Psb.VERSION_PSB );
+   h.zeros( 6 );
+   h.u16( 3 );                            // channels in the composite
+   h.u32( height );
+   h.u32( width );
+   h.u16( 16 );                           // bits per sample
+   h.u16( Psb.COLOR_MODE_RGB );
+   h.u32( 0 );                            // colour mode data: none
+   Psb.appendIccResource( h, iccProfile );
+   return h;
+};
+
+/*
+ * Image resources: the ICC profile, or nothing.
+ *
+ * Without it Photoshop opens the document untagged and applies
+ * whatever its policy says, which for ProPhoto data is a visible
+ * shift. The rest of Loom's outputs carry their profile because
+ * PixInsight embeds it on save; this file is written by hand, so it
+ * has to be put here deliberately.
+ */
+Psb.appendIccResource = function( h, iccProfile )
+{
+   if ( iccProfile == null || iccProfile.length == 0 )
+   {
+      h.u32( 0 );
+      return;
+   }
+   var icc = [], byteAt = Util.byteReader( iccProfile );
+   for ( var ib = 0; ib < iccProfile.length; ++ib )
+      icc.push( byteAt( ib ) );
+   var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, icc );
+   h.u32( res.length() );
+   for ( var rb = 0; rb < res.bytes.length; ++rb )
+      h.bytes.push( res.bytes[rb] );
+};
+
+// --- channel data, in the same order the records declared
+Psb.writeLayerChannels = function( file, layers, samples )
+{
+   for ( var L = 0; L < layers.length; ++L )
+   {
+      var layer = layers[L];
+      if ( layer.divider != null || Psb.isAdjustment( layer ) )
+         Psb.writeEmptyChannels( file );
+      else
+         Psb.writePlateChannels( file, layer.window.mainView.image, samples );
+   }
+};
+
+// zero-area: the compression word and nothing else
+Psb.writeEmptyChannels = function( file )
+{
+   var empty = new Psb.Buffer;
+   empty.u16( Psb.COMPRESSION_RAW ).u16( Psb.COMPRESSION_RAW )
+        .u16( Psb.COMPRESSION_RAW );
+   file.write( empty.toByteArray() );
+};
+
+Psb.writePlateChannels = function( file, img, samples )
+{
+   for ( var ch = 0; ch < 3; ++ch )
+   {
+      var cw = new Psb.Buffer;
+      cw.u16( Psb.COMPRESSION_RAW );
+      file.write( cw.toByteArray() );
+      // a mono plate fills all three channels from its only one
+      Psb.writeChannelData( file, img,
+                            ( img.numberOfChannels > 1 ) ? ch : 0, samples );
+   }
+};
+
+/*
+ * --- the flattened composite.
+ *
+ * Photoshop rebuilds its view from the layers and uses this only as a
+ * preview, but the section is mandatory and other readers show it.
+ * See Psb.compositeBaseLayer for which layer's pixels go here.
+ */
+Psb.writeComposite = function( file, layers, samples )
+{
+   var base = Psb.compositeBaseLayer( layers );
+
+   var ch0 = new Psb.Buffer; ch0.u16( Psb.COMPRESSION_RAW );
+   file.write( ch0.toByteArray() );
+   var bimg = base.window.mainView.image;
+   for ( var cc = 0; cc < 3; ++cc )
+      Psb.writeChannelData( file, bimg,
+                            ( bimg.numberOfChannels > 1 ) ? cc : 0, samples );
+};
+
+/*
+ * Give back the warm thread runtimes the swap left behind. Each is a
+ * whole V8 isolate, and Loom is a long-lived script holding several
+ * full-size images; there is no reason to keep eight of them alive
+ * between exports for the sake of a few milliseconds at the next one.
+ */
+Psb.releaseSwapThreads = function()
+{
+   if ( Psb.parallelReady === true && typeof Thread != "undefined"
+     && typeof Thread.releasePool == "function" )
+      try { Thread.releasePool(); } catch ( e2 ) {}
 };

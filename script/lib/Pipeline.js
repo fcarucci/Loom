@@ -73,46 +73,10 @@ Pipeline.preflight = function( config )
    for ( var j = 0; j < Util.CHANNELS.length; ++j )
    {
       var key = Util.CHANNELS[j];
-      var hasView = config.views && config.views[key];
-      var hasPath = config.paths[key];
-      if ( !hasView && !hasPath )
-         continue;
-
-      if ( hasView )
-      {
-         var vw = ImageWindow.windowById( config.views[key] );
-         if ( vw == null )
-         {
-            problems.push( "View no longer open for " + key + ": " + config.views[key] );
-            continue;
-         }
-         if ( vw.isNull )
-         {
-            problems.push( "Selected view no longer open for " + key + ": " + config.views[key] );
-            continue;
-         }
-         if ( Util.isBroadband( key ) && Util.keywordValue( vw.keywords, "FILTER" ) === null )
-            problems.push( "No FILTER keyword in " + key + " (view " + config.views[key] + ")" +
-                           " (SPFC cannot proceed; the script will not guess a filter)" );
-      }
-      else
-      {
-         var path = config.paths[key];
-         if ( !File.exists( path ) )
-         {
-            problems.push( "File not found for " + key + ": " + path );
-            continue;
-         }
-         if ( Util.isBroadband( key ) )
-         {
-            // header only: this used to be a full ImageWindow.open of every
-            // broadband master, on every run, to read one keyword
-            var kws = Pipeline.readImageInfo( path ).keywords;
-            if ( Util.keywordValue( kws, "FILTER" ) === null )
-               problems.push( "No FILTER keyword in " + key + ": " + path +
-                              " (SPFC cannot proceed; the script will not guess a filter)" );
-         }
-      }
+      if ( config.views && config.views[key] )
+         problems = problems.concat( Pipeline.preflightView( key, config.views[key] ) );
+      else if ( config.paths[key] )
+         problems = problems.concat( Pipeline.preflightPath( key, config.paths[key] ) );
    }
 
    // An empty output folder is valid and means "do not write anything":
@@ -122,42 +86,34 @@ Pipeline.preflight = function( config )
    return problems;
 };
 
-/* Keywords plus geometry from a single open, so the dialog can show size. */
-/*
- * Reads keywords and geometry WITHOUT decoding pixel data.
- *
- * The obvious implementation -- ImageWindow.open() then read .keywords --
- * loads and decompresses the whole image to extract a few header fields.
- * For a master folder that is ruinous: ~51 masterLight files at 300-850 MB
- * each is tens of gigabytes read off an external drive to learn FILTER,
- * XPIXSZ and the dimensions.
- *
- * FileFormatInstance.open() returns the ImageDescription array from the
- * header alone; pixels are only read by the separate readImage() call,
- * which is never made here. Keywords come from the instance directly.
- *
- * Falls back to the old whole-image path if the format cannot be
- * instantiated, so an exotic format still works, just slowly.
- */
-/*
- * Within one run the same file is asked about more than once -- preflight
- * checks FILTER, the load loop wants FILTER and INSTRUME, the dialog lists
- * geometry -- and re-reading a header off an external drive for each is
- * waste. Keyed on identity, not just path, so a file replaced under the
- * same name is not served from a stale entry.
- */
-Pipeline.imageInfoCache = {};
-
-Pipeline.imageInfoCacheKey = function( path )
+/* Preflight's problems with one channel chosen as an open view. */
+Pipeline.preflightView = function( key, id )
 {
-   try
-   {
-      var fi = new FileInfo( path );
-      if ( !fi.exists )
-         return null;
-      return path + "|" + fi.size + "|" + fi.lastModified.toISOString();
-   }
-   catch ( e ) { return null; }
+   var vw = ImageWindow.windowById( id );
+   if ( vw == null )
+      return [ "View no longer open for " + key + ": " + id ];
+   if ( vw.isNull )
+      return [ "Selected view no longer open for " + key + ": " + id ];
+   if ( Util.isBroadband( key ) && Util.keywordValue( vw.keywords, "FILTER" ) === null )
+      return [ "No FILTER keyword in " + key + " (view " + id + ")" +
+               " (SPFC cannot proceed; the script will not guess a filter)" ];
+   return [];
+};
+
+/* Preflight's problems with one channel chosen as a file. */
+Pipeline.preflightPath = function( key, path )
+{
+   if ( !File.exists( path ) )
+      return [ "File not found for " + key + ": " + path ];
+   if ( !Util.isBroadband( key ) )
+      return [];
+   // header only: this used to be a full ImageWindow.open of every
+   // broadband master, on every run, to read one keyword
+   var kws = Util.readImageInfo( path ).keywords;
+   if ( Util.keywordValue( kws, "FILTER" ) === null )
+      return [ "No FILTER keyword in " + key + ": " + path +
+               " (SPFC cannot proceed; the script will not guess a filter)" ];
+   return [];
 };
 
 /*
@@ -227,91 +183,6 @@ Pipeline.projectNameFor = function( config )
       }
    }
    return "";
-};
-
-/*
- * Reads geometry and keywords from `path`'s header alone, without decoding
- * a single pixel.
- *
- * Returns { info, why }: `info` is the header fields on success and null on
- * failure, and `why` then carries the diagnostic string the caller prints
- * before it falls back to a full read. Every failure point has its own
- * reason -- the reason is the whole point of this probe, because the
- * fallback is expensive enough that "it did not work" is not a useful
- * thing to read in a log.
- */
-Pipeline.tryHeaderRead = function( path )
-{
-   try
-   {
-      var ext = File.extractExtension( path );
-      var F = new FileFormat( ext, true /*toRead*/, false /*toWrite*/ );
-      if ( F.isNull )
-         return { info: null, why: "no reader for extension '" + ext + "'" };
-
-      var f = new FileFormatInstance( F );
-      if ( f.isNull )
-         return { info: null, why: "could not instantiate the " + ext + " reader" };
-
-      var d = f.open( path, "verbosity 0" );
-      if ( d == null || d.length < 1 )
-      {
-         try { f.close(); } catch ( e ) {}
-         return { info: null, why: "the reader returned no image description" };
-      }
-
-      var info = {
-         keywords: F.canStoreKeywords ? f.keywords : [],
-         width: d[0].width,
-         height: d[0].height
-      };
-      // The header is already in hand; a close that fails now costs
-      // nothing and must not send the caller down the full-read path.
-      try { f.close(); } catch ( e1 ) {}
-      return { info: info, why: null };
-   }
-   catch ( e2 )
-   {
-      return { info: null, why: String( e2 ) };
-   }
-};
-
-Pipeline.readImageInfo = function( path )
-{
-   var ck = Pipeline.imageInfoCacheKey( path );
-   if ( ck != null && Pipeline.imageInfoCache[ck] != null )
-      return Pipeline.imageInfoCache[ck];
-
-   var probe = Pipeline.tryHeaderRead( path );
-   var info = probe.info;
-
-   /*
-    * The fallback reads and decodes the ENTIRE image to recover a few
-    * header fields -- roughly a gigabyte per master here. It used to be
-    * reached silently whenever the reader could not be instantiated, so a
-    * run could be doing full reads on every file with nothing in the log
-    * to say so. It is always announced now.
-    */
-   if ( info == null )
-   {
-      Util.warn( "read", "header-only read unavailable for " + path +
-                         " (" + ( probe.why || "unknown reason" ) + ")" +
-                         " -- falling back to a FULL read of the image" );
-      var w = ImageWindow.open( path );
-      if ( w.length == 0 )
-         info = { keywords: [], width: 0, height: 0 };
-      else
-      {
-         info = { keywords: w[0].keywords,
-                  width: w[0].mainView.image.width,
-                  height: w[0].mainView.image.height };
-         w[0].forceClose();
-      }
-   }
-
-   if ( ck != null )
-      Pipeline.imageInfoCache[ck] = info;
-   return info;
 };
 
 /*
@@ -706,7 +577,7 @@ Pipeline.STAGE_COMPANIONS = {
  *
  * A channel record is built WITHOUT opening anything: the cache key needs
  * only a stat (Cache.fingerprintFile) and the FITS keywords come from the
- * header alone (Pipeline.readImageInfo). The pixels are needed only when a
+ * header alone (Util.readImageInfo). The pixels are needed only when a
  * stage actually has to run, and processChain knows when that is -- see
  * the hitIndex logic below. A fully cached run therefore never reads a
  * master at all, which on a seven-channel set is ~8 GB it used to read to
@@ -1032,99 +903,119 @@ Pipeline.cleanWhiteBalanceCachePath = function( key )
    return Cache.dir() + "/" + key + ".wb.json";
 };
 
-Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
-                                              lumInstrume, refView, refFingerprint )
+/*
+ * The measurement's cache key, from the three pre-correction keys, the
+ * crop, the filters and the instrument. Throws if a channel has no key.
+ */
+Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume )
 {
    var trio = [ "R", "G", "B" ];
-
    for ( var t = 0; t < trio.length; ++t )
       if ( !chans[trio[t]].cleanKey )
          throw new Error( "no pre-correction cache key for " + trio[t] );
 
-   var cacheKey = Cache.hash( "cleanwb|" + chans.R.cleanKey + "|" +
-                              chans.G.cleanKey + "|" + chans.B.cleanKey +
-                              "|crop:" + common.x0 + "," + common.y0 + "," +
-                              common.x1 + "," + common.y1 +
-                              "|" + JSON.stringify( config.filters || {} ) +
-                              "|" + String( lumInstrume ) );
+   return Cache.hash( "cleanwb|" + chans.R.cleanKey + "|" +
+                      chans.G.cleanKey + "|" + chans.B.cleanKey +
+                      "|crop:" + common.x0 + "," + common.y0 + "," +
+                      common.x1 + "," + common.y1 +
+                      "|" + JSON.stringify( config.filters || {} ) +
+                      "|" + String( lumInstrume ) );
+};
+
+/* The gains cached by an earlier measurement, or null to measure again. */
+Pipeline.cachedCleanWhiteBalance = function( config, cachePath, cacheKey )
+{
+   if ( !config.useCache || config.ignoreCache || !File.exists( cachePath ) )
+      return null;
+   try
+   {
+      var cached = JSON.parse( File.readTextFile( cachePath ) );
+      if ( cached && cached.length == 3 )
+      {
+         Util.log( "cache", "clean white balance HIT " +
+                            cacheKey.substring( 0, 12 ) + "..." );
+         return cached;
+      }
+   }
+   catch ( e ) { Util.warn( "cache", "unreadable clean white balance: " + e ); }
+   return null;
+};
+
+/*
+ * One channel's pre-correction result, registered to the reference, as a
+ * view. Every window it opens is pushed onto `temps` for the caller to
+ * release.
+ */
+Pipeline.registerCleanChannel = function( cleanKey, k, config, refView, refFingerprint, temps )
+{
+   /*
+    * Cache the REGISTERED clean reference, not just the three numbers
+    * this branch ultimately produces.
+    *
+    * Without this, any change to the white-balance key -- a different
+    * filter choice, a new crop -- repeats three full registrations
+    * (~12s each) plus a combine, a plate solve, SPFC and SPCC, about
+    * two minutes, to rederive three numbers. The registrations depend
+    * only on the source channel and the reference, so they survive
+    * changes that invalidate the measurement itself.
+    */
+   var regKey = Cache.chainKey( cleanKey, "cleanRegister",
+                                { ref: refFingerprint } );
+   var registeredWin = ( config.useCache && !config.ignoreCache )
+                     ? Cache.load( regKey, Util.freeWindowId( k + "_cleanreg" ) ) : null;
+   if ( registeredWin != null )
+   {
+      Util.log( "cache", k + " cleanRegister HIT " +
+                         regKey.substring( 0, 12 ) + "..." );
+      temps.push( registeredWin );
+      return registeredWin.mainView;
+   }
+   Util.log( "cache", k + " cleanRegister MISS" );
+
+   var w = Cache.load( cleanKey,
+                       Util.freeWindowId( k + "_cleanref" ) );
+   if ( w == null )
+      throw new Error( "the pre-correction result for " + k +
+                       " is not in the cache" );
+   temps.push( w );
+
+   /*
+    * NOTE: refView is the registration reference (L, or the channel
+    * chosen in its place), and it has ALREADY been cropped to `common` by
+    * the time this runs -- the crop is applied in place, so the same
+    * view object is now the cropped one. Registering against it
+    * therefore lands these channels directly in the cropped frame, the
+    * same size as the corrected channels. Cropping again here would
+    * apply `common` twice, since those coordinates are relative to the
+    * UNcropped frame.
+    */
+   var registered = Steps.register( w.mainView, refView );
+   temps.push( registered );
+   if ( config.useCache )
+      Cache.store( regKey, registered,
+                   { channel: k, stage: "cleanRegister",
+                     params: { ref: refFingerprint } } );
+   return registered.mainView;
+};
+
+Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
+                                              lumInstrume, refView, refFingerprint )
+{
+   var trio = [ "R", "G", "B" ];
+   var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
 
-   if ( config.useCache && !config.ignoreCache && File.exists( cachePath ) )
-   {
-      try
-      {
-         var cached = JSON.parse( File.readTextFile( cachePath ) );
-         if ( cached && cached.length == 3 )
-         {
-            Util.log( "cache", "clean white balance HIT " +
-                               cacheKey.substring( 0, 12 ) + "..." );
-            return cached;
-         }
-      }
-      catch ( e ) { Util.warn( "cache", "unreadable clean white balance: " + e ); }
-   }
+   var cached = Pipeline.cachedCleanWhiteBalance( config, cachePath, cacheKey );
+   if ( cached )
+      return cached;
    Util.log( "cache", "clean white balance MISS " + cacheKey.substring( 0, 12 ) + "..." );
 
    var temps = [], cleanViews = {};
    try
    {
       for ( var i = 0; i < trio.length; ++i )
-      {
-         var k = trio[i];
-         /*
-          * Cache the REGISTERED clean reference, not just the three numbers
-          * this branch ultimately produces.
-          *
-          * Without this, any change to the white-balance key -- a different
-          * filter choice, a new crop -- repeats three full registrations
-          * (~12s each) plus a combine, a plate solve, SPFC and SPCC, about
-          * two minutes, to rederive three numbers. The registrations depend
-          * only on the source channel and the reference, so they survive
-          * changes that invalidate the measurement itself.
-          */
-         var regKey = Cache.chainKey( chans[k].cleanKey, "cleanRegister",
-                                      { ref: refFingerprint } );
-         var registeredWin = null;
-         if ( config.useCache && !config.ignoreCache )
-         {
-            registeredWin = Cache.load( regKey, Util.freeWindowId( k + "_cleanreg" ) );
-            if ( registeredWin != null )
-               Util.log( "cache", k + " cleanRegister HIT " +
-                                  regKey.substring( 0, 12 ) + "..." );
-         }
-         if ( registeredWin != null )
-         {
-            temps.push( registeredWin );
-            cleanViews[k] = registeredWin.mainView;
-            continue;
-         }
-         Util.log( "cache", k + " cleanRegister MISS" );
-
-         var w = Cache.load( chans[k].cleanKey,
-                             Util.freeWindowId( k + "_cleanref" ) );
-         if ( w == null )
-            throw new Error( "the pre-correction result for " + k +
-                             " is not in the cache" );
-         temps.push( w );
-
-         /*
-          * NOTE: refView is the registration reference (L, or the channel
-          * chosen in its place), and it has ALREADY been cropped to `common` by
-          * the time this runs -- the crop is applied in place, so the same
-          * view object is now the cropped one. Registering against it
-          * therefore lands these channels directly in the cropped frame, the
-          * same size as the corrected channels. Cropping again here would
-          * apply `common` twice, since those coordinates are relative to the
-          * UNcropped frame.
-          */
-         var registered = Steps.register( w.mainView, refView );
-         temps.push( registered );
-         if ( config.useCache )
-            Cache.store( regKey, registered,
-                         { channel: k, stage: "cleanRegister",
-                           params: { ref: refFingerprint } } );
-         cleanViews[k] = registered.mainView;
-      }
+         cleanViews[trio[i]] = Pipeline.registerCleanChannel( chans[trio[i]].cleanKey, trio[i],
+                                                              config, refView, refFingerprint, temps );
 
       var refId = Util.freeWindowId( "RGB_cleanref" );
       var refWin = Steps.combineRGB( cleanViews.R, cleanViews.G,
@@ -1157,6 +1048,163 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
          try { reg.forget( temps[c] ); } catch ( e ) {}
          try { if ( !temps[c].isNull ) temps[c].forceClose(); } catch ( e ) {}
       }
+   }
+};
+
+/*
+ * The stage names of the finishing tail, per composite. Each composite
+ * keeps its own names: they are cache stage names, so renaming one would
+ * orphan every entry stored under it.
+ */
+Pipeline.RGB_FINISHING = { sharpen: "sharpenRGB", extract: "extractRGB",
+                           denoiseLinear: "denoiseLinearRGB",
+                           stretch: "stretchRGB", denoise: "denoiseRGB" };
+Pipeline.PALETTE_FINISHING = { sharpen: "paletteSharpen", extract: "paletteExtract",
+                               denoiseLinear: "paletteDenoiseLinear",
+                               stretch: "paletteStretch", denoise: "paletteDenoise" };
+
+/* Copies every own entry of `from` onto `to`, in `from`'s key order. */
+Pipeline.appendStages = function( to, from )
+{
+   for ( var k in from )
+      if ( Object.prototype.hasOwnProperty.call( from, k ) )
+         to[k] = from[k];
+   return to;
+};
+
+/*
+ * The finishing tail both composites run after their own head stages
+ * (combine, solve, calibration): sharpen, star extraction, linear
+ * denoise, stretch and stretched denoise. Written once, so the RGB
+ * composite and every palette cannot drift apart.
+ *
+ * `label` names the composite in logs and window ids ("RGB", or the
+ * palette's name), `noun` is what the warnings call it ("composite" or
+ * "palette"), `names` maps each role to its stage name (RGB_FINISHING or
+ * PALETTE_FINISHING).
+ *
+ * Returns { params, runners }. The params are in the order the chain has
+ * always been keyed with -- sharpen, extract, linear denoise, stretch,
+ * stretched denoise -- and the runners in the order they were always
+ * declared: sharpen, extract, stretch, linear denoise, stretched denoise.
+ */
+Pipeline.finishingStages = function( label, noun, names, config, reg )
+{
+   /*
+    * Only added when they will actually do something. A stage present
+    * in the chain hashes even when its runner no-ops, so including
+    * "sharpen with no tool" would change every downstream key for a
+    * step that does nothing.
+    *
+    * Extraction sits between sharpening and noise reduction: star
+    * reduction still acts on a frame that has stars in it, while the
+    * stars frame is spared the denoiser entirely and noise reduction
+    * works only on the starless.
+    *
+    * Linear noise reduction, between extraction and the stretch: the
+    * plate here is colour-calibrated, deconvolved, starless and
+    * still linear, which is exactly what NXT and MLDenoise ask for.
+    *
+    * The stretch acts on the STARLESS plate, after extraction. The
+    * stars plate was already stretched inside the extraction stage,
+    * from its own clone -- see Steps.extractStars.
+    */
+   var params = {};
+   var candidates = [
+      [ names.sharpen,       Pipeline.compositeSharpenParams( config ) ],
+      [ names.extract,       Pipeline.starExtractionParams( config ) ],
+      [ names.denoiseLinear, Pipeline.linearDenoiseParams( config ) ],
+      [ names.stretch,       Pipeline.stretchParams( config, true ) ],
+      [ names.denoise,       Pipeline.stretchedDenoiseParams( config ) ] ];
+   for ( var i = 0; i < candidates.length; ++i )
+      if ( candidates[i][1] != null )
+         params[ candidates[i][0] ] = candidates[i][1];
+
+   /*
+    * A failed finishing step must not cost the composite: it is kept as
+    * the step found it, and the stage is simply not cached.
+    */
+   function keptAfter( tag, e, failed, kept )
+   {
+      Util.warn( tag, label + " could not be " + failed + " (" + e +
+                      "); the " + noun + " is kept " + kept );
+      return Pipeline.SKIP_CACHE;
+   }
+
+   var runners = {};
+   runners[names.sharpen] = function( h )
+   {
+      Pipeline.checkAbort( "sharpening " + label );
+      try
+      {
+         Steps.correctComposite( h.view, config.sharpenTool,
+                                 config.starReduction, config.detailLevel, label );
+      }
+      catch ( e ) { return keptAfter( "sharpen", e, "corrected", "as it is" ); }
+   };
+   runners[names.extract] = function( h )
+   {
+      Pipeline.checkAbort( "extracting stars from " + label );
+      var split = Steps.extractStars( h.window, config.starTool, label,
+                                      !!config.stretch );
+      if ( split == null )
+         return Pipeline.SKIP_CACHE;
+      reg.add( split.stars );
+      h.stars = split.stars;
+   };
+   runners[names.stretch] = function( h )
+   {
+      Pipeline.checkAbort( "stretching " + label );
+      if ( config.keepLinear )
+         Pipeline.keepLinearCopy( h, label, reg );
+      try { Steps.stretchBy( config.stretchMethod, h.view, true, label + " starless" ); }
+      catch ( e ) { return keptAfter( "stretch", e, "stretched", "linear" ); }
+   };
+   runners[names.denoiseLinear] = function( h )
+   {
+      Pipeline.checkAbort( "denoising " + label );
+      // `false`: linear by construction here, whatever the run's
+      // stretch setting says about what happens later.
+      try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
+                           label + " linear", false ); }
+      catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
+   };
+   runners[names.denoise] = function( h )
+   {
+      Pipeline.checkAbort( "denoising " + label );
+      try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, label,
+                           !!config.stretch ); }
+      catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
+   };
+
+   return { params: params, runners: runners };
+};
+
+/*
+ * The stretch overwrites the composite in place, so the linear version
+ * has to be taken now or not at all. It is stored as the stretch stage's
+ * companion (h.linear), which is what keeps it alive when the stage later
+ * comes back from cache. Failing to take it costs only the copy: the
+ * stretch proceeds.
+ */
+Pipeline.keepLinearCopy = function( h, id, reg )
+{
+   try
+   {
+      h.linear = Steps.syqonCloneWindowForProcessing(
+                    h.window, Util.freeWindowId( id + "_linear" ) );
+      try
+      {
+         if ( h.window.hasAstrometricSolution )
+            h.linear.copyAstrometricSolution( h.window );
+      }
+      catch ( eS ) {}
+      reg.add( h.linear );
+   }
+   catch ( eL )
+   {
+      Util.warn( "stretch", "could not keep the linear copy (" +
+                            eL + "); the stretch proceeds" );
    }
 };
 
@@ -1226,17 +1274,9 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
     */
    if ( config.narrowbandNormalize )
       palParams.paletteNorm = { palette: pal };
-   if ( Pipeline.compositeSharpenParams( config ) != null )
-      palParams.paletteSharpen = Pipeline.compositeSharpenParams( config );
-   if ( Pipeline.starExtractionParams( config ) != null )
-      palParams.paletteExtract = Pipeline.starExtractionParams( config );
-   // Linear, starless, before the stretch -- see the RGB side.
-   if ( Pipeline.linearDenoiseParams( config ) != null )
-      palParams.paletteDenoiseLinear = Pipeline.linearDenoiseParams( config );
-   if ( Pipeline.stretchParams( config, true ) != null )
-      palParams.paletteStretch = Pipeline.stretchParams( config, true );
-   if ( Pipeline.stretchedDenoiseParams( config ) != null )
-      palParams.paletteDenoise = Pipeline.stretchedDenoiseParams( config );
+   var finishing = Pipeline.finishingStages( pal, "palette", Pipeline.PALETTE_FINISHING,
+                                             config, reg );
+   Pipeline.appendStages( palParams, finishing.params );
 
    var palChain = Pipeline.buildStageKeys( palSource, palParams );
    var palHolder = { key: pal, window: null, view: null };
@@ -1289,93 +1329,9 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                                  "); the palette is kept as it is" );
             return Pipeline.SKIP_CACHE;
          }
-      },
-      paletteSharpen: function( h )
-      {
-         Pipeline.checkAbort( "sharpening " + pal );
-         try
-         {
-            Steps.correctComposite( h.view, config.sharpenTool,
-                                    config.starReduction, config.detailLevel, pal );
-         }
-         catch ( e )
-         {
-            Util.warn( "sharpen", pal + " could not be corrected (" + e +
-                                  "); the palette is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      paletteExtract: function( h )
-      {
-         Pipeline.checkAbort( "extracting stars from " + pal );
-         var split = Steps.extractStars( h.window, config.starTool, pal,
-                                         !!config.stretch );
-         if ( split == null )
-            return Pipeline.SKIP_CACHE;
-         reg.add( split.stars );
-         h.stars = split.stars;
-      },
-      paletteStretch: function( h )
-      {
-         Pipeline.checkAbort( "stretching " + pal );
-         /*
-          * The stretch overwrites the composite in place, so the linear
-          * version has to be taken now or not at all. It is stored as
-          * this stage's companion, which is what keeps it alive when the
-          * stage later comes back from cache.
-          */
-         if ( config.keepLinear )
-            try
-            {
-               h.linear = Steps.syqonCloneWindowForProcessing(
-                             h.window, Util.freeWindowId( pal + "_linear" ) );
-               try
-               {
-                  if ( h.window.hasAstrometricSolution )
-                     h.linear.copyAstrometricSolution( h.window );
-               }
-               catch ( eS ) {}
-               reg.add( h.linear );
-            }
-            catch ( eL )
-            {
-               Util.warn( "stretch", "could not keep the linear copy (" +
-                                     eL + "); the stretch proceeds" );
-            }
-         try { Steps.stretchBy( config.stretchMethod, h.view, true, pal + " starless" ); }
-         catch ( e )
-         {
-            Util.warn( "stretch", pal + " could not be stretched (" + e +
-                                  "); the palette is kept linear" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      paletteDenoiseLinear: function( h )
-      {
-         Pipeline.checkAbort( "denoising " + pal );
-         // `false`: linear by construction at this point in the chain.
-         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
-                              pal + " linear", false ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", pal + " could not be denoised (" + e +
-                                  "); the palette is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      paletteDenoise: function( h )
-      {
-         Pipeline.checkAbort( "denoising " + pal );
-         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, pal,
-                               !!config.stretch ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", pal + " could not be denoised (" + e +
-                                  "); the palette is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
       }
    };
+   Pipeline.appendStages( palRunners, finishing.runners );
 
    Pipeline.processChain( palHolder, palChain, config, reg, palRunners );
    var pw = palHolder.window;
@@ -1432,38 +1388,9 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
       spccRGB:  { filters: config.filters || {}, instrume: lumInstrume,
                   whiteBalance: cleanFactors ? cleanFactors : "direct" }
    };
-   /*
-    * Only added when they will actually do something. A stage present
-    * in the chain hashes even when its runner no-ops, so including
-    * "sharpen with no tool" would change every downstream key for a
-    * step that does nothing.
-    */
-   if ( Pipeline.compositeSharpenParams( config ) != null )
-      rgbParams.sharpenRGB = Pipeline.compositeSharpenParams( config );
-   /*
-    * Extraction sits between sharpening and noise reduction: star
-    * reduction still acts on a frame that has stars in it, while the
-    * stars frame is spared the denoiser entirely and noise reduction
-    * works only on the starless.
-    */
-   if ( Pipeline.starExtractionParams( config ) != null )
-      rgbParams.extractRGB = Pipeline.starExtractionParams( config );
-   /*
-    * Linear noise reduction, between extraction and the stretch: the
-    * plate here is colour-calibrated, deconvolved, starless and
-    * still linear, which is exactly what NXT and MLDenoise ask for.
-    */
-   if ( Pipeline.linearDenoiseParams( config ) != null )
-      rgbParams.denoiseLinearRGB = Pipeline.linearDenoiseParams( config );
-   /*
-    * The stretch acts on the STARLESS plate, after extraction. The
-    * stars plate was already stretched inside the extraction stage,
-    * from its own clone -- see Steps.extractStars.
-    */
-   if ( Pipeline.stretchParams( config, true ) != null )
-      rgbParams.stretchRGB = Pipeline.stretchParams( config, true );
-   if ( Pipeline.stretchedDenoiseParams( config ) != null )
-      rgbParams.denoiseRGB = Pipeline.stretchedDenoiseParams( config );
+   var finishing = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING,
+                                             config, reg );
+   Pipeline.appendStages( rgbParams, finishing.params );
    var rgbChain = Pipeline.buildStageKeys( rgbSource, rgbParams );
 
    var rgbHolder = { key: "RGB", window: null, view: null };
@@ -1486,94 +1413,9 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
             Steps.applyWhiteBalance( h.view, cleanFactors );
          else
             Steps.spccRGB( h.view, lumInstrume, config.filters || {} );
-      },
-      sharpenRGB: function( h )
-      {
-         Pipeline.checkAbort( "sharpening RGB" );
-         try
-         {
-            Steps.correctComposite( h.view, config.sharpenTool,
-                                    config.starReduction, config.detailLevel, "RGB" );
-         }
-         catch ( e )
-         {
-            Util.warn( "sharpen", "RGB could not be corrected (" + e +
-                                  "); the composite is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      extractRGB: function( h )
-      {
-         Pipeline.checkAbort( "extracting stars from RGB" );
-         var split = Steps.extractStars( h.window, config.starTool, "RGB",
-                                         !!config.stretch );
-         if ( split == null )
-            return Pipeline.SKIP_CACHE;
-         reg.add( split.stars );
-         h.stars = split.stars;
-      },
-      stretchRGB: function( h )
-      {
-         Pipeline.checkAbort( "stretching RGB" );
-         /*
-          * The stretch overwrites the composite in place, so the linear
-          * version has to be taken now or not at all. It is stored as
-          * this stage's companion, which is what keeps it alive when the
-          * stage later comes back from cache.
-          */
-         if ( config.keepLinear )
-            try
-            {
-               h.linear = Steps.syqonCloneWindowForProcessing(
-                             h.window, Util.freeWindowId( "RGB" + "_linear" ) );
-               try
-               {
-                  if ( h.window.hasAstrometricSolution )
-                     h.linear.copyAstrometricSolution( h.window );
-               }
-               catch ( eS ) {}
-               reg.add( h.linear );
-            }
-            catch ( eL )
-            {
-               Util.warn( "stretch", "could not keep the linear copy (" +
-                                     eL + "); the stretch proceeds" );
-            }
-         try { Steps.stretchBy( config.stretchMethod, h.view, true, "RGB starless" ); }
-         catch ( e )
-         {
-            Util.warn( "stretch", "RGB could not be stretched (" + e +
-                                  "); the composite is kept linear" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      denoiseLinearRGB: function( h )
-      {
-         Pipeline.checkAbort( "denoising RGB" );
-         // `false`: linear by construction here, whatever the run's
-         // stretch setting says about what happens later.
-         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
-                              "RGB linear", false ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", "RGB could not be denoised (" + e +
-                                  "); the composite is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
-      },
-      denoiseRGB: function( h )
-      {
-         Pipeline.checkAbort( "denoising RGB" );
-         try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, "RGB",
-                               !!config.stretch ); }
-         catch ( e )
-         {
-            Util.warn( "denoise", "RGB could not be denoised (" + e +
-                                  "); the composite is kept as it is" );
-            return Pipeline.SKIP_CACHE;
-         }
       }
    };
+   Pipeline.appendStages( rgbRunners, finishing.runners );
 
    Pipeline.checkAbort( "combining and calibrating RGB" );
    Pipeline.processChain( rgbHolder, rgbChain, config, reg, rgbRunners );
@@ -1596,97 +1438,101 @@ Pipeline.loadChannels = function( config, reg )
    for ( var i = 0; i < Util.CHANNELS.length; ++i )
    {
       var key = Util.CHANNELS[i];
-      var w, sourceKey;
       if ( config.views && config.views[key] )
-      {
-         var srcWin = ImageWindow.windowById( config.views[key] );
-         if ( srcWin == null || srcWin.isNull )
-            throw new Error( "View no longer open for " + key + ": " + config.views[key] );
-         sourceKey = Cache.fingerprintView( srcWin.mainView );
-         w = new ImageWindow( srcWin.mainView.image.width,
-                              srcWin.mainView.image.height,
-                              srcWin.mainView.image.numberOfChannels,
-                              srcWin.mainView.image.bitsPerSample,
-                              srcWin.mainView.image.isReal,
-                              srcWin.mainView.image.isColor,
-                              Util.freeWindowId( key + "_work" ) );
-         w.mainView.beginProcess( UndoFlag_NoSwapFile );
-         w.mainView.image.assign( srcWin.mainView.image );
-         w.mainView.endProcess();
-         w.keywords = srcWin.keywords;
-
-         // The astrometric solution lives in XISF properties, not FITS
-         // keywords, so assigning pixels and keywords does NOT carry it
-         // over. Without this the duplicate looks unsolved and the
-         // pipeline re-solves an already-solved master.
-         try
-         {
-            if ( srcWin.hasAstrometricSolution )
-            {
-               w.copyAstrometricSolution( srcWin );
-               Util.log( "load", key + " - astrometric solution copied" );
-            }
-         }
-         catch ( e )
-         {
-            Util.warn( "load", key + " - could not copy astrometric solution: " + e );
-         }
-         Util.log( "load", key + " <- view " + config.views[key] + " (duplicated)" );
-      }
+         chans[key] = Pipeline.duplicateViewChannel( key, config.views[key], reg );
       else if ( config.paths[key] )
-      {
-         /*
-          * NOT opened here. The key chain needs a stat and two header
-          * keywords, and nothing downstream needs the pixels unless a
-          * stage actually runs -- see Pipeline.ensureLoaded. Opening
-          * every master up front read ~8 GB on a seven-channel set
-          * before the first cache lookup.
-          */
-         var path = config.paths[key];
-         sourceKey = Cache.fingerprintFile( path );
-         if ( sourceKey == null )
-            throw new Error( "Could not read " + key + ": " + path );
-         var info = Pipeline.readImageInfo( path );
-         chans[key] = { key: key, path: path, window: null, view: null,
-                        filter: Util.keywordValue( info.keywords, "FILTER" ),
-                        instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
-                        sourceKey: sourceKey, currentKey: sourceKey,
-                        load: function()
-                        {
-                           if ( this.window != null )
-                              return this.window;
-                           var ws = ImageWindow.open( this.path );
-                           if ( ws.length == 0 )
-                              throw new Error( "Could not open " + this.key +
-                                               ": " + this.path );
-                           var win = ws[0];
-                           win.mainView.id = Util.freeWindowId( this.key + "_work" );
-                           // registered the moment it exists: an unregistered
-                           // window is one reg.closeAll() cannot clean up, and
-                           // this file has produced that bug twice
-                           reg.add( win );
-                           this.window = win;
-                           this.view = win.mainView;
-                           Util.log( "load", this.key + " <- " + this.path );
-                           return win;
-                        } };
-         continue;
-      }
-      else
-         continue;
-      reg.add( w );
-      chans[key] = { key: key, window: w, view: w.mainView,
-                     filter: Util.keywordValue( w.keywords, "FILTER" ),
-                     instrume: Util.keywordValue( w.keywords, "INSTRUME" ),
-                     // sourceKey identifies the untouched input; currentKey
-                     // is the running cache key, advanced as stages run.
-                     // Narrowband channels never run solve/spfc/mgc/graxpert,
-                     // so their currentKey stays the source fingerprint until
-                     // register chains from it directly.
-                     sourceKey: sourceKey, currentKey: sourceKey };
+         chans[key] = Pipeline.lazyFileChannel( key, config.paths[key], reg );
    }
 
    return chans;
+};
+
+/* A channel from an open view: a registered working duplicate of it. */
+Pipeline.duplicateViewChannel = function( key, viewId, reg )
+{
+   var srcWin = ImageWindow.windowById( viewId );
+   if ( srcWin == null || srcWin.isNull )
+      throw new Error( "View no longer open for " + key + ": " + viewId );
+   var sourceKey = Cache.fingerprintView( srcWin.mainView );
+   var w = new ImageWindow( srcWin.mainView.image.width,
+                            srcWin.mainView.image.height,
+                            srcWin.mainView.image.numberOfChannels,
+                            srcWin.mainView.image.bitsPerSample,
+                            srcWin.mainView.image.isReal,
+                            srcWin.mainView.image.isColor,
+                            Util.freeWindowId( key + "_work" ) );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   w.mainView.image.assign( srcWin.mainView.image );
+   w.mainView.endProcess();
+   w.keywords = srcWin.keywords;
+
+   // The astrometric solution lives in XISF properties, not FITS
+   // keywords, so assigning pixels and keywords does NOT carry it
+   // over. Without this the duplicate looks unsolved and the
+   // pipeline re-solves an already-solved master.
+   try
+   {
+      if ( srcWin.hasAstrometricSolution )
+      {
+         w.copyAstrometricSolution( srcWin );
+         Util.log( "load", key + " - astrometric solution copied" );
+      }
+   }
+   catch ( e )
+   {
+      Util.warn( "load", key + " - could not copy astrometric solution: " + e );
+   }
+   Util.log( "load", key + " <- view " + viewId + " (duplicated)" );
+
+   reg.add( w );
+   return { key: key, window: w, view: w.mainView,
+            filter: Util.keywordValue( w.keywords, "FILTER" ),
+            instrume: Util.keywordValue( w.keywords, "INSTRUME" ),
+            // sourceKey identifies the untouched input; currentKey
+            // is the running cache key, advanced as stages run.
+            // Narrowband channels never run solve/spfc/mgc/graxpert,
+            // so their currentKey stays the source fingerprint until
+            // register chains from it directly.
+            sourceKey: sourceKey, currentKey: sourceKey };
+};
+
+/* A channel from a file, opened only when a stage needs its pixels. */
+Pipeline.lazyFileChannel = function( key, path, reg )
+{
+   /*
+    * NOT opened here. The key chain needs a stat and two header
+    * keywords, and nothing downstream needs the pixels unless a
+    * stage actually runs -- see Pipeline.ensureLoaded. Opening
+    * every master up front read ~8 GB on a seven-channel set
+    * before the first cache lookup.
+    */
+   var sourceKey = Cache.fingerprintFile( path );
+   if ( sourceKey == null )
+      throw new Error( "Could not read " + key + ": " + path );
+   var info = Util.readImageInfo( path );
+   return { key: key, path: path, window: null, view: null,
+            filter: Util.keywordValue( info.keywords, "FILTER" ),
+            instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
+            sourceKey: sourceKey, currentKey: sourceKey,
+            load: function()
+            {
+               if ( this.window != null )
+                  return this.window;
+               var ws = ImageWindow.open( this.path );
+               if ( ws.length == 0 )
+                  throw new Error( "Could not open " + this.key +
+                                   ": " + this.path );
+               var win = ws[0];
+               win.mainView.id = Util.freeWindowId( this.key + "_work" );
+               // registered the moment it exists: an unregistered
+               // window is one reg.closeAll() cannot clean up, and
+               // this file has produced that bug twice
+               reg.add( win );
+               this.window = win;
+               this.view = win.mainView;
+               Util.log( "load", this.key + " <- " + this.path );
+               return win;
+            } };
 };
 
       /*
@@ -1877,6 +1723,24 @@ Pipeline.correctNarrowband = function( chans, config, reg )
 Pipeline.REGISTRATION_FALLBACK_ORDER = [ "G", "R", "B", "H", "S", "O" ];
 
 /*
+ * The channels present, in REGISTRATION_FALLBACK_ORDER; anything not in
+ * the order still takes part, after it and sorted.
+ */
+Pipeline.registrationFallbackRanking = function( present )
+{
+   var order = Pipeline.REGISTRATION_FALLBACK_ORDER;
+   var ranked = [];
+   for ( var i = 0; i < order.length; ++i )
+      if ( present.indexOf( order[i] ) >= 0 )
+         ranked.push( order[i] );
+   var extra = [];
+   for ( var j = 0; j < present.length; ++j )
+      if ( ranked.indexOf( present[j] ) < 0 && extra.indexOf( present[j] ) < 0 )
+         extra.push( present[j] );
+   return ranked.concat( extra.sort() );
+};
+
+/*
  * The channel every other channel is registered to.
  *
  * `present` lists the channel keys in the run; `quality` maps a key to
@@ -1917,17 +1781,7 @@ Pipeline.registrationReference = function( present, quality )
    if ( present.indexOf( "L" ) >= 0 )
       return { key: "L", reason: "L is present, and L is always the reference" };
 
-   var order = Pipeline.REGISTRATION_FALLBACK_ORDER;
-   var ranked = [];
-   for ( var i = 0; i < order.length; ++i )
-      if ( present.indexOf( order[i] ) >= 0 )
-         ranked.push( order[i] );
-   // Anything not in the order still takes part, after it and sorted.
-   var extra = [];
-   for ( var j = 0; j < present.length; ++j )
-      if ( ranked.indexOf( present[j] ) < 0 && extra.indexOf( present[j] ) < 0 )
-         extra.push( present[j] );
-   ranked = ranked.concat( extra.sort() );
+   var ranked = Pipeline.registrationFallbackRanking( present );
    if ( ranked.length == 0 )
       return { key: null, reason: "no channels" };
 
@@ -2221,39 +2075,38 @@ Pipeline.balanceNarrowband = function( chans, config )
          medians[nb[n]] = Steps.medianOfCentre( chans[nb[n]].view, 0.6 );
 
    var refKey = Util.minMedianKey( medians );
-   var wantPalettes = ( config.palettes || [] ).length > 0;
-   if ( refKey !== null && Object.keys( medians ).length > 1 )
+   if ( refKey === null || Object.keys( medians ).length <= 1 )
    {
-      if ( wantPalettes )
-      {
-         /*
-          * Offset only. LinearFit assumes two images are the same signal
-          * at different scales -- true across frames of one filter, false
-          * across Ha, SII and OIII, which are different lines with
-          * different morphology. Measured on real data it scaled H down
-          * ~8x (H max 0.105 against S's 0.800), leaving Ha with about 23
-          * levels of 16-bit range across the nebula. That is what
-          * posterised NarrowbandNormalization and turned the palette
-          * green. SPCC in narrowband mode does the calibration properly,
-          * on the composite, further down.
-          */
-         var views = [];
-         for ( var mo = 0; mo < nb.length; ++mo )
-            if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
-         Util.log( "background", "narrowband sky floors matched to " + refKey +
-                                 " by offset; line ratios preserved for SPCC" );
-         Steps.matchBackgroundOffset( views, chans[refKey].view );
-      }
-      else
-      {
-         Util.log( "linearfit", "reference is " + refKey );
-         for ( var m = 0; m < nb.length; ++m )
-            if ( chans[nb[m]] && nb[m] != refKey )
-               Steps.linearFit( chans[nb[m]].view, chans[refKey].view );
-      }
-   }
-   else
       Util.log( "linearfit", "skipped: fewer than two narrowband channels" );
+      return;
+   }
+
+   if ( ( config.palettes || [] ).length > 0 )
+   {
+      /*
+       * Offset only. LinearFit assumes two images are the same signal
+       * at different scales -- true across frames of one filter, false
+       * across Ha, SII and OIII, which are different lines with
+       * different morphology. Measured on real data it scaled H down
+       * ~8x (H max 0.105 against S's 0.800), leaving Ha with about 23
+       * levels of 16-bit range across the nebula. That is what
+       * posterised NarrowbandNormalization and turned the palette
+       * green. SPCC in narrowband mode does the calibration properly,
+       * on the composite, further down.
+       */
+      var views = [];
+      for ( var mo = 0; mo < nb.length; ++mo )
+         if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
+      Util.log( "background", "narrowband sky floors matched to " + refKey +
+                              " by offset; line ratios preserved for SPCC" );
+      Steps.matchBackgroundOffset( views, chans[refKey].view );
+      return;
+   }
+
+   Util.log( "linearfit", "reference is " + refKey );
+   for ( var m = 0; m < nb.length; ++m )
+      if ( chans[nb[m]] && nb[m] != refKey )
+         Steps.linearFit( chans[nb[m]].view, chans[refKey].view );
 };
 
       /*
@@ -2580,6 +2433,25 @@ if ( rgbLinear != null )
 };
 
 /*
+ * A palette's stars frame. Narrowband stars are kept only when there are
+ * no broadband stars to recombine against. With an RGB composite in the
+ * run its stars are the ones that get used, and a second, dimmer set from
+ * the narrowband palette is just another window to close by hand.
+ */
+Pipeline.publishPaletteStars = function( entry, rgbStarsKept, keepIds, reg, results )
+{
+   if ( rgbStarsKept )
+   {
+      Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
+                          "already covers the broadband stars" );
+      try { entry.stars.forceClose(); } catch ( e ) {}
+   }
+   else
+      Pipeline.publish( entry.stars, entry.name + "_stars", reg,
+                        keepIds, results, entry.name + "_stars" );
+};
+
+/*
  * Name and keep each palette, its stars and its linear copy.
  */
 Pipeline.publishPalettes = function( results, paletteWins, rgbStarsKept,
@@ -2605,29 +2477,11 @@ Pipeline.publishPalettes = function( results, paletteWins, rgbStarsKept,
       }
 
       var eSplit = ( entry.stars != null );
-      entry.window = Pipeline.publish( entry.window,
-                        eSplit ? ( entry.name + "_starless" ) : entry.name,
-                        reg, keepIds, results,
-                        eSplit ? ( entry.name + "_starless" ) : entry.name );
+      var mainName = eSplit ? ( entry.name + "_starless" ) : entry.name;
+      entry.window = Pipeline.publish( entry.window, mainName,
+                                       reg, keepIds, results, mainName );
       if ( eSplit )
-      {
-         /*
-          * Narrowband stars are kept only when there are no broadband
-          * stars to recombine against. With an RGB composite in the run
-          * its stars are the ones that get used, and a second, dimmer
-          * set from the narrowband palette is just another window to
-          * close by hand.
-          */
-         if ( rgbStarsKept )
-         {
-            Util.log( "output", entry.name + ": stars dropped -- RGB_stars " +
-                                "already covers the broadband stars" );
-            try { entry.stars.forceClose(); } catch ( e ) {}
-         }
-         else
-            Pipeline.publish( entry.stars, entry.name + "_stars", reg,
-                              keepIds, results, entry.name + "_stars" );
-      }
+         Pipeline.publishPaletteStars( entry, rgbStarsKept, keepIds, reg, results );
       if ( entry.linear != null )
          Pipeline.publish( entry.linear, entry.name + "_linear", reg,
                            keepIds, results, entry.name + "_linear" );

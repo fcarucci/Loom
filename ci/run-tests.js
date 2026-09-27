@@ -21,6 +21,14 @@ require( "./pjsr-shim.js" );
  */
 global.LOOM_NODE_HARNESS = true;
 
+/*
+ * Run only some test groups: LOOM_TEST_ONLY=steps,cache (see testGroup in
+ * selftest.js). Unset runs the full suite, as always; the result line of a
+ * filtered run says FILTERED, so it cannot be mistaken for a full pass.
+ */
+if ( process.env.LOOM_TEST_ONLY !== undefined )
+   global.LOOM_TEST_ONLY = process.env.LOOM_TEST_ONLY;
+
 const fs = require( "fs" );
 const path = require( "path" );
 
@@ -28,128 +36,24 @@ const root = path.resolve( __dirname, ".." );
 const scriptDir = path.join( root, "script" );
 
 /*
- * A small stand-in for PJSR's preprocessor.
- *
- * Stripping the directives is not enough: Util.js selects its platform
- * with #ifeq on __PI_PLATFORM__ and then uses the macro it defines, so a
- * stripped file does not even load. This handles #define, #ifdef,
- * #ifndef, #ifeq, #else and #endif, and substitutes defined tokens.
- *
- * The define table is shared across files, exactly as PixInsight's is,
- * because that sharing is not a detail -- Steps.js must `#define VERSION`
- * for the bundled ImageSolver, and that define silently rewrote a
- * property access in a different file, which cost hours to find. A
- * faithful stand-in can catch that class of bug here, for free, on every
- * push. A stripping one cannot.
- *
- * Directive lines are replaced with comments rather than removed, so
- * every line number matches the real file and a stack trace points at it.
+ * A faithful stand-in for PJSR's preprocessor lives in ci/preprocess.js,
+ * shared with the reference gate. This instance's define table is shared
+ * across every file loaded below, exactly as PixInsight's is.
  */
-/*
- * The preprocessor symbols a real core defines.
- *
- * __PI_RELEASE__ matters as much as the platform now that Loom compiles
- * differently on 1.9.4 and 1.9.5: without it, every #ifoneof on the
- * release takes the 1.9.4 branch under node while PixInsight takes the
- * other one, and the suite would be testing a build nobody runs.
- *
- * Set to the version Loom is developed against. The 1.9.4 branch is
- * exercised by LOOM_TEST_CORE below rather than by leaving this unset.
- */
-const defines = { __PI_PLATFORM__: "MACOSX",
-                  __PI_MAJOR__: process.env.LOOM_TEST_CORE_MAJOR || "1",
-                  __PI_MINOR__: process.env.LOOM_TEST_CORE_MINOR || "9",
-                  __PI_RELEASE__: process.env.LOOM_TEST_CORE_RELEASE || "5" };
-
-function valueOf( token )
-{
-   const t = token.trim().replace( /^"|"$/g, "" );
-   return ( defines[t] !== undefined ) ? String( defines[t] ).replace( /^"|"$/g, "" ) : t;
-}
-
-/* One conditional-compilation stack, true while each enclosing branch is live. */
-function isLive( stack ) { return stack.every( Boolean ); }
+const { preprocess, defines } = require( "./preprocess.js" ).createPreprocessor( process.env );
 
 /*
- * Apply one directive to the branch stack and the define table. Directives
- * with no effect here -- include, engine, feature-id, feature-info -- fall
- * through, but every one of them is still commented out by the caller.
+ * The static reference gate, before anything loads: every NS.member read
+ * defined somewhere, every entry point's includes complete, load order and
+ * packaging lists consistent (see ci/check-refs.js). Node runs a fraction
+ * of the code; this reads all of it. The gate's own tests run right after,
+ * so a gate that has stopped detecting anything cannot pass vacuously.
  */
-function applyDirective( stack, directive, rest )
 {
-   switch ( directive )
-   {
-   case "ifdef":  stack.push( defines[rest.trim()] !== undefined ); break;
-   case "ifndef": stack.push( defines[rest.trim()] === undefined ); break;
-   case "ifeq":
-   {
-      const parts = rest.trim().split( /\s+/ );
-      stack.push( valueOf( parts[0] ) === valueOf( parts[1] ) );
-      break;
-   }
-   case "ifoneof":
-   {
-      /*
-       * #ifoneof NAME A B ... -- absent from the first version of
-       * this stand-in, so its body ran unguarded and redefined the
-       * platform the #ifeq above had just settled. A directive that
-       * is not understood must still BALANCE, or every #endif after
-       * it pops someone else's branch.
-       */
-      const parts = rest.trim().split( /\s+/ );
-      const subject = valueOf( parts[0] );
-      stack.push( parts.slice( 1 ).some( p => valueOf( p ) === subject ) );
-      break;
-   }
-   case "else":   stack[stack.length - 1] = !stack[stack.length - 1]; break;
-   case "endif":  stack.pop(); break;
-   case "define":
-   {
-      const m = /^(\w+)\s*(.*)$/.exec( rest.trim() );
-      if ( isLive( stack ) && m )
-         defines[m[1]] = m[2].trim();
-      break;
-   }
-   default: break;
-   }
-}
-
-/* A code line with every defined token replaced, as the real core does. */
-function substituteDefines( line )
-{
-   let code = line;
-   for ( const name of Object.keys( defines ) )
-      if ( name !== "__PI_PLATFORM__" )
-         code = code.replace( new RegExp( "\\b" + name + "\\b", "g" ), defines[name] );
-   return code;
-}
-
-function preprocess( text )
-{
-   const out = [];
-   const stack = [];
-   let continued = false;      // the previous directive ended in a backslash
-   for ( const line of text.split( "\n" ) )
-   {
-      /*
-       * A directive continues onto the next line after a trailing
-       * backslash, as #feature-info does. The continuation is part of the
-       * directive, not code, and must be commented out with it.
-       */
-      const d = continued ? null : /^\s*#\s*(\w+)\s*(.*)$/.exec( line );
-      if ( continued || d )
-      {
-         if ( d )
-            applyDirective( stack, d[1], d[2] );
-         continued = /\\\s*$/.test( line );
-         out.push( "//" + line );
-         continue;
-      }
-      // A line inside a dead branch must not run, but must still occupy
-      // its line number.
-      out.push( isLive( stack ) ? substituteDefines( line ) : "//" + line );
-   }
-   return out.join( "\n" );
+   const gatePassed = require( "./check-refs.js" ).main( root ) === 0;
+   const gateTestsPassed = require( "./check-refs.test.js" ).run( { quiet: true, inSuite: true } );
+   if ( !gatePassed || !gateTestsPassed )
+      process.exit( 1 );
 }
 
 function load( file )
@@ -161,6 +65,8 @@ function load( file )
 }
 
 const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+               "lib/StepsSyqon.js", "lib/StepsIcc.js",
+               "lib/Config.js",
                "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",
                "lib/Frames.js", "lib/Fly.js", "lib/Solve.js", "lib/Sky.js",
                "lib/Render.js", "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
@@ -233,6 +139,25 @@ for ( const lib of LIBS )
 }
 
 /*
+ * Loom.js, for the config functions the suite tests (defaultConfig,
+ * loadConfig, saveConfig). selftest.js #includes it, which this loader
+ * does not follow, so it is evaluated here under the two defines that
+ * selftest.js sets before its include: LOOM_LIBS_INCLUDED keeps it from
+ * re-running the libraries, LOOM_UNDER_TEST from calling main().
+ */
+defines.LOOM_LIBS_INCLUDED = "1";
+defines.LOOM_UNDER_TEST = "1";
+{
+   const { src } = load( "Loom.js" );
+   try { ( 0, eval )( src ); }
+   catch ( e )
+   {
+      console.error( "FAILED TO LOAD Loom.js: " + e.message );
+      process.exit( 1 );
+   }
+}
+
+/*
  * The suite's own console. PJSR scripts write through a global `console`
  * whose methods node does not have; map the ones the suite uses onto
  * something quiet, so a passing run is not buried in output.
@@ -291,7 +216,9 @@ catch ( e )
  */
 const lines = summary.split( "\n" );
 const notShimmed = lines.filter( l => l.includes( "NotShimmed" ) );
-const realFailures = lines.slice( 1 ).filter( l => l.trim() && !l.includes( "NotShimmed" ) );
+// a filtered run names the groups it ran on the line after the result
+const filtered = lines[0].includes( " FILTERED[" );
+const realFailures = lines.slice( filtered ? 2 : 1 ).filter( l => l.trim() && !l.includes( "NotShimmed" ) );
 
 /*
  * An aborted run is a FAILURE even with nothing in the failure list: the
@@ -302,6 +229,8 @@ const realFailures = lines.slice( 1 ).filter( l => l.trim() && !l.includes( "Not
 const aborted = lines[0].includes( "ABORTED" );
 
 console.error( lines[0] );
+if ( filtered )
+   console.error( lines[1] );
 if ( notShimmed.length )
 {
    console.error( "\nneeds PixInsight, not run here (" + notShimmed.length + "):" );

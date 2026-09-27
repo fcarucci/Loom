@@ -17,6 +17,9 @@
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
+#include "lib/StepsSyqon.js"
+#include "lib/StepsIcc.js"
+#include "lib/Config.js"
 #include "lib/Frames.js"
 #include "lib/Fly.js"
 #include "lib/Solve.js"
@@ -65,6 +68,15 @@
 #include "FrameSelector.js"
 #define LOOM_FLY_UNDER_TEST 1
 #include "FlyThrough.js"
+/*
+ * Loom.js too, for defaultConfig, loadConfig and saveConfig: the same two
+ * guards, so its libraries are not re-run and its dialog does not open.
+ * Last of the three, so its main() -- which every entry point defines --
+ * is the one the functions below would see; the suite does not call it,
+ * and its own main() is declared after all of them.
+ */
+#define LOOM_UNDER_TEST 1
+#include "Loom.js"
 
 #define RESULT_FILE "/tmp/agent-scratch/lhso-selftest.txt"
 
@@ -175,6 +187,90 @@ function check( name, actual, expected )
    var e = JSON.stringify( expected );
    if ( a != e )
       FAILURES.push( name + ": expected " + e + ", got " + a );
+}
+
+/*
+ * Test groups, so a change can be checked against only the tests it
+ * touches. runTests and the Fly and Solve tests are cut into sections,
+ * each wrapped in `if ( testGroup( "name" ) )`; a name may be used by
+ * more than one section, and "prelude" is setup that always runs.
+ *
+ * The filter is read once, by main(). Under PixInsight it is the file
+ * TEST_ONLY_FILE, one entry per line ('#' starts a comment line); under
+ * node it is LOOM_TEST_ONLY, comma-separated, which ci/run-tests.js sets
+ * from the environment. No filter, or an empty one, is the full suite.
+ *
+ * An entry selects a group by its whole name or by a prefix that ends at
+ * a dot: "steps" runs steps.syqon, "step" runs nothing. An entry that
+ * selects no group at all is a FAILURE, so a typo cannot pass as an
+ * empty green run, and a filtered run never reads as a full one: its
+ * result line says FILTERED and names what was asked for.
+ */
+var TEST_ONLY_FILE = "/tmp/agent-scratch/loom-test-only.txt";
+var TEST_ONLY = null;      // null is the full suite; otherwise the entries asked for
+var GROUPS_SEEN = {};      // every group the suite reached, run or not
+var GROUPS_RUN = [];       // the groups a filtered run ran, in order, once each
+
+function testGroupSelects( entry, name )
+{
+   return name == entry || name.indexOf( entry + "." ) == 0;
+}
+
+function testGroup( name )
+{
+   if ( name == "prelude" )
+      return true;
+   GROUPS_SEEN[name] = true;
+   if ( TEST_ONLY == null )
+      return true;
+   for ( var i = 0; i < TEST_ONLY.length; ++i )
+      if ( testGroupSelects( TEST_ONLY[i], name ) )
+      {
+         if ( GROUPS_RUN.indexOf( name ) < 0 )
+            GROUPS_RUN.push( name );
+         return true;
+      }
+   return false;
+}
+
+/* The entries asked for, or null for the full suite. */
+function readTestFilter()
+{
+   var text = null;
+   if ( IN_PIXINSIGHT )
+   {
+      if ( File.exists( TEST_ONLY_FILE ) )
+         text = File.readTextFile( TEST_ONLY_FILE );
+   }
+   else if ( typeof LOOM_TEST_ONLY != "undefined" && LOOM_TEST_ONLY != null )
+      text = String( LOOM_TEST_ONLY ).split( "," ).join( "\n" );
+   if ( text == null )
+      return null;
+   var entries = [];
+   var lines = String( text ).split( "\n" );
+   for ( var i = 0; i < lines.length; ++i )
+   {
+      var entry = lines[i].trim();
+      if ( entry.length > 0 && entry.charAt( 0 ) != "#" )
+         entries.push( entry );
+   }
+   return entries.length > 0 ? entries : null;
+}
+
+/* An entry that selected no group is a failure: it is a typo, not a pass. */
+function checkTestFilter()
+{
+   if ( TEST_ONLY == null )
+      return;
+   for ( var i = 0; i < TEST_ONLY.length; ++i )
+   {
+      var known = false;
+      for ( var name in GROUPS_SEEN )
+         if ( testGroupSelects( TEST_ONLY[i], name ) )
+            known = true;
+      if ( !known )
+         FAILURES.push( "unknown test group: " + TEST_ONLY[i] );
+   }
 }
 
 /*
@@ -324,8 +420,510 @@ function FlyThroughTestRemove( dir )
    if ( f.begin( dir + "/*" ) ) do { if ( !f.isDirectory ) File.remove( dir + "/" + f.name ); } while ( f.next() );
 }
 
+/*
+ * Runs fn with Settings and Parameters replaced by recording fakes, so the
+ * config code can be exercised without touching the real PixInsight
+ * settings -- a test that wrote "Loom/..." keys for real would overwrite
+ * the configuration of whoever runs the suite.
+ *
+ * `stored` is the Settings store (key -> value; absent reads null) and is
+ * written through; `params` is the process-icon Parameters (name -> value),
+ * read only. Every call is recorded in order in `log`, DataTypes by name so
+ * the transcript is the same under node and PixInsight; Parameters.set goes
+ * to `paramsSet`. The side effects of loading are recorded in the same log,
+ * with scripted results so they do not depend on the machine:
+ * env.studio is what Steps.studioAvailable answers (default false),
+ * env.dirMissing what Cache.selectedDirMissing answers (default false).
+ * Every replaced function and Cache's folder are restored afterwards.
+ *
+ * If the globals cannot be replaced, fn is NOT run and `swapped` is false:
+ * the caller must fail on that rather than let fn reach the real store.
+ */
+function withConfigStore( stored, params, fn, env )
+{
+   env = env || {};
+   var G = ( function() { return this; } )();
+   var out = { stored: stored, paramsSet: {}, log: [], swapped: false, result: undefined };
+   var has = function( o, k ) { return Object.prototype.hasOwnProperty.call( o, k ); };
+   function typeName( t )
+   {
+      return ( t === DataType_Boolean ) ? "Boolean" : ( t === DataType_String ) ? "String" :
+             ( t === DataType_Double ) ? "Double" : "type " + t;
+   }
+   var fakeSettings = {
+      read: function( key, type )
+      {
+         out.log.push( "Settings.read " + key + " " + typeName( type ) );
+         return has( stored, key ) ? stored[key] : null;
+      },
+      write: function( key, type, value )
+      {
+         out.log.push( "Settings.write " + key + " " + typeName( type ) + " " + JSON.stringify( value ) );
+         stored[key] = value;
+      }
+   };
+   function getter( kind )
+   {
+      return function( name )
+      {
+         out.log.push( "Parameters." + kind + " " + name );
+         return params[name];
+      };
+   }
+   var fakeParameters = {
+      has: function( name ) { out.log.push( "Parameters.has " + name ); return has( params, name ); },
+      getString: getter( "getString" ), getReal: getter( "getReal" ),
+      getBoolean: getter( "getBoolean" ), getInteger: getter( "getInteger" ),
+      get: getter( "get" ),
+      set: function( name, value )
+      {
+         out.log.push( "Parameters.set " + name + " " + JSON.stringify( value ) );
+         out.paramsSet[name] = value;
+      }
+   };
+
+   var realSettings = G.Settings, realParameters = G.Parameters;
+   var real = { studio: Steps.studioAvailable, migrate: Steps.migrateConfig, setDir: Cache.setDir,
+                missing: Cache.selectedDirMissing, disable: Cache.disableIfDirMissing };
+   var realDir = Cache.overrideDir;
+   try
+   {
+      try { G.Settings = fakeSettings; G.Parameters = fakeParameters; } catch ( e ) {}
+      out.swapped = ( Settings === fakeSettings && Parameters === fakeParameters );
+      if ( !out.swapped )
+         return out;
+      Steps.studioAvailable = function()
+      {
+         out.log.push( "Steps.studioAvailable -> " + !!env.studio );
+         return !!env.studio;
+      };
+      Steps.migrateConfig = function( config, prism2Offered )
+      {
+         out.log.push( "Steps.migrateConfig " + JSON.stringify( prism2Offered ) );
+         return real.migrate.apply( Steps, arguments );
+      };
+      Cache.setDir = function( path )
+      {
+         out.log.push( "Cache.setDir " + JSON.stringify( path ) );
+         return real.setDir.apply( Cache, arguments );
+      };
+      Cache.selectedDirMissing = function() { return !!env.dirMissing; };
+      Cache.disableIfDirMissing = function( config )
+      {
+         var r = real.disable.apply( Cache, arguments );
+         out.log.push( "Cache.disableIfDirMissing -> " + r );
+         return r;
+      };
+      out.result = fn();
+   }
+   finally
+   {
+      try { G.Settings = realSettings; G.Parameters = realParameters; } catch ( e ) {}
+      Steps.studioAvailable = real.studio;
+      Steps.migrateConfig = real.migrate;
+      Cache.setDir = real.setDir;
+      Cache.selectedDirMissing = real.missing;
+      Cache.disableIfDirMissing = real.disable;
+      Cache.overrideDir = realDir;
+   }
+   return out;
+}
+
+/*
+ * The config transcripts: what Loom.js's loadConfig reads, in what order,
+ * with which side effects, and the config it returns, for scripted stored
+ * states; what saveConfig writes for a range of configs; and defaultConfig
+ * itself, key order included. Compared against ci/fixtures/config.json,
+ * captured from the code before lib/Config.js existed, so moving and
+ * table-driving that code cannot change a key, a DataType, an order or a
+ * coercion without a check failing here.
+ */
+function configTranscripts()
+{
+   var K = "Loom/";
+   var out = { defaults: defaultConfig(), load: {}, save: {}, swapped: true };
+
+   function load( name, stored, params, env )
+   {
+      var r = withConfigStore( stored, params, function() { return loadConfig(); }, env );
+      if ( !r.swapped )
+         out.swapped = false;
+      out.load[name] = { log: r.log, config: r.result };
+   }
+   function save( name, config )
+   {
+      var r = withConfigStore( {}, {}, function() { saveConfig( config ); } );
+      if ( !r.swapped )
+         out.swapped = false;
+      out.save[name] = { log: r.log };
+   }
+   function stored( pairs )
+   {
+      var s = {};
+      for ( var k in pairs )
+         s[K + k] = pairs[k];
+      return s;
+   }
+
+   var every = {
+      savedList: "/m/a.xisf;/m/b.xisf", palettes: "SHO,HOO", narrowbandNormalize: false,
+      graxpertNarrowband: true, narrowbandBandwidth: 6.5, reduceHalos: true, projectName: "M31",
+      exportPsb: true, separateLStars: true, keepLinear: true, exportDir: "/out",
+      stretchMethod: Steps.STRETCH_METHOD_MAS, stretch: true, marsPath: "/mars/db",
+      starTool: Steps.STAR_TOOL_STARNET, noiseTool: Steps.NR_TOOL_MLDENOISE, noiseLevel: "high",
+      noiseLevelL: "low", sharpenTool: Steps.SHARPEN_TOOL_BXT, starReduction: "medium",
+      detailLevel: "high", gradientTool: Steps.GRADIENT_TOOL_STUDIO, useGraXpert: true,
+      autoUpdate: false, useCache: false, smoothing: 0.25, cacheDir: "/Volumes/X/cache",
+      filter_L: "Antlia L", filter_R: "Antlia R", filter_G: "Antlia G", filter_B: "Antlia B"
+   };
+
+   load( "empty", {}, {} );
+   load( "every Settings key set", stored( every ), {} );
+   load( "legacy useGraXpert true, Settings only", stored( { useGraXpert: true } ), {} );
+   load( "legacy useGraXpert false, Settings only", stored( { useGraXpert: false } ), {} );
+   load( "legacy useGraXpert, Parameters only", {}, { useGraXpert: true } );
+   load( "legacy useGraXpert false, Parameters only", {}, { useGraXpert: false } );
+   load( "empty strings for every string key", stored( {
+      savedList: "", palettes: "", projectName: "", exportDir: "", stretchMethod: "",
+      marsPath: "", starTool: "", noiseTool: "", noiseLevel: "", noiseLevelL: "",
+      sharpenTool: "", starReduction: "", detailLevel: "", gradientTool: "", cacheDir: "",
+      filter_L: "", filter_R: "", filter_G: "", filter_B: "" } ), {} );
+   load( "narrowbandBandwidth 0", stored( { narrowbandBandwidth: 0 } ), {} );
+   load( "narrowbandBandwidth negative", stored( { narrowbandBandwidth: -2 } ), {} );
+   load( "Parameters and Settings disagree on every dual key",
+         stored( { smoothing: 0.9, gradientTool: Steps.GRADIENT_TOOL_NONE, graxpertNarrowband: false,
+                   useCache: true, autoUpdate: true } ),
+         { smoothing: 0.1, gradientTool: Steps.GRADIENT_TOOL_GRAXPERT, graxpertNarrowband: true,
+           useCache: false, autoUpdate: false } );
+   load( "Parameters only, every name",
+         {},
+         { path_L: "/m/L.xisf", path_R: "/m/R.xisf", path_G: "", path_B: "/m/B.xisf",
+           path_H: "/m/H.xisf", path_S: "", path_O: "/m/O.xisf", savedList: "/m/list",
+           smoothing: 0.7, gradientTool: Steps.GRADIENT_TOOL_NONE, useGraXpert: true,
+           graxpertNarrowband: true, useCache: false, autoUpdate: false } );
+   load( "palettes with empty entries", stored( { palettes: ",,SHO," } ), {} );
+   load( "savedList empty in Parameters, set in Settings", stored( { savedList: "/s/list" } ),
+         { savedList: "" } );
+   load( "savedList in both: Parameters wins", stored( { savedList: "/s/list" } ),
+         { savedList: "/p/list" } );
+   load( "cache folder missing: the cache is off for this launch",
+         stored( { cacheDir: "/Volumes/Gone/cache", useCache: true } ), {}, { dirMissing: true } );
+   load( "cache folder missing but the cache already off",
+         stored( { cacheDir: "/Volumes/Gone/cache", useCache: false } ), {}, { dirMissing: true } );
+   load( "Studio found, Prism 2.0 offered: the old Prism name maps up",
+         stored( { noiseTool: Steps.NR_TOOL_STUDIO_OLD } ), {}, { studio: true } );
+   load( "Studio found, Prism 2.0 refused: 2.0 maps down to Essential",
+         stored( { noiseTool: Steps.NR_TOOL_STUDIO2, studioPrism2Unavailable: true } ), {}, { studio: true } );
+   load( "Studio not found: 2.0 stays", stored( { noiseTool: Steps.NR_TOOL_STUDIO2 } ), {} );
+   load( "retired Studio Parallax (correct only)",
+         stored( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO_CORRECT_OLD, starReduction: "high",
+                   detailLevel: "high" } ), {} );
+
+   var all = defaultConfig();
+   all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf" };
+   all.views = { L: "L_view" };
+   all.savedList = "/m/list";
+   all.filters = { L: "Antlia L", R: "Antlia R", G: "Antlia G", B: "Antlia B" };
+   all.gradientTool = Steps.GRADIENT_TOOL_STUDIO;
+   all.graxpertNarrowband = true;
+   all.smoothing = 0.3;
+   all.validateOnly = true;
+   all.keepWindowsOnError = true;
+   all.palettes = [ "SHO", "HOO" ];
+   all.narrowbandBandwidth = 6.5;
+   all.narrowbandNormalize = false;
+   all.reduceHalos = true;
+   all.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+   all.stretch = true;
+   all.stretchMethod = Steps.STRETCH_METHOD_MAS;
+   all.keepLinear = true;
+   all.separateLStars = true;
+   all.exportPsb = true;
+   all.projectName = "M31";
+   all.exportDir = "/out";
+   all.marsPath = "/mars/db";
+   all.starTool = Steps.STAR_TOOL_STARNET;
+   all.noiseTool = Steps.NR_TOOL_MLDENOISE;
+   all.noiseLevel = "high";
+   all.noiseLevelL = "low";
+   all.starReduction = "medium";
+   all.detailLevel = "high";
+   all.autoUpdate = false;
+   all.useCache = false;
+   all.cacheDir = "/Volumes/X/cache";
+   all.ignoreCache = true;
+
+   var blank = defaultConfig();
+   [ "savedList", "gradientTool", "stretchMethod", "projectName", "exportDir", "marsPath", "starTool",
+     "noiseTool", "noiseLevel", "noiseLevelL", "sharpenTool", "starReduction", "detailLevel",
+     "cacheDir" ].forEach( function( k ) { blank[k] = ""; } );
+   blank.narrowbandBandwidth = 0;
+
+   var sparse = { paths: { L: "/m/L.xisf", R: "", G: "", B: "", H: "", S: "", O: "" },
+                  smoothing: 0.5, useCache: true, autoUpdate: true };
+
+   var someFilters = defaultConfig();
+   someFilters.filters = { R: "Antlia R", B: "" };
+
+   var legacy = defaultConfig();
+   legacy.gradientTool = "";
+   legacy.useGraXpert = true;
+
+   var legacyOff = defaultConfig();
+   legacyOff.gradientTool = "";
+   legacyOff.useGraXpert = false;
+
+   save( "defaults", defaultConfig() );
+   save( "every field set", all );
+   save( "empty strings and a zero bandwidth", blank );
+   save( "optional fields undefined", sparse );
+   save( "filters partly set", someFilters );
+   save( "legacy useGraXpert true, no gradientTool", legacy );
+   save( "legacy useGraXpert false, no gradientTool", legacyOff );
+   save( "nothing but paths: the as-is fields are written undefined",
+         { paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "" } } );
+
+   /*
+    * Round trip: save then load through one store (Settings and the
+    * Parameters just written) returns what was saved, for every persisted
+    * field -- views, validateOnly, keepWindowsOnError and ignoreCache are
+    * per-run and come back as their defaults.
+    */
+   var rt = withConfigStore( {}, {}, function() { saveConfig( all ); } );
+   var back = withConfigStore( rt.stored, rt.paramsSet, function() { return loadConfig(); } );
+   if ( !rt.swapped || !back.swapped )
+      out.swapped = false;
+   out.roundTrip = back.result;
+   var persisted = JSON.parse( JSON.stringify( all ) );
+   persisted.views = {};
+   persisted.validateOnly = false;
+   persisted.keepWindowsOnError = false;
+   persisted.ignoreCache = false;
+   out.roundTripExpected = persisted;
+
+   return out;
+}
+
+/*
+ * The Steps namespace as data: one line per own member, its typeof and the
+ * sha1 of its text -- the source for a function, a canonical rendering
+ * for a value (nested functions by source, regular expressions by
+ * pattern, object keys in insertion order, since some tables are
+ * iterated). Steps is spread over three files that must behave as the one
+ * file they were cut from; this is how "nothing lost, nothing changed,
+ * every load-time value the same" is asserted, member by member.
+ * The expected inventory is ci/fixtures/steps-members.json, recorded
+ * from the single-file Steps.js before the split.
+ */
+function stepsValueText( v, depth )
+{
+   if ( typeof v == "function" )
+      return "function " + v.toString();
+   if ( v instanceof RegExp )
+      return "regexp " + String( v );
+   if ( v === null || typeof v != "object" )
+      return typeof v + " " + ( typeof v == "string" ? JSON.stringify( v ) : String( v ) );
+   if ( depth > 8 )
+      return "too deep";
+   var parts = [];
+   if ( Array.isArray( v ) )
+   {
+      for ( var i = 0; i < v.length; ++i )
+         parts.push( stepsValueText( v[i], depth + 1 ) );
+      return "[" + parts.join( "," ) + "]";
+   }
+   for ( var k in v )
+      if ( Object.prototype.hasOwnProperty.call( v, k ) )
+         parts.push( JSON.stringify( k ) + ":" + stepsValueText( v[k], depth + 1 ) );
+   return "{" + parts.join( "," ) + "}";
+}
+
+function stepsMemberInventory()
+{
+   var out = {};
+   var keys = Object.keys( Steps ).sort();
+   for ( var i = 0; i < keys.length; ++i )
+   {
+      var h = new CryptographicHash( CryptographicHash.SHA1 );
+      out[keys[i]] = ( typeof Steps[keys[i]] ) + " " +
+                     h.hash( stepsValueText( Steps[keys[i]], 0 ) ).toHex();
+   }
+   return out;
+}
+
+/*
+ * Steps.js is cut into Steps.js, StepsSyqon.js and StepsIcc.js, the same
+ * namespace. What can go wrong is not logic -- the moves are verbatim --
+ * but a member lost, an include missing, a load-time value initialised
+ * in a different order, a Settings key or a source pin quietly pointing
+ * at the wrong file. Runs FIRST, before any other check assigns a fake
+ * into Steps, so what it sees is what loading produced.
+ */
+function runStepsMemberTests()
+{
+   /*
+    * Nothing lost, nothing added, every body and value identical. Node
+    * only: the fixture is the node harness's rendering of the functions,
+    * and PixInsight's engine prints source its own way.
+    */
+   if ( !IN_PIXINSIGHT )
+   {
+      var fixture = JSON.parse( File.readTextFile( LOOM_DIR + "/../ci/fixtures/steps-members.json" ) );
+      var want = {};
+      for ( var k5 in fixture.core5 )
+         want[k5] = fixture.core5[k5];
+      if ( String( __PI_RELEASE__ ) == "4" )
+         for ( var k4 in fixture.core4 )
+            want[k4] = fixture.core4[k4];
+      var have = stepsMemberInventory();
+      var lost = [], added = [], changed = [];
+      for ( var w in want )
+         if ( !( w in have ) )
+            lost.push( w );
+         else if ( have[w] != want[w] )
+            changed.push( w );
+      for ( var h in have )
+         if ( !( h in want ) )
+            added.push( h );
+      check( "Steps: no member lost", lost, [] );
+      check( "Steps: no member added", added, [] );
+      check( "Steps: every member's source and load-time value unchanged", changed, [] );
+      check( "Steps: the member count", Object.keys( have ).length, 295 );
+   }
+
+   /*
+    * The Settings keys a user's installation already holds. A renamed key
+    * forgets every remembered binary and the Prism 2.0 refusal.
+    */
+   check( "the remembered-binary Settings keys",
+          [ "parallax_cli", "prism_cli", "SyQonStarless", "syqon-cli" ].map( Steps.executableSettingKey ),
+          [ "Loom/exe_parallax_cli", "Loom/exe_prism_cli", "Loom/exe_SyQonStarless", "Loom/exe_syqon-cli" ] );
+   check( "the Prism 2.0 refusal Settings key", Steps.PRISM2_UNAVAILABLE_KEY, "Loom/studioPrism2Unavailable" );
+   check( "the Studio Keychain note",
+          Steps.STUDIO_KEYCHAIN_NOTE,
+          "SyQon Studio may ask for your Mac password to reach its sign-in in the " +
+          "Keychain: enter it and choose Always Allow, or it will ask again every run." );
+   if ( !IN_PIXINSIGHT )
+   {
+      // The keys as actually read and written, with their types, through a recording Settings.
+      var realRead = Settings.read, realWrite = Settings.write, realFind = Steps.findExecutable;
+      var said = [], asked = [];
+      try
+      {
+         Settings.read = function( key, type ) { said.push( [ "read", key, type ] ); return null; };
+         Settings.write = function( key, type, value ) { said.push( [ "write", key, type, value ] ); };
+         Steps.findExecutable = function( name, config )
+         {
+            asked.push( [ name, String( config ).replace( File.systemTempDirectory, "<temp>" ) ] );
+            return null;
+         };
+         Steps.rememberedExecutable( "parallax_cli" );
+         Steps.rememberExecutable( "prism_cli", "/opt/prism_cli" );
+         Steps.studioPrism2Unavailable();
+         Steps.setStudioPrism2Unavailable( true );
+         Steps.syqonExecutable();
+         Steps.prismExecutable();
+         Steps.starlessExecutable();
+         Steps.studioExecutable();
+      }
+      finally
+      {
+         Settings.read = realRead;
+         Settings.write = realWrite;
+         Steps.findExecutable = realFind;
+      }
+      check( "Settings: the keys and types read and written",
+             said,
+             [ [ "read", "Loom/exe_parallax_cli", DataType_String ],
+               [ "write", "Loom/exe_prism_cli", DataType_String, "/opt/prism_cli" ],
+               [ "read", "Loom/studioPrism2Unavailable", DataType_Boolean ],
+               [ "write", "Loom/studioPrism2Unavailable", DataType_Boolean, true ] ] );
+      check( "each SyQon binary is looked for by its name and its config file",
+             asked,
+             [ [ "parallax_cli", "<temp>/SyQonParallaxCLI/syqon_parallax_config.csv" ],
+               [ "prism_cli", "<temp>/SyQonPrismCLI/syqon_prism_config.csv" ],
+               [ "SyQonStarless", "<temp>/SyQonStarlessCLI/syqon_starless_config.csv" ],
+               [ "syqon-cli", "<temp>/SyQonStudioCLI/syqon_studio_config.csv" ] ] );
+   }
+
+   /*
+    * Session state as loading leaves it: nothing missing, nothing
+    * assigned, no plan cached, no Studio note said. StepsIcc.js and
+    * StepsSyqon.js set these at load; a reordered initialisation shows
+    * here.
+    */
+   check( "ICC state at load: no profile known missing", Steps.missingProfiles, {} );
+   check( "ICC state at load: no RGB profile in use", Steps.rgbProfileInUse, null );
+   check( "ICC state at load: nothing assigned yet", Steps.lastAssignedProfile, null );
+   check( "ICC state at load: no profile plan cached",
+          Object.prototype.hasOwnProperty.call( Steps, "profilePlanCache" ), false );
+   check( "Studio state at load: nothing said, nothing entitled",
+          Steps.studioSession, { noted: false, entitled: {} } );
+
+   /*
+    * The source-reading checks elsewhere in this suite read lib/Steps.js
+    * for the noise ladder's comment and Steps.removeStars for its
+    * StarNet2 linear flag. They only mean something while that file is
+    * where those live.
+    */
+   var stepsSrc = File.readTextFile( LOOM_DIR + "/lib/Steps.js" );
+   check( "lib/Steps.js holds the noise ladder the comment check reads",
+          stepsSrc.indexOf( "\nSteps.NOISE_LEVELS = {" ) >= 0 &&
+          stepsSrc.indexOf( "\"Medium\" sits at each tool's own default" ) >= 0, true );
+   check( "lib/Steps.js holds Steps.removeStars",
+          stepsSrc.indexOf( "\nSteps.removeStars = function" ) >= 0, true );
+}
+
+/*
+ * Which profiles a machine gets, for six installations, pinned; and in
+ * PixInsight the bytes of the sRGB profile the fly-through embeds
+ * (Render.srgbIcc reads them through Steps.iccProfileBytes).
+ */
+function runStepsIccTests()
+{
+   function P( d, space, cls ) { return { deviceClass: cls || "mntr", colorSpace: space || "RGB", description: d }; }
+   var installs = [
+      [],
+      [ P( "ROMM RGB: ISO 22028-2:2013" ), P( "Display P3" ), P( "Generic Gray Profile", "GRAY" ),
+        P( "Generic Gray Gamma 2.2 Profile", "GRAY" ), P( "sRGB IEC61966-2.1" ) ],
+      [ P( "sRGB IEC61966-2.1" ), P( "Adobe RGB (1998)" ), P( "Dell U2720Q calibrated" ),
+        P( "ACES CG Linear (Academy Color Encoding System AP1)" ), P( "Gray Gamma 2.2", "GRAY" ),
+        P( "Rec. ITU-R BT.2020-1" ), P( "RSWOP", "CMYK", "prtr" ), P( "Rec. 2020 Linear" ) ],
+      [ P( "ProPhoto RGB" ), P( "sGray", "GRAY" ), P( "Gray Gamma 1.8", "GRAY" ), P( "Gray Gamma 2.2", "GRAY" ) ],
+      [ P( "Display P3" ), P( "sGray", "GRAY" ), P( "Wide Gamut RGB", "RGB", "spac" ),
+        P( "Epson Glossy", "RGB", "prtr" ), P( "Compatible with Adobe RGB (1998)" ) ],
+      [ P( "LG UltraFine calibrated" ), P( "sRGB Linear" ), P( "Coated FOGRA39", "CMYK", "prtr" ) ] ];
+   check( "profilePlan for six installations",
+          installs.map( function( x ) { return Steps.profilePlan( x ); } ),
+          [ { rgb: [ "ROMM RGB: ISO 22028-2:2013", "sRGB IEC61966-2.1" ],
+              gray: [ "Generic Gray Profile" ] },
+            { rgb: [ "ROMM RGB: ISO 22028-2:2013", "Display P3", "sRGB IEC61966-2.1" ],
+              gray: [ "Generic Gray Profile", "Generic Gray Gamma 2.2 Profile" ] },
+            { rgb: [ "Rec. ITU-R BT.2020-1", "Adobe RGB (1998)", "sRGB IEC61966-2.1" ],
+              gray: [ "Gray Gamma 2.2" ] },
+            { rgb: [ "ProPhoto RGB", "sRGB IEC61966-2.1" ],
+              gray: [ "Gray Gamma 1.8", "Gray Gamma 2.2", "sGray" ] },
+            { rgb: [ "Wide Gamut RGB", "Compatible with Adobe RGB (1998)", "Display P3", "sRGB IEC61966-2.1" ],
+              gray: [ "sGray" ] },
+            { rgb: [ "sRGB IEC61966-2.1" ], gray: [] } ] );
+
+   if ( IN_PIXINSIGHT )
+   {
+      var bytes = Steps.iccProfileBytes( Fly.SRGB_PROFILE_NAME );
+      var h = new CryptographicHash( CryptographicHash.SHA1 );
+      check( "the sRGB profile bytes the fly-through embeds",
+             [ bytes.length, h.hash( bytes ).toHex() ], [ 3144, "90bbb33997811925680f23c764bc2f9761f844fa" ] );
+   }
+}
+
 function runTests()
 {
+   if ( testGroup( "steps.members" ) ) {
+   runStepsMemberTests();
+   } if ( testGroup( "steps.icc" ) ) {
+   runStepsIccTests();
+
+   } if ( testGroup( "util" ) ) {
    // uniqueWindowId: no clash returns the bare base
    check( "uniqueWindowId no clash",
           Util.uniqueWindowId( "RGB", function( id ) { return false; } ),
@@ -448,6 +1046,7 @@ function runTests()
                                     G: "/a/X.xisf", B: "/a/B.xisf" } ),
           [ "Same file selected for R and G: /a/X.xisf" ] );
 
+   } if ( testGroup( "steps.chain" ) ) {
    // Availability checks use real process constructors
    if ( IN_PIXINSIGHT )
    {
@@ -490,6 +1089,7 @@ function runTests()
           Steps.lookupFilterCurve( "Definitely Not A Real Filter Name" ), null );
    }
 
+   } if ( testGroup( "util" ) ) {
    // channelFromFilter: the owner's masters carry bare single letters
    check( "channelFromFilter L", Util.channelFromFilter( "L" ), "L" );
    check( "channelFromFilter H", Util.channelFromFilter( "H" ), "H" );
@@ -574,6 +1174,7 @@ function runTests()
           null );
    check( "intersectRects empty", Util.intersectRects( [] ), null );
 
+   } if ( testGroup( "cache" ) ) {
    // --- cache key derivation ---
    // stable regardless of key insertion order
    check( "paramsString sorts keys",
@@ -667,6 +1268,7 @@ function runTests()
    }
    finally { Cache.setDir( savedCacheDir ); }
 
+   } if ( testGroup( "steps.plates" ) ) {
    /*
     * Frequency separation. The radius comes from the plate's own stars, so
     * a plate whose stars cannot be measured has no radius -- it must refuse
@@ -812,6 +1414,7 @@ function runTests()
       finally { w1.forceClose(); Steps.rgbProfileInUse = null; }
    }
 
+   } if ( testGroup( "pipeline.naming" ) ) {
    // The PSB carries its profile in image resource 1039, which the writer
    // builds by hand: nothing embeds it for us there.
    /*
@@ -844,18 +1447,18 @@ function runTests()
     * unexplained fallback is exactly the silent behaviour that warning was
     * added to end.
     */
-   var noReader = Pipeline.tryHeaderRead( "/nonexistent/loom-selftest.zzzz" );
+   var noReader = Util.tryHeaderRead( "/nonexistent/loom-selftest.zzzz" );
    check( "an unreadable extension yields no header info",
           noReader.info, null );
    check( "...and says why, in words",
           typeof noReader.why == "string" && noReader.why.length > 0, true );
-   var noFile = Pipeline.tryHeaderRead( "/nonexistent/loom-selftest.xisf" );
+   var noFile = Util.tryHeaderRead( "/nonexistent/loom-selftest.xisf" );
    check( "a missing file does not throw out of the probe",
           noFile.info, null );
    check( "...and it too carries a reason",
           typeof noFile.why == "string" && noFile.why.length > 0, true );
    check( "an empty path is a failure like any other, not a crash",
-          Pipeline.tryHeaderRead( "" ).info, null );
+          Util.tryHeaderRead( "" ).info, null );
 
    /*
     * The PSB's own name. One rule, used by both the writer and the
@@ -957,6 +1560,7 @@ function runTests()
       finally { clean.forceClose(); }
    } )();
 
+   } if ( testGroup( "steps.plates" ) ) {
    /*
     * ROMM RGB and ProPhoto RGB are the same colour space under different
     * names, and Photoshop matches its working space by NAME -- so the PSB
@@ -970,6 +1574,7 @@ function runTests()
           Steps.PROFILE_RGB_FILES.filter( function( p )
              { return !/\.(icm|icc)$/i.test( p ); } ).length, 0 );
 
+   } if ( testGroup( "psb" ) ) {
    /*
     * The palette curves. Which channel a line occupies depends on the
     * palette -- Ha is RED in HSO and HOO but GREEN in SHO -- so getting
@@ -1124,6 +1729,7 @@ function runTests()
    check( "and neither does an empty document",
           Psb.compositeBaseLayer( [] ), null );
 
+   } if ( testGroup( "update" ) ) {
    /*
     * The updater. Everything below runs against injected predicates and a
     * stubbed spawn: no repository, no network, no filesystem.
@@ -1435,6 +2041,7 @@ function runTests()
           "Loom " + Util.LOOM_VERSION );
 
 
+   } if ( testGroup( "util" ) ) {
    /* ---------------------------------------------------------------- */
    /* Running on Windows as well as macOS                               */
    /* ---------------------------------------------------------------- */
@@ -1464,6 +2071,7 @@ function runTests()
    check( "macOS is not Windows", Util.isWindows( Util.PLATFORM_MACOS ), false );
    check( "linux is not Windows", Util.isWindows( Util.PLATFORM_UNIX ), false );
 
+   } if ( testGroup( "steps.syqon" ) ) {
    /*
     * The install layout is asked of the core, not spelled out. These are
     * the four paths that used to be /Applications literals; each is
@@ -1509,8 +2117,10 @@ function runTests()
     * way from here.
     */
    var LIB_FILES = [ "Util.js", "Cache.js", "Psb.js", "Steps.js",
+                     "StepsSyqon.js", "StepsIcc.js", "Config.js",
                      "Pipeline.js", "Update.js", "UI.js",
-                     "Fly.js", "Sky.js", "Render.js" ];
+                     "Fly.js", "Sky.js", "Render.js",
+                     "Frames.js", "Solve.js", "AsiairNames.js", "Asiair.js", "NightDialog.js" ];
    var hardcoded = [];
    for ( var lf = 0; lf < LIB_FILES.length; ++lf )
    {
@@ -1548,14 +2158,14 @@ function runTests()
     * against Loom's own lib/ folder: it is guaranteed to be there, and its
     * contents are already known to this suite.
     */
-   var libEntries = Steps.directoryEntries( LOOM_DIR + "/lib" );
+   var libEntries = Util.directoryEntries( LOOM_DIR + "/lib" );
    check( "one directory level lists the library files",
           libEntries.indexOf( "Steps.js" ) >= 0 &&
           libEntries.indexOf( "Pipeline.js" ) >= 0, true );
    check( "the dot entries are not part of the listing",
           libEntries.indexOf( "." ) < 0 && libEntries.indexOf( ".." ) < 0, true );
    check( "a root that is not there enumerates as empty, not as an error",
-          Steps.directoryEntries( "/nonexistent/loom-selftest-root" ), [] );
+          Util.directoryEntries( "/nonexistent/loom-selftest-root" ), [] );
 
    /*
     * Picking a binary out of a candidate list. First match wins, and a
@@ -2004,6 +2614,7 @@ function runTests()
              [ Steps.SHARPEN_TOOL_BXT, "none", "none" ] );
    } )();
 
+   } if ( testGroup( "update" ) ) {
    /* ---------------------------------------------------------------- */
    /* The updater on Windows                                            */
    /* ---------------------------------------------------------------- */
@@ -2173,6 +2784,7 @@ function runTests()
    check( "the helper written is the PowerShell one, not the shell one",
           psWritten != null && psWritten.indexOf( "$ErrorActionPreference" ) >= 0 &&
              psWritten.indexOf( "#!/bin/sh" ) < 0, true );
+   } if ( testGroup( "pipeline.layout" ) ) {
    /* Restore what the macOS updater tests set, so order cannot matter. */
    Update.SCRIPT_DIR = "/x/Loom";
 
@@ -2272,6 +2884,7 @@ function runTests()
    check( "ordering never loses or invents a plate",
           Pipeline.orderedOutputKeys( [ "b", "RGB", "a" ] ).length, 3 );
 
+   } if ( testGroup( "cache" ) ) {
    /*
     * A cache folder that is not there disables the cache rather than
     * being created.
@@ -2316,6 +2929,7 @@ function runTests()
    }
    finally { Cache.setDir( savedOverride ); }
 
+   } if ( testGroup( "update" ) ) {
    /*
     * The installation root is NOT the folder the script sits in.
     *
@@ -2359,6 +2973,7 @@ function runTests()
    }
    finally { Update.SCRIPT_DIR = savedScriptDir; }
 
+   } if ( testGroup( "util" ) ) {
    /*
     * The startup banner. Plain rather than coloured: the console honours
     * only its semantic channels, so colour would mean a three-tone banner
@@ -2600,6 +3215,7 @@ function runTests()
           Util.runnableEntryCount( [ { channel: "H" },
                                      { channel: "O", unavailable: true } ] ), 1 );
 
+   } if ( testGroup( "pipeline.layout" ) ) {
    /*
     * Loom closes what THIS run created and nothing else.
     *
@@ -2625,6 +3241,7 @@ function runTests()
              Pipeline.mayCloseWindow( null, pre, keep ), false );
    } )();
 
+   } if ( testGroup( "frames" ) ) {
    /*
     * Frame Selector. The decision logic is pure so that what chooses which
     * files to delete can be tested without a workspace.
@@ -3573,6 +4190,7 @@ function runTests()
                                    "/dest", ".xisf" ).collisions.length, 1 );
    } )();
 
+   } if ( testGroup( "cache" ) ) {
    /*
     * A cache entry is recorded only once it has been proved readable.
     *
@@ -3643,6 +4261,7 @@ function runTests()
       }
    } )();
 
+   } if ( testGroup( "steps.chain" ) ) {
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
    check( "case does not matter",
@@ -3756,6 +4375,7 @@ function runTests()
           Pipeline.buildStageKeys( "s",
              { denoiseRGB: { tool: "x", level: "medium" } } )[0].key, true );
 
+   } if ( testGroup( "psb" ) ) {
    /*
     * Hue/Saturation, neutral. The six range quadruples are Photoshop's own
     * band edges -- not adjustments -- and the dropdown shows the wrong
@@ -3909,6 +4529,7 @@ function runTests()
    check( "odd payloads are padded to an even length",
           res.length() % 2, 0 );
 
+   } if ( testGroup( "steps.plates" ) ) {
    /*
     * The property that matters, checked as arithmetic rather than trusted
     * from a comment: Photoshop's Linear Light is
@@ -3962,6 +4583,7 @@ function runTests()
    }
    finally { Cache.setDir( savedCacheDir ); }
 
+   } if ( testGroup( "pipeline.keys" ) ) {
    // --- Pipeline.buildStageKeys: the full per-channel key chain ---
    // Pure logic -- no PixInsight objects touched -- so invalidation is
    // exercised directly here rather than trusted from Cache's own tests.
@@ -4817,6 +5439,7 @@ function runTests()
    check( "qeCurve resolves an ASI183 independently",
           Util.qeCurveNameForCamera( "ZWO ASI183MM Pro" ), "Sony IMX183" );
 
+   } if ( testGroup( "steps.stretch" ) ) {
    /* ---- deterministic stretch -------------------------------------- */
 
    // Acklam's approximation against known quantiles of the normal.
@@ -4939,6 +5562,7 @@ function runTests()
       finally { try { w.forceClose(); } catch ( e ) {} }
    } )();
 
+   } if ( testGroup( "frameselector" ) ) {
    /* ---- the Frame Selector measures, and the columns still mean --------- */
 
    /*
@@ -5523,6 +6147,7 @@ function runTests()
              !( /#include\s+<pjsr\/TextAlign\.jsh>/ ).test( pretend ), true );
    } )();
 
+   } if ( testGroup( "frames" ) ) {
    /*
     * The frame column shows what differs between frames, not what they
     * share. Whole names are far wider than the column, so the table
@@ -5966,6 +6591,7 @@ function runTests()
              typeof Frames.VERDICT_COLUMN, "undefined" );
    } )();
 
+   } if ( testGroup( "frameselector" ) ) {
    /*
     * Reading a folder reports progress per file.
     *
@@ -6384,6 +7010,7 @@ function runTests()
              ok2, true );
    } )();
 
+   } if ( testGroup( "ui" ) ) {
    /* ---- the dialogs must actually construct ---------------------------- */
 
    /*
@@ -6396,17 +7023,9 @@ function runTests()
    {
       function cfg()
       {
-         // mirrors Loom.js defaultConfig(); the dialog is only ever handed a
-         // complete config, so that is the contract being tested
-         return { paths: { L:"", R:"", G:"", B:"", H:"", S:"", O:"" }, views: {},
-                  savedList: "", filters: {}, useGraXpert: true, smoothing: 0.5,
-                  validateOnly: false, keepWindowsOnError: false, palettes: [],
-                  narrowbandBandwidth: 3.0, reduceHalos: false,
-                  sharpenTool: "none", stretch: false, keepLinear: false,
-                  exportDir: "", marsPath: "", starTool: "none",
-                  noiseTool: "none", noiseLevel: "medium",
-                  starReduction: "none", detailLevel: "none",
-                  useCache: true, ignoreCache: false };
+         // the dialog is only ever handed a complete config, so that is
+         // the contract being tested
+         return Config.defaults();
       }
 
       var built = true, err = "";
@@ -6499,6 +7118,7 @@ function runTests()
              ( cwErr ? ": " + cwErr : "" ), cwOK, true );
    } )();
 
+   } if ( testGroup( "pipeline.keys" ) ) {
    check( "companion path is distinct from the stage path",
           Cache.companionPathFor( "abc", "stars" ) != Cache.pathFor( "abc" ), true );
 
@@ -6576,6 +7196,7 @@ function runTests()
    check( "only the stages given are chained", noSharp.length, 1 );
    check( "and it is the aberration stage", noSharp[0].stage, "aberration" );
 
+   } if ( testGroup( "steps.syqon" ) ) {
    // composite-level correction is a no-op unless a level asks for something
    check( "correctComposite does nothing without a tool",
           Steps.correctComposite( null, "none", "high", "high" ), false );
@@ -6662,6 +7283,7 @@ function runTests()
    check( "bxt 'medium' is BlurXTerminator's own default",
           Steps.SHARPEN_LEVELS.bxt.detail.medium, 0.50 );
 
+   } if ( testGroup( "steps.stretch" ) ) {
    // ---- Prism pre-stretch target ------------------------------------------
 
    check( "corpus std bounds match the paper",
@@ -6706,6 +7328,7 @@ function runTests()
    var f35 = Steps.prismStretchStats( veryFlat, x0p, 0.35 ).std;
    check( "raising the target lifts contrast for a flat image", f35 > f15, true );
 
+   } if ( testGroup( "steps.palettes" ) ) {
    // ---- narrowband normalization -------------------------------------------
 
    // the module's palette enum, verified against a live instance
@@ -6755,6 +7378,823 @@ function runTests()
    check( "denoise is a no-op with no level",
           Steps.denoise( null, Steps.NR_TOOL_NXT, "none" ), undefined );
 
+   } if ( testGroup( "steps.characterization" ) ) {
+   /*
+    * Characterization of Steps.denoise's dispatch, pinned before it was
+    * restructured: which runner each tool reaches, with what, and the
+    * exact errors for an unknown tool or level. The runners that start a
+    * process are stubbed, so this needs no plug-in.
+    */
+   function denoiseCall( tool, level, stretched )
+   {
+      var realStudio = Steps.studioRun, realPrism = Steps.prismExecuteStage;
+      var got = [];
+      Steps.studioRun = function( v, what, o ) { got.push( [ "studio", v.id, what, o ] ); };
+      Steps.prismExecuteStage = function( v, s, st ) { got.push( [ "prism", v.id, s, st ] ); };
+      try { Steps.denoise( { id: "dn" }, tool, level, null, stretched ); }
+      catch ( x ) { got.push( [ "error", x.message ] ); }
+      finally { Steps.studioRun = realStudio; Steps.prismExecuteStage = realPrism; }
+      return got;
+   }
+   check( "denoise: Prism reaches its stage with the level's strength",
+          denoiseCall( Steps.NR_TOOL_PRISM, "low", true ),
+          [ [ "prism", "dn", 0.50, true ] ] );
+   check( "denoise: Studio Prism is declared linear unless already stretched",
+          denoiseCall( Steps.NR_TOOL_STUDIO, "medium", false ),
+          [ [ "studio", "dn", "noise reduction",
+              { model: Steps.STUDIO_MODEL_DENOISE, domain: "linear", application: 1.00 } ] ] );
+   check( "denoise: Studio Prism already stretched is declared nonlinear",
+          denoiseCall( Steps.NR_TOOL_STUDIO, "low", true )[0][3].domain, "nonlinear" );
+   check( "denoise: Prism 2.0 runs the level's model",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false ),
+          [ [ "studio", "dn", "noise reduction",
+              { model: "prism-ultra", domain: "linear", application: 1.00 } ] ] );
+   check( "denoise: an unknown tool is refused by name",
+          denoiseCall( "Frobnicator", "low" ),
+          [ [ "error", "Unknown noise reduction tool: Frobnicator" ] ] );
+   var dnTools = [ Steps.NR_TOOL_NXT, Steps.NR_TOOL_MLDENOISE, Steps.NR_TOOL_PRISM,
+                   Steps.NR_TOOL_STUDIO, Steps.NR_TOOL_STUDIO2 ];
+   for ( var dnt = 0; dnt < dnTools.length; ++dnt )
+      check( "denoise: " + dnTools[dnt] + " refuses an unknown level",
+             denoiseCall( dnTools[dnt], "extreme" ),
+             [ [ "error", "Unknown noise reduction level: extreme" ] ] );
+
+   /*
+    * Characterization of Steps.prismMtfTarget, pinned before it was
+    * restructured. A fake image with a skewed, star-like bright tail:
+    * contrasty enough to sit inside Prism's corpus at the default, flat
+    * enough to need a raised target, and one that cannot be characterised.
+    * The fake ignores its Rect, so under node a stand-in is enough.
+    */
+   function fakePrismWindow( seed, n, base, spread, nch, bulk )
+   {
+      var rnd = synthRandom( seed ), px = [];
+      for ( var c = 0; c < nch; ++c )
+      {
+         px.push( [] );
+         for ( var i = 0; i < n*n; ++i )
+         {
+            var r = rnd();
+            // bulk: a band that wide far above one dark pixel, flatter the narrower
+            px[c].push( ( i == 0 ) ? base :
+                        base + spread*( bulk ? 1 + bulk*r : r*r*r*r ) );
+         }
+      }
+      function sorted( c ) { return px[c].slice().sort( function( a, b ) { return a - b; } ); }
+      return { mainView: { image: {
+         width: n, height: n, numberOfChannels: nch,
+         minimum: function( rect, c ) { return sorted( c )[0]; },
+         median: function( rect, c ) { return sorted( c )[Math.floor( n*n/2 )]; },
+         sample: function( x, y, c ) { return px[c][y*n + x]; } } } };
+   }
+   var realRect = Rect;
+   if ( !IN_PIXINSIGHT )
+      Rect = function( x0, y0, x1, y1 ) { this.x0 = x0; this.y0 = y0; this.x1 = x1; this.y1 = y1; };
+   var prismSaid = [], realPrismWarn = Util.warn, realPrismLog = Util.log;
+   Util.warn = function( stage, m ) { prismSaid.push( "warn " + m ); };
+   Util.log = function( stage, m ) { prismSaid.push( m ); };
+   function prismTarget( win, stride )
+   {
+      prismSaid = [];
+      var t = Steps.prismMtfTarget( win, stride );
+      return [ t.toFixed( 4 ) ].concat( prismSaid );
+   }
+   try
+   {
+      check( "prismMtfTarget: contrasty RGB keeps the default",
+             prismTarget( fakePrismWindow( 11, 60, 0.02, 0.9, 3 ), 3 ),
+             [ "0.1500",
+               "target 0.15 (std 0.2457, highlights 0.970); raised from 0.15 where std was 0.2457" ] );
+      check( "prismMtfTarget: moderate RGB is inside the corpus at the default",
+             prismTarget( fakePrismWindow( 15, 60, 0.02, 0.05, 3, 10 ), 3 ),
+             [ "0.1500",
+               "target 0.15 (std 0.0678, inside Prism's training range 0.0474-0.1288)" ] );
+      check( "prismMtfTarget: flat RGB raises the target",
+             prismTarget( fakePrismWindow( 12, 60, 0.02, 0.05, 3, 0.05 ), 3 ),
+             [ "0.7000",
+               "target 0.70 (std 0.0350, highlights 0.705); raised from 0.15 where std was 0.0076",
+               "warn this image is flatter than anything in Prism's training corpus (std 0.0350 < 0.0474) at every usable target; denoising may still over-smooth" ] );
+      check( "prismMtfTarget: flat mono raises the target",
+             prismTarget( fakePrismWindow( 13, 60, 0.05, 0.08, 1, 0.05 ), 7 ),
+             [ "0.4500",
+               "target 0.45 (std 0.0498, highlights 0.456); raised from 0.15 where std was 0.0166" ] );
+      check( "prismMtfTarget: a constant image falls back to the default",
+             prismTarget( fakePrismWindow( 14, 30, 0.1, 0, 3 ) ),
+             [ "0.1500",
+               "warn could not characterise the image; using the default" ] );
+   }
+   finally
+   {
+      Util.warn = realPrismWarn;
+      Util.log = realPrismLog;
+      if ( !IN_PIXINSIGHT )
+         Rect = realRect;
+   }
+
+   } if ( testGroup( "psb" ) ) {
+   /*
+    * Characterization of Psb.write, pinned before it was restructured: the
+    * exact bytes of a small document that has every kind of entry -- a
+    * palette group with curves, a hidden group, a hue/saturation layer, a
+    * nested pass-through group, mono plates, a clipped top curve -- and
+    * an odd-length ICC payload. Needs real 16-bit images, so PixInsight only.
+    */
+   if ( IN_PIXINSIGHT )
+   {
+      var psbWins = [];
+      var psbPlate = function( id, nch, seed )
+      {
+         var w = new ImageWindow( 7, 5, nch, 16, false, nch == 3, Util.freeWindowId( id ) );
+         psbWins.push( w );
+         var rnd = synthRandom( seed ), img = w.mainView.image;
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < nch; ++c )
+            for ( var y = 0; y < 5; ++y )
+               for ( var x = 0; x < 7; ++x )
+                  img.setSample( rnd(), x, y, c );
+         w.mainView.endProcess();
+         return w;
+      };
+      try
+      {
+         var psbDir = "/tmp/agent-scratch/psb-characterization";
+         ensureDir( psbDir );
+         var psbDocChar = Steps.buildPsbDocument( {
+            HSO_starless: psbPlate( "psbc_hso", 3, 21 ), RGB: psbPlate( "psbc_rgb", 3, 22 ),
+            RGB_stars: psbPlate( "psbc_stars", 3, 23 ),
+            L_stars_low: psbPlate( "psbc_low", 1, 24 ), L_stars_high: psbPlate( "psbc_high", 1, 25 ) } );
+         var psbPath = psbDir + "/characterization.psb";
+         Psb.write( psbPath, psbDocChar, 7, 5, [ 1, 2, 3, 4, 5 ] );
+         var psbBytes = File.readFile( psbPath );
+         var psbHash = new CryptographicHash( CryptographicHash.SHA1 );
+         check( "Psb.write: the characterization document is byte-identical",
+                [ psbBytes.length, psbHash.hash( psbBytes ).toHex() ],
+                [ 4064, "2768c96247ab0d96ea41df03924423c78803dd46" ] );
+      }
+      finally
+      {
+         for ( var pwi = 0; pwi < psbWins.length; ++pwi )
+            psbWins[pwi].forceClose();
+      }
+   }
+
+   /*
+    * Characterization of Psb.writeChannelDataParallel, pinned before it was
+    * restructured. The chunk is shrunk so a few hundred samples cross
+    * several chunks and end on a short one, split over three threads.
+    */
+   if ( IN_PIXINSIGHT && Psb.canSwapInParallel() )
+   {
+      var realChunk = Psb.CHUNK_SAMPLES;
+      var parSrc = new Uint16Array( 200 );
+      for ( var psi = 0; psi < parSrc.length; ++psi )
+         parSrc[psi] = ( psi*2654435761 ) % 65536;
+      var parWrites = [], parBytes = [];
+      var parFile = { write: function( ba )
+      {
+         parWrites.push( ba.length );
+         for ( var bi = 0; bi < ba.length; ++bi )
+            parBytes.push( ba.at( bi ) );
+      } };
+      try
+      {
+         Psb.CHUNK_SAMPLES = 64;
+         Psb.writeChannelDataParallel( parFile, parSrc, parSrc.length, 3 );
+      }
+      finally { Psb.CHUNK_SAMPLES = realChunk; }
+      var parExpected = [];
+      for ( var pe = 0; pe < parSrc.length; ++pe )
+         parExpected.push( parSrc[pe] >> 8, parSrc[pe] & 255 );
+      check( "writeChannelDataParallel: one write per chunk, the last one short",
+             parWrites, [ 128, 128, 128, 16 ] );
+      check( "writeChannelDataParallel: every sample big-endian, in order",
+             parBytes.join( "," ) == parExpected.join( "," ), true );
+   }
+
+   } if ( testGroup( "steps.characterization" ) ) {
+   /*
+    * Characterization of Steps.syqonExecuteStage, pinned before it was
+    * restructured. Every step that touches a process or an image is
+    * stubbed and recorded; the output file is real, so the "no output"
+    * branch is decided by the filesystem as it is in a real run.
+    * `outcome` is what the CLI leaves behind, `fails` how many imports
+    * fail before one succeeds.
+    */
+   function syqonStage( outcome, fails, noExe, noWindow )
+   {
+      var names = [ "syqonExecutable", "syqonRunPaths", "syqonCreateStretchedTempWindow",
+                    "syqonSaveImageAsFits", "syqonRunProcessBlocking", "syqonProcessOutput" ];
+      var saved = {}, said = [], realWarn = Util.warn, realLog = Util.log;
+      for ( var ni = 0; ni < names.length; ++ni )
+         saved[names[ni]] = Steps[names[ni]];
+      var dir = "/tmp/agent-scratch/syqon-characterization";
+      ensureDir( dir );
+      var paths = { inputFilePath: dir + "/in.fits", outputFilePath: dir + "/out.fits",
+                    jsonInfoPath: dir + "/info.json" };
+      var target = { isNull: false, id: "sqwin" };
+      var view = { id: "sq", isMainView: true, window: noWindow ? null : target };
+      Util.warn = function( stage, m ) { said.push( "warn " + m ); };
+      Util.log = function( stage, m ) { said.push( m ); };
+      Steps.syqonExecutable = function() { return noExe ? null : "/opt/parallax_cli"; };
+      Steps.syqonRunPaths = function( base ) { said.push( "paths " + base ); return paths; };
+      Steps.syqonCreateStretchedTempWindow = function( w, t, linked )
+      {
+         said.push( "stretch " + w.id + " " + t + " " + linked );
+         return { tempWindow: { isNull: false, mainView: { id: "tmp" },
+                                forceClose: function() { said.push( "close tmp" ); } },
+                  stretchInfo: "SI" };
+      };
+      Steps.syqonSaveImageAsFits = function( p, v ) { said.push( "save " + v.id ); };
+      Steps.syqonRunProcessBlocking = function( exe, args, timeout )
+      {
+         said.push( "run " + timeout );
+         if ( outcome.output )
+            File.writeTextFile( paths.outputFilePath, "x" );
+         return outcome;
+      };
+      var imports = 0;
+      Steps.syqonProcessOutput = function( p, w, info )
+      {
+         if ( imports++ < fails )
+            throw new Error( "not flushed " + imports );
+         said.push( "import " + w.id + " " + info );
+      };
+      try
+      {
+         Steps.syqonExecuteStage( view, "star reduction",
+                                  { starReduction: 2, sharpen: 0.5 }, true );
+      }
+      catch ( x ) { said.push( "error " + x.message ); }
+      finally
+      {
+         for ( var nr = 0; nr < names.length; ++nr )
+            Steps[names[nr]] = saved[names[nr]];
+         Util.warn = realWarn;
+         Util.log = realLog;
+      }
+      said.push( "left " + [ File.exists( paths.inputFilePath ), File.exists( paths.outputFilePath ),
+                             File.exists( paths.jsonInfoPath ) ].join( "," ) );
+      return said;
+   }
+   check( "syqonExecuteStage: no executable", syqonStage( {}, 0, true ),
+          [ "error SyQon Parallax star reduction failed on sq: parallax_cli executable not found (see Steps.syqonConfigPath()).",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: no window", syqonStage( {}, 0, false, true ),
+          [ "error SyQon Parallax star reduction failed on sq: no valid image window.",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: the happy path",
+          syqonStage( { output: true }, 0 ),
+          [ "paths sq",
+            "stretch sqwin 0.12 true",
+            "save tmp",
+            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "run 1200000",
+            "import sqwin SI",
+            "star reduction sq complete",
+            "close tmp",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: an import retried once",
+          syqonStage( { output: true }, 1 ),
+          [ "paths sq",
+            "stretch sqwin 0.12 true",
+            "save tmp",
+            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "run 1200000",
+            "warn star reduction on sq: output not ready yet (attempt 1/5): Error: not flushed 1",
+            "import sqwin SI",
+            "star reduction sq complete",
+            "close tmp",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: no output, with stderr",
+          syqonStage( { stderr: "  boom  " }, 0 ),
+          [ "paths sq",
+            "stretch sqwin 0.12 true",
+            "save tmp",
+            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "run 1200000",
+            "close tmp",
+            "error SyQon Parallax star reduction failed on sq: no output file was produced. stderr: boom",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: no output, with error codes",
+          syqonStage( { stderr: "", sawError: true, errorCodes: [ 3, 4 ] }, 0 ),
+          [ "paths sq",
+            "stretch sqwin 0.12 true",
+            "save tmp",
+            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "run 1200000",
+            "close tmp",
+            "error SyQon Parallax star reduction failed on sq: no output file was produced. (process reported error code(s) 3,4)",
+            "left false,false,false" ] );
+   check( "syqonExecuteStage: no output, nothing said",
+          syqonStage( {}, 0 ),
+          [ "paths sq",
+            "stretch sqwin 0.12 true",
+            "save tmp",
+            "star reduction sq: /opt/parallax_cli --i /tmp/agent-scratch/syqon-characterization/in.fits --o /tmp/agent-scratch/syqon-characterization/out.fits --star-reduction 2 --sharpen 0.50 --tile 512 --overlap 128 --pad 512 --json-info /tmp/agent-scratch/syqon-characterization/info.json",
+            "run 1200000",
+            "close tmp",
+            "error SyQon Parallax star reduction failed on sq: no output file was produced.",
+            "left false,false,false" ] );
+
+   /*
+    * Characterization of Steps.marsDatabasesFromCoreSettings, pinned before
+    * it was restructured: settings files found by name, entries trimmed,
+    * missing databases warned about, repeats kept once. Sorted, because
+    * directory order is the platform's.
+    */
+   var marsDir = "/tmp/agent-scratch/mars-characterization";
+   ensureDir( marsDir );
+   File.writeTextFile( marsDir + "/db-a.xmars", "a" );
+   File.writeTextFile( marsDir + "/db-b.xmars", "b" );
+   File.writeTextFile( marsDir + "/core-1-pxi.settings",
+      "<v k=\"MARSDatabaseFilePath1\"> " + marsDir + "/db-a.xmars </v>" +
+      "<v k=\"MARSDatabaseFilePath2\" t=\"s\">" + marsDir + "/gone.xmars</v>" +
+      "<v k=\"MARSDatabaseFilePath3\">   </v>" );
+   File.writeTextFile( marsDir + "/core-2-pxi.settings",
+      "<v k=\"MARSDatabaseFilePath1\">" + marsDir + "/db-a.xmars</v>" +
+      "<v k=\"MARSDatabaseFilePath9\">" + marsDir + "/db-b.xmars</v>" +
+      "<v k=\"OtherPath1\">" + marsDir + "/db-c.xmars</v>" );
+   var realCoreDir = Steps.CORE_SETTINGS_DIR, marsSaid = [], realMarsWarn = Util.warn;
+   Util.warn = function( stage, m ) { marsSaid.push( m ); };
+   try
+   {
+      Steps.CORE_SETTINGS_DIR = marsDir;
+      check( "marsDatabasesFromCoreSettings: each database once, missing ones dropped",
+             Steps.marsDatabasesFromCoreSettings().sort(),
+          [ "/tmp/agent-scratch/mars-characterization/db-a.xmars",
+            "/tmp/agent-scratch/mars-characterization/db-b.xmars" ] );
+      check( "marsDatabasesFromCoreSettings: the missing one is warned about",
+             marsSaid,
+          [ "MARS database listed in PixInsight settings does not exist: /tmp/agent-scratch/mars-characterization/gone.xmars" ] );
+      Steps.CORE_SETTINGS_DIR = marsDir + "/nowhere";
+      check( "marsDatabasesFromCoreSettings: no settings, no databases",
+             Steps.marsDatabasesFromCoreSettings(), [] );
+   }
+   finally
+   {
+      Steps.CORE_SETTINGS_DIR = realCoreDir;
+      Util.warn = realMarsWarn;
+   }
+
+   /*
+    * Characterization of Steps.combineRGB's choice of window, pinned before
+    * it was restructured: ChannelCombination is replaced by a stand-in that
+    * opens whatever windows the case needs, so the diffing, the colour
+    * test, the warning and both error messages are all reached.
+    */
+   if ( IN_PIXINSIGHT )
+   {
+      var combineCase = function( opens )
+      {
+         var realWithout = Steps.withoutInconsistentKeywords, realWarn = Util.warn;
+         var said = [], made = [];
+         Util.warn = function( stage, m ) { said.push( "warn " + m.replace( /_[0-9]+/g, "" ) ); };
+         Steps.withoutInconsistentKeywords = function()
+         {
+            for ( var oi = 0; oi < opens.length; ++oi )
+               made.push( new ImageWindow( 4, 4, opens[oi], 32, true, opens[oi] == 3,
+                                           Util.freeWindowId( "cmb_new" + oi ) ) );
+            return true;
+         };
+         var r = [], rgbw = null;
+         try
+         {
+            for ( var ci = 0; ci < 3; ++ci )
+               r.push( new ImageWindow( 4, 4, 1, 32, true, false, Util.freeWindowId( "cmb_in" + ci ) ) );
+            rgbw = Steps.combineRGB( r[0].mainView, r[1].mainView, r[2].mainView, "cmb_out" );
+            var gotAt = -1;
+            for ( var gi = 0; gi < made.length; ++gi )
+               if ( made[gi].mainView.id == rgbw.mainView.id )
+                  gotAt = gi;
+            said.push( "got " + gotAt + " " + rgbw.mainView.id.replace( /[0-9]+$/, "" ) );
+         }
+         catch ( x ) { said.push( "error " + x.message.replace( /_[0-9]+/g, "" ) ); }
+         finally
+         {
+            Steps.withoutInconsistentKeywords = realWithout;
+            Util.warn = realWarn;
+            for ( var cr = 0; cr < r.length; ++cr ) r[cr].forceClose();
+            for ( var cm = 0; cm < made.length; ++cm ) made[cm].forceClose();
+         }
+         return said;
+      };
+      check( "combineRGB: the one colour window is taken and renamed", combineCase( [ 3 ] ),
+             [ "got 0 cmb_out" ] );
+      check( "combineRGB: a mono newcomer is passed over", combineCase( [ 1, 3 ] ),
+             [ "got 1 cmb_out" ] );
+      check( "combineRGB: two colour windows, the first is taken", combineCase( [ 3, 3 ] ),
+             [ "warn more than one new colour window appeared while building cmb_out; using cmb_new0",
+                   "got 0 cmb_out" ] );
+      check( "combineRGB: no colour window names what did appear", combineCase( [ 1 ] ),
+             [ "error ChannelCombination.executeGlobal() produced no colour window for cmb_out (new windows: cmb_new0)" ] );
+      check( "combineRGB: nothing new at all", combineCase( [] ),
+             [ "error ChannelCombination.executeGlobal() produced no colour window for cmb_out (no new windows at all)" ] );
+   }
+
+   /*
+    * Characterization of Steps.starReduction and Steps.sharpenDetail's
+    * dispatch, pinned before they were restructured, as for denoise above.
+    */
+   function sharpenCall( fn, tool, level )
+   {
+      var realStage = Steps.syqonExecuteStage, realStudio = Steps.studioRun;
+      var got = [];
+      Steps.syqonExecuteStage = function( v, what, o, linked ) { got.push( [ "parallax", v.id, what, o, linked ] ); };
+      Steps.studioRun = function( v, what, o ) { got.push( [ "studio", v.id, what, o ] ); };
+      try { Steps[fn]( { id: "sh" }, tool, level, "LINKED" ); }
+      catch ( x ) { got.push( [ "error", x.message ] ); }
+      finally { Steps.syqonExecuteStage = realStage; Steps.studioRun = realStudio; }
+      return got;
+   }
+   check( "starReduction: nothing to do at none", sharpenCall( "starReduction", Steps.SHARPEN_TOOL_BXT, "none" ), [] );
+   check( "starReduction: Parallax gets the level's reduction",
+          sharpenCall( "starReduction", Steps.SHARPEN_TOOL_SYQON, "high" ),
+          [ [ "parallax", "sh", "star reduction",
+              { correctAberration: false, starReduction: 5, sharpen: 0.0 }, "LINKED" ] ] );
+   check( "starReduction: Studio Parallax gets the level's reduction",
+          sharpenCall( "starReduction", Steps.SHARPEN_TOOL_STUDIO, "low" ),
+          [ [ "studio", "sh", "star reduction",
+              { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear", parallax: { reduction: 3 } } ] ] );
+   check( "starReduction: an unknown tool",
+          sharpenCall( "starReduction", "Squasher", "low" ),
+          [ [ "error", "Star reduction is not implemented for Squasher" ] ] );
+   check( "sharpenDetail: Parallax gets the level's sharpen",
+          sharpenCall( "sharpenDetail", Steps.SHARPEN_TOOL_SYQON, "medium" ),
+          [ [ "parallax", "sh", "detail sharpening",
+              { correctAberration: false, starReduction: 0, sharpen: 0.8 }, "LINKED" ] ] );
+   check( "sharpenDetail: Studio Parallax gets the level's deblur",
+          sharpenCall( "sharpenDetail", Steps.SHARPEN_TOOL_STUDIO, "high" ),
+          [ [ "studio", "sh", "detail sharpening",
+              { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear", parallax: { deblur: 0.75 } } ] ] );
+   check( "sharpenDetail: an unknown tool",
+          sharpenCall( "sharpenDetail", "Squasher", "low" ),
+          [ [ "error", "Detail sharpening is not implemented for Squasher" ] ] );
+   var shTools = [ Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO ];
+   for ( var sht = 0; sht < shTools.length; ++sht )
+   {
+      check( "starReduction: " + shTools[sht] + " refuses an unknown level",
+             sharpenCall( "starReduction", shTools[sht], "extreme" ),
+             [ [ "error", "Unknown star reduction level: extreme" ] ] );
+      check( "sharpenDetail: " + shTools[sht] + " refuses an unknown level",
+             sharpenCall( "sharpenDetail", shTools[sht], "extreme" ),
+             [ [ "error", "Unknown detail level: extreme" ] ] );
+   }
+
+   /*
+    * Characterization of Steps.extractStars, pinned before it was
+    * restructured: the two passes, their inputs, the stretch gate, the
+    * domain Studio is told, the astrometry copies and the cleanup on
+    * failure. Windows are fakes; every step is a recording stub.
+    */
+   function extractCase( tool, stretchStars, failAt, solved )
+   {
+      var names = [ "syqonCloneWindowForProcessing", "stretch", "removeStars",
+                    "deriveStarsByUnscreen" ];
+      var saved = {}, said = [];
+      for ( var ni = 0; ni < names.length; ++ni )
+         saved[names[ni]] = Steps[names[ni]];
+      function fakeWin( id, nch )
+      {
+         return { mainView: { id: id, image: { numberOfChannels: nch } },
+                  hasAstrometricSolution: solved,
+                  copyAstrometricSolution: function( w ) { said.push( "solution " + w.mainView.id + ">" + id ); },
+                  forceClose: function() { said.push( "close " + id ); } };
+      }
+      function maybeFail( step ) { if ( step == failAt ) throw new Error( "failed at " + step ); }
+      Steps.syqonCloneWindowForProcessing = function( w, id )
+      {
+         said.push( "clone " + w.mainView.id + ">" + id.replace( /[0-9]+$/, "" ) );
+         maybeFail( "clone " + id.replace( /[0-9]+$/, "" ) );
+         return fakeWin( id.replace( /[0-9]+$/, "" ), w.mainView.image.numberOfChannels );
+      };
+      Steps.stretch = function( v, linked, what, target ) { said.push( "stretch " + v.id + " " + linked + " " + what + " " + target ); };
+      Steps.removeStars = function( w, t, what, linear )
+      {
+         said.push( "remove " + w.mainView.id + " " + t + " " + what + " " + linear + " " + arguments.length );
+         maybeFail( "remove " + what );
+      };
+      Steps.deriveStarsByUnscreen = function( stars, starless ) { said.push( "unscreen " + stars.mainView.id + " " + starless.mainView.id ); };
+      var r = null;
+      try
+      {
+         r = Steps.extractStars( fakeWin( "M", 3 ), tool, "lbl", stretchStars );
+         said.push( r == null ? "null" : "stars " + r.stars.mainView.id + ", starless " + r.starless.mainView.id );
+      }
+      catch ( x ) { said.push( "error " + x.message ); }
+      finally
+      {
+         for ( var nr = 0; nr < names.length; ++nr )
+            Steps[names[nr]] = saved[names[nr]];
+      }
+      return said;
+   }
+   check( "extractStars: no tool, nothing done", extractCase( "none", true ),
+          [ "null" ] );
+   check( "extractStars: StarNet2 with the stretch", extractCase( "StarNet2", true, null, true ),
+          [ "clone M>lbl_starsrc",
+            "solution M>lbl_starsrc",
+            "stretch lbl_starsrc true lbl stars 0.5",
+            "clone lbl_starsrc>lbl_stars",
+            "solution lbl_starsrc>lbl_stars",
+            "remove lbl_starsrc StarNet2 lbl stars undefined 4",
+            "unscreen lbl_stars lbl_starsrc",
+            "close lbl_starsrc",
+            "remove M StarNet2 lbl starless undefined 3",
+            "stars lbl_stars, starless M" ] );
+   check( "extractStars: Studio with the stretch is told non-linear",
+          extractCase( Steps.STAR_TOOL_STUDIO, true, null, false ),
+          [ "clone M>lbl_starsrc",
+            "stretch lbl_starsrc true lbl stars 0.5",
+            "clone lbl_starsrc>lbl_stars",
+            "remove lbl_starsrc SyQon Studio Axiom lbl stars false 4",
+            "unscreen lbl_stars lbl_starsrc",
+            "close lbl_starsrc",
+            "remove M SyQon Studio Axiom lbl starless undefined 3",
+            "stars lbl_stars, starless M" ] );
+   check( "extractStars: Studio without the stretch",
+          extractCase( Steps.STAR_TOOL_STUDIO, false, null, false ),
+          [ "clone M>lbl_starsrc",
+            "clone lbl_starsrc>lbl_stars",
+            "remove lbl_starsrc SyQon Studio Axiom lbl stars undefined 4",
+            "unscreen lbl_stars lbl_starsrc",
+            "close lbl_starsrc",
+            "remove M SyQon Studio Axiom lbl starless undefined 3",
+            "stars lbl_stars, starless M" ] );
+   check( "extractStars: a failed stars pass closes both copies",
+          extractCase( "StarNet2", true, "remove lbl stars", false ),
+          [ "clone M>lbl_starsrc",
+            "stretch lbl_starsrc true lbl stars 0.5",
+            "clone lbl_starsrc>lbl_stars",
+            "remove lbl_starsrc StarNet2 lbl stars undefined 4",
+            "close lbl_stars",
+            "close lbl_starsrc",
+            "error failed at remove lbl stars" ] );
+   check( "extractStars: a failed second clone closes the first",
+          extractCase( "StarNet2", false, "clone lbl_stars", true ),
+          [ "clone M>lbl_starsrc",
+            "solution M>lbl_starsrc",
+            "clone lbl_starsrc>lbl_stars",
+            "close lbl_starsrc",
+            "error failed at clone lbl_stars" ] );
+   check( "extractStars: a failed starless pass leaves the stars to the caller",
+          extractCase( "StarNet2", false, "remove lbl starless", false ),
+          [ "clone M>lbl_starsrc",
+            "clone lbl_starsrc>lbl_stars",
+            "remove lbl_starsrc StarNet2 lbl stars undefined 4",
+            "unscreen lbl_stars lbl_starsrc",
+            "close lbl_starsrc",
+            "remove M StarNet2 lbl starless undefined 3",
+            "error failed at remove lbl starless" ] );
+
+   /*
+    * Characterization of Steps.studioRun, pinned before it was
+    * restructured. The refusals run anywhere; the full round trip needs
+    * real images, so it runs in PixInsight, with the CLI replaced by a
+    * stand-in that writes the result the real one would.
+    */
+   function studioCase( o )
+   {
+      var names = [ "studioExecutable", "studioNoteKeychain", "syqonRunProcessBlocking" ];
+      var saved = {}, said = [], realLog = Util.log;
+      for ( var ni = 0; ni < names.length; ++ni )
+         saved[names[ni]] = Steps[names[ni]];
+      var wasEntitled = Steps.studioSession.entitled[o.model];
+      var paths = [];
+      /*
+       * The temporary files are named by time and a random number, in the
+       * platform's temp folder: only their role is kept.
+       */
+      function tempRole( m )
+      {
+         return m.split( " " ).map( function( tok )
+            { return ( tok.indexOf( "SyQonStudioCLI" ) >= 0 ) ? tok.replace( /^.*_([a-z]+)\.xisf$/, "TMP_$1" ) : tok; } )
+            .join( " " );
+      }
+      Util.log = function( stage, m ) { said.push( tempRole( m ) ); };
+      Steps.studioExecutable = function() { return o.noExe ? null : "/opt/syqon-cli"; };
+      Steps.studioNoteKeychain = function() { said.push( "keychain" ); };
+      Steps.syqonRunProcessBlocking = function( exe, args, timeout, wait )
+      {
+         said.push( "run " + timeout + " " + wait.stage );
+         var out = args[args.length - 1];
+         paths = [ args[args.length - 2], out ];
+         var res = { stdout: "", stderr: o.stderr || "", sawError: false, errorCodes: [] };
+         if ( o.declare )
+         {
+            out = out.replace( "_output", "_declared" );
+            res.stdout = "wrote\n" + out + "\n";
+            paths.push( out );
+         }
+         if ( o.result != null )
+         {
+            var rw = new ImageWindow( 6, 4, o.result.length, 32, true, o.result.length == 3,
+                                      Util.freeWindowId( "studio_char_out" ) );
+            rw.mainView.beginProcess( UndoFlag_NoSwapFile );
+            for ( var rc = 0; rc < o.result.length; ++rc )
+               rw.mainView.image.fill( o.result[rc], new Rect( 0, 0, 6, 4 ), rc, rc );
+            rw.mainView.endProcess();
+            Steps.studioSaveXisf( out, rw.mainView );
+            rw.forceClose();
+         }
+         return res;
+      };
+      var view = o.view;
+      try
+      {
+         Steps.studioRun( view, "noise reduction", { model: o.model, domain: "linear", application: 0.5 } );
+         said.push( "done" );
+      }
+      catch ( x ) { said.push( "error " + tempRole( x.message ) ); }
+      finally
+      {
+         for ( var nr = 0; nr < names.length; ++nr )
+            Steps[names[nr]] = saved[names[nr]];
+         Util.log = realLog;
+         said.push( "entitled " + Steps.studioSession.entitled[o.model] );
+         Steps.studioSession.entitled[o.model] = wasEntitled;
+      }
+      for ( var pi = 0; pi < paths.length; ++pi )
+         said.push( "left " + File.exists( paths[pi] ) );
+      return said;
+   }
+   check( "studioRun: no CLI",
+          studioCase( { noExe: true, model: "char-model", view: { id: "st", isMainView: true, window: {} } } ),
+          [ "error SyQon Studio noise reduction failed on st: syqon-cli not found",
+            "entitled undefined" ] );
+   check( "studioRun: no window",
+          studioCase( { model: "char-model", view: { id: "st", isMainView: true, window: null } } ),
+          [ "error SyQon Studio noise reduction failed on st: no valid image window",
+            "entitled undefined" ] );
+   if ( IN_PIXINSIGHT )
+   {
+      var studioTarget = function( level, peak )
+      {
+         var w = new ImageWindow( 6, 4, 1, 32, true, false, Util.freeWindowId( "studio_char_in" ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         w.mainView.image.fill( level );
+         if ( peak != null )
+            w.mainView.image.setSample( peak, 5, 3 );
+         w.mainView.endProcess();
+         return w;
+      };
+      var stw = [ studioTarget( 0.2 ), studioTarget( 0.2, 2.0 ), studioTarget( 0.2 ), studioTarget( 0.2 ) ];
+      try
+      {
+         var stSaid = studioCase( { model: Steps.STUDIO_MODEL_DENOISE, view: stw[0].mainView,
+                                    result: [ 0.5, 0.25, 0.75 ] } );
+         stSaid.push( "sample " + stw[0].mainView.image.sample( 0, 0 ).toFixed( 4 ) );
+         check( "studioRun: a colour result on a mono target, channel 0", stSaid,
+          [ "noise reduction studio_char_in: /opt/syqon-cli --model prism-essential --domain linear --precision f32 --tile-size 512 --overlap 64 --application 0.5000 --overwrite TMP_input TMP_output",
+            "keychain",
+            "run 1800000 SyQon Studio noise reduction → studio_char_in",
+            "noise reduction studio_char_in complete",
+            "done",
+            "entitled true",
+            "left false",
+            "left false",
+            "sample 0.5000" ] );
+         stSaid = studioCase( { model: Steps.STUDIO_MODEL_DENOISE, view: stw[1].mainView,
+                                result: [ 0.3 ] } );
+         stSaid.push( "sample " + stw[1].mainView.image.sample( 0, 0 ).toFixed( 4 ) );
+         check( "studioRun: a mono result on a target with one bright pixel", stSaid,
+          [ "noise reduction studio_char_in_1: /opt/syqon-cli --model prism-essential --domain linear --precision f32 --tile-size 512 --overlap 64 --application 0.5000 --overwrite TMP_input TMP_output",
+            "keychain",
+            "run 1800000 SyQon Studio noise reduction → studio_char_in_1",
+            "noise reduction studio_char_in_1 complete",
+            "done",
+            "entitled true",
+            "left false",
+            "left false",
+            "sample 0.3000" ] );
+         stSaid = studioCase( { model: Steps.STUDIO_MODEL_DENOISE, view: stw[2].mainView,
+                                result: [ 0.4 ], declare: true } );
+         stSaid.push( "sample " + stw[2].mainView.image.sample( 0, 0 ).toFixed( 4 ) );
+         check( "studioRun: the output the CLI declares is the one used", stSaid,
+          [ "noise reduction studio_char_in_2: /opt/syqon-cli --model prism-essential --domain linear --precision f32 --tile-size 512 --overlap 64 --application 0.5000 --overwrite TMP_input TMP_output",
+            "keychain",
+            "run 1800000 SyQon Studio noise reduction → studio_char_in_2",
+            "noise reduction studio_char_in_2 complete",
+            "done",
+            "entitled true",
+            "left false",
+            "left false",
+            "left false",
+            "sample 0.4000" ] );
+         check( "studioRun: no output",
+                studioCase( { model: Steps.STUDIO_MODEL_DENOISE, view: stw[3].mainView,
+                              stderr: "Error: model not entitled" } ),
+          [ "noise reduction studio_char_in_3: /opt/syqon-cli --model prism-essential --domain linear --precision f32 --tile-size 512 --overlap 64 --application 0.5000 --overwrite TMP_input TMP_output",
+            "keychain",
+            "run 1800000 SyQon Studio noise reduction → studio_char_in_3",
+            "error SyQon Studio noise reduction failed on studio_char_in_3: Prism Essential (prism-essential): no output was produced. stderr: Error: model not entitled",
+            "entitled undefined",
+            "left false",
+            "left false" ] );
+      }
+      finally
+      {
+         for ( var sw = 0; sw < stw.length; ++sw )
+            stw[sw].forceClose();
+      }
+
+      /*
+       * Characterization of Steps.syqonCreateStretchedTempWindow, pinned
+       * before it was restructured: the recorded stretch and the stretched
+       * pixels on a mono, a linked and an unlinked colour image, and the
+       * refusal of an image that cannot be normalised.
+       */
+      var stretchCase = function( nch, linked, flat )
+      {
+         var w = new ImageWindow( 9, 7, nch, 32, true, nch == 3, Util.freeWindowId( "stretch_char" ) );
+         var rnd = synthRandom( 31 + nch ), out = [], t = null;
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < nch; ++c )
+            for ( var y = 0; y < 7; ++y )
+               for ( var x = 0; x < 9; ++x )
+                  w.mainView.image.setSample( flat ? 0.3 : 0.01*( c + 1 ) + 0.2*Math.pow( rnd(), 3 ), x, y, c );
+         w.mainView.endProcess();
+         try
+         {
+            t = Steps.syqonCreateStretchedTempWindow( w, 0.25, linked );
+            var si = t.stretchInfo;
+            out.push( [ si.used, si.targetMedian, si.wasColor,
+                        si.originalMin.map( function( v ) { return v.toFixed( 6 ); } ).join( "," ),
+                        si.originalMedian.map( function( v ) { return v.toFixed( 6 ); } ).join( "," ) ].join( " " ) );
+            var img = t.tempWindow.mainView.image, sum = 0;
+            for ( var c2 = 0; c2 < img.numberOfChannels; ++c2 )
+               for ( var y2 = 0; y2 < 7; ++y2 )
+                  for ( var x2 = 0; x2 < 9; ++x2 )
+                     sum += img.sample( x2, y2, c2 )*( 1 + x2 + 9*y2 + 63*c2 );
+            out.push( "weighted " + sum.toFixed( 5 ) );
+         }
+         catch ( x ) { out.push( "error " + x.message.replace( /stretch_char[_0-9]*/, "W" ) ); }
+         finally
+         {
+            if ( t != null ) t.tempWindow.forceClose();
+            w.forceClose();
+         }
+         return out;
+      };
+      check( "syqonCreateStretchedTempWindow: mono", stretchCase( 1, false ),
+          [ "true 0.25 false 0.010000 0.029592",
+            "weighted 598.26085" ] );
+      check( "syqonCreateStretchedTempWindow: colour, linked", stretchCase( 3, true ),
+          [ "true 0.25 true 0.010000,0.010000,0.010000 0.034356,0.034356,0.034356",
+            "weighted 6141.99259" ] );
+      check( "syqonCreateStretchedTempWindow: colour, unlinked", stretchCase( 3, false ),
+          [ "true 0.25 true 0.010000,0.020004,0.030003 0.015426,0.042500,0.015576",
+            "weighted 5857.25765" ] );
+      check( "syqonCreateStretchedTempWindow: a flat mono image is refused", stretchCase( 1, false, true ),
+          [ "error SyQon Parallax: invalid normalized median 0 for W" ] );
+      check( "syqonCreateStretchedTempWindow: a flat linked image is refused", stretchCase( 3, true, true ),
+          [ "error SyQon: invalid linked normalized median 0 for W" ] );
+      check( "syqonCreateStretchedTempWindow: a flat unlinked image is refused", stretchCase( 3, false, true ),
+          [ "error SyQon Parallax: invalid normalized median 0 for channel 0 of W" ] );
+
+      /*
+       * Characterization of Steps.syqonRunProcessBlocking's progress
+       * reading, pinned before it was restructured, on a real process: a
+       * shell that is silent at first (so the wait text shows), then
+       * reports on both streams, with a repeated percentage, a carriage
+       * return between updates, and each of the line shapes the CLIs use.
+       */
+      var progSaid = [];
+      var realProgress = Util.reportProgress, realStage = Util.reportStage, realProgLog = Util.log;
+      Util.reportProgress = function( pct, text ) { progSaid.push( "progress " + pct + " " + text ); };
+      Util.reportStage = function( text ) { progSaid.push( "stage " + text ); };
+      Util.log = function( stage, m ) { progSaid.push( "log " + stage + " " + m ); };
+      try
+      {
+         var progRes = Steps.syqonRunProcessBlocking( "/bin/sh",
+            [ "-c", "sleep 1; printf '[ 10%%] Tiles (1/8)\\n[ 10%%] Tiles (1/8)\\n[ 30%%] Tiles (3/8)\\r[ 55%%] Tiles (5/8)\\n'; " +
+                    "sleep 0.3; printf 'model 80%%\\n' >&2; sleep 0.3; printf '[CLI] Progress: 100%%\\n'" ],
+            60000, { text: function( ms, saw ) { return "waiting"; }, stage: "back to work" } );
+         progSaid.push( "result " + JSON.stringify( progRes ) );
+      }
+      catch ( x ) { progSaid.push( "error " + x.message ); }
+      finally
+      {
+         Util.reportProgress = realProgress;
+         Util.reportStage = realStage;
+         Util.log = realProgLog;
+      }
+      check( "syqonRunProcessBlocking: progress read from both streams", progSaid,
+          [ "stage waiting",
+            "log studio waiting",
+            "stage back to work",
+            "progress 10 Tiles",
+            "progress 30 Tiles",
+            "log cli 25% - Tiles (3/8)",
+            "progress 55 Tiles",
+            "log cli 50% - Tiles (5/8)",
+            "progress 80 model",
+            "log cli 75% - model",
+            "progress 100 CLI",
+            "log cli 100% - CLI",
+            "result {\"stdout\":\"[ 10%] Tiles (1/8)\\n[ 10%] Tiles (1/8)\\n[ 30%] Tiles (3/8)\\r[ 55%] Tiles (5/8)\\nmodel 80%\\n[CLI] Progress: 100%\\n\",\"stderr\":\"\",\"sawError\":false,\"errorCodes\":[],\"exitCode\":0}" ] );
+   }
+
+   } if ( testGroup( "util" ) ) {
    // ---- narrowband emission lines ----------------------------------------
 
    check( "Ha wavelength", Util.NARROWBAND_NM.H, 656.28 );
@@ -6925,6 +8365,7 @@ function runTests()
    check( "formatCoreVersion fills missing components",
           Util.formatCoreVersion( { major: 1 } ), "1.0.0" );
 
+   } if ( testGroup( "steps.residuals" ) ) {
    // ---- astrometric residual verdict --------------------------------------
 
    // Both thresholds, spelled out: 3.0 px is the verifier's matching
@@ -6967,6 +8408,7 @@ function runTests()
    check( "a recursive-spline solve of the same master is ok",
           Steps.residualVerdict( 0.0157 ), "ok" );
 
+   } if ( testGroup( "pipeline.keys" ) ) {
    /* ---- GraXpert on the narrowband channels, opt-in ------------------------ */
 
    /*
@@ -7041,6 +8483,7 @@ function runTests()
              null );
    } )();
 
+   } if ( testGroup( "frameselector" ) ) {
    /* ---- double click zooms to WHAT WAS CLICKED ---------------------------- */
 
    /*
@@ -7098,6 +8541,7 @@ function runTests()
              ok, true );
    } )();
 
+   } if ( testGroup( "steps.residuals" ) ) {
    /* ---- the 1.9.4 build must actually differ ------------------------------ */
 
    /*
@@ -7175,6 +8619,7 @@ function runTests()
          missing.push( needed[ri] );
    check( "every parameter AstrometricResiduals requires is present", missing, [] );
 
+   } if ( testGroup( "pipeline.reference" ) ) {
    // ---- registration reference --------------------------------------------
 
    /*
@@ -7484,6 +8929,7 @@ function runTests()
       }
    } )();
 
+   } if ( testGroup( "asiair.names" ) ) {
    /* ---- ASIAIR filename parsing ------------------------------------------ */
 
    /*
@@ -7934,6 +9380,7 @@ function runTests()
              "/Astro/Day 12/Light/a.xisf" );
    } )();
 
+   } if ( testGroup( "asiair.card" ) ) {
    /* ---- ASIAIR detection ---------------------------------------------------- */
 
    /*
@@ -8149,6 +9596,7 @@ function runTests()
              Asiair.scanCard( vanish + "-never" ).removed, true );
    } )();
 
+   } if ( testGroup( "asiair.names" ) ) {
    /* ---- what the round-two review found ------------------------------------ */
 
    /*
@@ -8205,6 +9653,7 @@ function runTests()
           AsiairNames.parseName(
              "Light_M42_10s_Bin1_H_gain100_20260920-220000_-7C_0001_0002.fit" ), null );
 
+   } if ( testGroup( "asiair.card" ) ) {
    /*
     * macOS AppleDouble sidecars sit beside every file on a card copied
     * through a Mac. "._Light_..." splits to a type of "." and a target of
@@ -8269,6 +9718,7 @@ function runTests()
              FrameSelector.approvedLightRecords( st ).length, 0 );
    } )();
 
+   } if ( testGroup( "asiair.night" ) ) {
    /* ---- arranging a card into targets and nights -------------------------- */
 
    ( function()
@@ -8395,6 +9845,7 @@ function runTests()
       check( "the night picker builds and selects" + ( err ? ": " + err : "" ), ok, true );
    } )();
 
+   } if ( testGroup( "asiair.card" ) ) {
    /* ---- scanPaths keeps the whole of scan's contract ---------------------- */
 
    if ( IN_PIXINSIGHT ) ( function()
@@ -8419,6 +9870,7 @@ function runTests()
       check( "an empty list is not a cancellation", empty.cancelled, false );
    } )();
 
+   } if ( testGroup( "frames" ) ) {
    /* ---- measuring in batches, so the scan window moves ------------------- */
 
    /*
@@ -8524,6 +9976,7 @@ function runTests()
              [ bare.title, bare.detail, bare.fraction ], [ "Measuring H (1 of 2 frames)", "", 0.5 ] );
    } )();
 
+   } if ( testGroup( "frameselector" ) ) {
    /*
     * A total nobody knows yet (a card being read) cannot fill a bar, and an
     * empty bar looked like nothing happening. A block moving back and forth
@@ -8704,6 +10157,7 @@ function runTests()
              "Bias_0.001s_Bin1_S_gain100_20240320-233122_-10.5C_0001.fit" ).type, "Bias" );
 
 
+   } if ( testGroup( "asiair.card" ) ) {
    /* ---- the header adapter -------------------------------------------------- */
 
    /*
@@ -8772,6 +10226,7 @@ function runTests()
              AsiairNames.matchFlats( [ lit ], [ other ] )[0].strength, "missing" );
    } )();
 
+   }
    runFlyTests();
 }
 
@@ -8822,6 +10277,7 @@ function runFlyTests()
 
 function runFlyTestsClean()
 {
+   if ( testGroup( "fly.geometry" ) ) {
    check( "Fly loads", typeof Fly, "object" );
    /* The suite keeps its own image cache: its dialogs must never evict (the cache keeps 3 images) the user's cached solves. */
    if ( IN_PIXINSIGHT ) check( "the suite's image cache is its own, not the user's", FlyThrough.cacheRoot() != File.systemTempDirectory + "/LoomFlyThrough", true );
@@ -9004,6 +10460,88 @@ function runFlyTestsClean()
              Fly.assignSprites( [ det( 20, 20, 2 ) ], [ P( 21, 20 ), P( 20.2, 20 ) ], 100, 100, 3 ).sprites[0].placed.x, 20.2 );
    } )();
 
+   } if ( testGroup( "sky.catalogue" ) ) {
+   /* ---- Sky: where the core install keeps its NGC/IC table --------------
+    * Before build 1705 it is src/scripts/AdP/NGC-IC.csv; 1705 moved it to
+    * include/pjsr/astrometry/NGC-IC.csv. The old place is read first, so
+    * older cores read exactly what they always read. Node only: the fakes
+    * replace File and CoreApplication members PixInsight does not let go. */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var SRC = "/fake/PixInsight/src";
+      var OLD = SRC + "/scripts/AdP/NGC-IC.csv";
+      var NEW = "/fake/PixInsight/include/pjsr/astrometry/NGC-IC.csv";
+      var HEADER = "id,alpha,delta,magnitude,diameter,axisRatio,posAngle,Common name,PGC,PGC2,Messier\n";
+      var TEXT = {};
+      TEXT[OLD] = HEADER + "NGC1,1.5,27.7,13.0,1.6,1.5,,,PGC564,,\n";
+      TEXT[NEW] = HEADER + "IC2,2.25,-12.8,15.0,0.8,1.2,,,PGC1,,\n";
+      function readWith( present, unreadable )
+      {
+         var saved = { exists: File.exists, read: File.readTextFile, src: CoreApplication.srcDirPath }, reads = [];
+         File.exists = function( p ) { return present.indexOf( p ) >= 0; };
+         File.readTextFile = function( p )
+         {
+            reads.push( p );
+            if ( unreadable || present.indexOf( p ) < 0 ) throw new Error( "no such file: " + p );
+            return TEXT[p];
+         };
+         CoreApplication.srcDirPath = SRC;
+         try { return { rows: Sky.readNgcIc(), reads: reads }; }
+         finally { File.exists = saved.exists; File.readTextFile = saved.read; CoreApplication.srcDirPath = saved.src; }
+      }
+      function ids( r ) { return r.rows ? r.rows.map( function( o ) { return o.id; } ) : null; }
+      var a = readWith( [ OLD ] );
+      check( "NGC/IC: only the pre-1705 table: it is read", [ ids( a ), a.reads ], [ [ "NGC1" ], [ OLD ] ] );
+      var b = readWith( [ NEW ] );
+      check( "NGC/IC: only the 1705 table (include/pjsr/astrometry): it is read", [ ids( b ), b.reads ], [ [ "IC2" ], [ NEW ] ] );
+      check( "NGC/IC: the 1705 table parses like the old one",
+             b.rows && b.rows[0], { id: "IC2", ra: 2.25, dec: -12.8, diameter: 0.8, name: "", pgc: "PGC1", messier: "" } );
+      var c = readWith( [ OLD, NEW ] );
+      check( "NGC/IC: both tables: the pre-1705 one wins", [ ids( c ), c.reads ], [ [ "NGC1" ], [ OLD ] ] );
+      var d = readWith( [] );
+      check( "NGC/IC: neither table: null, nothing read", [ d.rows, d.reads ], [ null, [] ] );
+
+      /* No table: one warning per session naming both places tried, so a missing catalogue is not silent. */
+      function warnings( fn )
+      {
+         var saved = Util.warn, said = [];
+         Util.warn = function( stage, m ) { said.push( stage + ": " + m ); };
+         try { fn(); } finally { Util.warn = saved; }
+         return said;
+      }
+      var MISSING = "fly: NGC/IC catalogue not found (tried " + OLD + ", " + NEW + "): objects can't be named or looked up";
+      Sky.ngcIcMissingWarned = false;
+      var first = null, second = null, again = null;
+      check( "NGC/IC missing: one warning naming both paths, in order",
+             warnings( function() { first = readWith( [] ).rows; } ), [ MISSING ] );
+      check( "NGC/IC missing: still null", first, null );
+      check( "NGC/IC missing again: no second warning",
+             warnings( function() { second = readWith( [] ).rows; } ), [] );
+      check( "NGC/IC missing again: still null", second, null );
+      Sky.ngcIcMissingWarned = false;
+      check( "NGC/IC missing after the warning is reset: warns again",
+             warnings( function() { again = readWith( [] ).rows; } ), [ MISSING ] );
+      Sky.ngcIcMissingWarned = false;
+      check( "NGC/IC found: no warning", warnings( function() { readWith( [ NEW ] ); } ), [] );
+      Sky.ngcIcMissingWarned = false;
+      var unreadable = null;
+      check( "NGC/IC present but unreadable: the same one warning",
+             warnings( function() { unreadable = readWith( [ OLD, NEW ], true ); } ), [ MISSING ] );
+      check( "NGC/IC present but unreadable: both tried, null", [ unreadable.rows, unreadable.reads ], [ null, [ OLD, NEW ] ] );
+      Sky.ngcIcMissingWarned = false;
+   } )();
+   /* The real table, from whichever core runs the suite (1705 has only the new place). */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var ngc = Sky.readNgcIc() || [];
+      check( "NGC/IC: the core install's table has the whole catalogue", ngc.length > 9000, true );
+      var m31 = ngc.filter( function( o ) { return o.id == "NGC224"; } )[0] || null;
+      check( "NGC/IC: NGC224 is M31", m31 && m31.messier, "M31" );
+      check( "NGC/IC: NGC224 at RA 10.684708, Dec 41.268750 (1e-4)",
+             m31 != null && Math.abs( m31.ra - 10.684708 ) < 1e-4 && Math.abs( m31.dec - 41.268750 ) < 1e-4, true );
+   } )();
+
+   } if ( testGroup( "fly.sky" ) ) {
    /* ---- Sky: catalogues, projection, star layers, sprites (PixInsight) - */
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -9114,6 +10652,7 @@ function runFlyTestsClean()
                                 [ { source: twin, x: 30, y: 20 } ] ).sprites.length, 1 );
    } )();
 
+   } if ( testGroup( "fly.render" ) ) {
    /* ---- Render: resampling and sprite drawing (pure) ------------------- */
    ( function()
    {
@@ -9470,6 +11009,7 @@ function runFlyTestsClean()
          check( "and its encoder list names at least one encoder", /encoders/i.test( Render.ffmpegEncoders( ff ) ), true );
    } )();
 
+   } if ( testGroup( "fly.dialog" ) ) {
    /* ---- Fly-Through: draft timing, final render, cancel ---------------- */
    check( "due frame by wall clock", Render.dueFrame( 1000, 1250, 10, 4 ), 2 );
    check( "late ticks drop frames, not slow the clip", Render.dueFrame( 1000, 1390, 10, 4 ), 3 );
@@ -9613,6 +11153,7 @@ function runFlyTestsClean()
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   } if ( testGroup( "fly.colour" ) ) {
    /* ---- Fly: colour management (pure) ---------------------------------- */
    ( function()
    {
@@ -9732,6 +11273,7 @@ function runFlyTestsClean()
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   } if ( testGroup( "fly.hdr" ) ) {
    /* ---- Fly: HDR (HLG and PQ) ------------------------------------------ */
    ( function()
    {
@@ -9835,6 +11377,7 @@ function runFlyTestsClean()
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   } if ( testGroup( "fly.draft" ) ) {
    /* ---- Draft order, player, dialog ------------------------------------ */
    check( "a clip plays its frames in order", [ 0, 1, 2, 3, 4 ].map( function( i ) { return Fly.sequenceFrame( i, 4, false ); } ), [ 0, 1, 2, 3, 0 ] );
    check( "a ping-pong draft plays the forward frames there and back",
@@ -10101,6 +11644,7 @@ function runFlyTestsClean()
    check( "a wide image: its height becomes 2160", Math.abs( Fly.workingScale( 12000, 4000 ) - 0.54 ) < 1e-12, true );
    check( "a small image is never enlarged", Fly.workingScale( 3000, 2000 ), 1 );
 
+   } if ( testGroup( "fly.working" ) ) {
    /* ---- The working copy ---------------------------------------------- */
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -10410,6 +11954,7 @@ function runFlyTestsClean()
       finally { [ a && a.window, b && b.window, lin, fin ].forEach( function( w ) { if ( w ) w.forceClose(); } ); }
    } )();
 
+   } if ( testGroup( "fly.stars" ) ) {
    /* ---- Deblending: splitting light between stars by model ------------- */
    ( function()
    {
@@ -10675,6 +12220,7 @@ function runFlyTestsClean()
       check( "noise is no spike", Fly.fitSpike( none, T, start, sigma ).reach, -1 );
    } )();
 
+   } if ( testGroup( "fly.dialog" ) ) {
    /*
     * The dialog opens without an image and the image is chosen in it -- a
     * list of the open images, and Open... for a file -- rather than a file
@@ -10808,6 +12354,7 @@ function runFlyTestsClean()
       }
    } )();
 
+   } if ( testGroup( "fly.stars" ) ) {
    /*
     * The Object box finds what a person types: catalogue ids however they
     * are spaced, Messier numbers, common names -- the catalogue's own and a
@@ -11062,6 +12609,7 @@ function runFlyTestsClean()
       check( "no music, no audio", Fly.ffmpegArgs( "/f", 30, "/out/v", "h264", "high", null ).join( " " ).indexOf( "-map" ), -1 );
    } )();
 
+   } if ( testGroup( "fly.logo" ) ) {
    /* The logo is composited into every frame, its transparency kept, and nowhere else. */
    if ( IN_PIXINSIGHT ) ( function()
    {
@@ -11547,6 +13095,7 @@ function runFlyTestsClean()
       finally { fx.windows.forEach( function( w ) { w.forceClose(); } ); }
    } )();
 
+   } if ( testGroup( "fly.object" ) ) {
    /* A failed solve says what was tried -- focal length, pixel sizes, centre -- and the solver's reason, so a wrong value shows. */
    ( function()
    {
@@ -11784,6 +13333,7 @@ function runFlyTestsClean()
              Fly.cacheToPrune( [ { name: "a", used: 5 }, { name: "b", used: 9 }, { name: "c", used: 1 }, { name: "d", used: 7 } ], 3 ), [ "c" ] );
    } )();
 
+   } if ( testGroup( "fly.cache" ) ) {
    /*
     * The per-image cache, on disk (the suite's own scratch folder, never
     * the real one): float arrays round trip; a solved working copy comes
@@ -11931,6 +13481,7 @@ function runFlyTestsClean()
       }
    } )();
 
+   } if ( testGroup( "fly.stars" ) ) {
    /*
     * Spikes grow as a brighter star's do: longer, never wider. A spike
     * falling as 1/r^2 shows, L times longer, what an L^2-times brighter one
@@ -12045,6 +13596,7 @@ function runFlyTestsClean()
       check( "and empty sky none", at( 190, 10 ), 1 );
    } )();
 
+   } if ( testGroup( "fly.sky" ) ) {
    /*
     * Gaia: DR3/SP first (what SPCC needs, so what most set up), then full
     * DR3. The first release that answers is used for the rest of the
@@ -12153,6 +13705,7 @@ function runFlyTestsClean()
       check( "radius below 1 leaves it as it is", Render.blur3( src.slice(), w, h, 0.5 )[30*w + 40], src[30*w + 40] );
    } )();
 
+   } if ( testGroup( "fly.dialog" ) ) {
    /*
     * A render stopped part way -- cancelled, or PixInsight closed -- picks
     * up where it left off: the frames already written with the same options
@@ -12175,8 +13728,8 @@ function runFlyTestsClean()
          check( "started again, it renders only the other 5", [ again.cancelled, again.written, again.reused ], [ false, 5, 3 ] );
          check( "the kept frames are untouched", ( new FileInfo( dir + "/resume/frame_00001.tif" ) ).lastModified.getTime(), t0 );
          check( "all 8 are there and nothing half-written is left",
-                [ Steps.directoryEntries( dir + "/resume" ).filter( Fly.isFrameFile ).length,
-                  Steps.directoryEntries( dir + "/resume" ).filter( function( n ) { return n.indexOf( FlyThrough.PARTIAL_SUFFIX ) >= 0; } ).length ], [ 8, 0 ] );
+                [ Util.directoryEntries( dir + "/resume" ).filter( Fly.isFrameFile ).length,
+                  Util.directoryEntries( dir + "/resume" ).filter( function( n ) { return n.indexOf( FlyThrough.PARTIAL_SUFFIX ) >= 0; } ).length ], [ 8, 0 ] );
          check( "progress counts the kept frames as done, and says how many were kept", seen[0], [ 4, 3 ] );
          var changed = FlyThrough.renderFinal( fx.scene, [ spec ], o, dir, { cancelAfter: 2 } );
          FlyThrough.renderFinal( fx.scene, [ spec ], Object.assign( {}, o, { growth: 0.3 } ), dir, { cancelAfter: 1 } );
@@ -12530,6 +14083,7 @@ function runFlyTestsClean()
       }
    } )();
 
+   } if ( testGroup( "fly.quality" ) ) {
    /* Star quality: Highest is the renderer as it was, from the full-size scene; High and Medium draw from it shrunk to the video (one scene px per output px) and sample glows by their footprint; Medium draws its stars at half size. */
    check( "the three levels", [ Fly.starQuality( "highest" ), Fly.starQuality( "high" ), Fly.starQuality( "medium" ) ],
           [ { footprint: false, outScale: 0, starRes: 1 }, { footprint: true, outScale: 1, starRes: 1 }, { footprint: true, outScale: 1, starRes: 0.5 } ] );
@@ -12669,6 +14223,27 @@ function runFlyTestsClean()
       } );
       check( "skipping dark pixels changes nothing (" + worst + ")", worst, 0 );
       check( "and skips a good part of them (" + skipped + " of " + total + ")", skipped > 0.2*total, true );
+   } )();
+
+   /* Characterization: the exact sums drawSprites adds (glow, footprint, mip levels, Medium, no mip, spikes) and darkMap's distances, as 0.3.0 drew them. */
+   ( function()
+   {
+      function fnv( arrs ) { var h = 2166136261 >>> 0; arrs.forEach( function( a ) { var u = new Uint32Array( new Float32Array( a ).buffer ); for ( var k = 0; k < u.length; ++k ) h = Math.imul( h ^ u[k], 16777619 ) >>> 0; } ); return ( "00000000" + h.toString( 16 ) ).slice( -8 ); }
+      var n = 61, R = 30, W = 90, mk = function() { return [ 1, 0.6, 0.3 ].map( function( k, c ) { var q = new Float32Array( n*n ); for ( var i = 0; i < 60; ++i ) { var x = ( i*37 + c*11 ) % n, y = ( i*53 + c*7 ) % n; q[y*n + x] = k*( 0.2 + ( i % 5 )/5 ); } for ( var y = 0; y < n; ++y ) for ( var x = 0; x < n; ++x ) q[y*n + x] += k*Math.exp( -( ( x - R )*( x - R ) + ( y - R )*( y - R ) )/( 2*2*2 ) ); return q; } ); };
+      var sp = { rect: { x0: 0, y0: 0, x1: n, y1: n }, det: { x: R, y: R } };
+      var cases = [ [ 1, 1, 1, 4, {} ], [ 1.7, 1, 2, 4, { footprint: true } ], [ 3, 0.4, 2.4, 4, { footprint: true } ], [ 0.8, 1, 3, 0, {} ], [ 1.2, 1, 9, 0, {} ], [ 1.2, 1, 9, 0, { coarse: true } ], [ 2, 1, 7, 3, { mip: false } ],
+                    [ 1.5, 0.6, 1.5, 4, { spike: { length: 3, angles: [ 0.3, 0.3 + Math.PI/2, 0.3 + Math.PI, 0.3 + 3*Math.PI/2 ] } } ], [ 1, 1, 1, 0, { spike: { length: 1.4, angles: [ 1, 2.5 ] } } ] ];
+      var hs = cases.map( function( v )
+      {
+         var patches = mk(), accs = [ 0, 1, 2 ].map( function() { return new Float32Array( W*W ); } );
+         for ( var ph = 0; ph < 2; ++ph )
+            Render.drawSprites( accs, W, W, patches, sp, 45 + 0.37*ph, 41 - 0.21*ph, v[0], [ 1, 0.9, 0.8 ], { x: 3, y: 2, fx: v[2], fy: v[2]*1.1 }, [ 0.5, 0.4, 0.3 ], v[3], Object.assign( { seen: v[1] }, v[4] ) );
+         return fnv( accs );
+      } );
+      var p = mk()[0]; for ( var i = 0; i < p.length; ++i ) if ( p[i] < 0.05 ) p[i] = 0;
+      hs.push( fnv( [ Render.darkMap( p, n, n ), Render.darkMap( p, 7, 5 ), Render.darkMap( p.subarray( 0, 40 ), 8, 5 ) ] ) );
+      check( "drawSprites and darkMap draw exactly as before, bit for bit", hs,
+             [ "1b18f6b7", "530003fb", "c4ba6df8", "8656f176", "b93a0cce", "9e4c648d", "76dda254", "95da3cab", "f67b91ad", "b452d355" ] );
    } )();
 
    /*
@@ -12886,12 +14461,16 @@ function runFlyTestsClean()
    } )();
 
    /* fly-tests-end */
+   }
    runSolveTests();
+   runPipeTests();
+   runFinishingTests();
 }
 
 /* Loom's blind solver. Solve.js is pure and runs under node. */
 function runSolveTests()
 {
+   if ( testGroup( "solve.transfer" ) ) {
    /* A catalogue transfer that stops sending is abandoned: one sat an hour in curl_easy_perform with no data. */
    ( function()
    {
@@ -12924,9 +14503,12 @@ function runSolveTests()
       check( "transferWatch: nothing is cancelled outside a blind solve", Sky.transferCancelled(), false );
       check( "GAIA_ONLINE_TOTAL outlasts the slowest answer seen (about 30 s) many times over", Sky.GAIA_ONLINE_TOTAL >= 300000, true );
    } )();
+   } if ( testGroup( "solve.core" ) ) {
    check( "Solve loads", typeof Solve, "object" );
+   } if ( testGroup( "prelude" ) ) {
    function near( a, b, e ) { return Math.abs( a - b ) <= e; }
 
+   } if ( testGroup( "solve.core" ) ) {
    /* ---- tangent plane ---------------------------------------------- */
    ( function()
    {
@@ -12981,6 +14563,7 @@ function runSolveTests()
       check( "fitSimilarity: scale is degrees per pixel", near( Solve.fitSimilarity( [ [ 0, 0 ], [ 100, 0 ] ], [ [ 0, 0 ], [ 0.01, 0 ] ], 0 ).scale, 1e-4, 1e-15 ), true );
    } )();
 
+   } if ( testGroup( "prelude" ) ) {
    /* ---- sky grid, keeper, tiles, band quads --------------------------- */
    /* A deterministic synthetic sky patch: n stars, uniform over [ra0, ra0+w] x [dec0, dec0+h], G 6..13. */
    function synthSky( seed, n, ra0, dec0, w, h )
@@ -12991,6 +14574,7 @@ function runSolveTests()
          out.push( { ra: ra0 + w*rnd(), dec: dec0 + h*rnd(), G: 6 + 7*rnd() } );
       return out;
    }
+   } if ( testGroup( "solve.core" ) ) {
    ( function()
    {
       check( "BANDS start at 0.3 degrees", near( Solve.BANDS[0].lo, 0.3, 1e-12 ), true );
@@ -13096,6 +14680,7 @@ function runSolveTests()
       check( "makeIndex's quads are bandQuads', band by band", same( whole.quads, flat ), true );
    } )();
 
+   } if ( testGroup( "solve.search" ) ) {
    /* ---- one catalogue tile: an online answer at the row limit is read again in pieces ---- */
    ( function()
    {
@@ -13313,6 +14898,7 @@ function runSolveTests()
       check( "solve ticks while it works", ticks > 0, true );
    } )();
 
+   } if ( testGroup( "solve.blind" ) ) {
    /* ---- blind solve: hints, cancel, and the hand-off to ImageSolver ------ */
    check( "hintsFrom: focal 1000 and the pixel that gives the scale",
           ( function() { var h = Solve.hintsFrom( { ra: 1, dec: 2, scale: 0.966 } ); return h.focal == 1000 && Math.abs( 206.265*h.pixel/h.focal - 0.966 ) < 1e-12 && h.ra == 1 && h.dec == 2; } )(), true );
@@ -13579,14 +15165,1531 @@ function runSolveTests()
       check( "blindStars: bright stars first, then the detector's by flux, no star twice",
              ranked.length == 4 && want.every( function( p, i ) { return Math.hypot( ranked[i].x - p[0], ranked[i].y - p[1] ) < 1; } ), true );
       check( "blindStars: an image with nothing saturated keeps the detector's stars", Solve.blindStars( dets, new Float32Array( W*H ).fill( 0.05 ), W, H ).length, 3 );
+
+      // characterization: the exact stars, with a flat-topped square (its middle) and two touching stars (split at a higher threshold)
+      for ( y = 20; y < 26; ++y ) for ( x = 200; x < 206; ++x ) buf[y*W + x] = 1;
+      add( 60, 200, function( dx, dy ) { return 1.5*Math.exp( -( dx*dx + dy*dy )/( 2*3*3 ) ) + 1.5*Math.exp( -( ( dx - 12 )*( dx - 12 ) + dy*dy )/( 2*3*3 ) ); } );
+      for ( i = 0; i < buf.length; ++i ) buf[i] = Math.min( 1, buf[i] );
+      check( "brightStars: the exact stars, sizes and order",
+             Solve.brightStars( buf, W, H ).map( function( b ) { return b.x.toFixed( 6 ) + " " + b.y.toFixed( 6 ) + " " + b.n; } ),
+             [ "100.377675 80.547856 217", "280.565881 199.781049 53", "60.038251 200.000000 37", "71.961749 200.000000 37", "202.500000 22.500000 36" ] );
    } )();
+
+   } if ( testGroup( "solve.native" ) ) {
+   /*
+    * PKG-8: the quad-code lookup, which a 1.9.5 build 1705 core can answer
+    * from its KDTree. Both paths must give these quads in this order: the
+    * blind solve votes on its hypotheses and sorts them stably, in lookup
+    * order, so a reordering alone could change which field is found.
+    */
+   ( function()
+   {
+      var sky = synthSky( 99, 60000, 60, 10, 12, 12 ), home = { ra: 66, dec: 16 };
+      var keep = new Solve.Keeper( Solve.BANDS.map( function( b ) { return b.lo; } ), Solve.STARS_PER_CELL );
+      sky.forEach( function( t ) { if ( Fly.separation( t, home ) <= Solve.REGION_RADIUS ) keep.add( t ); } );
+      var idx = Solve.regionIndex( keep.stars() ), codes = idx.codes, nq = codes.length/4, tol = Solve.CODE_TOL;
+      function fieldDets( centre, scale, turn, parity, seed )
+      {
+         var W = 3840, H = 2560, s = seed >>> 0, dets = [];
+         function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+         var f = { a: scale*Math.cos( turn ), b: scale*Math.sin( turn ), parity: parity, tx: 0, ty: 0 };
+         var c0 = Solve.applySimilarity( f, W/2, H/2 ); f.tx = -c0[0]; f.ty = -c0[1];
+         sky.forEach( function( t )
+         {
+            var p = Solve.toPlane( centre, t.ra, t.dec );
+            if ( !p ) return;
+            var xy = Solve.invertSimilarity( f, p[0], p[1] );
+            if ( xy[0] < 0 || xy[1] < 0 || xy[0] >= W || xy[1] >= H || rnd() < 0.2 ) return;
+            dets.push( { x: xy[0] + 0.3*( rnd() - 0.5 ), y: xy[1] + 0.3*( rnd() - 0.5 ), flux: Math.pow( 10, -0.4*t.G )*( 0.8 + 0.4*rnd() ) } );
+         } );
+         for ( var k = 0, real = dets.length; k < 0.3*real; ++k ) dets.push( { x: W*rnd(), y: H*rnd(), flux: Math.pow( 10, -0.4*( 8 + 5*rnd() ) ) } );
+         return dets;
+      }
+      var fieldA = fieldDets( { ra: 66, dec: 16 }, 1.2/3840, 0.3, 0, 3 ), fieldB = fieldDets( { ra: 64.5, dec: 14.2 }, 2/3840, 1.1, 1, 5 );
+      // the queries: every image quad of two fields; index codes nudged up to 0.009 an axis; index codes moved exactly tol along an axis, and onto a bin edge
+      var queries = Solve.imageQuads( fieldA, Solve.IMAGE_QUAD_STARS ).concat( Solve.imageQuads( fieldB, Solve.IMAGE_QUAD_STARS ) ).map( function( q ) { return q.code; } );
+      var probes = [], s = 41;
+      function rnd() { s = ( Math.imul( s, 1664525 ) + 1013904223 ) >>> 0; return s/4294967296; }
+      for ( var i = 0; i < 300; ++i )
+      {
+         var q = Math.floor( rnd()*nq ), c = [ codes[4*q], codes[4*q + 1], codes[4*q + 2], codes[4*q + 3] ], axis = i % 4;
+         probes.push( c.map( function( v ) { return v + 0.018*( rnd() - 0.5 ); } ) );
+         probes.push( c.map( function( v, j ) { return j == axis ? v + ( i % 8 < 4 ? tol : -tol ) : v; } ) );
+         probes.push( c.map( function( v, j ) { return j == axis ? Math.floor( ( v + 0.25 )/Solve.HASH_BIN )*Solve.HASH_BIN - 0.25 : v; } ) );
+      }
+      queries = queries.concat( probes );
+      check( "lookup goldens: the fixture", [ nq, queries.length ].join(), "5398,14912" );
+
+      // the canonical answer: every quad within tol (a sphere, not the 3^4 bins), ordered by hash bin, then by quad number
+      function canonical( code )
+      {
+         var keyed = [];
+         for ( var k = 0; k < nq; ++k )
+         {
+            var e = 0;
+            for ( var j = 0; j < 4; ++j ) e += ( codes[4*k + j] - code[j] )*( codes[4*k + j] - code[j] );
+            if ( e <= tol*tol ) keyed.push( { key: Solve.hashKey( codes[4*k], codes[4*k + 1], codes[4*k + 2], codes[4*k + 3] ), q: k } );
+         }
+         return keyed.sort( function( a, b ) { return a.key - b.key || a.q - b.q; } ).map( function( x ) { return x.q; } );
+      }
+      var sample = probes.concat( queries.filter( function( q, k ) { return k % 25 == 0; } ) ), off = 0, found = 0;
+      sample.forEach( function( code ) { var got = Solve.lookup( idx.hash, codes, code, tol ); found += got.length; if ( got.join() != canonical( code ).join() ) ++off; } );
+      check( "lookup: exactly the quads within tol (tol <= bin width), by bin then quad number", [ off, found > 300 ].join(), "0,true" );
+
+      var all = [], hits = 0;
+      queries.forEach( function( code ) { var got = Solve.lookup( idx.hash, codes, code, tol ); hits += got.length; all.push( got.join() ); } );
+      check( "lookup goldens: every answer, in order", [ hits, Fly.hashKey( all.join( ";" ) ) ].join(), "527,2f48ecb1" );
+      // many quads per answer, over several bins, numbered out of bin order: the order itself is pinned (a region index rarely answers more than one)
+      var nc = 3200, dense = new Float32Array( 4*nc ), centres = [];
+      for ( i = 0; i < 400; ++i ) centres.push( [ 0.05 + 0.9*rnd(), 0.05 + 0.9*rnd(), 0.05 + 0.9*rnd(), 0.05 + 0.9*rnd() ] );
+      for ( i = 0; i < nc; ++i ) { var cc = centres[( i*37 ) % 400]; for ( var j = 0; j < 4; ++j ) dense[4*i + j] = cc[j] + 0.016*( rnd() - 0.5 ); }
+      var denseHash = Solve.buildHash( dense ), denseQueries = centres.concat( centres.map( function( cc ) { return cc.map( function( v, j ) { return v + ( j == 1 ? 0.004 : 0 ); } ); } ) );
+      var denseAll = [], denseHits = 0, denseMany = 0, denseOff = 0;
+      denseQueries.forEach( function( code )
+      {
+         var got = Solve.lookup( denseHash, dense, code, tol ), keyed = [];
+         denseHits += got.length; if ( got.length >= 3 ) ++denseMany;
+         denseAll.push( got.join() );
+         for ( var k = 0; k < nc; ++k )
+         {
+            var e = 0;
+            for ( var j = 0; j < 4; ++j ) e += ( dense[4*k + j] - code[j] )*( dense[4*k + j] - code[j] );
+            if ( e <= tol*tol ) keyed.push( { key: Solve.hashKey( dense[4*k], dense[4*k + 1], dense[4*k + 2], dense[4*k + 3] ), q: k } );
+         }
+         if ( got.join() != keyed.sort( function( a, b ) { return a.key - b.key || a.q - b.q; } ).map( function( x ) { return x.q; } ).join() ) ++denseOff;
+      } );
+      check( "lookup, many quads an answer: the canonical answer, and in no other order (bin key, then quad number)",
+             [ denseOff, denseMany > 300, denseAll.some( function( a ) { var v = a.split( "," ).map( Number ); return v.some( function( x, k ) { return k > 0 && x < v[k - 1]; } ); } ) ].join(), "0,true,true" );
+      check( "lookup goldens: many quads an answer, every answer in order", [ denseHits, Fly.hashKey( denseAll.join( ";" ) ) ].join(), "3822,13c4d238" );
+
+      // the solves themselves, every result field, in order (numbers to 12 digits: the same arithmetic on every core)
+      function digest( v ) { return Fly.hashKey( JSON.stringify( v, function( k, x ) { return typeof x == "number" ? x.toPrecision( 12 ) : x; } ) ); }
+      var rA = Solve.solve( idx, fieldA, 3840, 2560, {} ), rB = Solve.solve( idx, fieldB, 3840, 2560, {} );
+      check( "solve goldens: both fields solve where they are", rA.length > 0 && rB.length > 0 && Fly.separation( rA[0], { ra: 66, dec: 16 } ) < 0.01 && Fly.separation( rB[0], { ra: 64.5, dec: 14.2 } ) < 0.01, true );
+      check( "solve goldens: every result, in order", [ rA.length, rB.length, digest( rA ), digest( rB ) ].join(), "1,1,e4316cf7,8dd9d149" );
+      /*
+       * Both paths, on the same data: forced to the fallback (the hash), and
+       * forced to the tree path -- here with a stand-in tree that answers
+       * its box in reverse order, so the tree path must restore the hash's
+       * order itself; on a 1705 core, again with the core's own KDTree.
+       */
+      function answers()
+      {
+         return queries.map( function( code ) { return Solve.lookup( idx.hash, codes, code, tol ).join(); } ).join( ";" ) + "|" +
+                denseQueries.map( function( code ) { return Solve.lookup( denseHash, dense, code, tol ).join(); } ).join( ";" );
+      }
+      function forget() { delete idx.hash.tree; delete denseHash.tree; }
+      function solves() { return [ digest( Solve.solve( idx, fieldA, 3840, 2560, {} ) ), digest( Solve.solve( idx, fieldB, 3840, 2560, {} ) ) ].join(); }
+      var savedTree = Util.kdTree, built = 0, fallback, fallbackSolves;
+      try
+      {
+         Util.forceNative( false );
+         fallback = answers(); fallbackSolves = solves();
+         check( "lookup, forced to the fallback: the goldens", [ Fly.hashKey( fallback ), fallbackSolves ].join(), [ Fly.hashKey( all.join( ";" ) + "|" + denseAll.join( ";" ) ), digest( rA ), digest( rB ) ].join() );
+         Util.forceNative( true );
+         Util.kdTree = function( objs )
+         {
+            ++built;
+            return { search: function( p, eps )
+            {
+               var out = [];
+               objs.forEach( function( o, k ) { if ( o.point.every( function( v, j ) { return v >= p[j] - eps && v <= p[j] + eps; } ) ) out.push( k ); } );
+               return out.reverse();
+            } };
+         };
+         forget();
+         check( "lookup, tree path (stand-in tree, reversed): every answer, in order", Fly.hashKey( answers() ), Fly.hashKey( fallback ) );
+         check( "lookup, tree path (stand-in tree): the solves", solves(), fallbackSolves );
+         check( "lookup, tree path: the tree is made once per index", built, 2 );
+         Util.kdTree = savedTree;
+         forget();
+         Util.forceNative( null );
+         if ( Util.hasKDTree() )
+         {
+            var native = answers(), nativeSolves = solves();
+            check( "lookup, the core's KDTree (1705): every answer, in order", Fly.hashKey( native ), Fly.hashKey( fallback ) );
+            check( "lookup, the core's KDTree (1705): the solves", nativeSolves, fallbackSolves );
+         }
+      }
+      finally { Util.kdTree = savedTree; Util.forceNative( null ); forget(); }
+
+      var savedBins = Solve.HASH_BINS, tooFine;
+      try { Solve.HASH_BINS = 1000; tooFine = Solve.treeKeysExact( 100 ); } finally { Solve.HASH_BINS = savedBins; }
+      check( "lookup: the tree path only while its packed sort key is exact (under 2^22 quads, keys under 2^53)",
+             [ Solve.treeKeysExact( nq ), Solve.treeKeysExact( 4194303 ), Solve.treeKeysExact( 4194304 ), tooFine ], [ true, true, false, false ] );
+
+      // the capability layer: 1.9.5 build 1705 or later, compared part by part
+      function core( v ) { var p = v.split( "." ); return { major: +p[0], minor: +p[1], release: +p[2], build: +p[3] }; }
+      check( "pi1705: by (major, minor, release, build)",
+             [ "1.9.4.9999", "1.9.5.1704", "1.9.5.1705", "1.9.5.1800", "1.9.6.1", "1.10.0.3", "2.0.0.0", "1.8.9.2000" ].map( function( v ) { return Util.pi1705( core( v ) ); } ),
+             [ false, false, true, true, true, true, true, false ] );
+      check( "coreVersionAtLeast: a minimum with no build asks for none", Util.coreVersionAtLeast( core( "1.9.4.0" ), Util.MIN_CORE ), true );
+      check( "hasKDTree: a 1705 core with a KDTree, nothing else", Util.hasKDTree(), Util.pi1705() && typeof KDTree == "function" );
+      Util.forceNative( true ); var forcedOn = Util.hasKDTree();
+      Util.forceNative( false ); var forcedOff = Util.hasKDTree();
+      Util.forceNative( null );
+      check( "forceNative: forces either answer, null restores the core's", [ forcedOn, forcedOff, Util.hasKDTree() ], [ true, false, Util.pi1705() && typeof KDTree == "function" ] );
+   } )();
+
+   /* The 1705 structures are named in one place, the capability layer in Util.js, so no path uses them unguarded. */
+   ( function()
+   {
+      // every library there is, listed from the folder: a new one is covered without an edit here
+      var files = [ "Loom.js", "FrameSelector.js", "FlyThrough.js" ], named = [], ff = new FileFind;
+      if ( ff.begin( LOOM_DIR + "/lib/*.js" ) ) do if ( /\.js$/.test( ff.name ) ) files.push( "lib/" + ff.name ); while ( ff.next() );
+      check( "the source check reads every library (Util.js, Solve.js and the rest)", files.indexOf( "lib/Util.js" ) > 0 && files.indexOf( "lib/Solve.js" ) > 0 && files.length > 15, true );
+      files.forEach( function( f )
+      {
+         if ( f != "lib/Util.js" && /\b(KDTree|KDTreeNode|QuadTree|BTree|readToEnd)\b/.test( File.readTextFile( LOOM_DIR + "/" + f ) ) ) named.push( f );
+      } );
+      check( "KDTree, QuadTree, BTree and readToEnd are named only in Util.js", named, [] );
+   } )();
+
+   } if ( testGroup( "config" ) ) {
+   /*
+    * Loom.js config: the L denoise strength is remembered across launches.
+    * saveConfig has always written Loom/noiseLevelL; loadConfig must read
+    * it back, or L resets to "follow the colour level" on every launch.
+    * Empty is a legal stored value (follow colour) and must round-trip as
+    * itself; with nothing stored the default, also empty, stands.
+    */
+   ( function()
+   {
+      function roundTrip( level )
+      {
+         var store = {};
+         var c = defaultConfig();
+         c.noiseLevelL = level;
+         var saved = withConfigStore( store, {}, function() { saveConfig( c ); } );
+         check( "config: the fake Settings/Parameters are in place for saveConfig (" + level + ")", saved.swapped, true );
+         if ( !saved.swapped )
+            return null;
+         check( "config: saveConfig writes Loom/noiseLevelL (" + JSON.stringify( level ) + ")",
+                store["Loom/noiseLevelL"], level );
+         var loaded = withConfigStore( store, {}, function() { return loadConfig(); } );
+         check( "config: the fake Settings/Parameters are in place for loadConfig (" + level + ")", loaded.swapped, true );
+         return loaded.swapped ? loaded.result : null;
+      }
+
+      var high = roundTrip( "high" );
+      check( "config: noiseLevelL \"high\" survives save then load", high && high.noiseLevelL, "high" );
+      check( "config: and the colour level alongside it is untouched", high && high.noiseLevel, "medium" );
+
+      var empty = roundTrip( "" );
+      check( "config: an empty noiseLevelL (follow colour) round-trips as empty", empty && empty.noiseLevelL, "" );
+
+      var fresh = withConfigStore( {}, {}, function() { return loadConfig(); } );
+      check( "config: the fakes are in place for a first launch", fresh.swapped, true );
+      check( "config: with nothing stored, noiseLevelL keeps its default (follow colour)",
+             fresh.swapped && fresh.result.noiseLevelL, "" );
+      check( "config: the default itself is empty", defaultConfig().noiseLevelL, "" );
+   } )();
+
+   /*
+    * Config transcripts (see configTranscripts): defaults with their key
+    * order, every loadConfig read and side effect in order with the
+    * config it returns, every saveConfig write in order, and a round
+    * trip, all against the fixture captured before lib/Config.js existed.
+    */
+   ( function()
+   {
+      var got = configTranscripts();
+      check( "config: the fake Settings/Parameters were in place for every transcript", got.swapped, true );
+      if ( !got.swapped )
+         return;
+      var want = JSON.parse( File.readTextFile( LOOM_DIR + "/../ci/fixtures/config.json" ) );
+      check( "config: defaultConfig, every key and its order", got.defaults, want.defaults );
+      check( "config: the load states are the fixture's", Object.keys( got.load ), Object.keys( want.load ) );
+      for ( var name in want.load )
+      {
+         var g = got.load[name] || {};
+         check( "config: load, " + name + ": reads and side effects in order", g.log, want.load[name].log );
+         check( "config: load, " + name + ": the config", g.config, want.load[name].config );
+      }
+      check( "config: the save cases are the fixture's", Object.keys( got.save ), Object.keys( want.save ) );
+      for ( var sname in want.save )
+         check( "config: save, " + sname + ": writes in order", ( got.save[sname] || {} ).log, want.save[sname].log );
+      check( "config: save then load returns every persisted field", got.roundTrip, got.roundTripExpected );
+      check( "config: and the round trip is the fixture's", got.roundTrip, want.roundTrip );
+   } )();
+   }
+}
+
+/*
+ * Characterization tests for the refactoring of Pipeline.js and UI.js:
+ * they pin down what the code already does, messages and order included,
+ * with Loom's own collaborators stubbed and restored.
+ */
+function runPipeTests()
+{
+   if ( testGroup( "prelude" ) ) {
+   /* Replaces obj[name] for each [obj, name, fn]; returns the undo. */
+   function stub( list )
+   {
+      var saved = list.map( function( s ) { return [ s[0], s[1], s[0][s[1]] ]; } );
+      list.forEach( function( s ) { s[0][s[1]] = s[2]; } );
+      return function() { saved.forEach( function( s ) { s[0][s[1]] = s[2]; } ); };
+   }
+
+   } if ( testGroup( "pipeline.characterization" ) ) {
+   /*
+    * Pipeline.preflight: every problem, in the order it is reported.
+    */
+   ( function()
+   {
+      var dir = "/tmp/agent-scratch/loom-pipe-preflight";
+      ensureDir( dir );
+      var noFilter = dir + "/L.xisf", withFilter = dir + "/G.xisf", narrow = dir + "/H.xisf";
+      [ noFilter, withFilter, narrow ].forEach( function( p ) { File.writeTextFile( p, "x" ); } );
+      var missing = dir + "/R-missing.xisf";
+      function run( config, o )
+      {
+         var restore = stub( [
+            [ Util, "validateSelection", function() { return [ "selection" ]; } ],
+            [ Steps, "moduleAvailable", function( n ) { return o.missing.indexOf( n ) < 0; } ],
+            [ Steps, "studioAvailable", function() { return o.studio; } ],
+            [ Steps, "studioModelsFor", function() { return o.models; } ],
+            [ Steps, "studioCheckEntitlement", function() { return [ "refused" ]; } ],
+            [ Util, "readImageInfo", function( p )
+              {
+                 return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [] };
+              } ] ] );
+         try { return Pipeline.preflight( config ); }
+         finally { restore(); }
+      }
+      var first = Pipeline.REQUIRED_PROCESSES[0];
+      check( "preflight: every channel problem, in channel order",
+             run( { paths: { L: noFilter, R: missing, G: withFilter, H: narrow },
+                    views: { B: "loom_no_such_view_xyz" } },
+                  { missing: [ first ], studio: false, models: [] } ),
+             [ "selection",
+               "Process not installed: " + first,
+               "No FILTER keyword in L: " + noFilter + " (SPFC cannot proceed; the script will not guess a filter)",
+               "File not found for R: " + missing,
+               "Selected view no longer open for B: loom_no_such_view_xyz" ] );
+      check( "preflight: a missing GraXpert only matters when chosen",
+             [ run( { paths: {}, gradientTool: Steps.GRADIENT_TOOL_GRAXPERT },
+                    { missing: [ "GraXpert" ], studio: false, models: [] } ),
+               run( { paths: {} }, { missing: [ "GraXpert" ], studio: false, models: [] } ) ],
+             [ [ "selection", "Process not installed: GraXpert (choose another gradient tool to proceed without)" ],
+               [ "selection" ] ] );
+      check( "preflight: Studio chosen but absent is reported, and nothing is tried",
+             run( { paths: {}, gradientTool: Steps.GRADIENT_TOOL_STUDIO },
+                  { missing: [], studio: false, models: [ "m" ] } ),
+             [ "selection", "SyQon Studio not found: syqon-cli (choose another gradient tool to proceed without)" ] );
+      check( "preflight: Studio's refusals follow the process checks",
+             [ run( { paths: { H: narrow } }, { missing: [], studio: true, models: [ "m" ] } ),
+               run( { paths: { H: narrow } }, { missing: [], studio: true, models: [] } ) ],
+             [ [ "selection", "refused" ], [ "selection" ] ] );
+   } )();
+
+   /*
+    * Pipeline.measureCleanWhiteBalance: the order of cache lookups,
+    * registrations and measurements, and that every temporary is released.
+    */
+   ( function()
+   {
+      var dir = "/tmp/agent-scratch/loom-pipe-cleanwb";
+      ensureDir( dir );
+      var calls, factors, lastKey;
+      function win( id ) { return { mainView: { id: id }, isNull: false, forceClose: function() { calls.push( "close " + id ); } }; }
+      function run( config, o )
+      {
+         calls = [];
+         var restore = stub( [
+            [ Pipeline, "cleanWhiteBalanceCachePath", function( k ) { lastKey = k; return dir + "/" + k + ".wb.json"; } ],
+            [ Util, "freeWindowId", function( id ) { return id; } ],
+            [ Cache, "load", function( k, id )
+              {
+                 calls.push( "load " + id );
+                 if ( /_cleanreg$/.test( id ) ) return ( o.regHit || [] ).indexOf( id.charAt( 0 ) ) >= 0 ? win( id ) : null;
+                 return ( o.lost == id.charAt( 0 ) ) ? null : win( id );
+              } ],
+            [ Cache, "store", function( k, w, meta ) { calls.push( "store " + meta.channel + " " + meta.stage ); } ],
+            [ Steps, "register", function( v, ref ) { calls.push( "register " + v.id + " to " + ref.id ); return win( v.id + "_r" ); } ],
+            [ Steps, "combineRGB", function( r, g, b, id ) { calls.push( "combine " + [ r.id, g.id, b.id ].join( "," ) ); return win( id ); } ],
+            [ Steps, "solve", function( v ) { calls.push( "solve " + v.id ); } ],
+            [ Steps, "spfc", function( v, a, b, inst ) { calls.push( "spfc " + v.id + " " + inst ); } ],
+            [ Steps, "spccRGB", function( v, inst ) { calls.push( "spcc " + v.id ); } ],
+            [ Steps, "readWhiteBalanceFactors", function() { return factors; } ] ] );
+         var reg = { forget: function( w ) { calls.push( "forget " + w.mainView.id ); } };
+         var chans = { R: { cleanKey: "kr" }, G: { cleanKey: "kg" }, B: { cleanKey: o.noKey ? null : "kb" } };
+         try
+         {
+            return Pipeline.measureCleanWhiteBalance( chans, config, reg, { x0: 1, y0: 2, x1: 3, y1: 4 },
+                                                      o.inst || "ZWO", { id: "REF" }, "fp" );
+         }
+         catch ( e ) { return "threw " + e.message; }
+         finally { restore(); }
+      }
+      factors = [ 1, 0.5, 0.25 ];
+      run( { useCache: false, filters: { R: "Astronomik R" } }, {} );
+      check( "clean WB: the cache key is exactly what it was",
+             lastKey, Cache.hash( "cleanwb|kr|kg|kb|crop:1,2,3,4|" + JSON.stringify( { R: "Astronomik R" } ) + "|ZWO" ) );
+      check( "clean WB: a missing key throws before anything opens",
+             [ run( {}, { noKey: true } ), calls ], [ "threw no pre-correction cache key for B", [] ] );
+      check( "clean WB: uncached, registers each channel, measures, releases everything in reverse",
+             [ run( { useCache: false }, {} ), calls ],
+             [ [ 1, 0.5, 0.25 ],
+               [ "load R_cleanref", "register R_cleanref to REF",
+                 "load G_cleanref", "register G_cleanref to REF",
+                 "load B_cleanref", "register B_cleanref to REF",
+                 "combine R_cleanref_r,G_cleanref_r,B_cleanref_r",
+                 "solve RGB_cleanref", "spfc RGB_cleanref ZWO", "spcc RGB_cleanref",
+                 "forget RGB_cleanref", "close RGB_cleanref",
+                 "forget B_cleanref_r", "close B_cleanref_r", "forget B_cleanref", "close B_cleanref",
+                 "forget G_cleanref_r", "close G_cleanref_r", "forget G_cleanref", "close G_cleanref",
+                 "forget R_cleanref_r", "close R_cleanref_r", "forget R_cleanref", "close R_cleanref" ] ] );
+      var inst = "cachetest" + Date.now();
+      var firstRun = run( { useCache: true }, { regHit: [ "G" ], inst: inst } );
+      var firstCalls = calls.filter( function( c ) { return !/^(forget|close)/.test( c ); } );
+      check( "clean WB: a cached registration is reused and the others stored",
+             [ firstRun, firstCalls ],
+             [ [ 1, 0.5, 0.25 ],
+               [ "load R_cleanreg", "load R_cleanref", "register R_cleanref to REF", "store R cleanRegister",
+                 "load G_cleanreg",
+                 "load B_cleanreg", "load B_cleanref", "register B_cleanref to REF", "store B cleanRegister",
+                 "combine R_cleanref_r,G_cleanreg,B_cleanref_r",
+                 "solve RGB_cleanref", "spfc RGB_cleanref " + inst, "spcc RGB_cleanref" ] ] );
+      factors = [ 9, 9, 9 ];
+      check( "clean WB: the stored gains are served without opening anything",
+             [ run( { useCache: true }, { inst: inst } ), calls ], [ [ 1, 0.5, 0.25 ], [] ] );
+      check( "clean WB: ignoring the cache measures again",
+             run( { useCache: true, ignoreCache: true }, { inst: inst } ), [ 9, 9, 9 ] );
+      check( "clean WB: a lost pre-correction result throws, and what was opened is released",
+             [ run( { useCache: false }, { lost: "G" } ), calls ],
+             [ "threw the pre-correction result for G is not in the cache",
+               [ "load R_cleanref", "register R_cleanref to REF", "load G_cleanref",
+                 "forget R_cleanref_r", "close R_cleanref_r", "forget R_cleanref", "close R_cleanref" ] ] );
+      factors = null;
+      check( "clean WB: no factors from SPCC throws",
+             run( { useCache: false }, {} ), "threw SPCC did not record white balance factors" );
+   } )();
+
+   /*
+    * Pipeline.balanceNarrowband: offset-matched for palettes, linear fit
+    * otherwise, and nothing with fewer than two narrowband channels.
+    */
+   ( function()
+   {
+      var calls = [];
+      function run( keys, config )
+      {
+         calls = [];
+         var chans = {};
+         var medians = { H: 0.3, S: 0.1, O: 0.2, R: 0.01 };
+         keys.forEach( function( k ) { chans[k] = { view: { id: k, m: medians[k] } }; } );
+         var restore = stub( [
+            [ Steps, "medianOfCentre", function( v, f ) { calls.push( "median " + v.id + " " + f ); return v.m; } ],
+            [ Steps, "matchBackgroundOffset", function( vs, ref ) { calls.push( "offset " + vs.map( function( v ) { return v.id; } ).join( "," ) + " to " + ref.id ); } ],
+            [ Steps, "linearFit", function( v, ref ) { calls.push( "fit " + v.id + " to " + ref.id ); } ] ] );
+         try { Pipeline.balanceNarrowband( chans, config ); }
+         finally { restore(); }
+         return calls;
+      }
+      check( "balanceNarrowband: linear fit to the lowest median",
+             run( [ "R", "H", "S", "O" ], {} ),
+             [ "median H 0.6", "median S 0.6", "median O 0.6", "fit H to S", "fit O to S" ] );
+      check( "balanceNarrowband: offsets only when palettes are wanted",
+             run( [ "O", "H" ], { palettes: [ "SHO" ] } ),
+             [ "median H 0.6", "median O 0.6", "offset H,O to O" ] );
+      check( "balanceNarrowband: an empty palette list still fits",
+             run( [ "O", "H" ], { palettes: [] } ),
+             [ "median H 0.6", "median O 0.6", "fit H to O" ] );
+      check( "balanceNarrowband: one narrowband channel is left alone",
+             [ run( [ "H", "R" ], { palettes: [ "SHO" ] } ), run( [ "R" ], {} ) ],
+             [ [ "median H 0.6" ], [] ] );
+   } )();
+
+   /* Pipeline.registrationReference: the logged reasons, word for word. */
+   ( function()
+   {
+      var rr = Pipeline.registrationReference;
+      check( "registrationReference: the reasons, whole",
+             [ rr( [ "L", "R" ], {} ),
+               rr( [], {} ),
+               rr( [ "Z", "O", "S", "X" ], null ),
+               rr( [ "R", "G", "B", "Q" ], { R: { fwhm: 3.4, stars: 2400 }, G: { fwhm: 3.0, stars: 2600 },
+                                            B: { fwhm: 0, stars: 10 } } ),
+               rr( [ "H" ], { H: { fwhm: 3.2, stars: 3000 } } ) ],
+             [ { key: "L", reason: "L is present, and L is always the reference" },
+               { key: null, reason: "no channels" },
+               { key: "S", reason: "no L, and no usable star measurements; S by the fixed order S > O > X > Z" },
+               { key: "G", reason: "no L; G has the best FWHM/sqrt(stars): 3.00 px FWHM, 2600 stars (against R 3.40 px / 2400 stars, B unmeasured, Q unmeasured)" },
+               { key: "H", reason: "no L; H has the best FWHM/sqrt(stars): 3.20 px FWHM, 3000 stars" } ] );
+   } )();
+
+   /*
+    * Pipeline.forgetKeepers: which windows are spared from closeAll, in
+    * order, and which results are dropped when palettes swept the
+    * narrowband channels.
+    */
+   ( function()
+   {
+      function run( chans, rgb, paletteWins, keep )
+      {
+         var log = [];
+         var reg = { forget: function( w ) { log.push( "forget " + ( w && w.id ) ); },
+                     closeAll: function() { log.push( "closeAll" ); } };
+         var results = { H: 1, S: 2, O: 3, RGB: 4 };
+         Pipeline.forgetKeepers( results, chans, rgb, paletteWins, keep, reg );
+         return [ log, Object.keys( results ) ];
+      }
+      function w( id ) { return { id: id }; }
+      check( "forgetKeepers: everything a run hands over, in order",
+             run( { L: { window: w( "L" ), stars: w( "L_stars" ) }, H: { window: w( "H" ) } },
+                  { window: w( "RGB" ), stars: w( "RGB_stars" ), linear: w( "RGB_linear" ) },
+                  [ { window: w( "SHO" ), stars: w( "SHO_stars" ), linear: w( "SHO_linear" ) },
+                    { window: w( "HOO" ), stars: null, linear: null } ],
+                  [ "L", "R", "H" ] ),
+             [ [ "forget L", "forget H", "forget RGB", "forget SHO", "forget HOO", "forget L_stars",
+                 "forget RGB_stars", "forget RGB_linear", "forget SHO_stars", "forget SHO_linear", "closeAll" ],
+               [ "RGB" ] ] );
+      check( "forgetKeepers: no RGB, no palettes, nothing kept",
+             run( { L: { window: w( "L" ) } }, null, [], [] ),
+             [ [ "closeAll" ], [ "H", "S", "O", "RGB" ] ] );
+   } )();
+
+   /*
+    * Pipeline.publishPalettes: names, the stars kept or dropped, and a
+    * lost window reported without stopping the rest.
+    */
+   ( function()
+   {
+      var log = [];
+      var restore = stub( [
+         [ Pipeline, "windowIsUsable", function( win ) { return win.ok; } ],
+         [ Pipeline, "publish", function( win, id, reg, keepIds, results, key ) { log.push( "publish " + win.id + " as " + id + " key " + key ); return { id: id, ok: true }; } ],
+         [ Util, "error", function( tag, msg ) { log.push( "error " + tag + " " + msg ); } ] ] );
+      function pal( name, stars, linear, ok )
+      {
+         return { name: name, window: { id: name, ok: ok !== false },
+                  stars: stars ? { id: name + "S", forceClose: function() { log.push( "close " + name + "S" ); } } : null,
+                  linear: linear ? { id: name + "L" } : null };
+      }
+      try
+      {
+         var wins = [ pal( "SHO", true, true ), pal( "HOO", false, false, false ), pal( "OHS", true, false ) ];
+         Pipeline.publishPalettes( {}, wins, false, [], {} );
+         check( "publishPalettes: stars and linear kept without RGB stars; a lost window is reported",
+                [ log, wins[0].window.id ],
+                [ [ "publish SHO as SHO_starless key SHO_starless", "publish SHOS as SHO_stars key SHO_stars",
+                    "publish SHOL as SHO_linear key SHO_linear",
+                    "error output HOO: its window is gone before it could be named; this palette is lost, the rest of the run is unaffected",
+                    "publish OHS as OHS_starless key OHS_starless", "publish OHSS as OHS_stars key OHS_stars" ],
+                  "SHO_starless" ] );
+         log = [];
+         Pipeline.publishPalettes( {}, [ pal( "SHO", true, false ), pal( "HOO", false, true ) ], true, [], {} );
+         check( "publishPalettes: palette stars dropped when RGB stars are kept",
+                log, [ "publish SHO as SHO_starless key SHO_starless", "close SHOS",
+                       "publish HOO as HOO key HOO", "publish HOOL as HOO_linear key HOO_linear" ] );
+      }
+      finally { restore(); }
+   } )();
+
+   /* Pipeline.loadChannels, the parts that need no open image. */
+   ( function()
+   {
+      var restore = stub( [
+         [ Cache, "fingerprintFile", function( p ) { return p == "/gone" ? null : "fp:" + p; } ],
+         [ Util, "readImageInfo", function( p )
+           { return { keywords: [ { name: "FILTER", value: "'F" + p + "'" }, { name: "INSTRUME", value: "'Cam'" } ] }; } ] ] );
+      try
+      {
+         var reg = { add: function() { throw new Error( "nothing may be registered" ); } };
+         var chans = Pipeline.loadChannels( { paths: { L: "/l", R: "", O: "/o" }, views: {} }, reg );
+         check( "loadChannels: files are listed, fingerprinted, and not opened",
+                Object.keys( chans ).map( function( k )
+                {
+                   var c = chans[k];
+                   return [ k, c.key, c.path, c.window, c.view, c.filter, c.instrume, c.sourceKey, c.currentKey, typeof c.load ];
+                } ),
+                [ [ "L", "L", "/l", null, null, "F/l", "Cam", "fp:/l", "fp:/l", "function" ],
+                  [ "O", "O", "/o", null, null, "F/o", "Cam", "fp:/o", "fp:/o", "function" ] ] );
+         var threw = [];
+         [ { paths: { G: "/gone" } }, { paths: { G: "/g" }, views: { R: "loom_no_such_view_xyz" } } ].forEach( function( cfg )
+         {
+            try { Pipeline.loadChannels( cfg, reg ); threw.push( "no" ); }
+            catch ( e ) { threw.push( e.message ); }
+         } );
+         check( "loadChannels: an unreadable file and a closed view both stop the run",
+                threw, [ "Could not read G: /gone", "View no longer open for R: loom_no_such_view_xyz" ] );
+      }
+      finally { restore(); }
+   } )();
+
+   /* The masters list's cells, status note and commit, without a dialog. */
+   ( function()
+   {
+      check( "UI.filterCellText: unavailable, no FILTER, a named filter, a plain letter",
+             [ UI.filterCellText( { unavailable: true, filter: "R", channel: "R" } ),
+               UI.filterCellText( { filter: null, channel: null } ),
+               UI.filterCellText( { filter: "Baader R", channel: "R" } ),
+               UI.filterCellText( { filter: "Ha", channel: null } ),
+               UI.filterCellText( { filter: "R", channel: "R" } ) ],
+             [ "(not open)", "(no FILTER)", "Baader R  (R)", "Ha", "R" ] );
+      check( "UI.qualityCells: figures with their changes, and blanks",
+             [ UI.qualityCells( { fwhm: 3.21, eccentricity: 0.456, noise: 0.000123, stars: 2345 },
+                                { fwhm: 6, eccentricity: 7, noise: 8, stars: -9 } ),
+               UI.qualityCells( { fwhm: 2.5, eccentricity: null, noise: null, stars: 100 }, null ),
+               UI.qualityCells( null, { fwhm: 9 } ) ],
+             [ [ "3.21  +6%", "0.456  +7%", "1.23e-4  +8%", "2345  -9%" ],
+               [ "2.50", "", "", "100" ], [ "", "", "", "" ] ] );
+      check( "UI.hiddenEntriesNote: singular, plural, none",
+             [ UI.hiddenEntriesNote( 1, 2 ), UI.hiddenEntriesNote( 3, 1 ), UI.hiddenEntriesNote( 0, 0 ) ],
+             [ "  <span style='color:#888888'>(1 remembered entry unavailable and not listed; the list is still saved, so reopening the project and relaunching Loom will restore it)</span>" +
+               "  <span style='color:#888888'>(2 views without FILTER hidden)</span>",
+               "  <span style='color:#888888'>(3 remembered entries unavailable and not listed; the list is still saved, so reopening the project and relaunching Loom will restore them)</span>" +
+               "  <span style='color:#888888'>(1 view without FILTER hidden)</span>",
+               "" ] );
+      var folded = UI.foldEntries( [
+         { unavailable: true, channel: "L", source: "file", ref: "/a", label: "a" },
+         { channel: null, filter: null, label: "b" },
+         { channel: null, filter: "Weird", label: "w" },
+         { channel: "R", source: "view", ref: "view_R", label: "view_R" },
+         { channel: "R", source: "file", ref: "/r2", label: "r2" },
+         { channel: "H", source: "file", ref: "/h", label: "h" } ] );
+      check( "UI.foldEntries: paths, views and the problems that refuse a run",
+             folded,
+             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "" }, views: { R: "view_R" },
+               problems: [ "Unrecognised FILTER (missing) for b", "Unrecognised FILTER 'Weird' for w",
+                           "Two images map to channel R: view_R and r2" ] } );
+   } )();
+
+   } if ( testGroup( "prelude" ) ) {
+   /*
+    * Characterization for moving helpers between layers: the header
+    * reader and its cache, the directory lister, the too-old-core refusal.
+    * Pinned here by literal, so the move is proved by the same expectations
+    * before and after.
+    */
+
+   /*
+    * Node only: swaps globals for the duration of body and puts them back
+    * (deleting any that did not exist). PJSR's own classes are not replaced
+    * inside PixInsight; the real-file checks below run there instead.
+    */
+   function withGlobals( fakes, body )
+   {
+      var G = ( function() { return this; } )();
+      var saved = {};
+      for ( var k in fakes )
+      {
+         saved[k] = { had: Object.prototype.hasOwnProperty.call( G, k ), value: G[k] };
+         G[k] = fakes[k];
+      }
+      try { return body(); }
+      finally
+      {
+         for ( var s in saved )
+            if ( saved[s].had )
+               G[s] = saved[s].value;
+            else
+               delete G[s];
+      }
+   }
+
+   } if ( testGroup( "imageinfo" ) ) {
+   /*
+    * readImageInfo, tryHeaderRead, imageInfoCacheKey and the cache they
+    * share: every path through the header probe, the announced full-read
+    * fallback, and cache identity, against recording fakes of the PJSR
+    * file classes.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var log = [], warned = [];
+      function when( s ) { return new Date( Date.UTC( 2026, 0, 2, 3, 4, s ) ); }
+      var files = {
+         "/fake/a.fits": { size: 1234, mtime: when( 5 ) },
+         "/fake/b.zzz":  { size: 10, mtime: when( 5 ) },
+         "/fake/d.tif":  { size: 30, mtime: when( 5 ) },
+         "/fake/e.xisf": { size: 40, mtime: when( 5 ) },
+         "/fake/f.xisf": { size: 50, mtime: when( 5 ) },
+         "/fake/g.zzz":  { size: 60, mtime: when( 5 ) }
+      };
+      var headerKws = [ { name: "FILTER", value: "'Ha'" } ];
+      var fullKws = [ { name: "FILTER", value: "'Full'" } ];
+      var fullWindows = null;   // what the fake ImageWindow.open returns next; null is one window
+      var fakes = {
+         FileInfo: function( path )
+         {
+            if ( path == "/fake/throws.fits" )
+               throw new Error( "stat failed" );
+            var f = files[path];
+            this.exists = f != null;
+            this.size = f ? f.size : 0;
+            this.lastModified = f ? f.mtime : null;
+         },
+         FileFormat: function( ext, toRead, toWrite )
+         {
+            log.push( "FileFormat " + ext + " " + toRead + " " + toWrite );
+            this.isNull = ( ext == ".zzz" );
+            this.canStoreKeywords = ( ext != ".tif" );
+         },
+         FileFormatInstance: function( F )
+         {
+            this.isNull = false;
+            this.keywords = headerKws;
+            this.open = function( path, hints )
+            {
+               log.push( "open " + path + " " + hints );
+               if ( path == "/fake/e.xisf" )
+                  throw new Error( "boom" );
+               if ( path == "/fake/f.xisf" )
+                  return [];
+               return [ { width: 100, height: 50 } ];
+            };
+            this.close = function()
+            {
+               log.push( "close" );
+               if ( F.canStoreKeywords === false )
+                  throw new Error( "close failed" );
+            };
+         },
+         ImageWindow: {
+            open: function( path )
+            {
+               log.push( "full " + path );
+               if ( fullWindows != null )
+                  return fullWindows;
+               return [ { keywords: fullKws,
+                          mainView: { image: { width: 7, height: 9 } },
+                          forceClose: function() { log.push( "forceClose" ); } } ];
+            }
+         }
+      };
+      var restore = stub( [ [ Util, "warn", function( stage, message ) { warned.push( [ stage, message ] ); } ] ] );
+      var cache = Util.imageInfoCache;
+      try
+      {
+         withGlobals( fakes, function()
+         {
+            check( "imageInfoCacheKey: path, size and mtime, in that order",
+                   Util.imageInfoCacheKey( "/fake/a.fits" ), "/fake/a.fits|1234|2026-01-02T03:04:05.000Z" );
+            check( "imageInfoCacheKey: a file that is not there has no key",
+                   Util.imageInfoCacheKey( "/fake/none.fits" ), null );
+            check( "imageInfoCacheKey: a FileInfo that throws has no key",
+                   Util.imageInfoCacheKey( "/fake/throws.fits" ), null );
+
+            check( "tryHeaderRead: a FITS header, keywords and geometry, reader closed",
+                   [ Util.tryHeaderRead( "/fake/a.fits" ), log.splice( 0 ) ],
+                   [ { info: { keywords: headerKws, width: 100, height: 50 }, why: null },
+                     [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ] ] );
+            check( "tryHeaderRead: no reader for the extension",
+                   [ Util.tryHeaderRead( "/fake/b.zzz" ), log.splice( 0 ) ],
+                   [ { info: null, why: "no reader for extension '.zzz'" }, [ "FileFormat .zzz true false" ] ] );
+            check( "tryHeaderRead: an empty description closes the reader and says so",
+                   [ Util.tryHeaderRead( "/fake/f.xisf" ), log.splice( 0 ) ],
+                   [ { info: null, why: "the reader returned no image description" },
+                     [ "FileFormat .xisf true false", "open /fake/f.xisf verbosity 0", "close" ] ] );
+            check( "tryHeaderRead: a reader that throws reports the error",
+                   [ Util.tryHeaderRead( "/fake/e.xisf" ), log.splice( 0 ) ],
+                   [ { info: null, why: "Error: boom" },
+                     [ "FileFormat .xisf true false", "open /fake/e.xisf verbosity 0" ] ] );
+            check( "tryHeaderRead: a format without keywords gives none, and a failing close is ignored",
+                   [ Util.tryHeaderRead( "/fake/d.tif" ), log.splice( 0 ) ],
+                   [ { info: { keywords: [], width: 100, height: 50 }, why: null },
+                     [ "FileFormat .tif true false", "open /fake/d.tif verbosity 0", "close" ] ] );
+
+            var first = Util.readImageInfo( "/fake/a.fits" );
+            check( "readImageInfo: header fields from one open, no warning",
+                   [ first, log.splice( 0 ), warned.length ],
+                   [ { keywords: headerKws, width: 100, height: 50 },
+                     [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ], 0 ] );
+            var again = Util.readImageInfo( "/fake/a.fits" );
+            check( "readImageInfo: the second call is the SAME object, with no second open",
+                   [ again === first, log.length ], [ true, 0 ] );
+            check( "readImageInfo: the entry sits in the one shared cache under the pinned key",
+                   [ Util.imageInfoCache === cache,
+                     cache[ "/fake/a.fits|1234|2026-01-02T03:04:05.000Z" ] === first ], [ true, true ] );
+
+            files["/fake/a.fits"].size = 1235;
+            var resized = Util.readImageInfo( "/fake/a.fits" );
+            check( "readImageInfo: a changed size is a new read",
+                   [ resized === first, log.splice( 0 ).length ], [ false, 3 ] );
+            files["/fake/a.fits"].mtime = when( 6 );
+            var touched = Util.readImageInfo( "/fake/a.fits" );
+            check( "readImageInfo: a changed mtime is a new read",
+                   [ touched === resized, log.splice( 0 ).length ], [ false, 3 ] );
+
+            var full = Util.readImageInfo( "/fake/b.zzz" );
+            check( "readImageInfo: no reader falls back to a full read and announces it",
+                   [ full, log.splice( 0 ), warned.splice( 0 ) ],
+                   [ { keywords: fullKws, width: 7, height: 9 },
+                     [ "FileFormat .zzz true false", "full /fake/b.zzz", "forceClose" ],
+                     [ [ "read", "header-only read unavailable for /fake/b.zzz (no reader for extension '.zzz')" +
+                                 " -- falling back to a FULL read of the image" ] ] ] );
+            check( "readImageInfo: the full read is cached too",
+                   [ Util.readImageInfo( "/fake/b.zzz" ) === full, log.length ], [ true, 0 ] );
+
+            Util.readImageInfo( "/fake/e.xisf" );
+            check( "readImageInfo: a reader that throws is announced with its error, stage read",
+                   [ log.splice( 0 ), warned.splice( 0 ) ],
+                   [ [ "FileFormat .xisf true false", "open /fake/e.xisf verbosity 0", "full /fake/e.xisf", "forceClose" ],
+                     [ [ "read", "header-only read unavailable for /fake/e.xisf (Error: boom)" +
+                                 " -- falling back to a FULL read of the image" ] ] ] );
+
+            fullWindows = [];
+            check( "readImageInfo: a full read that opens nothing is empty, not an error",
+                   Util.readImageInfo( "/fake/g.zzz" ), { keywords: [], width: 0, height: 0 } );
+            fullWindows = null;
+            log.splice( 0 ); warned.splice( 0 );
+
+            var u1 = Util.readImageInfo( "/fake/none.fits" );
+            var u2 = Util.readImageInfo( "/fake/none.fits" );
+            check( "readImageInfo: a file with no cache key is read every time",
+                   [ u1 === u2, log.filter( function( l ) { return l.indexOf( "open " ) == 0; } ).length ],
+                   [ false, 2 ] );
+         } );
+      }
+      finally
+      {
+         restore();
+         for ( var key in cache )
+            if ( key.indexOf( "/fake/" ) == 0 )
+               delete cache[key];
+      }
+   } )();
+
+   /*
+    * Absence, checked by name: the reference gate rightly refuses a
+    * dotted read of a member nothing defines, and absence is the point.
+    */
+   function stillDefined( list )
+   {
+      return list.filter( function( p ) { return p[0][ p[1] ] !== undefined; } )
+                 .map( function( p ) { return p[1]; } );
+   }
+   check( "the header reader lives in Util alone: no alias left in Pipeline",
+          stillDefined( [ [ Pipeline, "readImageInfo" ], [ Pipeline, "tryHeaderRead" ],
+                          [ Pipeline, "imageInfoCacheKey" ], [ Pipeline, "imageInfoCache" ] ] ), [] );
+   check( "dead code and moved members stay gone",
+          stillDefined( [ [ Steps, "isLoomOutput" ], [ Frames, "relativeReasons" ], [ Frames, "absoluteReasons" ],
+                          [ Util, "OUTPUT_EXTENSION" ], [ Sky, "ringMedian" ], [ Steps, "directoryEntries" ] ] ), [] );
+
+   /* The same reader on a real file, in PixInsight: the real FileFormat and FileInfo. */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = "/tmp/agent-scratch/loom-imageinfo";
+      ensureDir( dir );
+      var path = synthFrame( dir + "/header.xisf", { width: 64, height: 48, stars: 0, fwhm: 3,
+                                                   background: 0.1, noise: 0.01, filter: "Ha" } );
+      var cache = Util.imageInfoCache;
+      for ( var k0 in cache )
+         if ( k0.indexOf( path + "|" ) == 0 )
+            delete cache[k0];
+      var info = Util.readImageInfo( path );
+      check( "readImageInfo (real file): geometry and FILTER from the header",
+             [ info.width, info.height, Util.keywordValue( info.keywords, "FILTER" ) ], [ 64, 48, "Ha" ] );
+      var key = Util.imageInfoCacheKey( path );
+      check( "readImageInfo (real file): keyed on path, size and an ISO mtime",
+             /^\/tmp\/agent-scratch\/loom-imageinfo\/header\.xisf\|\d+\|\d{4}-\d\d-\d\dT[0-9:.]+Z$/.test( key ), true );
+      check( "readImageInfo (real file): the second call is the cached object",
+             [ Util.readImageInfo( path ) === info, cache[key] === info ], [ true, true ] );
+      delete cache[key];
+   } )();
+
+   } if ( testGroup( "util" ) ) {
+   /*
+    * The directory lister: one level, "." and ".." dropped and nothing
+    * else, in the order FileFind yields; a root that cannot be listed, or
+    * that fails part way, is the empty list.
+    */
+   if ( !IN_PIXINSIGHT ) ( function()
+   {
+      var patterns = [];
+      function fakeFind( names, failAt )
+      {
+         return function()
+         {
+            var i = -1, self = this;
+            this.begin = function( pattern )
+            {
+               patterns.push( pattern );
+               if ( names == null )
+                  throw new Error( "no such root" );
+               return self.next();
+            };
+            this.next = function()
+            {
+               if ( ++i >= names.length )
+                  return false;
+               if ( i === failAt )
+                  throw new Error( "read failed" );
+               self.name = names[i];
+               return true;
+            };
+         };
+      }
+      function list( names, failAt, root )
+      {
+         return withGlobals( { FileFind: fakeFind( names, failAt ) },
+                             function() { return Util.directoryEntries( root ); } );
+      }
+      check( "directoryEntries: FileFind's order, only the two dot entries dropped",
+             list( [ ".", "..", "b.txt", "a", ".hidden", "..x" ], -1, "/root/dir" ),
+             [ "b.txt", "a", ".hidden", "..x" ] );
+      check( "directoryEntries: one level, the root's own wildcard",
+             patterns.splice( 0 ), [ "/root/dir/*" ] );
+      check( "directoryEntries: an empty listing is empty", list( [], -1, "/r" ), [] );
+      check( "directoryEntries: a root that throws is empty", list( null, -1, "/r" ), [] );
+      check( "directoryEntries: a failure part way is empty, not a partial list",
+             list( [ "a", "b", "c" ], 2, "/r" ), [] );
+   } )();
+
+   } if ( testGroup( "coreversion" ) ) {
+   /*
+    * The refusal on a core older than Util.MIN_CORE, per entry point: the
+    * console line and the message box, texts byte for byte, icon and
+    * buttons; nothing at all at or above the minimum. Each entry point's
+    * wording is lifted out of its source (node does not load
+    * FrameSelector.js) and handed to Util.checkCoreVersion with a fake
+    * core and a recording console and box, so no real box can open.
+    */
+   ( function()
+   {
+      function entryCheck( file, declaration, name )
+      {
+         var src = File.readTextFile( LOOM_DIR + "/" + file );
+         var at = src.indexOf( "\n" + declaration + " = {" );
+         var text = ( at < 0 ) ? "" : src.substring( at, src.indexOf( "\n};\n", at ) + 4 );
+         return new Function( "FrameSelector", text + "\nreturn " + name + ";" )( {} );
+      }
+      var CHECKS = { "Loom.js": entryCheck( "Loom.js", "var LOOM_CORE_CHECK", "LOOM_CORE_CHECK" ),
+                     "FrameSelector.js": entryCheck( "FrameSelector.js", "FrameSelector.CORE_CHECK",
+                                                     "FrameSelector.CORE_CHECK" ) };
+      function refusal( file, core )
+      {
+         var logged = [], shown = [];
+         var out = { criticalln: function( m ) { logged.push( m ); },
+                     show: function( message, title, icon, buttons ) { shown.push( [ message, title, icon, buttons ] ); } };
+         var ok = Util.checkCoreVersion( CHECKS[file],
+                                         { major: core[0], minor: core[1], release: core[2], build: 1601 }, out );
+         return [ ok, logged, shown ];
+      }
+      var LOOM_TOO_OLD =
+         "Loom needs PixInsight 1.9.4 or later.\n\n" +
+         "This is PixInsight 1.9.3 (build 1601).\n\n" +
+         "Loom uses the ImageSolver and AstrometricResiduals sources that ship with 1.9.4, " +
+         "and astrometric solutions written by it are not readable by earlier versions. " +
+         "Please update PixInsight and run Loom again.";
+      var FS_TOO_OLD =
+         "The Loom Frame Selector needs PixInsight 1.9.4 or later.\n\n" +
+         "This is PixInsight 1.9.3 (build 1601).\n\n" +
+         "SubframeSelector's measurement columns were read off 1.9.4. An earlier version " +
+         "returns a different table, so the figures this tool deletes frames on would be " +
+         "read from the wrong columns. Please update PixInsight and run it again.";
+      check( "Loom on 1.9.3: refused, the reason logged and shown",
+             refusal( "Loom.js", [ 1, 9, 3 ] ),
+             [ false, [ LOOM_TOO_OLD ],
+               [ [ LOOM_TOO_OLD, "Loom: PixInsight is too old", StdIcon_Error, StdButton_Ok ] ] ] );
+      check( "Frame Selector on 1.9.3: refused, the reason logged and shown",
+             refusal( "FrameSelector.js", [ 1, 9, 3 ] ),
+             [ false, [ FS_TOO_OLD ],
+               [ [ FS_TOO_OLD, "Loom Frame Selector: PixInsight is too old", StdIcon_Error, StdButton_Ok ] ] ] );
+      check( "Loom on 1.9.4, 1.9.5 and 1.10.0: carries on, says nothing",
+             [ refusal( "Loom.js", [ 1, 9, 4 ] ), refusal( "Loom.js", [ 1, 9, 5 ] ), refusal( "Loom.js", [ 1, 10, 0 ] ) ],
+             [ [ true, [], [] ], [ true, [], [] ], [ true, [], [] ] ] );
+      check( "Frame Selector on 1.9.4, 1.9.5 and 1.10.0: carries on, says nothing",
+             [ refusal( "FrameSelector.js", [ 1, 9, 4 ] ), refusal( "FrameSelector.js", [ 1, 9, 5 ] ),
+               refusal( "FrameSelector.js", [ 1, 10, 0 ] ) ],
+             [ [ true, [], [] ], [ true, [], [] ], [ true, [], [] ] ] );
+   } )();
+   ( function()
+   {
+      function mainOf( file )
+      {
+         var src = File.readTextFile( LOOM_DIR + "/" + file );
+         var at = src.indexOf( "\nfunction main()" );
+         return ( at < 0 ) ? "" : src.substring( at, src.indexOf( "\n}\n", at ) + 3 );
+      }
+      var loomMain = mainOf( "Loom.js" ), fsMain = mainOf( "FrameSelector.js" );
+      var loomCall = "if ( !Util.checkCoreVersion( LOOM_CORE_CHECK ) )\n      return;";
+      var fsCall = "if ( !Util.checkCoreVersion( FrameSelector.CORE_CHECK ) )\n      return;";
+      check( "each entry's main refuses an old core, in its own words, before it does anything else",
+             [ loomMain.indexOf( loomCall ) > 0 &&
+                  loomMain.indexOf( loomCall ) < loomMain.indexOf( "loadConfig()" ),
+               fsMain.indexOf( fsCall ) > 0 &&
+                  fsMain.indexOf( fsCall ) < fsMain.indexOf( "FrameSelector.main()" ) ],
+             [ true, true ] );
+      check( "no entry point keeps its own copy of the core check",
+             [ File.readTextFile( LOOM_DIR + "/Loom.js" ).indexOf( "function checkCoreVersion" ),
+               File.readTextFile( LOOM_DIR + "/FrameSelector.js" ).indexOf( "function checkCoreVersion" ) ],
+             [ -1, -1 ] );
+      if ( IN_PIXINSIGHT )
+         check( "on the running core the check carries on without a word",
+                Util.checkCoreVersion( { title: "unused", message: function() { return "unused"; } }, null,
+                                       { criticalln: function() { throw new Error( "logged" ); },
+                                         show: function() { throw new Error( "shown" ); } } ),
+                true );
+   } )();
+   }
+}
+
+/*
+ * Characterization tests for the composite finishing stages that
+ * Pipeline.buildRGB and Pipeline.buildPalette both run (sharpen, star
+ * extraction, linear denoise, stretch with its linear copy, stretched
+ * denoise): their params and stage keys over a config matrix, and every
+ * runner's calls, warnings, registrations and returns, catch branches
+ * included. Captured on the code before the two were merged into one.
+ */
+function runFinishingTests()
+{
+   if ( testGroup( "pipeline.finishing" ) ) {
+   function stub( list )
+   {
+      var saved = list.map( function( s ) { return [ s[0], s[1], s[0][s[1]] ]; } );
+      list.forEach( function( s ) { s[0][s[1]] = s[2]; } );
+      return function() { saved.forEach( function( s ) { s[0][s[1]] = s[2]; } ); };
+   }
+   var chans = {};
+   [ "R", "G", "B", "H", "S", "O" ].forEach( function( k )
+   {
+      chans[k] = { currentKey: "key" + k, view: { id: "view" + k } };
+   } );
+   var common = { x0: 1, y0: 2, x1: 300, y1: 200 };
+
+   /*
+    * One build with processChain replaced by a capture, and
+    * buildStageKeys wrapped so the params object is seen with its key
+    * insertion order intact.
+    */
+   function capture( kind, config, reg )
+   {
+      var got = {};
+      var realKeys = Pipeline.buildStageKeys;
+      var restore = stub( [
+         [ Pipeline, "processChain", function( holder, chain, cfg, r, runners )
+           {
+              got.chain = chain;
+              got.runners = runners;
+           } ],
+         [ Pipeline, "buildStageKeys", function( src, params )
+           {
+              got.params = JSON.stringify( params );
+              return realKeys( src, params );
+           } ],
+         [ Pipeline, "checkAbort", function() {} ],
+         [ Util, "freeWindowId", function( id ) { return id; } ] ] );
+      try
+      {
+         reg = reg || { add: function() {} };
+         if ( kind == "RGB" )
+            Pipeline.buildRGB( chans, config, reg, common, "ZWO ASI2600MM", null );
+         else
+            Pipeline.buildPalette( kind, chans, config, reg, common );
+      }
+      finally { restore(); }
+      return got;
+   }
+
+   var sharpenTools = [ "none", Steps.SHARPEN_TOOL_BXT, Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO ];
+   var levels = [ [ "none", "none" ], [ "medium", "none" ], [ "none", "medium" ], [ "medium", "medium" ] ];
+   var noiseTools = [ "none", Steps.NR_TOOL_NXT, Steps.NR_TOOL_PRISM, Steps.NR_TOOL_STUDIO ];
+   var noiseLevels = [ [ "none", "none" ], [ "medium", "none" ], [ "medium", "high" ] ];
+   var stretches = [ [ false, undefined ], [ true, Steps.STRETCH_METHOD_MTF ], [ true, Steps.STRETCH_METHOD_MAS ] ];
+   var starTools = [ "none", Steps.STAR_TOOL_STARNET, Steps.STAR_TOOL_SYQON ];
+   function matrix( fn )
+   {
+      sharpenTools.forEach( function( st ) { levels.forEach( function( lv ) {
+      noiseTools.forEach( function( nt ) { noiseLevels.forEach( function( nl ) {
+      stretches.forEach( function( sm ) { [ false, true ].forEach( function( kl ) {
+      starTools.forEach( function( sx ) {
+         fn( { useCache: true, filters: {}, narrowbandBandwidth: 7, narrowbandNormalize: true,
+               sharpenTool: st, starReduction: lv[0], detailLevel: lv[1],
+               noiseTool: nt, noiseLevel: nl[0], noiseLevelL: nl[1],
+               stretch: sm[0], stretchMethod: sm[1], keepLinear: kl, starTool: sx } );
+      } ); } ); } ); } ); } ); } ); } );
+   }
+
+   /*
+    * G11 + G13: one rolling digest per build over the whole matrix, of the
+    * params JSON (key insertion order included), the runner names and the
+    * chain (stage, key, params, companion). The distinct counts guard
+    * against a matrix that has quietly collapsed.
+    */
+   var kinds = [ "RGB", "SHO", "HOO" ];
+   var digests = {}, distinct = {}, configs = 0;
+   kinds.forEach( function( kind ) { digests[kind] = ""; distinct[kind] = {}; } );
+   matrix( function( config )
+   {
+      ++configs;
+      kinds.forEach( function( kind )
+      {
+         var got = capture( kind, config );
+         var line = got.params + "#" + Object.keys( got.runners ).join( "," ) + "#" +
+                    JSON.stringify( got.chain );
+         digests[kind] = Cache.hash( digests[kind] + "\n" + line );
+         distinct[kind][got.params] = true;
+      } );
+   } );
+   check( "finishing: matrix size", configs, 3456 );
+   check( "finishing: distinct params over the matrix",
+          kinds.map( function( k ) { return Object.keys( distinct[k] ).length; } ),
+          [ 600, 600, 600 ] );
+   check( "finishing: params, runner names and stage keys over the matrix", digests,
+          { RGB: "50186b918cf963bbfee01a87dd0be0710e3dc1fc",
+            SHO: "444d5ab6fb056a6707ba0d1b2278db1e3f8fefbc",
+            HOO: "b1bd98020c928830da1bfbc70c7ec7a2faf730ba" } );
+
+   /* Corners in the clear, so a digest failure has a readable neighbour. */
+   var everything = { useCache: true, filters: {}, narrowbandBandwidth: 7, narrowbandNormalize: false,
+                      sharpenTool: Steps.SHARPEN_TOOL_STUDIO, starReduction: "medium", detailLevel: "medium",
+                      noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium", noiseLevelL: "high",
+                      stretch: true, stretchMethod: Steps.STRETCH_METHOD_MAS, keepLinear: true,
+                      starTool: Steps.STAR_TOOL_SYQON };
+   var prism = JSON.parse( JSON.stringify( everything ) );
+   prism.noiseTool = Steps.NR_TOOL_PRISM;
+   prism.stretchMethod = Steps.STRETCH_METHOD_MTF;
+   prism.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+   prism.keepLinear = false;
+   var cornerExpected = [
+      [ { "combine": {},
+           "solveRGB": {},
+           "spfcRGB": {"filters": {}, "instrume": "ZWO ASI2600MM"},
+           "spccRGB": {"filters": {}, "instrume": "ZWO ASI2600MM", "whiteBalance": "direct"},
+           "sharpenRGB": {"tool": "SyQon Studio Parallax", "stars": "medium", "detail": "medium", "starsAmount": 5, "detailAmount": 0.5, "family": "classic"},
+           "extractRGB": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
+           "denoiseLinearRGB": {"tool": "NoiseXTerminator", "level": "medium", "stretched": true, "amount": [0.9, 0.15]},
+           "stretchRGB": {"method": "MultiscaleAdaptiveStretch", "linked": true, "keepLinear": true, "mas": {"targetBackground": 0.15, "aggressiveness": 0.7, "dynamicRangeCompression": 0.4, "contrastRecovery": true, "contrastRecoveryIntensity": 1, "previewLargeScale": false, "backgroundROIEnabled": false, "saturationEnabled": false}} },
+        [ ["combine", "solveRGB", "spfcRGB", "spccRGB", "sharpenRGB", "extractRGB", "stretchRGB", "denoiseLinearRGB", "denoiseRGB"],
+          [ "combine e0715c5e0182c33d1cb66687503ff6e023274353",
+            "solveRGB 784e362a7cedb683770819c9cdc7c0d118433dd7",
+            "spfcRGB 588454deb4798e16f1aee9b4c6ec4dedcdf7ac3c",
+            "spccRGB 0e0274c4add6fa2b3ed82843d27017638130374f",
+            "sharpenRGB 168437a7d6240872be2daa2f6853d6f96534a17b",
+            "extractRGB 51c041ac5bd32da23fcfb3aacfbde24a8f947c89 +stars",
+            "denoiseLinearRGB 12aa06fda17bc5a316a7f259e7efa48c462bbd25",
+            "stretchRGB c8ef05a67d6910ae8db6a48f2a7056641eb728ca +linear" ] ] ],
+      [ { "paletteCombine": {},
+           "paletteSpcc": {"palette": "SHO", "bandwidth": 7},
+           "paletteSharpen": {"tool": "SyQon Studio Parallax", "stars": "medium", "detail": "medium", "starsAmount": 5, "detailAmount": 0.5, "family": "classic"},
+           "paletteExtract": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
+           "paletteDenoiseLinear": {"tool": "NoiseXTerminator", "level": "medium", "stretched": true, "amount": [0.9, 0.15]},
+           "paletteStretch": {"method": "MultiscaleAdaptiveStretch", "linked": true, "keepLinear": true, "mas": {"targetBackground": 0.15, "aggressiveness": 0.7, "dynamicRangeCompression": 0.4, "contrastRecovery": true, "contrastRecoveryIntensity": 1, "previewLargeScale": false, "backgroundROIEnabled": false, "saturationEnabled": false}} },
+        [ ["paletteCombine", "paletteSpcc", "paletteNorm", "paletteSharpen", "paletteExtract", "paletteStretch", "paletteDenoiseLinear", "paletteDenoise"],
+          [ "paletteCombine b2d85f7c2a04bb83b91053b7b77c9285cb697ae1",
+            "paletteSpcc 07d73115a0594d5a5e3125c6fa14eb66950b2872",
+            "paletteSharpen d4db5ce11ce796eb8c7a9e1ec6803924b6c6dc3c",
+            "paletteExtract 3a6cc73ccf2d555743016f8f6d590bf85c78a68b +stars",
+            "paletteDenoiseLinear 9bf334567aaf956236c7cc5ef4df69dbcd511b15",
+            "paletteStretch fbc3e42fbe2bb7758d9d2eff4b2a0e400e84edd7 +linear" ] ] ],
+      [ { "combine": {},
+           "solveRGB": {},
+           "spfcRGB": {"filters": {}, "instrume": "ZWO ASI2600MM"},
+           "spccRGB": {"filters": {}, "instrume": "ZWO ASI2600MM", "whiteBalance": "direct"},
+           "sharpenRGB": {"tool": "BlurXTerminator", "stars": "medium", "detail": "medium", "starsAmount": 0.5, "detailAmount": 0.5},
+           "extractRGB": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
+           "stretchRGB": {"target": 0.25, "linked": true, "keepLinear": false},
+           "denoiseRGB": {"tool": "SyQon Prism", "level": "medium", "stretched": true, "amount": 0.85} },
+        [ ["combine", "solveRGB", "spfcRGB", "spccRGB", "sharpenRGB", "extractRGB", "stretchRGB", "denoiseLinearRGB", "denoiseRGB"],
+          [ "combine e0715c5e0182c33d1cb66687503ff6e023274353",
+            "solveRGB 784e362a7cedb683770819c9cdc7c0d118433dd7",
+            "spfcRGB 588454deb4798e16f1aee9b4c6ec4dedcdf7ac3c",
+            "spccRGB 0e0274c4add6fa2b3ed82843d27017638130374f",
+            "sharpenRGB 2d8597f0f3ef560590994a6695e3871011b18ed4",
+            "extractRGB bdf0d0ed303f0f94136704589d2a7e02ff13a08b +stars",
+            "stretchRGB c0e45d2de3a541ac2844b98c7e82c04f2dbdf2ec",
+            "denoiseRGB 5a1f9a986f207dd31fc5b30b57f7c09b3f2da596" ] ] ],
+      [ { "paletteCombine": {},
+           "paletteSpcc": {"palette": "HOO", "bandwidth": 7},
+           "paletteSharpen": {"tool": "BlurXTerminator", "stars": "medium", "detail": "medium", "starsAmount": 0.5, "detailAmount": 0.5},
+           "paletteExtract": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
+           "paletteStretch": {"target": 0.25, "linked": true, "keepLinear": false},
+           "paletteDenoise": {"tool": "SyQon Prism", "level": "medium", "stretched": true, "amount": 0.85} },
+        [ ["paletteCombine", "paletteSpcc", "paletteNorm", "paletteSharpen", "paletteExtract", "paletteStretch", "paletteDenoiseLinear", "paletteDenoise"],
+          [ "paletteCombine 9c465d77e74cdf129f5a2a3245248a4e2357ca29",
+            "paletteSpcc f5ba8e73827b8ea61618fc2fef432d51af30e00c",
+            "paletteSharpen 76f4bdf0b9c774fe49efa9b952c2abfaf9c00ea8",
+            "paletteExtract 9c2773d95fe904be6479f6050d8a0b998249fffa +stars",
+            "paletteStretch 50207e6de8ef757f6c9d799a14fd7cc0d39b3bf5",
+            "paletteDenoise f39fe7d42e18fff4d022a320252d8ca3b2362cc8" ] ] ] ];
+   [ [ "RGB", everything ], [ "SHO", everything ], [ "RGB", prism ], [ "HOO", prism ] ].forEach( function( c, i )
+   {
+      var got = capture( c[0], c[1] );
+      check( "finishing: corner " + i + " " + c[0] + " params", got.params,
+             JSON.stringify( cornerExpected[i][0] ) );
+      check( "finishing: corner " + i + " " + c[0] + " runners and chain",
+             [ Object.keys( got.runners ), got.chain.map( function( e )
+                { return e.stage + " " + e.key + ( e.companion ? " +" + e.companion : "" ); } ) ],
+             cornerExpected[i][1] );
+   } );
+
+   /*
+    * G12: each finishing runner called directly against recording fakes.
+    * Per runner: its return, the calls in order (warnings, registrations
+    * and checkAbort texts included) and the stars and linear windows the
+    * holder carries afterwards.
+    */
+   function name( a )
+   {
+      return ( a != null && typeof a == "object" && a.id !== undefined ) ? a.id : JSON.stringify( a );
+   }
+   function transcript( kind, config, fail, hasSolution )
+   {
+      var calls = [];
+      function rec( label, fn )
+      {
+         return function()
+         {
+            calls.push( label + "(" + Array.prototype.slice.call( arguments ).map( name ).join( "," ) + ")" );
+            if ( fail[label] == "throw" )
+               throw new Error( label + " failed" );
+            return fn ? fn.apply( null, arguments ) : undefined;
+         };
+      }
+      var got = capture( kind, config, { add: rec( "reg.add" ) } );
+      var restore = stub( [
+         [ Steps, "correctComposite", rec( "correctComposite" ) ],
+         [ Steps, "extractStars", rec( "extractStars", function( w, tool, label )
+           {
+              return fail.extractStars == "null" ? null : { stars: { id: label + "_stars" } };
+           } ) ],
+         [ Steps, "stretchBy", rec( "stretchBy" ) ],
+         [ Steps, "denoise", rec( "denoise" ) ],
+         [ Steps, "syqonCloneWindowForProcessing", rec( "clone", function( w, id )
+           {
+              return { id: id, copyAstrometricSolution: rec( "copyAstrometricSolution" ) };
+           } ) ],
+         [ Util, "warn", rec( "warn" ) ],
+         [ Util, "log", rec( "log" ) ],
+         [ Util, "operation", rec( "operation" ) ],
+         [ Util, "freeWindowId", rec( "freeWindowId", function( id ) { return id + "_free"; } ) ],
+         [ Pipeline, "checkAbort", rec( "checkAbort" ) ] ] );
+      var out = [];
+      try
+      {
+         var keys = Object.keys( got.runners );
+         keys.slice( keys.length - 5 ).forEach( function( stage )
+         {
+            calls = [];
+            var h = { window: { id: "win", hasAstrometricSolution: hasSolution }, view: { id: "view" } };
+            var ret;
+            try { ret = got.runners[stage]( h ); }
+            catch ( e ) { ret = "threw " + e.message; }
+            out.push( [ stage, ret === undefined ? "undefined" : ret, calls,
+                        h.stars ? h.stars.id : null, h.linear ? h.linear.id : null ] );
+         } );
+      }
+      finally { restore(); }
+      return out;
+   }
+   var quiet = JSON.parse( JSON.stringify( everything ) );
+   quiet.keepLinear = false;
+   quiet.stretch = false;
+   quiet.stretchMethod = Steps.STRETCH_METHOD_MTF;
+   var scenarios = [
+      [ "all succeed, keep linear, solved", everything, {}, true ],
+      [ "all succeed, keep linear, unsolved", everything, {}, false ],
+      [ "no linear copy, no stretch", quiet, {}, true ],
+      [ "every step fails, no stars", everything,
+        { correctComposite: "throw", extractStars: "null", stretchBy: "throw", denoise: "throw", clone: "throw" }, true ],
+      [ "solution copy fails, extraction throws", everything,
+        { copyAstrometricSolution: "throw", extractStars: "throw" }, true ],
+      [ "cancelled", everything, { checkAbort: "throw" }, true ] ];
+   var runnerExpected = {
+      "RGB all succeed, keep linear, solved":
+         [ [ "sharpenRGB", "undefined",
+            [ "checkAbort(\"sharpening RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+            null, null ],
+           [ "extractRGB", "undefined",
+            [ "checkAbort(\"extracting stars from RGB\")",
+              "extractStars(win,\"SyQon Starless\",\"RGB\",true)",
+              "reg.add(RGB_stars)" ],
+            "RGB_stars", null ],
+           [ "stretchRGB", "undefined",
+            [ "checkAbort(\"stretching RGB\")",
+              "freeWindowId(\"RGB_linear\")",
+              "clone(win,\"RGB_linear_free\")",
+              "copyAstrometricSolution(win)",
+              "reg.add(RGB_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"RGB starless\")" ],
+            null, "RGB_linear_free" ],
+           [ "denoiseLinearRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+            null, null ],
+           [ "denoiseRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+            null, null ] ],
+      "RGB all succeed, keep linear, unsolved":
+         [ [ "sharpenRGB", "undefined",
+            [ "checkAbort(\"sharpening RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+            null, null ],
+           [ "extractRGB", "undefined",
+            [ "checkAbort(\"extracting stars from RGB\")",
+              "extractStars(win,\"SyQon Starless\",\"RGB\",true)",
+              "reg.add(RGB_stars)" ],
+            "RGB_stars", null ],
+           [ "stretchRGB", "undefined",
+            [ "checkAbort(\"stretching RGB\")",
+              "freeWindowId(\"RGB_linear\")",
+              "clone(win,\"RGB_linear_free\")",
+              "reg.add(RGB_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"RGB starless\")" ],
+            null, "RGB_linear_free" ],
+           [ "denoiseLinearRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+            null, null ],
+           [ "denoiseRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+            null, null ] ],
+      "RGB no linear copy, no stretch":
+         [ [ "sharpenRGB", "undefined",
+            [ "checkAbort(\"sharpening RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+            null, null ],
+           [ "extractRGB", "undefined",
+            [ "checkAbort(\"extracting stars from RGB\")",
+              "extractStars(win,\"SyQon Starless\",\"RGB\",false)",
+              "reg.add(RGB_stars)" ],
+            "RGB_stars", null ],
+           [ "stretchRGB", "undefined",
+            [ "checkAbort(\"stretching RGB\")",
+              "stretchBy(\"mtf\",view,true,\"RGB starless\")" ],
+            null, null ],
+           [ "denoiseLinearRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+            null, null ],
+           [ "denoiseRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",false)" ],
+            null, null ] ],
+      "RGB every step fails, no stars":
+         [ [ "sharpenRGB", "loom-skip-cache",
+            [ "checkAbort(\"sharpening RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")",
+              "warn(\"sharpen\",\"RGB could not be corrected (Error: correctComposite failed); the composite is kept as it is\")" ],
+            null, null ],
+           [ "extractRGB", "loom-skip-cache",
+            [ "checkAbort(\"extracting stars from RGB\")",
+              "extractStars(win,\"SyQon Starless\",\"RGB\",true)" ],
+            null, null ],
+           [ "stretchRGB", "loom-skip-cache",
+            [ "checkAbort(\"stretching RGB\")",
+              "freeWindowId(\"RGB_linear\")",
+              "clone(win,\"RGB_linear_free\")",
+              "warn(\"stretch\",\"could not keep the linear copy (Error: clone failed); the stretch proceeds\")",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"RGB starless\")",
+              "warn(\"stretch\",\"RGB could not be stretched (Error: stretchBy failed); the composite is kept linear\")" ],
+            null, null ],
+           [ "denoiseLinearRGB", "loom-skip-cache",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)",
+              "warn(\"denoise\",\"RGB could not be denoised (Error: denoise failed); the composite is kept as it is\")" ],
+            null, null ],
+           [ "denoiseRGB", "loom-skip-cache",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)",
+              "warn(\"denoise\",\"RGB could not be denoised (Error: denoise failed); the composite is kept as it is\")" ],
+            null, null ] ],
+      "RGB solution copy fails, extraction throws":
+         [ [ "sharpenRGB", "undefined",
+            [ "checkAbort(\"sharpening RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+            null, null ],
+           [ "extractRGB", "threw extractStars failed",
+            [ "checkAbort(\"extracting stars from RGB\")",
+              "extractStars(win,\"SyQon Starless\",\"RGB\",true)" ],
+            null, null ],
+           [ "stretchRGB", "undefined",
+            [ "checkAbort(\"stretching RGB\")",
+              "freeWindowId(\"RGB_linear\")",
+              "clone(win,\"RGB_linear_free\")",
+              "copyAstrometricSolution(win)",
+              "reg.add(RGB_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"RGB starless\")" ],
+            null, "RGB_linear_free" ],
+           [ "denoiseLinearRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+            null, null ],
+           [ "denoiseRGB", "undefined",
+            [ "checkAbort(\"denoising RGB\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+            null, null ] ],
+      "RGB cancelled":
+         [ [ "sharpenRGB", "threw checkAbort failed",
+            [ "checkAbort(\"sharpening RGB\")" ],
+            null, null ],
+           [ "extractRGB", "threw checkAbort failed",
+            [ "checkAbort(\"extracting stars from RGB\")" ],
+            null, null ],
+           [ "stretchRGB", "threw checkAbort failed",
+            [ "checkAbort(\"stretching RGB\")" ],
+            null, null ],
+           [ "denoiseLinearRGB", "threw checkAbort failed",
+            [ "checkAbort(\"denoising RGB\")" ],
+            null, null ],
+           [ "denoiseRGB", "threw checkAbort failed",
+            [ "checkAbort(\"denoising RGB\")" ],
+            null, null ] ],
+      "SHO all succeed, keep linear, solved":
+         [ [ "paletteSharpen", "undefined",
+            [ "checkAbort(\"sharpening SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+            null, null ],
+           [ "paletteExtract", "undefined",
+            [ "checkAbort(\"extracting stars from SHO\")",
+              "extractStars(win,\"SyQon Starless\",\"SHO\",true)",
+              "reg.add(SHO_stars)" ],
+            "SHO_stars", null ],
+           [ "paletteStretch", "undefined",
+            [ "checkAbort(\"stretching SHO\")",
+              "freeWindowId(\"SHO_linear\")",
+              "clone(win,\"SHO_linear_free\")",
+              "copyAstrometricSolution(win)",
+              "reg.add(SHO_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"SHO starless\")" ],
+            null, "SHO_linear_free" ],
+           [ "paletteDenoiseLinear", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+            null, null ],
+           [ "paletteDenoise", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+            null, null ] ],
+      "SHO all succeed, keep linear, unsolved":
+         [ [ "paletteSharpen", "undefined",
+            [ "checkAbort(\"sharpening SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+            null, null ],
+           [ "paletteExtract", "undefined",
+            [ "checkAbort(\"extracting stars from SHO\")",
+              "extractStars(win,\"SyQon Starless\",\"SHO\",true)",
+              "reg.add(SHO_stars)" ],
+            "SHO_stars", null ],
+           [ "paletteStretch", "undefined",
+            [ "checkAbort(\"stretching SHO\")",
+              "freeWindowId(\"SHO_linear\")",
+              "clone(win,\"SHO_linear_free\")",
+              "reg.add(SHO_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"SHO starless\")" ],
+            null, "SHO_linear_free" ],
+           [ "paletteDenoiseLinear", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+            null, null ],
+           [ "paletteDenoise", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+            null, null ] ],
+      "SHO no linear copy, no stretch":
+         [ [ "paletteSharpen", "undefined",
+            [ "checkAbort(\"sharpening SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+            null, null ],
+           [ "paletteExtract", "undefined",
+            [ "checkAbort(\"extracting stars from SHO\")",
+              "extractStars(win,\"SyQon Starless\",\"SHO\",false)",
+              "reg.add(SHO_stars)" ],
+            "SHO_stars", null ],
+           [ "paletteStretch", "undefined",
+            [ "checkAbort(\"stretching SHO\")",
+              "stretchBy(\"mtf\",view,true,\"SHO starless\")" ],
+            null, null ],
+           [ "paletteDenoiseLinear", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+            null, null ],
+           [ "paletteDenoise", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",false)" ],
+            null, null ] ],
+      "SHO every step fails, no stars":
+         [ [ "paletteSharpen", "loom-skip-cache",
+            [ "checkAbort(\"sharpening SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")",
+              "warn(\"sharpen\",\"SHO could not be corrected (Error: correctComposite failed); the palette is kept as it is\")" ],
+            null, null ],
+           [ "paletteExtract", "loom-skip-cache",
+            [ "checkAbort(\"extracting stars from SHO\")",
+              "extractStars(win,\"SyQon Starless\",\"SHO\",true)" ],
+            null, null ],
+           [ "paletteStretch", "loom-skip-cache",
+            [ "checkAbort(\"stretching SHO\")",
+              "freeWindowId(\"SHO_linear\")",
+              "clone(win,\"SHO_linear_free\")",
+              "warn(\"stretch\",\"could not keep the linear copy (Error: clone failed); the stretch proceeds\")",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"SHO starless\")",
+              "warn(\"stretch\",\"SHO could not be stretched (Error: stretchBy failed); the palette is kept linear\")" ],
+            null, null ],
+           [ "paletteDenoiseLinear", "loom-skip-cache",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)",
+              "warn(\"denoise\",\"SHO could not be denoised (Error: denoise failed); the palette is kept as it is\")" ],
+            null, null ],
+           [ "paletteDenoise", "loom-skip-cache",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)",
+              "warn(\"denoise\",\"SHO could not be denoised (Error: denoise failed); the palette is kept as it is\")" ],
+            null, null ] ],
+      "SHO solution copy fails, extraction throws":
+         [ [ "paletteSharpen", "undefined",
+            [ "checkAbort(\"sharpening SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+            null, null ],
+           [ "paletteExtract", "threw extractStars failed",
+            [ "checkAbort(\"extracting stars from SHO\")",
+              "extractStars(win,\"SyQon Starless\",\"SHO\",true)" ],
+            null, null ],
+           [ "paletteStretch", "undefined",
+            [ "checkAbort(\"stretching SHO\")",
+              "freeWindowId(\"SHO_linear\")",
+              "clone(win,\"SHO_linear_free\")",
+              "copyAstrometricSolution(win)",
+              "reg.add(SHO_linear_free)",
+              "stretchBy(\"MultiscaleAdaptiveStretch\",view,true,\"SHO starless\")" ],
+            null, "SHO_linear_free" ],
+           [ "paletteDenoiseLinear", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+            null, null ],
+           [ "paletteDenoise", "undefined",
+            [ "checkAbort(\"denoising SHO\")",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+            null, null ] ],
+      "SHO cancelled":
+         [ [ "paletteSharpen", "threw checkAbort failed",
+            [ "checkAbort(\"sharpening SHO\")" ],
+            null, null ],
+           [ "paletteExtract", "threw checkAbort failed",
+            [ "checkAbort(\"extracting stars from SHO\")" ],
+            null, null ],
+           [ "paletteStretch", "threw checkAbort failed",
+            [ "checkAbort(\"stretching SHO\")" ],
+            null, null ],
+           [ "paletteDenoiseLinear", "threw checkAbort failed",
+            [ "checkAbort(\"denoising SHO\")" ],
+            null, null ],
+           [ "paletteDenoise", "threw checkAbort failed",
+            [ "checkAbort(\"denoising SHO\")" ],
+            null, null ] ] };
+   [ "RGB", "SHO" ].forEach( function( kind )
+   {
+      scenarios.forEach( function( s )
+      {
+         check( "finishing: " + kind + " runners, " + s[0],
+                transcript( kind, s[1], s[2], s[3] ), runnerExpected[kind + " " + s[0]] );
+      } );
+   } );
+   }
 }
 
 function main()
 {
    var aborted = false;
    silenceLogging();
-   try { runTests(); }
+   try { TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); }
    catch ( e )
    {
       aborted = true;
@@ -13605,11 +16708,14 @@ function main()
    }
 
    var status = ( FAILURES.length == 0 ? "PASS" : "FAIL" );
+   if ( TEST_ONLY != null )
+      status += " FILTERED[" + TEST_ONLY.join( "," ) + "]";
    if ( aborted )
       status += " ABORTED after " + TESTS_RUN + " checks";
 
    var summary = status +
                  " " + TESTS_RUN + " run, " + FAILURES.length + " failed\n" +
+                 ( TEST_ONLY != null ? "groups run: " + GROUPS_RUN.join( " " ) + "\n" : "" ) +
                  FAILURES.join( "\n" ) + "\n";
 
    console.writeln( summary );

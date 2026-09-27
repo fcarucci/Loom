@@ -18,8 +18,8 @@
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
-#include "lib/Pipeline.js"
-#include "lib/Frames.js"
+#include "lib/StepsSyqon.js"
+#include "lib/StepsIcc.js"
 #include "lib/Fly.js"
 #include "lib/Solve.js"
 #include "lib/Sky.js"
@@ -38,7 +38,7 @@ FlyThrough.prepareFolder = function( folder, keepFrames )
 {
    if ( !File.directoryExists( folder ) )
       File.createDirectory( folder, true );
-   Steps.directoryEntries( folder ).filter( function( name )
+   Util.directoryEntries( folder ).filter( function( name )
    {
       return FlyThrough.isPartialFrame( name ) || ( !keepFrames && Fly.isFrameFile( name ) );
    } ).forEach( function( name )
@@ -287,13 +287,13 @@ FlyThrough.clearFrames = function( dir, countOnly )
    {
       var f = dir + "/" + n;
       if ( !File.directoryExists( f ) ) return;
-      var ours = Steps.directoryEntries( f ).filter( function( e ) { return Fly.isFrameFile( e ) || FlyThrough.isPartialFrame( e ) || e == FlyThrough.FRAMES_RECORD; } );
+      var ours = Util.directoryEntries( f ).filter( function( e ) { return Fly.isFrameFile( e ) || FlyThrough.isPartialFrame( e ) || e == FlyThrough.FRAMES_RECORD; } );
       if ( !ours.length ) return;
       ++folders;
       frames += ours.filter( Fly.isFrameFile ).length;
       if ( countOnly ) return;
       ours.forEach( function( e ) { FlyThrough.removeQuietly( f + "/" + e ); } );
-      if ( Steps.directoryEntries( f ).length == 0 )
+      if ( Util.directoryEntries( f ).length == 0 )
          try { File.removeDirectory( f ); } catch ( e ) { Util.warn( "fly", "could not remove " + f + ": " + e ); }
    } );
    return { frames: frames, folders: folders };
@@ -333,36 +333,14 @@ FlyThrough.identify = function( window, choices, progress )
 {
    choices = choices || {};
    var stage = ( progress && progress.stage ) ? progress.stage : function() {};
-   var blind = null;
+   var solved = { blind: null, solvedPixel: undefined };
    if ( Sky.projector( window ) == null )
    {
       if ( !choices.hints && !choices.blind )
          return { needsSolve: true };
-      var blindProgress = { stage: stage, isCancelled: function() { return !!( progress && progress.isCancelled && progress.isCancelled() ); } };
-      var hintError = null;
-      if ( choices.hints )
-      {
-         stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
-         try { var solvedPixel = Sky.solveWithHints( window, choices.hints, stage ); }
-         catch ( e )
-         {
-            // ImageSolver may have written the solution the scale check then rejected: Sky.projector would believe it next time
-            Sky.clearSolution( window );
-            if ( FlyThrough.isCancel( e ) ) throw e;
-            hintError = e;
-         }
-      }
-      if ( !choices.hints || hintError )
-      {
-         if ( hintError ) stage( "The hints did not solve: solving blind", 0, 0 );
-         try { blind = Sky.solveBlind( window, blindProgress ); solvedPixel = blind.solvedPixel; }
-         catch ( e )
-         {
-            if ( FlyThrough.isCancel( e ) || !hintError ) throw e;
-            throw new Error( String( hintError.message || hintError ) + "\n\nBlind solving: " + String( e.message || e ) );
-         }
-      }
+      solved = FlyThrough.solveUnsolved( window, choices, progress, stage );
    }
+   var blind = solved.blind, solvedPixel = solved.solvedPixel;
    stage( "Finding what the image shows (NGC/IC catalogue)", 1, 4 );
    var proj = Sky.projector( window ), field = Sky.field( window );
    var ngc = Sky.readNgcIc(), pick = ngc ? Fly.pickTarget( ngc, field.centre, field.radiusDeg ) : { best: null, runnerUp: null };
@@ -376,7 +354,14 @@ FlyThrough.identify = function( window, choices, progress )
               sources: ( stage( "Looking up the stars and their distances in Gaia", 2, 4 ), Sky.requireSources( field.centre, field.radiusDeg ) ),
               solvedPixel: ( typeof solvedPixel == "number" ) ? solvedPixel : null,
               blind: blind ? blind.result : null };
-   if ( type == "galaxy" )
+   FlyThrough.findDistance( id, choices, stage );
+   return id;
+};
+
+/* id.D and its source: a galaxy is a fixed backdrop, a typed distance is kept, else the target's cluster or star. */
+FlyThrough.findDistance = function( id, choices, stage )
+{
+   if ( id.type == "galaxy" )
    {
       id.D = Infinity;
       id.distanceSource = "galaxy";
@@ -386,12 +371,46 @@ FlyThrough.identify = function( window, choices, progress )
       id.D = choices.distance;
       id.distanceSource = "typed";
    }
-   else if ( target )
+   else if ( id.target )
    {
       stage( "Finding the nebula's distance from its star cluster", 3, 4 );
-      FlyThrough.clusterDistance( id, target );
+      FlyThrough.clusterDistance( id, id.target );
    }
-   return id;
+};
+
+/*
+ * FlyThrough.identify's plate solve of an image with no solution: from
+ * choices.hints, and blind when there are none or they fail. Returns
+ * { blind: Sky.solveBlind's answer or null, solvedPixel }.
+ */
+FlyThrough.solveUnsolved = function( window, choices, progress, stage )
+{
+   var blind = null, solvedPixel;
+   var blindProgress = { stage: stage, isCancelled: function() { return !!( progress && progress.isCancelled && progress.isCancelled() ); } };
+   var hintError = null;
+   if ( choices.hints )
+   {
+      stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
+      try { solvedPixel = Sky.solveWithHints( window, choices.hints, stage ); }
+      catch ( e )
+      {
+         // ImageSolver may have written the solution the scale check then rejected: Sky.projector would believe it next time
+         Sky.clearSolution( window );
+         if ( FlyThrough.isCancel( e ) ) throw e;
+         hintError = e;
+      }
+   }
+   if ( !choices.hints || hintError )
+   {
+      if ( hintError ) stage( "The hints did not solve: solving blind", 0, 0 );
+      try { blind = Sky.solveBlind( window, blindProgress ); solvedPixel = blind.solvedPixel; }
+      catch ( e )
+      {
+         if ( FlyThrough.isCancel( e ) || !hintError ) throw e;
+         throw new Error( String( hintError.message || hintError ) + "\n\nBlind solving: " + String( e.message || e ) );
+      }
+   }
+   return { blind: blind, solvedPixel: solvedPixel };
 };
 
 /* The nebula's distance from its ionising cluster when one is found, else from the bright star that lights it. */
@@ -1190,25 +1209,31 @@ FlyThrough.Dialog = class extends Dialog
       this.needsHints = has && ( Sky.projector( this.imageWindow ) == null );
       // an image's hints start empty -- never the last image's -- then come from its memory or its name
       this.objectEdit.text = this.raEdit.text = this.decEdit.text = this.objectMatch.text = "";
+      if ( this.needsHints ) this.fillHints();
+      this.hints.visible = this.needsHints;
+      if ( this.targetLabel ) this.targetLabel.text = "";
+      [ "draftButton", "renderButton" ].forEach( function( k ) { if ( this[k] ) this[k].enabled = has; }, this );
+   }
+
+   /* An unsolved image's hints, from its header (pointing, else object name), then its memory, then its name. */
+   fillHints()
+   {
       // the header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do)
-      if ( this.needsHints && !this.raEdit.text.trim() )
+      if ( !this.raEdit.text.trim() )
       {
          var hc = FlyThrough.headerCentre( this.imageWindow );
          if ( hc ) { this.raEdit.text = hc.ra.toFixed( 4 ); this.decEdit.text = hc.dec.toFixed( 4 ); this.objectMatch.text = "Centre from the image's header"; }
       }
       // and the header's object name (OBJECT, Observation:Object:Name)
-      if ( this.needsHints && !this.raEdit.text.trim() )
+      if ( !this.raEdit.text.trim() )
       {
          var name = FlyThrough.headerObject( this.imageWindow );
          if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
          var oh = name ? Fly.findObject( name, this.ngcIc || [] )[0] : null;
          if ( oh ) { this.objectEdit.text = oh.name || oh.id; this.raEdit.text = oh.ra.toFixed( 4 ); this.decEdit.text = oh.dec.toFixed( 4 ); this.objectMatch.text = oh.id + " (from the image's header)"; }
       }
-      if ( this.needsHints ) this.recallObject();
-      if ( this.needsHints && !this.objectEdit.text.trim() && !this.raEdit.text.trim() ) this.objectFromName();
-      this.hints.visible = this.needsHints;
-      if ( this.targetLabel ) this.targetLabel.text = "";
-      [ "draftButton", "renderButton" ].forEach( function( k ) { if ( this[k] ) this[k].enabled = has; }, this );
+      this.recallObject();
+      if ( !this.objectEdit.text.trim() && !this.raEdit.text.trim() ) this.objectFromName();
    }
 
    /*
@@ -1828,27 +1853,29 @@ FlyThrough.Dialog = class extends Dialog
       this.analysing( function() { self.analyseImage(); } );
    }
 
+   /* The image's solved working copy from the cache, else resampled (and solved by analyseImage). */
+   openWork( progress )
+   {
+      this.cacheDirPath = FlyThrough.cacheDir( FlyThrough.cacheRoot(), this.imageWindow );
+      progress.stage( "Opening the image's working copy", 0, 0 );
+      this.work = FlyThrough.loadWork( this.cacheDirPath );
+      this.workCached = ( this.work != null );
+      if ( !this.work )
+      {
+         progress.stage( "Making a smaller working copy of the image", 0, 0 );
+         this.work = Sky.workingCopy( this.imageWindow );
+      }
+      var wi = this.work.window.mainView.image;
+      this.imageLabel.text = "Image: " + this.imageWindow.mainView.id + " \u2014 working at " + wi.width + "\u00d7" + wi.height +
+                             ( this.workCached ? " (solved before)" : "" );
+   }
+
    analyseImage()
    {
       this.requireTool();
       var choices = this.choices(), progress = this.progressFor();
       this.status.text = "Analysing\u2026";
-      if ( !this.work )
-      {
-         // the image's solved working copy from the cache, else resampled (and solved below)
-         this.cacheDirPath = FlyThrough.cacheDir( FlyThrough.cacheRoot(), this.imageWindow );
-         progress.stage( "Opening the image's working copy", 0, 0 );
-         this.work = FlyThrough.loadWork( this.cacheDirPath );
-         this.workCached = ( this.work != null );
-         if ( !this.work )
-         {
-            progress.stage( "Making a smaller working copy of the image", 0, 0 );
-            this.work = Sky.workingCopy( this.imageWindow );
-         }
-         var wi = this.work.window.mainView.image;
-         this.imageLabel.text = "Image: " + this.imageWindow.mainView.id + " \u2014 working at " + wi.width + "\u00d7" + wi.height +
-                                ( this.workCached ? " (solved before)" : "" );
-      }
+      if ( !this.work ) this.openWork( progress );
       if ( choices.hints )
          choices.hints.pixel /= this.work.scale;         // the working copy's pixels are larger
       var id = FlyThrough.identify( this.work.window, choices, progress );
