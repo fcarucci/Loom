@@ -2901,6 +2901,34 @@ function runTests()
     */
    check( "TLS 1.2 is forced",
           psZip.indexOf( "Tls12" ) >= 0, true );
+   /*
+    * Every network call of both release helpers carries Update.TIMEOUT_SECONDS,
+    * so a transfer that hangs on an unreachable or stalled host ends instead
+    * of leaving a worker behind. Built with another value too, so the
+    * scripts are seen to follow the setting rather than a copy of it.
+    */
+   ( function()
+   {
+      var saved = Update.TIMEOUT_SECONDS;
+      function timeouts( seconds )
+      {
+         Update.TIMEOUT_SECONDS = seconds;
+         try
+         {
+            var sh = Update.zipScript( { dir: "/x/Loom", stateDir: "/cache/update", version: "0.1",
+                                         owner: "o", repo: "r", platform: Util.PLATFORM_MACOS } );
+            var ps = Update.zipScript( { dir: "C:/x/Loom", stateDir: "C:/cache/update", version: "0.1",
+                                         owner: "o", repo: "r", platform: Util.PLATFORM_WINDOWS } );
+            var count = function( text, re ) { return ( text.match( re ) || [] ).length; };
+            return [ count( sh, /curl /g ), count( sh, new RegExp( "curl [^\\n]*--max-time " + seconds + " ", "g" ) ),
+                     count( ps, /Invoke-(RestMethod|WebRequest) /g ),
+                     count( ps, new RegExp( "Invoke-(RestMethod|WebRequest) [^\\n]*-TimeoutSec " + seconds + "( |$)", "gm" ) ) ];
+         }
+         finally { Update.TIMEOUT_SECONDS = saved; }
+      }
+      check( "every release download has the update timeout: curl calls, with it; PowerShell calls, with it",
+             [ timeouts( Update.TIMEOUT_SECONDS ), timeouts( 37 ) ], [ [ 2, 2, 2, 2 ], [ 2, 2, 2, 2 ] ] );
+   } )();
    check( "the old copy is kept until the new one is in place on Windows",
           psZip.indexOf( "Move-Item -LiteralPath $DIR -Destination ($DIR + '.old') -Force" ) >= 0,
           true );

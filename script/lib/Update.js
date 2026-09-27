@@ -64,9 +64,10 @@ Update.HISTORY_FILE = "update.log";
 Update.LOCK_DIR = "update.lock";
 
 /*
- * How long a detached update may run before it is killed. A fetch that
- * sits on an unreachable host must not leave a worker behind for the rest
- * of the session.
+ * How long one download of the release updater may take before it is
+ * abandoned (curl --max-time, PowerShell -TimeoutSec). A fetch that sits on
+ * an unreachable host must not leave a worker behind for the rest of the
+ * session.
  */
 Update.TIMEOUT_SECONDS = 120;
 
@@ -674,7 +675,8 @@ Update.zipScriptPosix = function( o )
       "",
       "# -f so an HTML error page is an error, not a 200-byte 'release'.",
       "# --proto '=https' so a redirect cannot downgrade the transport.",
-      "JSON=$(curl -fsSL --proto '=https' " + q( api ) + " 2>&1) || {",
+      "# --max-time so a stalled transfer ends rather than leaving a worker behind.",
+      "JSON=$(curl -fsSL --proto '=https' --max-time " + Update.TIMEOUT_SECONDS + " " + q( api ) + " 2>&1) || {",
       "  report failed 1 \"$CURRENT\" - \"$JSON\"; exit 0; }",
       "TAG=$(printf '%s' \"$JSON\" | sed -n 's/.*\"tag_name\"[ ]*:[ ]*\"\\([^\"]*\\)\".*/\\1/p' | head -1)",
       "URL=$(printf '%s' \"$JSON\" | sed -n 's/.*\"browser_download_url\"[ ]*:[ ]*\"\\([^\"]*\\)\".*/\\1/p' | head -1)",
@@ -687,7 +689,7 @@ Update.zipScriptPosix = function( o )
       "  report unchanged 0 \"$CURRENT\" \"$CURRENT\" ''; exit 0; fi",
       "",
       "mkdir -p \"$WORK\" || exit 0",
-      "curl -fsSL --proto '=https' -o \"$WORK/release.zip\" \"$URL\" || {",
+      "curl -fsSL --proto '=https' --max-time " + Update.TIMEOUT_SECONDS + " -o \"$WORK/release.zip\" \"$URL\" || {",
       "  report failed 1 \"$CURRENT\" \"$TAG\" 'download failed'; exit 0; }",
       "mkdir \"$WORK/tree\" || exit 0",
       "tar -xf \"$WORK/release.zip\" -C \"$WORK/tree\" || {",
@@ -768,8 +770,8 @@ Update.zipScriptPowerShell = function( o )
       "",
       "try {",
       "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
-      "  $JSON = Invoke-RestMethod -UseBasicParsing -Uri " + q( api ) +
-                " -Headers @{ 'User-Agent' = 'Loom' }",
+      "  $JSON = Invoke-RestMethod -UseBasicParsing -TimeoutSec " + Update.TIMEOUT_SECONDS +
+                " -Uri " + q( api ) + " -Headers @{ 'User-Agent' = 'Loom' }",
       "  $TAG = [string]$JSON.tag_name",
       "  $URL = ''",
       "  if ($JSON.assets -and $JSON.assets.Count -gt 0) {",
@@ -785,7 +787,8 @@ Update.zipScriptPowerShell = function( o )
       "",
       "  New-Item -ItemType Directory -Path $WORK -Force | Out-Null",
       "  New-Item -ItemType Directory -Path ($WORK + '/tree') -Force | Out-Null",
-      "  Invoke-WebRequest -UseBasicParsing -Uri $URL -OutFile ($WORK + '/release.zip')",
+      "  Invoke-WebRequest -UseBasicParsing -TimeoutSec " + Update.TIMEOUT_SECONDS +
+                " -Uri $URL -OutFile ($WORK + '/release.zip')",
       "  Expand-Archive -LiteralPath ($WORK + '/release.zip') -DestinationPath ($WORK + '/tree') -Force",
       "",
       "  # Verify against the NEW release: requiring every file the OLD copy",
