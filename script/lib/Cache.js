@@ -252,8 +252,12 @@ Cache.lookupCompanion = function( key, name )
 Cache.loadCompanion = function( key, name, newId )
 {
    var path = Cache.companionPathFor( key, name );
-   if ( !File.exists( path ) )
-      return null;
+   return File.exists( path ) ? Cache.openAs( path, newId ) : null;
+};
+
+/* The image at `path` as a window with id `newId` (when given); null when it does not open. */
+Cache.openAs = function( path, newId )
+{
    var ws = ImageWindow.open( path );
    if ( ws.length == 0 )
       return null;
@@ -429,15 +433,7 @@ Cache.store = function( key, window, meta )
 Cache.load = function( key, newId )
 {
    var path = Cache.lookup( key );
-   if ( path == null )
-      return null;
-   var ws = ImageWindow.open( path );
-   if ( ws.length == 0 )
-      return null;
-   var w = ws[0];
-   if ( newId )
-      w.mainView.id = newId;
-   return w;
+   return ( path == null ) ? null : Cache.openAs( path, newId );
 };
 
 /* Number of cached results (xisf entries, ignoring json sidecars). */

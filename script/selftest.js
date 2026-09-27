@@ -835,7 +835,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 291 );
+      check( "Steps: the member count", Object.keys( have ).length, 290 );
    }
 
    /*
@@ -20669,11 +20669,11 @@ function runFailurePathTests()
       withStubs( xrec.stubs, function()
       {
          check( "lookupDeviceCurve: case does not matter",
-                Steps.lookupDeviceCurve( "sony imx411/455/461/533/571" ), { name: "Sony IMX411/455/461/533/571", data: "1,2" } );
+                Steps.filterCurveByName( "sony imx411/455/461/533/571", "Q" ), { name: "Sony IMX411/455/461/533/571", data: "1,2" } );
          check( "lookupDeviceCurve: a filter curve is not a device curve",
-                Steps.lookupDeviceCurve( "Antlia R" ), null );
+                Steps.filterCurveByName( "Antlia R", "Q" ), null );
          check( "lookupDeviceCurve: nothing asked, nothing found",
-                [ Steps.lookupDeviceCurve( "" ), Steps.lookupDeviceCurve( null ) ], [ null, null ] );
+                [ Steps.filterCurveByName( "", "Q" ), Steps.filterCurveByName( null, "Q" ) ], [ null, null ] );
          check( "filterCurveByName: any channel, whole name, any case",
                 [ Steps.filterCurveByName( "antlia r" ), Steps.filterCurveByName( "Antlia" ), Steps.filterCurveByName( "" ) ],
                 [ { name: "Antlia R", data: "3,4" }, null, null ] );

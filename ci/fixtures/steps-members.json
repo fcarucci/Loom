@@ -1,5 +1,5 @@
 {
-  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models.",
+  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models; filterCurveByName and deviceCurveForImage when lookupDeviceCurve was folded into filterCurveByName( name, \"Q\" ).",
   "core5": {
     "ASSIGN_NEW_PROFILE": "number 383fcd42bad63d548eecefb5fe3f55821e43011f",
     "CORE_SETTINGS_DIR": "string c39c0158e3907d2180b56d38378156e9fc11c734",
@@ -114,7 +114,7 @@
     "denoiseStudio2": "function e11d24f86d9e96237fe9b04f83ddc74db23c58cd",
     "deriveStarsByUnscreen": "function 32b41fba11084d8f2608303bf7d14b89153ce3be",
     "detachFromFile": "function 3a10ec4b0b533a9ccf7268d733bb722aa5d5009d",
-    "deviceCurveForImage": "function 13265ce11934ff43d109f857f8ae2548d244b843",
+    "deviceCurveForImage": "function b167b7b75066af124d0895aa3163fadfeac92b3b",
     "executableCandidates": "function 6846a03adf8a415412701a1b00ae40773b9c98c4",
     "executableFromConfig": "function 71c90fdb03f9f71adde692225f95390ba5be32ea",
     "executableSettingKey": "function a137ef28ac0ef832aca204b6abaa96373dfd95e3",
@@ -122,7 +122,7 @@
     "exportTiff16": "function 670cdd4d0c15394cdd20ba754ca099d067ec26c0",
     "extractStars": "function 7570c3cf1c8cda186a3b9debfce97273df0ca01e",
     "extractStarsPlate": "function 53e71fe76d4433f95173eaa2653b99c9d75abb6b",
-    "filterCurveByName": "function baccad12316d3cc4f08c576503c312fc6bd64d1f",
+    "filterCurveByName": "function 0b8939422f01f39b330ad584d1c39cbc27282ca6",
     "findExecutable": "function 8e98cd3b60dd44947df33a18fc6f704ff7c74100",
     "firstColourWindow": "function e182745bc7cd2baf0733f29723a65a6fc1e28f73",
     "firstExistingPath": "function a67e3ad4ba2e7e16a03994f944b66b879a5ffb13",
@@ -144,7 +144,6 @@
     "linearFit": "function 72a879c21224f0917bc2ab422c1451f4acee5dd3",
     "listFilterCurves": "function 8dcf47ef460aaaa723f130aa7a43fe3de461c87e",
     "loadQualityTable": "function f9ddce9fcb798fcdf8fcaa5f9b5ca0ce536bb1a4",
-    "lookupDeviceCurve": "function f61662a809ac8c19e627126c71cc835ec3836942",
     "lookupFilterCurve": "function 7854d3d5bc374fce4ecaf450cd2d170f9d5373f0",
     "markAsOutput": "function 6d24ac2f4959b468f3850a79e4185cbd6e9f37e7",
     "marsDatabasesFromCoreSettings": "function e569e572cd371031ae5ab55d91b0453bde8b2a9f",

@@ -527,30 +527,15 @@ Steps.listFilterCurves = function( channel )
    return out;
 };
 
-/* A named filter curve, whatever its channel. */
-Steps.filterCurveByName = function( name )
+/* A named filter curve, any case: of `channel` ("Q" for a device's QE curve), else of any channel. */
+Steps.filterCurveByName = function( name, channel )
 {
    if ( name == null || name.length == 0 )
       return null;
-   var text = File.readTextFile( Steps.FILTERS_XSPD_PATH );
-   var re = new RegExp( '<Filter\\s+name="([^"]*)"\\s+channel="[^"]*"[^>]*?data="([^"]*)"', "g" );
-   var m, target = String( name ).toLowerCase();
-   while ( (m = re.exec( text )) != null )
-      if ( m[1].toLowerCase() == target )
-         return { name: m[1], data: m[2] };
-   return null;
-};
-
-Steps.lookupDeviceCurve = function( name )
-{
-   if ( name == null || name.length == 0 )
-      return null;
-   var text = File.readTextFile( Steps.FILTERS_XSPD_PATH );
-   var re = new RegExp( '<Filter\\s+name="([^"]*)"\\s+channel="Q"[^>]*?data="([^"]*)"', "g" );
-   var m, target = String( name ).toLowerCase();
-   while ( (m = re.exec( text )) != null )
-      if ( m[1].toLowerCase() == target )
-         return { name: m[1], data: m[2] };
+   var curves = Steps.listFilterCurves( channel || '[^"]*' ), target = String( name ).toLowerCase();
+   for ( var i = 0; i < curves.length; ++i )
+      if ( curves[i].name.toLowerCase() == target )
+         return curves[i];
    return null;
 };
 
@@ -565,7 +550,7 @@ Steps.deviceCurveForImage = function( instrume )
    var name = Util.qeCurveNameForCamera( instrume );
    if ( name != null )
    {
-      var c = Steps.lookupDeviceCurve( name );
+      var c = Steps.filterCurveByName( name, "Q" );
       if ( c != null )
       {
          Util.log( "qe", "camera '" + instrume + "' -> " + c.name );
@@ -573,7 +558,7 @@ Steps.deviceCurveForImage = function( instrume )
       }
       Util.warn( "qe", "curve '" + name + "' not found in filters.xspd" );
    }
-   var ideal = Steps.lookupDeviceCurve( Util.IDEAL_QE_CURVE_NAME );
+   var ideal = Steps.filterCurveByName( Util.IDEAL_QE_CURVE_NAME, "Q" );
    Util.log( "qe", "camera " + ( instrume ? "'" + instrume + "' unrecognised" : "unknown" ) +
                    " -> " + Util.IDEAL_QE_CURVE_NAME );
    return ideal;
