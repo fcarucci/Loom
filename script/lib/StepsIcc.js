@@ -35,12 +35,6 @@ Steps.ASSIGN_NEW_PROFILE = 0;
 Steps.PROFILE_RGB  = "ROMM RGB: ISO 22028-2:2013";   // ProPhoto
 Steps.PROFILE_GRAY = "Generic Gray Profile";         // gamma 1.8
 
-Steps.profileNameFor = function( window )
-{
-   return ( window.mainView.image.numberOfChannels >= 3 ) ? Steps.PROFILE_RGB
-                                                          : Steps.PROFILE_GRAY;
-};
-
 /*
  * Not every installation HAS those two. ROMM RGB and Generic Gray are
  * macOS system profiles: a Windows PixInsight reported "Couldn't find the

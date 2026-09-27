@@ -113,13 +113,6 @@ Steps.PI_SRC_SCRIPTS_DIR = CoreApplication.srcDirPath + "/scripts";
 // ("Filter-name-to-curve lookup").
 Steps.FILTERS_XSPD_PATH = Steps.PI_BASE_DIR + "/library/filters.xspd";
 
-// Path to the ImageSolver script's reusable engine, per the
-// verified-parameters.md ImageSolver invocation recipe. Informational
-// only: the engine itself arrives through the #include above, which
-// cannot use this value because #include is resolved at parse time.
-Steps.IMAGE_SOLVER_ENGINE_PATH =
-   Steps.PI_SRC_SCRIPTS_DIR + "/ImageSolver/ImageSolverEngine.js";
-
 /*
  * True if a process of this name is installed. Checked during preflight
  * so a missing module names itself rather than surfacing as an
@@ -2540,7 +2533,7 @@ Steps.exportTiff16 = function( window, dir, name )
  * minimum. Nothing is clipped and no range is wasted, by construction.
  *
  * This was ORIGINALLY a noise model: c0 = median - z(N)*MADN with
- * z(N) = inverseNormalCDF(1-1/N), the level below which fewer than one pixel
+ * z(N) the normal quantile at 1-1/N, the level below which fewer than one pixel
  * is expected if the sky is Gaussian. Verified against the L master on
  * 2026-09-15 and the assumption is false: the darkest pixel sits only 3.93
  * MADN below the median on the full frame (3.24 on a centre crop), where the
@@ -2589,57 +2582,11 @@ Steps.STRETCH_SKY_TARGET = 0.25;
 Steps.STRETCH_STARS_TARGET = 0.5;
 
 /*
- * Retained only to document the rejected rule and to let the self-test pin
- * the measurement that rejected it; nothing in the pipeline calls it.
- *
- * Inverse normal CDF, Acklam's rational approximation (|error| < 1.15e-9).
- */
-Steps.inverseNormalCDF = function( p )
-{
-   if ( !( p > 0 && p < 1 ) )
-      throw new Error( "inverseNormalCDF: p out of range: " + p );
-
-   var a = [ -3.969683028665376e+01,  2.209460984245205e+02, -2.759285104469687e+02,
-              1.383577518672690e+02, -3.066479806614716e+01,  2.506628277459239e+00 ];
-   var b = [ -5.447609879822406e+01,  1.615858368580409e+02, -1.556989798598866e+02,
-              6.680131188771972e+01, -1.328068155288572e+01 ];
-   var c = [ -7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-             -2.549732539343734e+00,  4.374664141464968e+00,  2.938163982698783e+00 ];
-   var d = [  7.784695709041462e-03,  3.224671290700398e-01,  2.445134137142996e+00,
-              3.754408661907416e+00 ];
-   var pl = 0.02425, ph = 1 - pl, q, r;
-
-   if ( p < pl )
-   {
-      q = Math.sqrt( -2*Math.log( p ) );
-      return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
-             ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
-   }
-   if ( p > ph )
-   {
-      q = Math.sqrt( -2*Math.log( 1-p ) );
-      return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
-              ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
-   }
-   q = p - 0.5; r = q*q;
-   return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q /
-          (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);
-};
-
-/* Sigma multiplier for a frame of N pixels: expect fewer than one below it. */
-Steps.stretchSigmaForPixelCount = function( N )
-{
-   if ( !( N > 1 ) )
-      throw new Error( "stretchSigmaForPixelCount: N must exceed 1, got " + N );
-   return Steps.inverseNormalCDF( 1 - 1/N );
-};
-
-/*
  * The two numbers for one plate, from statistics the caller has measured.
  * Pure, so the whole rule is unit-tested without a running PixInsight.
  *
  * `median` and `madn` are in the image's own [0,1] scale. Returns
- * { c0, m, z, skyOut } with skyOut the level the sky actually lands on --
+ * { c0, m, skyOut } with skyOut the level the sky actually lands on --
  * 0.25 by construction, returned so callers can assert rather than trust.
  */
 Steps.stretchParametersFrom = function( median, minimum, target )

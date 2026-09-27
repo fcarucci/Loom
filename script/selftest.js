@@ -788,7 +788,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 295 );
+      check( "Steps: the member count", Object.keys( have ).length, 291 );
    }
 
    /*
@@ -1300,12 +1300,6 @@ function runTests()
           "ROMM RGB: ISO 22028-2:2013" );
    check( "mono plates get the gamma-1.8 grayscale profile",
           Steps.PROFILE_GRAY, "Generic Gray Profile" );
-   check( "a three-channel plate takes the RGB profile",
-          Steps.profileNameFor( { mainView: { image: { numberOfChannels: 3 } } } ),
-          Steps.PROFILE_RGB );
-   check( "a one-channel plate takes the grayscale profile",
-          Steps.profileNameFor( { mainView: { image: { numberOfChannels: 1 } } } ),
-          Steps.PROFILE_GRAY );
 
    /*
     * Not every machine HAS ROMM RGB. It is a macOS system profile: on a
@@ -1374,6 +1368,20 @@ function runTests()
              Steps.profilePlan( [] ).rgb, [ Steps.PROFILE_RGB, "sRGB IEC61966-2.1" ] );
       check( "no gray profile anywhere: only the preferred name is tried",
              Steps.profilePlan( [] ).gray, [ Steps.PROFILE_GRAY ] );
+      check( "ROMM RGB and ProPhoto are one family; Display P3 is not",
+             [ "ROMM RGB: ISO 22028-2:2013", "ProPhoto RGB", "Display P3", null ].map( Steps.isProPhotoFamily ),
+             [ true, true, false, false ] );
+      // The plan is built from the installed profiles once a session, then reused.
+      var realInstalled = Steps.installedIccProfiles, scans = 0;
+      Steps.installedIccProfiles = function() { ++scans; return []; };
+      try
+      {
+         delete Steps.profilePlanCache;
+         check( "the session's profile plan is scanned once and kept",
+                [ Steps.currentProfilePlan().rgb, Steps.currentProfilePlan() === Steps.currentProfilePlan(), scans ],
+                [ [ Steps.PROFILE_RGB, "sRGB IEC61966-2.1" ], true, 1 ] );
+      }
+      finally { Steps.installedIccProfiles = realInstalled; delete Steps.profilePlanCache; }
 
       check( "Windows profiles live under the system root",
              Steps.iccProfileDirectories( Util.PLATFORM_WINDOWS, "C:/Users/x", "D:\\WINNT" )[0],
@@ -2179,8 +2187,6 @@ function runTests()
    {
       check( "the spectrum database is really there",
              File.exists( Steps.FILTERS_XSPD_PATH ), true );
-      check( "the ImageSolver engine is really there",
-             File.exists( Steps.IMAGE_SOLVER_ENGINE_PATH ), true );
       check( "the core settings directory is really there",
              File.directoryExists( Steps.CORE_SETTINGS_DIR ), true );
    }
@@ -5770,30 +5776,6 @@ function runTests()
 
    } if ( testGroup( "steps.stretch" ) ) {
    /* ---- deterministic stretch -------------------------------------- */
-
-   // Acklam's approximation against known quantiles of the normal.
-   check( "inverseNormalCDF(0.5) is 0",
-          Math.abs( Steps.inverseNormalCDF( 0.5 ) ) < 1e-9, true );
-   check( "inverseNormalCDF(0.975) is 1.959964",
-          Math.abs( Steps.inverseNormalCDF( 0.975 ) - 1.959964 ) < 1e-5, true );
-   check( "inverseNormalCDF(0.025) is -1.959964",
-          Math.abs( Steps.inverseNormalCDF( 0.025 ) + 1.959964 ) < 1e-5, true );
-   check( "inverseNormalCDF is antisymmetric about 0.5",
-          Math.abs( Steps.inverseNormalCDF( 0.9 ) +
-                    Steps.inverseNormalCDF( 0.1 ) ) < 1e-6, true );
-
-   /*
-    * z(N) is retained only as the record of a REJECTED rule. Verified against
-    * the L master on 2026-09-15: the Gaussian assumption behind it is false
-    * for a stacked, drizzled frame -- the darkest pixel sat 3.93 MADN below
-    * the median where the model demanded 5.60, so the black point fell below
-    * every real pixel and left ~10% of the output range empty.
-    */
-   var z92 = Steps.stretchSigmaForPixelCount( 11966*7678 );
-   check( "the rejected Gaussian rule demanded more than 5 sigma",
-          z92 > 5.5 && z92 < 5.7, true );
-   check( "the real frame's darkest pixel was far short of that",
-          3.93 < z92, true );
 
    // The rule in force: the black point is the image's own minimum.
    var sp = Steps.stretchParametersFrom( 1.44898040e-3, 8.43324524e-4 );
