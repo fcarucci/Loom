@@ -962,8 +962,12 @@ UI.SelectDialog = class extends Dialog
          "where NoiseXTerminator does.</p>" +
          "<p><b>Strength</b> is the same ladder for every tool: Medium is the " +
          "tool\'s own default, Low backs off, High pushes past it.</p>" +
-         "<p><b>SyQon Studio Prism 2.0</b> is Studio\'s paid Deep Prism: Low " +
-         "is Advanced, Medium is Max, High is Ultra. Loom checks " +
+         "<p><b>SyQon Studio Prism 2.0</b> is Studio\'s paid Deep Prism, run " +
+         "in two passes: Advanced on the <i>linear</i> plate, where it keeps " +
+         "faint detail, then a stronger model <i>after</i> the stretch for " +
+         "the noise that is left. Low is Advanced alone, Medium adds Ultra " +
+         "after the stretch, High adds Max. With the stretch off only " +
+         "Advanced runs. Loom checks " +
          "that your SyQon account can run them before it starts. If it " +
          "cannot, Loom offers <b>SyQon Studio Prism Essential</b> (included) " +
          "in its place until a later check succeeds; Essential\'s High is " +

@@ -286,7 +286,7 @@ reported only.
 | **Sharpen** | star reduction and detail, on the finished composite with colour linked | star reduction None/Low/Medium/High, detail None/Low/Medium/High |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see below | on/off |
-| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism 2.0 (Low: Advanced, Medium: Max, High: Ultra; paid, checked against your SyQon account before the run; if the account refuses it, SyQon Studio Prism Essential is offered in its place until a check succeeds); strength Low/Medium/High |
+| **Denoise** | where the tool belongs: NoiseXTerminator, MLDenoise and SyQon Studio's Prisms on linear data, after star extraction and before the stretch; standalone SyQon Prism, and Prism 2.0's second pass, after the stretch | None, NoiseXTerminator, MLDenoise, SyQon Prism, SyQon Studio Prism 2.0 (two passes: Advanced on linear data, then Ultra or Max after the stretch; Low: Advanced, Medium: Advanced then Ultra, High: Advanced then Max; paid, checked against your SyQon account before the run; if the account refuses it, SyQon Studio Prism Essential is offered in its place until a check succeeds); strength Low/Medium/High |
 
 ### Narrowband palette
 

@@ -5,7 +5,11 @@ section of this file.
 
 ## [Unreleased]
 
-- SyQon Studio Prism 2.0: Medium is now Max and High is Ultra.
+- **Noise reduction:** SyQon Studio Prism 2.0 now denoises in two passes. Advanced runs on the linear plate, before the stretch, where it keeps faint detail; after the stretch, Ultra (Medium) or Max (High) removes the noise that is left. Low is Advanced alone. Every pass runs at Studio's full blend. This follows SyQon's published input contract: Advanced takes linear data only, Ultra and Max take linear or stretched data.
+  - Medium is Advanced then Ultra, and High is Advanced then Max. This replaces the one-model-per-level ladder, including the Medium/High swap made earlier in this release cycle.
+  - Advanced is the same at every level, so its result is cached once. Changing between Medium and High re-runs only the pass after the stretch.
+  - With the stretch off, only Advanced runs, and the log says the second pass was skipped.
+  - The check before a run tries all three models, Advanced, Ultra and Max, whatever the level, so Prism 2.0 is offered only when your account can run all of them. If it can't, Loom offers Prism Essential in Prism 2.0's place, as before.
 
 ## [0.3.0] — 2026-09-26
 

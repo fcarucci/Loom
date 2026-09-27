@@ -1418,8 +1418,9 @@ Steps.syqonStarlessRun = function( window, label )
  * each when it is found -- the maintainer's call. Studio's models are not
  * the standalone ones under a new name (Prism 2.0 is a different network,
  * and paid), so a choice saved with a standalone tool stays with it.
- * Studio adds Prism 2.0, whose Advanced, Max and Ultra models are Loom's
- * denoise levels (Steps.NOISE_LEVELS.studio2), and, with BlurXTerminator
+ * Studio adds Prism 2.0, a two-pass denoiser: Advanced on the linear
+ * plate, then Ultra (Medium) or Max (High) after the stretch
+ * (Steps.NOISE_LEVELS.studio2), and, with BlurXTerminator
  * chosen, runs the aberration pass in BXT's place with Parallax's
  * correction (Steps.aberrationCorrector) -- no dropdown entry.
  *
@@ -1428,8 +1429,9 @@ Steps.syqonStarlessRun = function( window, label )
  * inverse -- and why standalone Prism had to run after the stretch. Studio
  * takes linear input natively and is TOLD the domain (--domain), so each
  * model runs where Loom's pipeline already has the data it asks for:
- * Deep Gradient where GraXpert runs, Prism in the linear denoise slot beside
- * NXT, Parallax where BlurXTerminator runs. None of them round-trips linear
+ * Deep Gradient where GraXpert runs, Prism Essential and Advanced in the
+ * linear denoise slot beside NXT, Ultra and Max in the post-stretch slot,
+ * Parallax where BlurXTerminator runs. None of them round-trips linear
  * flux through a convex curve.
  *
  * Entitlement lives in the Studio account, not on the command line: a model
@@ -1617,16 +1619,21 @@ Steps.studioModelsFor = function( config, studioFound )
       add( Steps.STUDIO_MODEL_STARLESS );
    if ( config.noiseTool == Steps.NR_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_DENOISE );
+   /*
+    * Prism 2.0: ALL of its models, whatever the level and whether or not
+    * there is a stretch. The entry is offered only to an account licensed
+    * for Advanced, Ultra and Max together (maintainer, 2026-09-26), so a
+    * Low run checks Max too: otherwise Low would keep the entry offered on
+    * an account that High then finds refused. Slower, by design.
+    */
    if ( config.noiseTool == Steps.NR_TOOL_STUDIO2 )
-   {
-      var levels = [ config.noiseLevel, config.noiseLevelL ];
-      for ( var i = 0; i < levels.length; ++i )
+      for ( var level in Steps.NOISE_LEVELS.studio2 )
       {
-         var step = Steps.NOISE_LEVELS.studio2[levels[i]];
-         if ( step )
-            add( step.model );
+         var step = Steps.NOISE_LEVELS.studio2[level];
+         add( step.linear.model );
+         if ( step.stretched )
+            add( step.stretched.model );
       }
-   }
    return out;
 };
 
@@ -1678,8 +1685,11 @@ Steps.studioProbeProblem = function( model, res )
 Steps.studioIsPrism2 = function( model )
 {
    for ( var level in Steps.NOISE_LEVELS.studio2 )
-      if ( Steps.NOISE_LEVELS.studio2[level].model == model )
+   {
+      var step = Steps.NOISE_LEVELS.studio2[level];
+      if ( step.linear.model == model || ( step.stretched && step.stretched.model == model ) )
          return true;
+   }
    return false;
 };
 

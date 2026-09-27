@@ -408,8 +408,8 @@ Pipeline.compositeDenoiseParams = function( config, which )
 
 /*
  * The same parameters, offered to whichever of the two slots the chosen
- * tool belongs in -- and null to the other, so only one denoise stage is
- * ever in the chain.
+ * tool belongs in -- and null to the other, so for every tool but one only
+ * one denoise stage is ever in the chain.
  *
  * NXT and MLDenoise run LINEAR, after star extraction and before the
  * stretch: linear because that is what their authors ask for, and after
@@ -417,17 +417,55 @@ Pipeline.compositeDenoiseParams = function( config, which )
  * Loom extracts while still linear, so that one position satisfies both.
  *
  * Prism runs after the stretch, which is the data it is built for.
+ *
+ * SyQon Studio Prism 2.0 is the exception: two passes, Advanced in the
+ * linear slot at every level and, at Medium and High, Ultra or Max in the
+ * stretched slot (Steps.NOISE_LEVELS.studio2 says why). Each slot keys on
+ * ITS OWN model and blend and not on the level's name, so Low, Medium and
+ * High share the Advanced result and a change of level re-runs only the
+ * pass after the stretch. With the stretch off there is no stretched plate,
+ * so only the linear slot is filled.
  */
+Pipeline.prism2PassParams = function( config, which, pass )
+{
+   var level = Pipeline.denoiseLevelFor( config, which );
+   var amount = Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, level, pass );
+   return ( amount == null ) ? null
+          : { tool: Steps.NR_TOOL_STUDIO2, pass: pass, amount: amount };
+};
+
 Pipeline.linearDenoiseParams = function( config, which )
 {
    var p = Pipeline.compositeDenoiseParams( config, which );
-   return ( p != null && Steps.denoiseIsLinear( p.tool ) ) ? p : null;
+   if ( p == null || !Steps.denoiseIsLinear( p.tool ) )
+      return null;
+   /*
+    * A level Prism 2.0 does not know keeps the ordinary params, so the
+    * runner is reached and refuses it by name.
+    */
+   if ( p.tool == Steps.NR_TOOL_STUDIO2 )
+      return Pipeline.prism2PassParams( config, which, "linear" ) || p;
+   return p;
 };
 
 Pipeline.stretchedDenoiseParams = function( config, which )
 {
    var p = Pipeline.compositeDenoiseParams( config, which );
-   return ( p != null && !Steps.denoiseIsLinear( p.tool ) ) ? p : null;
+   if ( p == null )
+      return null;
+   if ( p.tool == Steps.NR_TOOL_STUDIO2 )
+      return config.stretch ? Pipeline.prism2PassParams( config, which, "stretched" ) : null;
+   return !Steps.denoiseIsLinear( p.tool ) ? p : null;
+};
+
+/*
+ * Which pass a linear-slot runner asks Steps.denoise for: its own when the
+ * stretched slot follows, "all" (the whole level) when there is no stretch -- so
+ * Prism 2.0 says that its post-stretch pass has nothing to run on.
+ */
+Pipeline.linearDenoisePass = function( config )
+{
+   return config.stretch ? "linear" : "all";
 };
 
 Pipeline.SKIP_CACHE = "loom-skip-cache";
@@ -1166,14 +1204,14 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
       // `false`: linear by construction here, whatever the run's
       // stretch setting says about what happens later.
       try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel,
-                           label + " linear", false ); }
+                           label + " linear", false, Pipeline.linearDenoisePass( config ) ); }
       catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
    };
    runners[names.denoise] = function( h )
    {
       Pipeline.checkAbort( "denoising " + label );
       try { Steps.denoise( h.view, config.noiseTool, config.noiseLevel, label,
-                           !!config.stretch ); }
+                           !!config.stretch, "stretched" ); }
       catch ( e ) { return keptAfter( "denoise", e, "denoised", "as it is" ); }
    };
 
@@ -2174,8 +2212,10 @@ Pipeline.splitLuminance = function( chans, config, reg, common )
    /*
     * L is denoised on the same rule as the composites: NXT and
     * MLDenoise linear, after extraction and before the stretch;
-    * Prism after the stretch. Only one of the two slots is ever in
-    * the chain, because only one tool is chosen.
+    * Prism after the stretch. Only one of the two slots is in the
+    * chain, because only one tool is chosen -- except Prism 2.0 at
+    * Medium and High, which runs Advanced in the first and Ultra or
+    * Max in the second (see Pipeline.linearDenoiseParams).
     *
     * L was left out until now, and it is the plate that needs it
     * most: a single channel, usually the shortest integration of the
@@ -2206,7 +2246,7 @@ Pipeline.splitLuminance = function( chans, config, reg, common )
          // stretch setting says about what happens later.
          try { Steps.denoise( c.view, config.noiseTool,
                               Pipeline.denoiseLevelFor( config, "L" ),
-                              "L linear", false ); }
+                              "L linear", false, Pipeline.linearDenoisePass( config ) ); }
          catch ( e )
          {
             Util.warn( "denoise", "L could not be denoised (" + e +
@@ -2219,7 +2259,7 @@ Pipeline.splitLuminance = function( chans, config, reg, common )
          Pipeline.checkAbort( "denoising L" );
          try { Steps.denoise( c.view, config.noiseTool,
                               Pipeline.denoiseLevelFor( config, "L" ),
-                              "L", !!config.stretch ); }
+                              "L", !!config.stretch, "stretched" ); }
          catch ( e )
          {
             Util.warn( "denoise", "L could not be denoised (" + e +

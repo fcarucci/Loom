@@ -1490,8 +1490,16 @@ Steps.NR_TOOL_MLDENOISE = "MLDenoise";
  *
  * SyQon Studio's Prism is a linear tool again: Studio publishes Prism
  * Essential's input contract as "Linear RGB or mono", so it runs in the
- * linear slot beside NXT, not where standalone Prism ran. Prism 2.0's
- * Ultra and Max take "Linear or non-linear", so they run there too.
+ * linear slot beside NXT, not where standalone Prism ran.
+ *
+ * Prism 2.0 is the one tool that runs in BOTH places, because its models
+ * have different contracts (syqon.eu/develop): Advanced is "Linear RGB or
+ * mono" like Essential, so it runs in the linear slot, while Ultra and Max
+ * take "Linear or non-linear" and run after the stretch, on the noise the
+ * stretch has made visible. Its linear pass is why this answers true for
+ * it; Steps.NOISE_LEVELS.studio2 says which level runs what, and
+ * Pipeline.linearDenoiseParams / stretchedDenoiseParams put each pass in
+ * its slot.
  *
  * So the dropdown offers a tool and Loom puts it where it belongs. Order is
  * the part that is easy to get wrong, and it is not configurable here.
@@ -1675,35 +1683,56 @@ Steps.NOISE_LEVELS = {
     */
    studio: { low: 0.60, medium: 1.00, high: 1.00 },    // 1.00 = Studio default
    /*
-    * SyQon Studio's Prism 2.0, the paid Deep Prism models. Each level is a
-    * MODEL (and a blend, kept in the key), because Prism 2.0's strengths
-    * are its models: Studio lists Advanced, Ultra and Max. The ladder is
-    * the maintainer's choice (2026-09-26, Medium and High swapped the same
-    * day), every level at Studio's own 1.00 blend:
+    * SyQon Studio's Prism 2.0, the paid Deep Prism models, run as a
+    * TWO-PASS denoiser. The ladder is the maintainer's (2026-09-26, which
+    * replaced one model per level), every model at Studio's own 1.00 blend:
     *
-    *    Low     Advanced at 1.00   the lightest Deep Prism
-    *    Medium  Max at 1.00        Max as Studio runs it
-    *    High    Ultra at 1.00      Ultra as Studio runs it
+    *    Low     Advanced on the linear plate
+    *    Medium  Advanced on the linear plate, then Ultra after the stretch
+    *    High    Advanced on the linear plate, then Max after the stretch
     *
-    * Measured with syqon-cli on a synthetic linear frame (384x384 RGB,
-    * sky sigma 1.73e-3), sky noise kept after each, against Essential:
+    * The split follows SyQon's published input contract (syqon.eu/develop):
+    * Essential and Advanced take "Linear RGB or mono" only, Ultra and Max
+    * "Linear or non-linear". Advanced therefore runs where NXT does, on
+    * linear data, where it removes noise without taking the faint signal
+    * the stretch is about to lift; Ultra or Max then clean what the stretch
+    * has made visible. Advanced is the same pass at every level, so its
+    * result is cached once and a change of level re-runs only the second
+    * pass (Pipeline.linearDenoiseParams keys each slot on its own model).
     *
-    *    Essential 1.00  0.77      Ultra 0.60  0.52      Ultra 1.00  0.20
-    *    Advanced 1.00   0.39      Max 0.60    0.40      Max 1.00    0.04
+    * Measured with syqon-cli on a synthetic LINEAR frame (384x384 RGB, sky
+    * sigma 1.73e-3), sky noise kept after one model alone, against
+    * Essential:
     *
-    * so the ladder keeps 0.39 -> 0.04 -> 0.20, every level stronger than
-    * Essential's full strength. On that frame Medium (Max) removes more
-    * noise than High (Ultra); the maintainer chose the order knowing it.
-    * Each level is its own licensed model, so preflight checks the one
-    * the chosen level runs. Max leaves 4% of the synthetic noise, which
-    * on real data is where faint signal starts to go with it.
+    *    Essential 1.00  0.77      Ultra 1.00  0.20
+    *    Advanced 1.00   0.39      Max 1.00    0.04
+    *
+    * Max leaves 4% of the synthetic noise when run on linear data, which on
+    * real data is where faint signal starts to go with it -- the reason
+    * the strong models now run after the stretch, on top of Advanced,
+    * instead of in its place.
+    *
+    * Each pass is { model, application }; a level without a pass after the
+    * stretch has `stretched: null`. Every model here is a Prism 2.0 model
+    * (Steps.studioIsPrism2), and preflight checks all three on every
+    * Prism 2.0 run, whatever the level (Steps.studioModelsFor), so the
+    * entry is offered only to an account licensed for all of them.
     */
-   studio2: { low:    { model: "prism-advanced", application: 1.00 },
-              medium: { model: "prism-max",   application: 1.00 },  // Max, Studio's blend
-              high:   { model: "prism-ultra", application: 1.00 } }
+   studio2: { low:    { linear:    { model: "prism-advanced", application: 1.00 },
+                        stretched: null },
+              medium: { linear:    { model: "prism-advanced", application: 1.00 },
+                        stretched: { model: "prism-ultra",    application: 1.00 } },
+              high:   { linear:    { model: "prism-advanced", application: 1.00 },
+                        stretched: { model: "prism-max",      application: 1.00 } } }
 };
 
-Steps.denoise = function( view, tool, level, label, alreadyStretched )
+/*
+ * `pass` matters only to a tool that runs in both slots (Prism 2.0):
+ * "linear" or "stretched" runs that slot's pass alone; "all", or no pass,
+ * runs the whole level on what `alreadyStretched` says the data is. Other
+ * tools run in one slot and ignore it.
+ */
+Steps.denoise = function( view, tool, level, label, alreadyStretched, pass )
 {
    if ( !tool || tool == "none" || !level || level == "none" )
       return;
@@ -1713,7 +1742,7 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched )
    var run = Steps.denoiseRunner( tool );
    if ( run == null )
       throw new Error( "Unknown noise reduction tool: " + tool );
-   run( view, level, alreadyStretched );
+   run( view, level, alreadyStretched, pass );
 };
 
 /*
@@ -1801,15 +1830,41 @@ Steps.denoiseStudio = function( view, level, alreadyStretched )
                       application: application } );
 };
 
-Steps.denoiseStudio2 = function( view, level, alreadyStretched )
+Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
 {
    var step = Steps.noiseLevelSetting( Steps.NOISE_LEVELS.studio2, level );
-   Util.log( "denoise", view.id + ": SyQon Studio Prism 2.0 " + level + " (" +
-                        step.model + ", application " + step.application.toFixed( 2 ) + ")" );
-   Steps.studioRun( view, "noise reduction",
-                    { model: step.model,
-                      domain: alreadyStretched ? "nonlinear" : "linear",
-                      application: step.application } );
+   var name = view.id + ": SyQon Studio Prism 2.0 " + level;
+   function run( p, domain )
+   {
+      Util.log( "denoise", name + " (" + Steps.studioModelLabel( p.model ) + ", " + domain +
+                           ", application " + p.application.toFixed( 2 ) + ")" );
+      Steps.studioRun( view, "noise reduction",
+                       { model: p.model, domain: domain, application: p.application } );
+   }
+
+   // Advanced: linear input only, by SyQon's contract
+   if ( pass != "stretched" )
+   {
+      if ( !alreadyStretched )
+         run( step.linear, "linear" );
+      else
+         Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.linear.model ) +
+                    " takes linear data only and this image is already stretched, so it " +
+                    "is skipped" + ( step.stretched
+                    ? "; only " + Steps.studioModelLabel( step.stretched.model ) + " runs"
+                    : "; this level has no pass after the stretch, so nothing runs" ) );
+   }
+
+   // Ultra or Max: after the stretch, on the stretched plate
+   if ( pass != "linear" && step.stretched )
+   {
+      if ( alreadyStretched )
+         run( step.stretched, "nonlinear" );
+      else
+         Util.log( "denoise", name + ": the post-stretch pass (" +
+                   Steps.studioModelLabel( step.stretched.model ) +
+                   ") is skipped because there is no stretch" );
+   }
 };
 
 /*
@@ -2140,7 +2195,7 @@ Steps.sharpenAmountFor = function( tool, kind, level )
    return ( v == null ) ? null : v;
 };
 
-Steps.noiseAmountFor = function( tool, level )
+Steps.noiseAmountFor = function( tool, level, pass )
 {
    if ( level == null || level == "none" )
       return null;
@@ -2163,10 +2218,21 @@ Steps.noiseAmountFor = function( tool, level )
    }
    if ( tool == Steps.NR_TOOL_STUDIO2 )
    {
-      // the model as well as the blend: Low and Medium share a model, High
-      // and Medium a blend. Built here so the key's field order is fixed.
+      /*
+       * Per pass, the model as well as the blend: every pass runs at 1.00,
+       * so the model is what tells them apart. Built here so the key's
+       * field order is fixed. Without a pass, both of the level's passes.
+       */
       var m = Steps.NOISE_LEVELS.studio2[level];
-      return ( m == null ) ? null : { model: m.model, application: m.application };
+      if ( m == null )
+         return null;
+      var amount = function( p )
+      {
+         return ( p == null ) ? null : { model: p.model, application: p.application };
+      };
+      if ( pass == null )
+         return { linear: amount( m.linear ), stretched: amount( m.stretched ) };
+      return amount( m[pass] );
    }
    return null;
 };

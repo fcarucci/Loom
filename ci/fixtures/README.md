@@ -10,4 +10,6 @@
   member check asserts the namespace still matches it after `Steps.js` was
   split into `Steps.js`, `StepsSyqon.js` and `StepsIcc.js`; the
   `ci/pi-entry-alone` drivers check its member types in PixInsight for
-  Loom.js and FlyThrough.js loaded alone.
+  Loom.js and FlyThrough.js loaded alone. A change that deliberately edits a Steps member
+  re-records that member's line in the same commit (noted in the file's
+  `about`).

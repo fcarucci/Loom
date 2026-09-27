@@ -2362,34 +2362,74 @@ function runTests()
           [ 0.60, 1.00, 1.00 ] );
 
    /*
-    * Prism 2.0: Studio's paid Deep Prism models, Advanced, Ultra and Max,
-    * all linear like Essential. One model per level, each at Studio's
-    * 1.00 blend -- the maintainer's choice: Low Advanced, Medium Max,
-    * High Ultra. Measured on a synthetic linear frame, sky noise kept:
-    * 0.39, 0.04, 0.20 -- Medium keeps less than High, knowingly.
+    * Prism 2.0: Studio's paid Deep Prism models, run in TWO passes -- the
+    * maintainer's ladder (2026-09-26), every model at Studio's 1.00 blend:
+    * Advanced on the LINEAR plate at every level (SyQon publishes it as
+    * "Linear RGB or mono" only), then, after the stretch, Ultra at Medium
+    * and Max at High ("Linear or non-linear"). Low is Advanced alone.
     */
    check( "Prism 2.0 is a linear-stage denoiser too",
           Steps.denoiseIsLinear( Steps.NR_TOOL_STUDIO2 ), true );
-   check( "Prism 2.0's ladder: Advanced, Max, Ultra",
-          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low" ),
-            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium" ),
-            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high" ) ],
+   check( "Prism 2.0's linear pass: Advanced at every level",
+          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low", "linear" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium", "linear" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high", "linear" ) ],
           [ { model: "prism-advanced", application: 1.00 },
-            { model: "prism-max",      application: 1.00 },
-            { model: "prism-ultra",    application: 1.00 } ] );
+            { model: "prism-advanced", application: 1.00 },
+            { model: "prism-advanced", application: 1.00 } ] );
+   check( "Prism 2.0's post-stretch pass: none, Ultra, Max",
+          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low", "stretched" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium", "stretched" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high", "stretched" ) ],
+          [ null,
+            { model: "prism-ultra", application: 1.00 },
+            { model: "prism-max",   application: 1.00 } ] );
+   check( "a Prism 2.0 level's amount without a pass names both passes",
+          Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high" ),
+          { linear:    { model: "prism-advanced", application: 1.00 },
+            stretched: { model: "prism-max",      application: 1.00 } } );
+   check( "every Deep Prism model is Prism 2.0, Essential is not",
+          [ "prism-advanced", "prism-ultra", "prism-max", "prism-essential" ].map( Steps.studioIsPrism2 ),
+          [ true, true, true, false ] );
    check( "an unknown Prism 2.0 level has no amount",
-          Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "extreme" ), null );
+          [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "extreme" ),
+            Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "extreme", "linear" ) ], [ null, null ] );
    check( "Ultra and Max are tiled and blended like Essential",
           Steps.studioBuildArgs( { model: "prism-max", domain: "linear", application: 1.0,
                                    input: "a", output: "b" } ),
           [ "--model", "prism-max", "--domain", "linear", "--precision", "f32",
             "--tile-size", "512", "--overlap", "64", "--application", "1.0000",
             "--overwrite", "a", "b" ] );
-   check( "Prism 2.0 denoise params key on the model as well as the blend",
+   /*
+    * Each slot keys on ITS OWN model and blend, not on the level's name:
+    * Advanced is the same pass at every level, so Low, Medium and High share
+    * the linear key, and changing Medium to High re-runs only the pass after
+    * the stretch.
+    */
+   check( "Prism 2.0's linear slot keys on Advanced, not on the level",
           Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
-                                          noiseLevel: "high" }, "RGB" ),
-          { tool: Steps.NR_TOOL_STUDIO2, level: "high", stretched: false,
-            amount: { model: "prism-ultra", application: 1.00 } } );
+                                          noiseLevel: "high", stretch: true }, "RGB" ),
+          { tool: Steps.NR_TOOL_STUDIO2, pass: "linear",
+            amount: { model: "prism-advanced", application: 1.00 } } );
+   check( "Prism 2.0's stretched slot keys on the level's post-stretch model",
+          Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
+                                             noiseLevel: "high", stretch: true }, "RGB" ),
+          { tool: Steps.NR_TOOL_STUDIO2, pass: "stretched",
+            amount: { model: "prism-max", application: 1.00 } } );
+   check( "L's slot follows L's own level",
+          Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "high",
+                                             noiseLevelL: "medium", stretch: true }, "L" ).amount.model,
+          "prism-ultra" );
+   check( "Low has no post-stretch slot",
+          Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
+                                             noiseLevel: "low", stretch: true }, "RGB" ), null );
+   check( "with the stretch off there is no post-stretch slot either",
+          Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
+                                             noiseLevel: "high", stretch: false }, "RGB" ), null );
+   check( "an unknown Prism 2.0 level still takes the linear slot, to be refused by name",
+          Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
+                                          noiseLevel: "extreme", stretch: true }, "RGB" ),
+          { tool: Steps.NR_TOOL_STUDIO2, level: "extreme", stretched: true, amount: null } );
 
    /*
     * Entitlement. Ultra, Max, Parallax and Axiom are paid; the account
@@ -2399,15 +2439,28 @@ function runTests()
     */
    check( "the Studio models a run uses, each once",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
-                                   noiseLevelL: "high",
+                                   noiseLevelL: "high", stretch: true,
                                    sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                    starTool: Steps.STAR_TOOL_STUDIO,
                                    gradientTool: Steps.GRADIENT_TOOL_STUDIO } ),
-          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-ultra" ] );
-   check( "Medium on both is Max alone",
+          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-ultra", "prism-max" ] );
+   /*
+    * Prism 2.0 is offered only to an account licensed for all three of its
+    * models, so every Prism 2.0 run checks all three, whatever the level
+    * and whether or not there is a stretch (maintainer, 2026-09-26).
+    */
+   check( "Prism 2.0 Medium checks Advanced, Ultra and Max",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "medium",
-                                   noiseLevelL: "medium" } ),
-          [ "prism-max" ] );
+                                   noiseLevelL: "medium", stretch: true } ),
+          [ "prism-advanced", "prism-ultra", "prism-max" ] );
+   check( "Prism 2.0 with the stretch off still checks all three",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "high",
+                                   stretch: false } ),
+          [ "prism-advanced", "prism-ultra", "prism-max" ] );
+   check( "Prism 2.0 Low still checks all three",
+          Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
+                                   stretch: true } ),
+          [ "prism-advanced", "prism-ultra", "prism-max" ] );
    check( "a run with no Studio tool uses no Studio model",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium",
                                    sharpenTool: Steps.SHARPEN_TOOL_BXT,
@@ -4279,9 +4332,9 @@ function runTests()
     * Exactly ONE denoise stage is ever in a chain. Two would denoise twice;
     * none would silently drop the step the user asked for.
     */
-   function denoiseSlots( tool )
+   function denoiseSlots( tool, level, stretch )
    {
-      var cfg = { noiseTool: tool, noiseLevel: "medium", stretch: true };
+      var cfg = { noiseTool: tool, noiseLevel: level || "medium", stretch: stretch !== false };
       return ( Pipeline.linearDenoiseParams( cfg ) != null ? "linear" : "" ) +
              ( Pipeline.stretchedDenoiseParams( cfg ) != null ? "stretched" : "" );
    }
@@ -4293,6 +4346,20 @@ function runTests()
           denoiseSlots( Steps.NR_TOOL_PRISM ), "stretched" );
    check( "with no tool, neither slot is filled",
           denoiseSlots( "none" ), "" );
+   /*
+    * The one exception: Prism 2.0 is two passes, Advanced on the linear
+    * plate and Ultra or Max after the stretch, so Medium and High fill
+    * both slots. Low is Advanced alone, and with the stretch off there is
+    * no stretched plate for the second pass.
+    */
+   check( "Prism 2.0 Medium occupies both slots",
+          denoiseSlots( Steps.NR_TOOL_STUDIO2 ), "linearstretched" );
+   check( "Prism 2.0 High occupies both slots",
+          denoiseSlots( Steps.NR_TOOL_STUDIO2, "high" ), "linearstretched" );
+   check( "Prism 2.0 Low occupies the linear slot only",
+          denoiseSlots( Steps.NR_TOOL_STUDIO2, "low" ), "linear" );
+   check( "Prism 2.0 with the stretch off occupies the linear slot only",
+          denoiseSlots( Steps.NR_TOOL_STUDIO2, "high", false ), "linear" );
 
    /*
     * The order within the chain is the whole point: the linear denoise must
@@ -4327,6 +4394,72 @@ function runTests()
    check( "Prism stays after the stretch",
           rgbStageOrder( Steps.NR_TOOL_PRISM ),
           "combine,spccRGB,sharpenRGB,extractRGB,stretchRGB,denoiseRGB" );
+   check( "Prism 2.0 runs Advanced before the stretch and its second pass after",
+          rgbStageOrder( Steps.NR_TOOL_STUDIO2 ),
+          "combine,spccRGB,sharpenRGB,extractRGB,denoiseLinearRGB,stretchRGB,denoiseRGB" );
+
+   /*
+    * Prism 2.0's passes are cached apart. The finishing chain as the
+    * pipeline builds it, for one composite, at three levels: Advanced and
+    * the stretch after it are the same work at every level, so their keys
+    * are shared and a change of level re-runs only the post-stretch pass.
+    */
+   function prism2Chain( level, stretch )
+   {
+      var cfg = { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: level,
+                  stretch: stretch !== false, stretchMethod: Steps.STRETCH_METHOD_MTF };
+      var fin = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING, cfg, null );
+      var chain = Pipeline.buildStageKeys( "src", fin.params ), out = {};
+      for ( var i = 0; i < chain.length; ++i )
+         out[chain[i].stage] = chain[i].key;
+      return out;
+   }
+   var p2Low = prism2Chain( "low" ), p2Med = prism2Chain( "medium" ), p2High = prism2Chain( "high" );
+   check( "Prism 2.0 Medium's finishing stages",
+          Object.keys( p2Med ), [ "denoiseLinearRGB", "stretchRGB", "denoiseRGB" ] );
+   check( "Prism 2.0 Low's finishing stages: no post-stretch pass",
+          Object.keys( p2Low ), [ "denoiseLinearRGB", "stretchRGB" ] );
+   check( "Medium to High reuses the cached Advanced pass and the stretch",
+          [ p2Med.denoiseLinearRGB == p2High.denoiseLinearRGB, p2Med.stretchRGB == p2High.stretchRGB ],
+          [ true, true ] );
+   check( "...and re-runs only the post-stretch pass",
+          p2Med.denoiseRGB != p2High.denoiseRGB, true );
+   check( "Low shares Medium's Advanced pass and stretch",
+          [ p2Low.denoiseLinearRGB == p2Med.denoiseLinearRGB, p2Low.stretchRGB == p2Med.stretchRGB ],
+          [ true, true ] );
+   check( "with the stretch off, Prism 2.0 is Advanced alone",
+          Object.keys( prism2Chain( "high", false ) ), [ "denoiseLinearRGB" ] );
+
+   /*
+    * The runners tell Steps.denoise which pass a slot is. With the stretch
+    * off the linear slot asks for the whole level, and the level itself
+    * says that its post-stretch pass has nothing to run on.
+    */
+   function prism2RunnerCalls( stretch )
+   {
+      var cfg = { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "high", stretch: stretch };
+      var fin = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING, cfg, null );
+      var real = Steps.denoise, calls = [];
+      Steps.denoise = function( v, tool, level, label, stretched, pass )
+      {
+         calls.push( [ v.id, level, label, stretched, pass ] );
+      };
+      try
+      {
+         fin.runners.denoiseLinearRGB( { view: { id: "rgb" } } );
+         if ( stretch )
+            fin.runners.denoiseRGB( { view: { id: "rgb" } } );
+      }
+      finally { Steps.denoise = real; }
+      return calls;
+   }
+   check( "the composite runners ask for the linear pass, then the stretched one",
+          prism2RunnerCalls( true ),
+          [ [ "rgb", "high", "RGB linear", false, "linear" ],
+            [ "rgb", "high", "RGB", true, "stretched" ] ] );
+   check( "with the stretch off the linear runner asks for the whole level",
+          prism2RunnerCalls( false ),
+          [ [ "rgb", "high", "RGB linear", false, "all" ] ] );
 
    /*
     * Medium is the tool's own default for every tool, so "Medium" means
@@ -4364,6 +4497,19 @@ function runTests()
           readmeSrc.indexOf( "last, after the stretch" ), -1 );
    check( "the README offers MLDenoise alongside the other two",
           readmeSrc.indexOf( "MLDenoise" ) >= 0, true );
+   /*
+    * Prism 2.0's ladder is stated in three places a user reads: the README,
+    * the dialog's help and the changelog. All three say the two-pass
+    * ladder, and none the one-model-per-level ladder it replaced.
+    */
+   var uiSrc = File.readTextFile( LOOM_DIR + "/lib/UI.js" );
+   check( "the README states Prism 2.0's two passes",
+          readmeSrc.indexOf( "Medium: Advanced then Ultra, High: Advanced then Max" ) >= 0, true );
+   check( "the dialog's help states them",
+          uiSrc.indexOf( "Low is Advanced alone, Medium adds Ultra " ) >= 0 &&
+          uiSrc.indexOf( "after the stretch, High adds Max." ) >= 0, true );
+   check( "neither still states one model per level",
+          [ readmeSrc.indexOf( "Medium: Max" ), uiSrc.indexOf( "Medium is Max" ) ], [ -1, -1 ] );
 
    /*
     * Moving a stage changes its cache key, so old entries cannot be served
@@ -7385,15 +7531,25 @@ function runTests()
     * exact errors for an unknown tool or level. The runners that start a
     * process are stubbed, so this needs no plug-in.
     */
-   function denoiseCall( tool, level, stretched )
+   function denoiseCall( tool, level, stretched, pass, said )
    {
       var realStudio = Steps.studioRun, realPrism = Steps.prismExecuteStage;
+      var realLog = Util.log, realWarn = Util.warn;
       var got = [];
       Steps.studioRun = function( v, what, o ) { got.push( [ "studio", v.id, what, o ] ); };
       Steps.prismExecuteStage = function( v, s, st ) { got.push( [ "prism", v.id, s, st ] ); };
-      try { Steps.denoise( { id: "dn" }, tool, level, null, stretched ); }
+      if ( said )
+      {
+         Util.log = function( tag, m ) { said.push( "log " + m ); };
+         Util.warn = function( tag, m ) { said.push( "warn " + m ); };
+      }
+      try { Steps.denoise( { id: "dn" }, tool, level, null, stretched, pass ); }
       catch ( x ) { got.push( [ "error", x.message ] ); }
-      finally { Steps.studioRun = realStudio; Steps.prismExecuteStage = realPrism; }
+      finally
+      {
+         Steps.studioRun = realStudio; Steps.prismExecuteStage = realPrism;
+         Util.log = realLog; Util.warn = realWarn;
+      }
       return got;
    }
    check( "denoise: Prism reaches its stage with the level's strength",
@@ -7405,10 +7561,57 @@ function runTests()
               { model: Steps.STUDIO_MODEL_DENOISE, domain: "linear", application: 1.00 } ] ] );
    check( "denoise: Studio Prism already stretched is declared nonlinear",
           denoiseCall( Steps.NR_TOOL_STUDIO, "low", true )[0][3].domain, "nonlinear" );
-   check( "denoise: Prism 2.0 runs the level's model",
-          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false ),
+   /*
+    * Prism 2.0 is two passes, and the pipeline runs each in its own slot:
+    * Advanced on linear data, then Ultra (Medium) or Max (High) on the
+    * stretched plate, declared nonlinear. Low has no second pass.
+    */
+   var advancedLinear = [ "studio", "dn", "noise reduction",
+                          { model: "prism-advanced", domain: "linear", application: 1.00 } ];
+   check( "denoise: Prism 2.0's linear pass is Advanced, declared linear",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false, "linear" ), [ advancedLinear ] );
+   check( "denoise: Prism 2.0 High's stretched pass is Max, declared nonlinear",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", true, "stretched" ),
           [ [ "studio", "dn", "noise reduction",
-              { model: "prism-ultra", domain: "linear", application: 1.00 } ] ] );
+              { model: "prism-max", domain: "nonlinear", application: 1.00 } ] ] );
+   check( "denoise: Prism 2.0 Medium's stretched pass is Ultra",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "medium", true, "stretched" )[0][3].model,
+          "prism-ultra" );
+   check( "denoise: Prism 2.0 Low's stretched pass runs nothing",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "low", true, "stretched" ), [] );
+
+   /*
+    * The whole level in one call, as a caller without two slots makes it.
+    * On linear data with no stretch to follow, Advanced runs and the level
+    * says its post-stretch pass is skipped. On data already stretched,
+    * Advanced cannot run -- SyQon's contract for it is linear input only --
+    * so it is skipped with one warning and the post-stretch model runs.
+    */
+   var p2Said = [];
+   check( "denoise: Prism 2.0 High on linear data with no stretch runs Advanced alone",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false, undefined, p2Said ), [ advancedLinear ] );
+   check( "...and logs that the post-stretch pass is skipped because there is no stretch",
+          p2Said.filter( function( m ) { return /^log .*Max.*skipped.*no stretch/.test( m ); } ).length, 1 );
+   check( "...without a warning",
+          p2Said.filter( function( m ) { return /^warn /.test( m ); } ), [] );
+   p2Said = [];
+   check( "denoise: Prism 2.0 Medium on stretched input runs only Ultra",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "medium", true, undefined, p2Said ),
+          [ [ "studio", "dn", "noise reduction",
+              { model: "prism-ultra", domain: "nonlinear", application: 1.00 } ] ] );
+   check( "...with one warning that Advanced was skipped",
+          p2Said.filter( function( m ) { return /^warn /.test( m ); } ).length, 1 );
+   check( "...naming Advanced and why",
+          /Advanced.*linear/.test( p2Said.filter( function( m ) { return /^warn /.test( m ); } )[0] ),
+          true );
+   p2Said = [];
+   check( "denoise: Prism 2.0 Low on stretched input runs nothing",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "low", true, "all", p2Said ), [] );
+   check( "...and warns, once",
+          p2Said.filter( function( m ) { return /^warn .*nothing/.test( m ); } ).length, 1 );
+   check( "denoise: other tools ignore the pass",
+          denoiseCall( Steps.NR_TOOL_STUDIO, "medium", false, "linear" ),
+          denoiseCall( Steps.NR_TOOL_STUDIO, "medium", false ) );
    check( "denoise: an unknown tool is refused by name",
           denoiseCall( "Frobnicator", "low" ),
           [ [ "error", "Unknown noise reduction tool: Frobnicator" ] ] );
@@ -16410,11 +16613,11 @@ function runFinishingTests()
             null, "RGB_linear_free" ],
            [ "denoiseLinearRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false,\"linear\")" ],
             null, null ],
            [ "denoiseRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true,\"stretched\")" ],
             null, null ] ],
       "RGB all succeed, keep linear, unsolved":
          [ [ "sharpenRGB", "undefined",
@@ -16435,11 +16638,11 @@ function runFinishingTests()
             null, "RGB_linear_free" ],
            [ "denoiseLinearRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false,\"linear\")" ],
             null, null ],
            [ "denoiseRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true,\"stretched\")" ],
             null, null ] ],
       "RGB no linear copy, no stretch":
          [ [ "sharpenRGB", "undefined",
@@ -16457,11 +16660,11 @@ function runFinishingTests()
             null, null ],
            [ "denoiseLinearRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false,\"all\")" ],
             null, null ],
            [ "denoiseRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",false,\"stretched\")" ],
             null, null ] ],
       "RGB every step fails, no stars":
          [ [ "sharpenRGB", "loom-skip-cache",
@@ -16483,12 +16686,12 @@ function runFinishingTests()
             null, null ],
            [ "denoiseLinearRGB", "loom-skip-cache",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false,\"linear\")",
               "warn(\"denoise\",\"RGB could not be denoised (Error: denoise failed); the composite is kept as it is\")" ],
             null, null ],
            [ "denoiseRGB", "loom-skip-cache",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true,\"stretched\")",
               "warn(\"denoise\",\"RGB could not be denoised (Error: denoise failed); the composite is kept as it is\")" ],
             null, null ] ],
       "RGB solution copy fails, extraction throws":
@@ -16510,11 +16713,11 @@ function runFinishingTests()
             null, "RGB_linear_free" ],
            [ "denoiseLinearRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB linear\",false,\"linear\")" ],
             null, null ],
            [ "denoiseRGB", "undefined",
             [ "checkAbort(\"denoising RGB\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"RGB\",true,\"stretched\")" ],
             null, null ] ],
       "RGB cancelled":
          [ [ "sharpenRGB", "threw checkAbort failed",
@@ -16552,11 +16755,11 @@ function runFinishingTests()
             null, "SHO_linear_free" ],
            [ "paletteDenoiseLinear", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false,\"linear\")" ],
             null, null ],
            [ "paletteDenoise", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true,\"stretched\")" ],
             null, null ] ],
       "SHO all succeed, keep linear, unsolved":
          [ [ "paletteSharpen", "undefined",
@@ -16577,11 +16780,11 @@ function runFinishingTests()
             null, "SHO_linear_free" ],
            [ "paletteDenoiseLinear", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false,\"linear\")" ],
             null, null ],
            [ "paletteDenoise", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true,\"stretched\")" ],
             null, null ] ],
       "SHO no linear copy, no stretch":
          [ [ "paletteSharpen", "undefined",
@@ -16599,11 +16802,11 @@ function runFinishingTests()
             null, null ],
            [ "paletteDenoiseLinear", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false,\"all\")" ],
             null, null ],
            [ "paletteDenoise", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",false,\"stretched\")" ],
             null, null ] ],
       "SHO every step fails, no stars":
          [ [ "paletteSharpen", "loom-skip-cache",
@@ -16625,12 +16828,12 @@ function runFinishingTests()
             null, null ],
            [ "paletteDenoiseLinear", "loom-skip-cache",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false,\"linear\")",
               "warn(\"denoise\",\"SHO could not be denoised (Error: denoise failed); the palette is kept as it is\")" ],
             null, null ],
            [ "paletteDenoise", "loom-skip-cache",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)",
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true,\"stretched\")",
               "warn(\"denoise\",\"SHO could not be denoised (Error: denoise failed); the palette is kept as it is\")" ],
             null, null ] ],
       "SHO solution copy fails, extraction throws":
@@ -16652,11 +16855,11 @@ function runFinishingTests()
             null, "SHO_linear_free" ],
            [ "paletteDenoiseLinear", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO linear\",false,\"linear\")" ],
             null, null ],
            [ "paletteDenoise", "undefined",
             [ "checkAbort(\"denoising SHO\")",
-              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true)" ],
+              "denoise(view,\"NoiseXTerminator\",\"medium\",\"SHO\",true,\"stretched\")" ],
             null, null ] ],
       "SHO cancelled":
          [ [ "paletteSharpen", "threw checkAbort failed",
