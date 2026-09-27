@@ -4558,6 +4558,89 @@ function runTests()
           Psb.isAdjustment( { window: {} } ), false );
 
    /*
+    * Byte characterization of the writer's structural blocks, pinned before
+    * the byte-copy loops were folded into Psb.Buffer.append: tagged blocks
+    * (even and odd payloads), an image resource, the file header with and
+    * without an ICC profile, and the layer records of a document holding a
+    * visible and a hidden pixel layer, a closed Screen group (bounding
+    * divider, header) around a curves and a clipped hidden hue/saturation
+    * layer, and an unnamed Luminosity layer -- plus which layer stands in
+    * for the composite and which layers get pixel data.
+    */
+   var psbHex = function( b )
+   {
+      var a = b.bytes || b, s = "";
+      for ( var i = 0; i < a.length; ++i ) s += ( a[i] < 16 ? "0" : "" ) + a[i].toString( 16 );
+      return s;
+   };
+   var psbEven = new Psb.Buffer; psbEven.u16( 0x1234 ).u16( 0xabcd );
+   var psbOdd = new Psb.Buffer; psbOdd.u8( 7 ).u16( 0x0102 );
+   check( "Psb bytes: a tagged block with an even payload",
+          psbHex( Psb.taggedBlock( "luni", psbEven ) ), "3842494d6c756e69000000041234abcd" );
+   check( "Psb bytes: a tagged block with an odd payload is padded to even",
+          psbHex( Psb.taggedBlock( "lsct", psbOdd ) ), "3842494d6c7363740000000307010200" );
+   check( "Psb bytes: an image resource with an odd payload",
+          psbHex( Psb.imageResource( 1039, [ 1, 2, 3 ] ) ), "3842494d040f00000000000301020300" );
+   check( "Psb bytes: the file header with an ICC profile",
+          psbHex( Psb.fileHeader( 7, 5, [ 1, 2, 3, 4, 5 ] ) ),
+          "384250530002000000000000000300000005000000070010000300000000000000123842494d040f000000000005010203040500" );
+   check( "Psb bytes: the file header without one",
+          psbHex( Psb.fileHeader( 7, 5, null ) ), "38425053000200000000000000030000000500000007001000030000000000000000" );
+   var psbLayers = Psb.flatten( [
+      { name: "Base" }, { name: "Hidden base", visible: false },
+      { name: "Étoiles", blend: "scrn", open: false, opacity: 128,
+        group: [ { name: "Curve", curves: [ 1 ] }, { name: "HS", hueSaturation: true, clipping: true, visible: false } ] },
+      { name: "", blend: "lum " } ] );
+   var psbLengths = Psb.declareChannels( psbLayers, 35 );
+   check( "Psb bytes: channel lengths, pixel layers 2 + 2 x 35, the rest the compression word",
+          JSON.stringify( psbLengths ), "[[72,72,72],[72,72,72],[2,2,2],[2,2,2],[2,2,2],[2,2,2],[72,72,72]]" );
+   check( "Psb bytes: the layer records",
+          psbHex( Psb.layerRecords( psbLayers, 7, 5, psbLengths ) ),
+             "000700000000000000000000000500000007000300000000000000000048000100000000000000480002000000000000" +
+             "00483842494d6e6f726dff00080000000028000000000000000004426173650000003842494d6c756e690000000c0000" +
+             "000400420061007300650000000000000000000000050000000700030000000000000000004800010000000000000048" +
+             "000200000000000000483842494d6e6f726dff000a000000003c00000000000000000b48696464656e20626173653842" +
+             "494d6c756e690000001c0000000b00480069006400640065006e00200062006100730065000000000000000000000000" +
+             "00000000000000030000000000000000000200010000000000000002000200000000000000023842494d6e6f726dff00" +
+             "18000000005400000000000000000e3c2f4c617965722067726f75703e003842494d6c756e69000000200000000e003c" +
+             "002f004c0061007900650072002000670072006f00750070003e3842494d6c7363740000000400000003000000000000" +
+             "0000000000000000000000030000000000000000000200010000000000000002000200000000000000023842494d6e6f" +
+             "726dff00080000000060000000000000000005437572766500003842494d6c756e690000001000000005004300750072" +
+             "0076006500003842494d63757276000000280000010000000200020000000000ff00ff43727620000400000001000100" +
+             "020000000000ff00ff000000000000000000000000000000000000030000000000000000000200010000000000000002" +
+             "000200000000000000023842494d6e6f726dff010a00000000900000000000000000024853003842494d6c756e690000" +
+             "000800000002004800533842494d687565320000006400020000000000000000000000000000013b0159000f002d0000" +
+             "00000000000f002d004b0069000000000000004b0069008700a5000000000000008700a500c300e100000000000000c3" +
+             "00e100ff011d00000000000000ff011d013b015900000000000000000000000000000000000000000000000300000000" +
+             "00000000000200010000000000000002000200000000000000023842494d7363726e8000180000000048000000000000" +
+             "000007c9746f696c65733842494d6c756e69000000140000000700c90074006f0069006c0065007300003842494d6c73" +
+             "63740000000c000000023842494d7363726e000000000000000000000005000000070003000000000000000000480001" +
+             "0000000000000048000200000000000000483842494d6c756d20ff0008000000001c0000000000000000000000003842" +
+             "494d6c756e690000000400000000"
+ );
+   check( "Psb: the composite stands in from the first visible pixel layer", Psb.compositeBaseLayer( psbLayers ).name, "Base" );
+   check( "Psb: all pixel layers hidden, from the first of them",
+          Psb.compositeBaseLayer( Psb.flatten( [ { name: "Curve", curves: [ 1 ] }, { name: "A", visible: false }, { name: "B", visible: false } ] ) ).name, "A" );
+   var psbWrites = [], psbSaved = { plate: Psb.writePlateChannels, empty: Psb.writeEmptyChannels };
+   try
+   {
+      Psb.writePlateChannels = function( file, img, samples ) { psbWrites.push( "plate " + img + " " + samples ); };
+      Psb.writeEmptyChannels = function( file ) { psbWrites.push( "empty" ); };
+      Psb.writeLayerChannels( {}, psbLayers.map( function( l ) { return Object.assign( {}, l, { window: { mainView: { image: l.name || "unnamed" } } } ); } ), 35 );
+   }
+   finally { Psb.writePlateChannels = psbSaved.plate; Psb.writeEmptyChannels = psbSaved.empty; }
+   check( "Psb: only pixel layers write plates, every other layer its empty channels", psbWrites.join( "; " ),
+          "plate Base 35; plate Hidden base 35; empty; empty; empty; empty; plate unnamed 35" );
+   check( "Psb.hasPixels: a pixel layer yes; dividers, curves and hue/saturation layers no",
+          [ {}, { divider: Psb.DIVIDER_OPEN }, { divider: Psb.DIVIDER_BOUNDING }, { curves: [ 1 ] }, { hueSaturation: true }, { hueSaturation: false } ]
+             .map( Psb.hasPixels ), [ true, false, false, false, false, true ] );
+   var psbFromBuffer = new Psb.Buffer, psbFromArray = new Psb.Buffer;
+   psbFromBuffer.u8( 9 ).append( psbOdd ).u8( 10 );
+   psbFromArray.u8( 9 ).append( [ 7, 1, 2 ] ).u8( 10 );
+   check( "Psb.Buffer.append: a Buffer and a byte array append the same bytes, and it chains",
+          [ psbHex( psbFromBuffer ), psbHex( psbFromArray ) ], [ "090701020a", "090701020a" ] );
+
+   /*
     * The byte swap. This is the loop the threads run, and the only part of
     * the writer that touches pixels, so what it produces is what Photoshop
     * reads. PSB is big-endian and this machine is not.

@@ -143,6 +143,15 @@ Psb.Buffer.prototype.unicodeName = function( s )
    return this;
 };
 
+/* Appends another Buffer's bytes, or an array of bytes. */
+Psb.Buffer.prototype.append = function( b )
+{
+   var a = b.bytes || b;
+   for ( var i = 0; i < a.length; ++i )
+      this.bytes.push( a[i] );
+   return this;
+};
+
 Psb.Buffer.prototype.length = function() { return this.bytes.length; };
 
 Psb.Buffer.prototype.toByteArray = function()
@@ -160,9 +169,7 @@ Psb.taggedBlock = function( key, payloadBuffer )
    var b = new Psb.Buffer;
    b.ascii( "8BIM" ).ascii( key );
    var data = payloadBuffer.bytes;
-   b.u32( data.length );
-   for ( var i = 0; i < data.length; ++i )
-      b.bytes.push( data[i] );
+   b.u32( data.length ).append( data );
    // blocks are padded to even lengths
    if ( data.length % 2 != 0 )
       b.zeros( 1 );
@@ -308,9 +315,7 @@ Psb.layerExtraBlocks = function( layer )
 
    var luni = new Psb.Buffer;
    luni.unicodeName( layer.name );
-   var lb = Psb.taggedBlock( "luni", luni );
-   for ( var i = 0; i < lb.bytes.length; ++i )
-      b.bytes.push( lb.bytes[i] );
+   b.append( Psb.taggedBlock( "luni", luni ) );
 
    if ( layer.divider != null )
    {
@@ -324,25 +329,14 @@ Psb.layerExtraBlocks = function( layer )
        */
       if ( layer.divider == Psb.DIVIDER_OPEN || layer.divider == Psb.DIVIDER_CLOSED )
          lsct.ascii( "8BIM" ).ascii( layer.blend || "norm" );
-      var db = Psb.taggedBlock( "lsct", lsct );
-      for ( var j = 0; j < db.bytes.length; ++j )
-         b.bytes.push( db.bytes[j] );
+      b.append( Psb.taggedBlock( "lsct", lsct ) );
    }
 
    if ( layer.curves != null )
-   {
-      var cb = Psb.taggedBlock( "curv",
-                   Psb.curvesPayload( layer.curves ) );
-      for ( var c = 0; c < cb.bytes.length; ++c )
-         b.bytes.push( cb.bytes[c] );
-   }
+      b.append( Psb.taggedBlock( "curv", Psb.curvesPayload( layer.curves ) ) );
 
    if ( layer.hueSaturation )
-   {
-      var hb = Psb.taggedBlock( "hue2", Psb.hueSaturationPayload() );
-      for ( var h = 0; h < hb.bytes.length; ++h )
-         b.bytes.push( hb.bytes[h] );
-   }
+      b.append( Psb.taggedBlock( "hue2", Psb.hueSaturationPayload() ) );
    return b;
 };
 
@@ -354,6 +348,12 @@ Psb.layerExtraBlocks = function( layer )
 Psb.isAdjustment = function( layer )
 {
    return ( layer.curves != null ) || ( layer.hueSaturation === true );
+};
+
+/* Whether a layer carries pixels: group dividers and adjustment layers do not. */
+Psb.hasPixels = function( layer )
+{
+   return layer.divider == null && !Psb.isAdjustment( layer );
 };
 
 /*
@@ -371,15 +371,11 @@ Psb.isAdjustment = function( layer )
  */
 Psb.compositeBaseLayer = function( layers )
 {
-   var pixelLayer = function( layer )
-   {
-      return layer.divider == null && !Psb.isAdjustment( layer );
-   };
    for ( var p = 0; p < layers.length; ++p )
-      if ( pixelLayer( layers[p] ) && layers[p].visible )
+      if ( Psb.hasPixels( layers[p] ) && layers[p].visible )
          return layers[p];
    for ( var q = 0; q < layers.length; ++q )
-      if ( pixelLayer( layers[q] ) )
+      if ( Psb.hasPixels( layers[q] ) )
          return layers[q];
    return null;
 };
@@ -395,11 +391,10 @@ Psb.layerRecord = function( layer, width, height, channelLengths )
     */
    // adjustment layers hold no pixels of their own, exactly like the
    // markers: empty rectangle, empty channels
-   var isMarker = ( layer.divider != null ) || Psb.isAdjustment( layer );
-   if ( isMarker )
-      b.i32( 0 ).i32( 0 ).i32( 0 ).i32( 0 );
-   else
+   if ( Psb.hasPixels( layer ) )
       b.i32( 0 ).i32( 0 ).i32( height ).i32( width );
+   else
+      b.i32( 0 ).i32( 0 ).i32( 0 ).i32( 0 );
 
    var ids = layer.channelIds;
    b.u16( ids.length );
@@ -436,13 +431,9 @@ Psb.layerRecord = function( layer, width, height, channelLengths )
    extra.u32( 0 );                          // layer mask data: none
    extra.u32( 0 );                          // blending ranges: none
    extra.pascal( layer.name, 4 );
-   var blocks = Psb.layerExtraBlocks( layer );
-   for ( var k = 0; k < blocks.bytes.length; ++k )
-      extra.bytes.push( blocks.bytes[k] );
+   extra.append( Psb.layerExtraBlocks( layer ) );
 
-   b.u32( extra.length() );
-   for ( var m = 0; m < extra.bytes.length; ++m )
-      b.bytes.push( extra.bytes[m] );
+   b.u32( extra.length() ).append( extra );
 
    return b;
 };
@@ -836,9 +827,7 @@ Psb.imageResource = function( id, dataBytes )
    b.ascii( "8BIM" );
    b.u16( id );
    b.u16( 0 );                         // empty Pascal name, padded to even
-   b.u32( dataBytes.length );
-   for ( var i = 0; i < dataBytes.length; ++i )
-      b.bytes.push( dataBytes[i] );
+   b.u32( dataBytes.length ).append( dataBytes );
    if ( dataBytes.length % 2 != 0 )
       b.zeros( 1 );
    return b;
@@ -909,8 +898,7 @@ Psb.declareChannels = function( layers, samples )
    var channelLengths = [];
    for ( var i = 0; i < layers.length; ++i )
    {
-      var isEmpty = ( layers[i].divider != null ) || Psb.isAdjustment( layers[i] );
-      var per = isEmpty ? markerBytes : pixelBytes;
+      var per = Psb.hasPixels( layers[i] ) ? pixelBytes : markerBytes;
       channelLengths.push( [ per, per, per ] );
       layers[i].channelIds = [ 0, 1, 2 ];
    }
@@ -923,11 +911,7 @@ Psb.layerRecords = function( layers, width, height, channelLengths )
    var records = new Psb.Buffer;
    records.u16( layers.length );
    for ( var r = 0; r < layers.length; ++r )
-   {
-      var rec = Psb.layerRecord( layers[r], width, height, channelLengths[r] );
-      for ( var b = 0; b < rec.bytes.length; ++b )
-         records.bytes.push( rec.bytes[b] );
-   }
+      records.append( Psb.layerRecord( layers[r], width, height, channelLengths[r] ) );
    return records;
 };
 
@@ -971,9 +955,7 @@ Psb.appendIccResource = function( h, iccProfile )
    for ( var ib = 0; ib < iccProfile.length; ++ib )
       icc.push( byteAt( ib ) );
    var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, icc );
-   h.u32( res.length() );
-   for ( var rb = 0; rb < res.bytes.length; ++rb )
-      h.bytes.push( res.bytes[rb] );
+   h.u32( res.length() ).append( res );
 };
 
 // --- channel data, in the same order the records declared
@@ -982,10 +964,10 @@ Psb.writeLayerChannels = function( file, layers, samples )
    for ( var L = 0; L < layers.length; ++L )
    {
       var layer = layers[L];
-      if ( layer.divider != null || Psb.isAdjustment( layer ) )
-         Psb.writeEmptyChannels( file );
-      else
+      if ( Psb.hasPixels( layer ) )
          Psb.writePlateChannels( file, layer.window.mainView.image, samples );
+      else
+         Psb.writeEmptyChannels( file );
    }
 };
 
