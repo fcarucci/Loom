@@ -135,7 +135,7 @@ FlyThrough.presetJob = function( scene, p, opts )
 {
    var n = Fly.frameCount( opts.duration, opts.fps, p.pingPong ), ps = FlyThrough.qualityScene( scene, opts, p );
    var F = p.crossfade ? Fly.crossfadeFrames( opts.duration, opts.fps ) : 0;
-   var po = Object.assign( {}, FlyThrough.presetOptions( opts, p.preset || p.id ), { frameDt: Fly.frameStep( n, F, p.pingPong ), loops: !!( p.pingPong || p.crossfade ),
+   var po = Object.assign( {}, FlyThrough.presetOptions( opts, p.preset || p.id ), { frameDt: Fly.frameStep( n, p.pingPong ), loops: !!( p.pingPong || p.crossfade ),
                logo: opts.logoImage ? Render.logoLayer( opts.logoImage, p.w, p.h, opts.logoPlace, scene.nc, opts.logoOpacity ) : null } );
    return { p: p, n: n, F: F, ps: ps, po: po, crop: Fly.presetCrop( ps.w, ps.h, ps.tp.x, ps.tp.y, p.w, p.h ) };
 };
@@ -149,7 +149,7 @@ FlyThrough.presetJob = function( scene, p, opts )
  */
 FlyThrough.renderFrames = function( job, folder, res, progress, total, cancelled, resume )
 {
-   var p = job.p, icc = job.po.transfer == "sdr" ? Render.srgbIcc() : null, still = {};
+   var icc = job.po.transfer == "sdr" ? Render.srgbIcc() : null, still = {};
    try { FlyThrough.renderFrameRange( job, folder, res, progress, total, cancelled, resume, icc, still ); }
    finally { if ( still.still ) still.still.free(); }
 };
@@ -522,7 +522,7 @@ FlyThrough.renderDraft = function( scene, opts, spec, progress )
    var o = Object.assign( {}, opts, { kernel: "bilinear", output: Fly.outputTransform( opts.colour || Fly.SRGB_COLOUR, "sdr" ) } );
    var bitmaps = [], still = {};   // a crossfade's pre-roll still, rendered once (FlyThrough.loopImage)
    var F = spec.crossfade ? Fly.crossfadeFrames( opts.duration, plan.fps ) : 0;
-   o.frameDt = Fly.frameStep( plan.frames, F, false );
+   o.frameDt = Fly.frameStep( plan.frames, false );
    o.logo = opts.logoImage ? Render.logoLayer( opts.logoImage, plan.width, plan.height, opts.logoPlace, scene.nc, opts.logoOpacity ) : null;
    try
    {
@@ -2237,7 +2237,7 @@ FlyThrough.Dialog = class extends Dialog
 
    renderAll()
    {
-      var self = this, o = this.prepare();
+      var o = this.prepare();
       if ( o.presets.length == 0 ) throw new Error( "Choose at least one preset." );
       if ( !o.dir || !File.directoryExists( o.dir ) ) throw new Error( "Choose an output folder." );
       Settings.write( "Loom/flyFolder", DataType_String, o.dir );

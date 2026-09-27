@@ -2840,15 +2840,12 @@ Steps.multiscaleStretch = function( view, label )
       throw new Error( "MultiscaleAdaptiveStretch failed on " + name );
 };
 
-/*
- * Whichever stretch the run asked for. `target` applies to the MTF method
- * only; MAS carries its own target background.
- */
-Steps.stretchBy = function( method, view, linked, label, target )
+/* Whichever stretch the run asked for. MAS carries its own target background. */
+Steps.stretchBy = function( method, view, linked, label )
 {
    if ( method == Steps.STRETCH_METHOD_MAS )
       return Steps.multiscaleStretch( view, label );
-   return Steps.stretch( view, linked, label, target );
+   return Steps.stretch( view, linked, label );
 };
 
 /* ---------------------------------------------------------------------------
@@ -3258,19 +3255,13 @@ Steps.measureMasterFWHM = function( path )
  * for the fits. Measured on a central region: representative, and far cheaper
  * than fitting every star in a 12006x7834 frame.
  */
-Steps.measurePSF = function( view, sampleSize, wholeFrame )
+Steps.measurePSF = function( view )
 {
    Util.reportStage( "measuring PSF \u2192 " + view.id );
    var img = view.image;
-   var rect;
-   if ( wholeFrame )
-      rect = new Rect( 0, 0, img.width, img.height );
-   else
-   {
-      var S = Math.min( sampleSize || 1200, Math.min( img.width, img.height ) );
-      rect = new Rect( (img.width-S) >> 1, (img.height-S) >> 1,
-                       ((img.width-S) >> 1) + S, ((img.height-S) >> 1) + S );
-   }
+   var S = Math.min( 1200, Math.min( img.width, img.height ) );
+   var rect = new Rect( (img.width-S) >> 1, (img.height-S) >> 1,
+                        ((img.width-S) >> 1) + S, ((img.height-S) >> 1) + S );
 
    var D = new StarDetector;
    D.structureLayers = 5;

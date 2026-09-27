@@ -387,7 +387,7 @@ Solve.lookupTree = function( hash, codes, code, tol )
       for ( var i = 0; i < objs.length; ++i ) objs[i] = { point: Array.prototype.slice.call( codes, 4*i, 4*i + 4 ) };
       hash.tree = Util.kdTree( objs ); hash.treeCodes = codes;
    }
-   var B = Solve.HASH_BINS, w = Solve.HASH_BIN, P = 4194304, found = hash.tree.search( code, tol*( 1 + 1e-9 ) ), keyed = [];
+   var w = Solve.HASH_BIN, P = 4194304, found = hash.tree.search( code, tol*( 1 + 1e-9 ) ), keyed = [];
    var base = [ Math.floor( ( code[0] + 0.25 )/w ), Math.floor( ( code[1] + 0.25 )/w ), Math.floor( ( code[2] + 0.25 )/w ), Math.floor( ( code[3] + 0.25 )/w ) ];
    for ( var k = 0; k < found.length; ++k )
    {

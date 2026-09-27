@@ -78,7 +78,7 @@ Render.tentTaps = function( b, m )
  * passes: rows first (only the source rows some output row needs), then
  * columns.
  */
-Render.resample = function( buf, w, h, ax, ay )
+Render.resample = function( buf, w, ax, ay )
 {
    var outW = ax.outN, outH = ay.outN, out = new Float32Array( outW*outH );
    var rmin = Infinity, rmax = -1, k, u, v;
@@ -958,8 +958,8 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    var S = [], T = [], c;
    for ( c = 0; c < sc.nc; ++c )
    {
-      S.push( Render.resample( sc.S[c], sc.w, sc.h, ax, ay ) );
-      T.push( Render.resample( sc.R[c], sc.w, sc.h, tax, tay ) );
+      S.push( Render.resample( sc.S[c], sc.w, ax, ay ) );
+      T.push( Render.resample( sc.R[c], sc.w, tax, tay ) );
    }
    // before the start (a crossfade's pre-roll) the clock that drives twinkle, bloom, the logo and the shutter holds at 0:
    // with the camera at rest there, every such moment is frame 0 (FlyThrough.loopImage renders it once)
@@ -976,7 +976,7 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    if ( tw != outW || th != outH )
    {
       var ux = Render.axisWeights( outW, 0, tw, 0, 1, tw, "bicubic" ), uy = Render.axisWeights( outH, 0, th, 0, 1, th, "bicubic" );
-      T = T.map( function( b ) { return Render.resample( b, tw, th, ux, uy ); } );
+      T = T.map( function( b ) { return Render.resample( b, tw, ux, uy ); } );
    }
    return Render.frameImage( sc.nc, S, T, opts, outW, outH, clock );
 };
@@ -1218,7 +1218,7 @@ Render.glowPatch = function( sp, c )
 /* One placed star, along its shutter path, in each channel: its photograph turning to its model up close, twinkling. */
 Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
 {
-   var sp = q.sp, path = Render.shutterPath( sc, sp, q.e, s, opts, cam, q.cx, q.cy ), seconds = ( opts.t || 0 )*( opts.duration || 0 );
+   var sp = q.sp, path = Render.shutterPath( sc, sp, q.e, opts, cam, q.cx, q.cy ), seconds = ( opts.t || 0 )*( opts.duration || 0 );
    // up close the star turns from its photograph (noise, processing marks) to its smooth model
    // -- its core sooner (Fly.coreModelWeight): a saturated core is often a flat square in the photograph,
    // and boosted the square is what one sees; its spikes take only the glow's boost
@@ -1269,7 +1269,7 @@ Render.coreRadius = function( sp )
  * output px (Fly.shutterSteps). The first frame is drawn still, so it
  * stays the image.
  */
-Render.shutterPath = function( sc, sp, e, s, opts, cam, cx, cy )
+Render.shutterPath = function( sc, sp, e, opts, cam, cx, cy )
 {
    if ( !opts.motionBlur || !( opts.frameDt > 0 ) || !( opts.t > 0 ) ) return [ { x: cx, y: cy } ];
    var h = 0.5*Fly.SHUTTER*Math.min( opts.frameDt, opts.t ), ends = [ -h, h ].map( function( d )

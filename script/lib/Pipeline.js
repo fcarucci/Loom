@@ -2471,7 +2471,7 @@ Pipeline.publishRGB = function( results, rgb, keepIds, reg )
 var rgbSplit = ( rgbStars != null );
 if ( rgbSplit )
    delete results.RGB;
-rgbWin = Pipeline.publish( rgbWin, rgbSplit ? "RGB_starless" : "RGB",
+Pipeline.publish( rgbWin, rgbSplit ? "RGB_starless" : "RGB",
                            reg, keepIds, results,
                            rgbSplit ? "RGB_starless" : "RGB" );
 if ( rgbSplit )
@@ -2788,10 +2788,9 @@ Pipeline.CASCADE_STEP = 52;
  * the deck as a whole stays in the middle of the workspace rather than
  * starting there and drifting off the bottom right.
  */
-Pipeline.staggeredPosition = function( max, index, count, step )
+Pipeline.staggeredPosition = function( max, index, count )
 {
-   var d = ( step == null ) ? Pipeline.CASCADE_STEP : step;
-   var off = Math.round( ( index - ( count - 1 )/2 ) * d );
+   var off = Math.round( ( index - ( count - 1 )/2 ) * Pipeline.CASCADE_STEP );
    var c = Pipeline.centredPosition( max );
    function clamp( v, hi ) { return Math.max( 0, Math.min( v, Math.max( 0, hi ) ) ); }
    return { x: clamp( c.x + off, max.x ), y: clamp( c.y + off, max.y ) };

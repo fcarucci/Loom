@@ -695,13 +695,12 @@ Util.deserializeEntries = function( text )
  */
 Util.NATIVE_PIXEL_SIZE = 3.76;
 
-Util.drizzleLabel = function( xpixsz, nativePixelSize )
+Util.drizzleLabel = function( xpixsz )
 {
-   var native = nativePixelSize || Util.NATIVE_PIXEL_SIZE;
    var v = parseFloat( xpixsz );
    if ( !isFinite( v ) || v <= 0 )
       return "";
-   var factor = native / v;
+   var factor = Util.NATIVE_PIXEL_SIZE / v;
    var rounded = Math.round( factor );
    // Only report clean integer factors; anything else is not a drizzle.
    if ( rounded < 2 || Math.abs( factor - rounded ) > 0.05 )

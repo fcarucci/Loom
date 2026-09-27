@@ -1233,8 +1233,8 @@ Fly.presetSpec = function( p, orientation, loop )
             pingPong: loops && loop != "crossfade", crossfade: loops && loop == "crossfade" };
 };
 
-/* The flight time between two frames (0..1): n frames, a crossfade's F more, or there and back. */
-Fly.frameStep = function( n, F, pingPong )
+/* The flight time between two frames (0..1): n frames, or there and back. */
+Fly.frameStep = function( n, pingPong )
 {
    var steps = pingPong ? n/2 : n - 1;             // a crossfade's flight is its clip (Fly.loopFrame)
    return steps > 0 ? 1/steps : 0;

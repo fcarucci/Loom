@@ -8697,6 +8697,43 @@ function runTests()
    }
 
    /*
+    * Characterization of the region Steps.measurePSF measures, pinned before
+    * its never-passed sampleSize and wholeFrame parameters were removed: the
+    * central 1200 px square, or the whole short side when the image is
+    * smaller. Node only: fake StarDetector and Rect record the selection; no
+    * stars, so the run ends before any fit.
+    */
+   if ( !IN_PIXINSIGHT )
+   {
+      var PSG = ( function() { return this; } )();
+      function psfRegion( w, h )
+      {
+         var had = Object.prototype.hasOwnProperty.call( PSG, "StarDetector" );
+         var hadRect = Object.prototype.hasOwnProperty.call( PSG, "Rect" );
+         var realSD = PSG.StarDetector, realRect = PSG.Rect, realStage = Util.reportStage, sel = [];
+         PSG.StarDetector = function() { this.stars = function() { return []; }; };
+         PSG.Rect = function( x0, y0, x1, y1 ) { this.x0 = x0; this.y0 = y0; this.x1 = x1; this.y1 = y1; };
+         Util.reportStage = function() {};
+         var img = { width: w, height: h, _sel: "whole" };
+         Object.defineProperty( img, "selectedRect", {
+            get: function() { return this._sel; },
+            set: function( r ) { this._sel = r; sel.push( r === "whole" ? r : [ r.x0, r.y0, r.x1, r.y1 ] ); } } );
+         try { sel.push( Steps.measurePSF( { id: "psf", image: img } ) ); }
+         finally
+         {
+            if ( had ) PSG.StarDetector = realSD; else delete PSG.StarDetector;
+            if ( hadRect ) PSG.Rect = realRect; else delete PSG.Rect;
+            Util.reportStage = realStage;
+         }
+         return sel;
+      }
+      check( "measurePSF: the central 1200 px of a large frame, then the selection restored",
+             psfRegion( 6000, 4000 ), [ [ 2400, 1400, 3600, 2600 ], "whole", null ] );
+      check( "measurePSF: the short side of a small frame",
+             psfRegion( 800, 600 ), [ [ 100, 0, 700, 600 ], "whole", null ] );
+   }
+
+   /*
     * Characterization of Steps.prismMtfTarget, pinned before it was
     * restructured. A fake image with a skewed, star-like bright tail:
     * contrasty enough to sit inside Prism's corpus at the default, flat
@@ -12524,7 +12561,7 @@ function runFlyTestsClean()
          var w = 20, h = 3, ramp = new Float32Array( w*h );
          for ( var y = 0; y < h; ++y ) for ( var x = 0; x < w; ++x ) ramp[y*w + x] = x/100;
          var K = 2, tp = 9.5;
-         var out = Render.resample( ramp, w, h, Render.axisWeights( w, 0, w, tp, K, w, kernel ),
+         var out = Render.resample( ramp, w, Render.axisWeights( w, 0, w, tp, K, w, kernel ),
                                     Render.axisWeights( h, 0, h, 1, K, h, kernel ) );
          check( kernel + ": a zoom of 2 about the target maps u to tp + (u - tp)/2",
                 near( out[1*w + 4], ( tp + ( 4 - tp )/2 )/100, 1e-6 ) && near( out[1*w + 15], ( tp + ( 15 - tp )/2 )/100, 1e-6 ), true );
@@ -13345,7 +13382,7 @@ function runFlyTestsClean()
          var lo = Infinity, hi = 0;
          for ( var ph = 0; ph < 1; ph += 0.125 )
          {
-            var out = Render.resample( src, w, h, Render.axisWeights( 100, ph, 300, 150, 1, w, kernel ),
+            var out = Render.resample( src, w, Render.axisWeights( 100, ph, 300, 150, 1, w, kernel ),
                                        Render.axisWeights( 20, ph, 60, 30, 1, h, kernel ) );
             var sum = 0; for ( var j = 0; j < out.length; ++j ) sum += out[j];
             lo = Math.min( lo, sum*9 ); hi = Math.max( hi, sum*9 );
@@ -13355,7 +13392,7 @@ function runFlyTestsClean()
       } );
       var ident = Render.axisWeights( 6, 0, 6, 2.3, 1, 6, "bicubic" );
       check( "at 1:1 the weights are still the identity", Array.prototype.slice.call( Render.resample(
-             new Float32Array( [ 1, 2, 3, 4, 5, 6 ] ), 6, 1, ident, Render.axisWeights( 1, 0, 1, 0, 1, 1, "bicubic" ) ) ), [ 1, 2, 3, 4, 5, 6 ] );
+             new Float32Array( [ 1, 2, 3, 4, 5, 6 ] ), 6, ident, Render.axisWeights( 1, 0, 1, 0, 1, 1, "bicubic" ) ) ), [ 1, 2, 3, 4, 5, 6 ] );
 
       // a sprite drawn 3x smaller than its own pixels keeps its light too
       var pw = 15, patch = new Float32Array( pw*pw ), ptot = 0;
@@ -14303,7 +14340,7 @@ function runFlyTestsClean()
       var cf = Fly.presetSpec( "exhibition", "horizontal", "crossfade" ), pp = Fly.presetSpec( "exhibition" );
       check( "the exhibition loop can crossfade instead of going back and forth", [ cf.crossfade, cf.pingPong, pp.pingPong, !!pp.crossfade ], [ true, false, true, false ] );
       check( "a crossfade loop is as long as the clip", Fly.frameCount( 20, 30, cf.pingPong ), 600 );
-      check( "the flight time between frames (a crossfade's flight is its clip)", [ Fly.frameStep( 11, 0, false ), Fly.frameStep( 10, 0, true ), Fly.frameStep( 100, 21, false ) ], [ 0.1, 0.2, 1/99 ] );
+      check( "the flight time between frames (a crossfade's flight is its clip)", [ Fly.frameStep( 11, false ), Fly.frameStep( 10, true ), Fly.frameStep( 100, false ) ], [ 0.1, 0.2, 1/99 ] );
       check( "a preset keeps its own name for its settings whatever its folder", Fly.presetSpec( "exhibition", "vertical" ).preset, "exhibition" );
    } )();
 
