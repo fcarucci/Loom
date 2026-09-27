@@ -3,6 +3,10 @@
 What changed in each Loom release. Each release's notes on GitHub are its
 section of this file.
 
+## [0.3.1] — 2026-09-26
+
+- **Updates:** Loom's updater now installs a release only when it is newer than the version you have. Before, it installed the latest published release whenever its version merely differed from yours, so a copy newer than the latest release, the same version written differently (0.3 and 0.3.0), or a release tag that is not a version number would have been installed over it, updating you backwards.
+
 ## [0.3.0] — 2026-09-26
 
 ### Loom Fly-Through
