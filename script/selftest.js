@@ -17523,6 +17523,7 @@ function runPipeTests()
       var noFilter = dir + "/L.xisf", withFilter = dir + "/G.xisf", narrow = dir + "/H.xisf";
       [ noFilter, withFilter, narrow ].forEach( function( p ) { File.writeTextFile( p, "x" ); } );
       var missing = dir + "/R-missing.xisf";
+      var marsAsked = [];
       function run( config, o )
       {
          var restore = stub( [
@@ -17531,6 +17532,11 @@ function runPipeTests()
             [ Steps, "studioAvailable", function() { return o.studio; } ],
             [ Steps, "studioModelsFor", function() { return o.models; } ],
             [ Steps, "studioCheckEntitlement", function() { return [ "refused" ]; } ],
+            [ Steps, "configuredMGC", function( dir )
+              {
+                 marsAsked.push( dir );
+                 return ( o.mars === undefined ) ? { marsDatabaseFiles: [ [ true, "/m/a.xmars" ] ] } : o.mars;
+              } ],
             [ Util, "readImageInfo", function( p )
               {
                  return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [] };
@@ -17548,6 +17554,32 @@ function runPipeTests()
                "No FILTER keyword in L: " + noFilter + " (SPFC cannot proceed; the script will not guess a filter)",
                "File not found for R: " + missing,
                "Selected view no longer open for B: loom_no_such_view_xyz" ] );
+      /*
+       * BF-4: MGC runs on every broadband channel and Steps.mgc refuses to
+       * run without a MARS database, so preflight asks the same question
+       * (Steps.configuredMGC, with the run's own folder) before anything is
+       * solved -- and only when a broadband channel is in the run.
+       */
+      var noMars = "No MARS database found: MGC needs one for the broadband channels " +
+                   "(set the MARS database folder in the Loom dialog, or configure MARS " +
+                   "in MultiscaleGradientCorrection)";
+      var none = { missing: [], studio: false, models: [], mars: null };
+      var empty = { missing: [], studio: false, models: [], mars: { marsDatabaseFiles: [] } };
+      marsAsked = [];
+      check( "preflight: no MARS database refuses a broadband run, before the channel problems",
+             [ run( { paths: { G: withFilter }, marsPath: "/my/mars" }, none ),
+               run( { paths: { L: noFilter } }, empty ),
+               run( { paths: { G: withFilter } }, { missing: [], studio: false, models: [] } ) ],
+             [ [ "selection", noMars ],
+               [ "selection", noMars,
+                 "No FILTER keyword in L: " + noFilter + " (SPFC cannot proceed; the script will not guess a filter)" ],
+               [ "selection" ] ] );
+      check( "preflight: MARS is looked up in the run's own folder",
+             marsAsked[0], "/my/mars" );
+      marsAsked = [];
+      check( "preflight: a narrowband-only run needs no MARS database, and does not look for one",
+             [ run( { paths: { H: narrow } }, none ), marsAsked.length ],
+             [ [ "selection" ], 0 ] );
       check( "preflight: a missing GraXpert only matters when chosen",
              [ run( { paths: {}, gradientTool: Steps.GRADIENT_TOOL_GRAXPERT },
                     { missing: [ "GraXpert" ], studio: false, models: [] } ),

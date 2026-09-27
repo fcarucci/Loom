@@ -19,20 +19,6 @@ Pipeline.REQUIRED_PROCESSES = [
    "ChannelCombination"
 ];
 
-// No hardcoded locations: where the MARS databases live is the user's
-// business. Ask MultiscaleGradientCorrection what PixInsight has
-// registered, exactly as the Gaia lookup asks the Gaia process.
-
-/*
- * MARS availability cannot be determined from a freshly constructed
- * MultiscaleGradientCorrection: a new instance carries default parameters,
- * not the databases PixInsight has configured. So this does not guess.
- * Steps.mgc runs with useMARSDatabase = true and MGC itself reports the
- * problem if no database is registered -- a real error from the process
- * that owns the setting, rather than a preflight refusal based on a value
- * we cannot actually read.
- */
-
 /*
  * A wall: nothing opens or processes until every check passes, so a
  * missing FITS keyword or a missing MARS database costs a dialog box
@@ -66,9 +52,7 @@ Pipeline.preflight = function( config )
    if ( Steps.studioModelsFor( config, true ).length > 0 && Steps.studioAvailable() )
       problems = problems.concat( Steps.studioCheckEntitlement( config ) );
 
-   // MGC always runs on the broadband channels present in this selection,
-   // so the MARS database is never optional. Fail loudly here rather than
-   // discovering the absence mid-run or silently correcting without it.
+   problems = problems.concat( Pipeline.marsProblems( config ) );
 
    for ( var j = 0; j < Util.CHANNELS.length; ++j )
    {
@@ -84,6 +68,29 @@ Pipeline.preflight = function( config )
    // folder that was actually specified has to exist.
 
    return problems;
+};
+
+/*
+ * MGC runs on every broadband channel, and Steps.mgc refuses to start
+ * without a MARS database. Asked here the same way -- Steps.configuredMGC,
+ * with the run's own folder -- so the absence costs a dialog box rather
+ * than a run that stops after solving and flux-calibrating. No hardcoded
+ * locations: where the databases live is the user's business.
+ */
+Pipeline.marsProblems = function( config )
+{
+   var broadband = Util.BROADBAND.filter( function( k )
+   {
+      return ( config.views && config.views[k] ) || config.paths[k];
+   } );
+   if ( broadband.length == 0 )
+      return [];
+   var mgc = Steps.configuredMGC( config.marsPath );
+   if ( mgc && mgc.marsDatabaseFiles && mgc.marsDatabaseFiles.length > 0 )
+      return [];
+   return [ "No MARS database found: MGC needs one for the broadband channels " +
+            "(set the MARS database folder in the Loom dialog, or configure MARS " +
+            "in MultiscaleGradientCorrection)" ];
 };
 
 /* Preflight's problems with one channel chosen as an open view. */
