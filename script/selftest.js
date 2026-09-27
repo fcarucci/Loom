@@ -402,6 +402,53 @@ function flyTestScene( dir, flux )
 }
 
 /* The suite's own scratch folder for generated frames. Emptied on entry. */
+/*
+ * Test-side adapters, kept out of the libraries because only the suite uses
+ * them: a 3x3 matrix times a vector, a Gaia TSV fixture as objects, the
+ * render benchmark, and Render.blurImage on a plain array.
+ */
+function testMul3( M, v )
+{
+   return [ M[0]*v[0] + M[1]*v[1] + M[2]*v[2], M[3]*v[0] + M[4]*v[1] + M[5]*v[2], M[6]*v[0] + M[7]*v[1] + M[8]*v[2] ];
+}
+
+function testParseSources( text )
+{
+   var lines = String( text ).split( /\r?\n/ ), head = lines[0].split( "\t" ), out = [];
+   for ( var i = 1; i < lines.length; ++i )
+   {
+      if ( !lines[i] ) continue;
+      var f = lines[i].split( "\t" ), s = {};
+      for ( var j = 0; j < head.length; ++j ) s[head[j]] = parseFloat( f[j] );
+      out.push( s );
+   }
+   return out;
+}
+
+/* Milliseconds per frame over `n` frames spread along the path. */
+function testRenderBenchmark( sc, outW, outH, crop, opts, n )
+{
+   var t0 = Date.now();
+   for ( var i = 0; i < n; ++i )
+      Render.frame( sc, n > 1 ? i/( n - 1 ) : 0, opts, outW, outH, crop ).free();
+   return ( Date.now() - t0 )/n;
+}
+
+/* Render.blurImage on a single-channel Float32Array, in place (PixInsight only). */
+function testBlur3( a, w, h, r )
+{
+   if ( !( r >= 1 ) ) return a;
+   var img = new Image( w, h, 1, ColorSpace_Gray, 32, SampleType_Real ), rect = new Rect( 0, 0, w, h );
+   try
+   {
+      img.setSamples( a, rect, 0 );
+      Render.blurImage( img, r );
+      img.getSamples( a, rect, 0 );
+   }
+   finally { img.free(); }
+   return a;
+}
+
 function synthDir( name )
 {
    var dir = "/tmp/agent-scratch/" + name;
@@ -12225,6 +12272,9 @@ function runFlyTestsClean()
    if ( IN_PIXINSIGHT ) check( "the suite's image cache is its own, not the user's", FlyThrough.cacheRoot() != File.systemTempDirectory + "/LoomFlyThrough", true );
    check( "Sky loads", typeof Sky, "object" );
    check( "Render loads", typeof Render, "object" );
+   // frames are numbered to five digits, so a folder lists in render order
+   check( "frame files are named in render order",
+          [ Fly.framePath( "/f", 7 ), Fly.framePath( "/f", 12345 ) ], [ "/f/frame_00007.tif", "/f/frame_12345.tif" ] );
 
    /* ---- Fly: exact geometry ------------------------------------------- */
    ( function()
@@ -12310,7 +12360,7 @@ function runFlyTestsClean()
    {
       var path = LOOM_DIR + "/../ci/fixtures/ic1396-gaia-g16.tsv";
       check( "the IC 1396 fixture is in the repository", File.exists( path ), true );
-      var src = Fly.parseSources( File.readTextFile( path ) );
+      var src = testParseSources( File.readTextFile( path ) );
       check( "fixture parses", src.length > 8000, true );
       var c = Fly.findCluster( src, { ra: 324.745, dec: 57.514 }, Fly.clusterRadius( 85/60 ) );   // NGC/IC diameter 170', capped
       check( "IC 1396's cluster gives 870-1000 pc: " + ( c && c.distance ),
@@ -12856,11 +12906,11 @@ function runFlyTestsClean()
                                   project: proj, target: T0, D: 900 } );
          sc.S = [ sc.S[0], sc.S[0], sc.S[0] ]; sc.R = [ sc.R[0], sc.R[0], sc.R[0] ]; sc.nc = 3;
          var tp = sc.tp, crop = Fly.presetCrop( W, H, tp.x, tp.y, 3840, 2160 );
-         var ms = Render.benchmark( sc, 3840, 2160, crop, { travel: 180, easing: "smoothstep", growth: 0.15, brightening: true,
+         var ms = testRenderBenchmark( sc, 3840, 2160, crop, { travel: 180, easing: "smoothstep", growth: 0.15, brightening: true,
                                     output: Fly.outputTransform( Fly.SRGB_COLOUR, "sdr" ) }, 3 );
          var bopts = function( mode ) { return { travel: 180, easing: "smoothstep", growth: 0.15, brightening: true,
                                                  output: Fly.outputTransform( Fly.SRGB_COLOUR, mode, { peak: 1000 } ) }; };
-         var msHlg = Render.benchmark( sc, 3840, 2160, crop, bopts( "hlg" ), 2 ), msPq = Render.benchmark( sc, 3840, 2160, crop, bopts( "pq" ), 2 );
+         var msHlg = testRenderBenchmark( sc, 3840, 2160, crop, bopts( "hlg" ), 2 ), msPq = testRenderBenchmark( sc, 3840, 2160, crop, bopts( "pq" ), 2 );
          var line = "Fly-Through render: " + Math.round( ms ) + " ms/frame (SDR), " + Math.round( msHlg ) + " (HDR HLG), " +
                     Math.round( msPq ) + " (HDR PQ) at 3840x2160 RGB with colour conversion, " + sp.sprites.length +
                     " sprites on an 8 MP backdrop; sprite extraction " + tSprites + " ms";
@@ -13111,11 +13161,11 @@ function runFlyTestsClean()
       check( "a table curve interpolates", near( Fly.trcDecode( { type: "table", t: [ 0, 0.25, 1 ] }, 0.75 ), 0.625, 1e-12 ), true );
 
       var M709 = Fly.sourceToTarget( PROPHOTO, "rec709" ), M2020 = Fly.sourceToTarget( PROPHOTO, "rec2020" );
-      check( "ProPhoto white stays white in Rec.709 (Bradford D50 to D65)", near3( Fly.mul3( M709, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
-      check( "and in BT.2020", near3( Fly.mul3( M2020, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
-      check( "ProPhoto's green lies outside Rec.709: the matrix is really applied", Fly.mul3( M709, [ 0, 1, 0 ] )[0] < 0, true );
+      check( "ProPhoto white stays white in Rec.709 (Bradford D50 to D65)", near3( testMul3( M709, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
+      check( "and in BT.2020", near3( testMul3( M2020, [ 1, 1, 1 ] ), [ 1, 1, 1 ], 2e-3 ), true );
+      check( "ProPhoto's green lies outside Rec.709: the matrix is really applied", testMul3( M709, [ 0, 1, 0 ] )[0] < 0, true );
       check( "sRGB's own primaries map to Rec.709 unchanged",
-             near3( Fly.mul3( Fly.sourceToTarget( Fly.SRGB_COLOUR.matrix, "rec709" ), [ 1, 0, 0 ] ), [ 1, 0, 0 ], 2e-3 ), true );
+             near3( testMul3( Fly.sourceToTarget( Fly.SRGB_COLOUR.matrix, "rec709" ), [ 1, 0, 0 ] ), [ 1, 0, 0 ], 2e-3 ), true );
 
       // a constructed v2 profile: rXYZ/gXYZ/bXYZ and a gamma-1.8 curv on all three
       function be32( n ) { return [ ( n >>> 24 ) & 255, ( n >>> 16 ) & 255, ( n >>> 8 ) & 255, n & 255 ]; }
@@ -15681,7 +15731,7 @@ function runFlyTestsClean()
    } )();
 
    /*
-    * Bloom's blurs run in PixInsight's own convolution (Render.blur3): the
+    * Bloom's blurs run in PixInsight's own convolution (Render.blurImage): the
     * three box passes as one separable kernel -- the same light, several
     * times faster -- matching Render.boxBlur away from the frame's edges.
     */
@@ -15691,11 +15741,11 @@ function runFlyTestsClean()
       for ( var i = 0; i < 30; ++i ) src[( 30 + ( i*37 ) % 100 )*w + 40 + ( i*53 ) % 120] = 1 + i/10;
       [ 2, 7 ].forEach( function( r )
       {
-         var box = Render.boxBlur( src.slice(), w, h, r ), nat = Render.blur3( src.slice(), w, h, r ), m = 3*r, worst = 0, peak = 0;
+         var box = Render.boxBlur( src.slice(), w, h, r ), nat = testBlur3( src.slice(), w, h, r ), m = 3*r, worst = 0, peak = 0;
          for ( var y = m; y < h - m; ++y ) for ( var x = m; x < w - m; ++x ) { worst = Math.max( worst, Math.abs( box[y*w + x] - nat[y*w + x] ) ); peak = Math.max( peak, box[y*w + x] ); }
          check( "radius " + r + ": the native blur is the box blur inside the frame (" + ( worst/peak ).toExponential( 1 ) + " of the peak)", worst < 1e-5*peak, true );
       } );
-      check( "radius below 1 leaves it as it is", Render.blur3( src.slice(), w, h, 0.5 )[30*w + 40], src[30*w + 40] );
+      check( "radius below 1 leaves it as it is", testBlur3( src.slice(), w, h, 0.5 )[30*w + 40], src[30*w + 40] );
    } )();
 
    } if ( testGroup( "fly.dialog" ) ) {

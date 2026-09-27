@@ -444,19 +444,6 @@ Fly.refineCluster = function( inside, seed, near )
    return c;
 };
 
-Fly.parseSources = function( text )
-{
-   var lines = String( text ).split( /\r?\n/ ), head = lines[0].split( "\t" ), out = [];
-   for ( var i = 1; i < lines.length; ++i )
-   {
-      if ( !lines[i] ) continue;
-      var f = lines[i].split( "\t" ), s = {};
-      for ( var j = 0; j < head.length; ++j ) s[head[j]] = parseFloat( f[j] );
-      out.push( s );
-   }
-   return out;
-};
-
 Fly.defaultTravel = function( type, D ) { return ( type == "galaxy" ) ? 200 : 0.2*D; };
 
 Fly.clampTravel = function( travel, type, D )
@@ -1306,11 +1293,6 @@ Fly.framePath = function( folder, i )
  * ICC profile, so the conversion is done here from the profile's own tags:
  * nothing depends on which profiles a machine has installed.
  * ------------------------------------------------------------------------ */
-
-Fly.mul3 = function( M, v )
-{
-   return [ M[0]*v[0] + M[1]*v[1] + M[2]*v[2], M[3]*v[0] + M[4]*v[1] + M[5]*v[2], M[6]*v[0] + M[7]*v[1] + M[8]*v[2] ];
-};
 
 Fly.matMul = function( A, B )
 {

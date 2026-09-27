@@ -661,27 +661,11 @@ Render.boxBlur = function( a, w, h, r )
 /*
  * Render.boxBlur's three passes as one kernel -- a box of 2r + 1 convolved
  * with itself three times -- run by PixInsight's own separable convolution
- * (C++, every core): the same result away from the frame's edges, several
- * times faster. Near an edge PixInsight treats the outside its own way,
- * where boxBlur repeated the edge pixel on each pass. Falls back to
- * boxBlur outside PixInsight (the Node suite).
+ * (C++, every core) on an image, in place; returns it. The same result away
+ * from the frame's edges, several times faster. Near an edge PixInsight
+ * treats the outside its own way, where boxBlur repeated the edge pixel on
+ * each pass.
  */
-Render.blur3 = function( a, w, h, r )
-{
-   if ( !( r >= 1 ) ) return a;
-   if ( typeof Image == "undefined" || typeof Vector == "undefined" ) return Render.boxBlur( a, w, h, r );
-   var img = new Image( w, h, 1, ColorSpace_Gray, 32, SampleType_Real ), rect = new Rect( 0, 0, w, h );
-   try
-   {
-      img.setSamples( a, rect, 0 );
-      Render.blurImage( img, r );
-      img.getSamples( a, rect, 0 );
-   }
-   finally { img.free(); }
-   return a;
-};
-
-/* Render.blur3 on a PixInsight image, in place; returns it. */
 Render.blurImage = function( img, r )
 {
    if ( !( r >= 1 ) ) return img;
@@ -1329,15 +1313,6 @@ Render.srgbIcc = function()
       try { Render.srgbIccCache = Steps.iccProfileBytes( Fly.SRGB_PROFILE_NAME ); }
       catch ( e ) { Render.srgbIccCache = null; Util.warn( "fly", "no sRGB profile to embed in SDR frames: " + e ); }
    return Render.srgbIccCache;
-};
-
-/* Milliseconds per frame over `n` frames spread along the path. */
-Render.benchmark = function( sc, outW, outH, crop, opts, n )
-{
-   var t0 = Date.now();
-   for ( var i = 0; i < n; ++i )
-      Render.frame( sc, n > 1 ? i/( n - 1 ) : 0, opts, outW, outH, crop ).free();
-   return ( Date.now() - t0 )/n;
 };
 
 /* ---------------------------------------------------------------------------
