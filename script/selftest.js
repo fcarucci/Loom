@@ -1848,23 +1848,7 @@ function runTests()
    var GOOD_GIT = { exitCode: 0, output: "git version 2.39.5 (Apple Git-154)" };
 
    check( "the version is a well-formed release number",
-          Update.parseVersion( Util.LOOM_VERSION ) != null, true );
-   check( "a missing patch counts as zero",
-          Update.compareVersions( "0.1", "0.1.0" ), 0 );
-   check( "a newer minor wins", Update.compareVersions( "0.2", "0.1" ), 1 );
-   check( "an older major loses", Update.compareVersions( "0.9", "1.0" ), -1 );
-   check( "a leading v is not part of the number",
-          Update.compareVersions( "v0.2", "0.2" ), 0 );
-   check( "garbage is not a version", Update.parseVersion( "main" ), null );
-   /*
-    * An unparseable tag must not read as an update: a release is only ever
-    * taken on a POSITIVE answer, never on the absence of a negative one.
-    */
-   check( "an unparseable tag is never newer",
-          Update.isNewerTag( "nightly", "0.1" ), false );
-   check( "a newer tag is newer", Update.isNewerTag( "v0.2", "0.1" ), true );
-   check( "the same version is not newer",
-          Update.isNewerTag( "v0.1", "0.1" ), false );
+          /^\d+\.\d+(\.\d+)?$/.test( Util.LOOM_VERSION ), true );
 
    /*
     * /usr/bin/git EXISTS on every Mac whether or not git is installed: it
@@ -1895,8 +1879,7 @@ function runTests()
    /*
     * .git is a FILE in a linked worktree or a submodule checkout. Testing
     * only for the directory reports "not a repository" for a real
-    * checkout, which would route it into the path that REPLACES the
-    * directory -- exactly what the rule exists to prevent.
+    * checkout, which would then never be updated.
     */
    check( "an ordinary clone is git-managed",
           Update.isGitManaged( "/x/Loom", fakeIo( [], [ "/x/Loom/.git" ] ) ), true );
@@ -1904,18 +1887,6 @@ function runTests()
           Update.isGitManaged( "/x/Loom", fakeIo( [ "/x/Loom/.git" ], [] ) ), true );
    check( "a plain directory is not git-managed",
           Update.isGitManaged( "/x/Loom", fakeIo( [], [] ) ), false );
-
-   check( "a checkout is a git install",
-          Update.installKind( "/x/Loom", fakeIo( [], [ "/x/Loom/.git" ] ) ), "git" );
-   check( "a marked directory is a release install",
-          Update.installKind( "/x/Loom", fakeIo( [ "/x/Loom/RELEASE" ], [] ) ),
-          "release" );
-   /*
-    * No .git and no marker: unknown, and left alone. A directory is only
-    * ever replaced if this feature created it.
-    */
-   check( "an unmarked directory is unknown and untouchable",
-          Update.installKind( "/x/Loom", fakeIo( [], [] ) ), "unknown" );
 
    Update.SCRIPT_DIR = "/x/Loom";
    function kindOf( r ) { return ( r == null ) ? null : r.kind; }
@@ -1926,12 +1897,7 @@ function runTests()
           kindOf( Update.prepareHelper( { autoUpdate: true },
              fakeIo( [ "/opt/homebrew/bin/git" ], [ "/x/Loom/.git" ], GOOD_GIT ) ) ),
           "git" );
-   /*
-    * A checkout whose git is unusable prepares NOTHING. It must not fall
-    * through to the zip path: that swaps a directory into place, which
-    * over a working tree leaves a repository permanently dirty and
-    * refused by every later --ff-only.
-    */
+   /* A checkout whose git is unusable prepares NOTHING. */
    check( "a checkout with no usable git prepares nothing at all",
           kindOf( Update.prepareHelper( { autoUpdate: true },
              fakeIo( [], [ "/x/Loom/.git" ], GOOD_GIT ) ) ), null );
@@ -2052,7 +2018,6 @@ function runTests()
    check( "...and reports a failed status check as a failure",
           gs.indexOf( "report failed $RC" ) >= 0, true );
    check( "the PowerShell branch does the same",
-          Update.zipScript != null &&
           Update.gitScript( { git: "git.exe", dir: "C:/L", stateDir: "C:/S",
                               platform: "Windows" } )
             .indexOf( "--untracked-files=all 2>&1" ) < 0, true );
@@ -2069,78 +2034,6 @@ function runTests()
    check( "the outcome is published by rename, not written in place",
           gs.indexOf( "mv \"$TMP\" \"$OUT\"" ) >= 0, true );
 
-   var zs = Update.zipScript( { dir: "/x/Loom", stateDir: "/cache/update",
-                                version: "0.1", owner: "o", repo: "r" } );
-   check( "curl fails on an error page instead of saving it",
-          zs.indexOf( "-fsSL" ) >= 0, true );
-   check( "a redirect cannot downgrade the transport",
-          zs.indexOf( "--proto '=https'" ) >= 0, true );
-   check( "the old copy is kept until the new one is in place",
-          zs.indexOf( "mv \"$DIR\" \"$DIR.old\"" ) >= 0, true );
-   check( "a failed install rolls back",
-          zs.indexOf( "mv \"$DIR.old\" \"$DIR\"" ) >= 0, true );
-   check( "the installed tree is marked as a release install",
-          zs.indexOf( Update.RELEASE_MARKER ) >= 0, true );
-
-   /*
-    * Only a NEWER release is installed. The generated script itself decides,
-    * run by /bin/sh against a stand-in curl (a shell function, so nothing
-    * reaches the network) that answers with one release tag and fails any
-    * download: a tag the script means to install ends "failed" at the
-    * download, one it refuses ends "unchanged". Update.isNewerTag is the
-    * oracle, so the shell and the JS rule cannot drift apart.
-    */
-   ( function()
-   {
-      // under the run's own folder, and removed below
-      var dir = TEST_SCRATCH + "/update-tag", state = dir + "/state";
-      File.createDirectory( state, true );
-      function runShell( path )
-      {
-         if ( !IN_PIXINSIGHT )
-            return process.mainModule.require( "child_process" )
-                      .spawnSync( "/bin/sh", [ path ], { encoding: "utf8" } ).status;
-         var P = new ExternalProcess, t0 = Date.now();
-         P.start( "/bin/sh", [ path ] );
-         while ( P.isStarting || P.isRunning )
-         {
-            CoreApplication.processEvents();
-            if ( Date.now() - t0 > 20000 ) { P.terminate(); return -1; }
-         }
-         return P.exitCode;
-      }
-      function decides( tag, current )
-      {
-         var script = Update.zipScriptPosix( { dir: dir + "/Loom", stateDir: state, version: current,
-                                               owner: "o", repo: "r" } ).split( "\n" );
-         script.splice( 1, 0,
-            "curl() {",
-            "  for a in \"$@\"; do [ \"$a\" = -o ] && return 22; done",
-            "  printf '{\"tag_name\": \"%s\", \"browser_download_url\": \"https://example.invalid/r.zip\"}' " +
-               Update.quotePosix( tag ),
-            "}" );
-         var out = state + "/" + Update.OUTCOME_FILE;
-         if ( File.exists( out ) ) File.remove( out );
-         File.writeTextFile( dir + "/run.sh", script.join( "\n" ) );
-         runShell( dir + "/run.sh" );
-         var rec = File.exists( out ) ? Update.parseOutcome( File.readTextFile( out ) ) : null;
-         return rec == null ? "no record" : rec.status;
-      }
-      var rows = [ [ "v0.4.0", "0.3.0" ], [ "v0.3.0", "0.3.0" ], [ "v0.2.9", "0.3.0" ], [ "0.3", "0.3.0" ],
-                   [ "0.3.1", "0.3" ], [ "v0.10.0", "0.9.0" ], [ "v0.9.0", "0.10.0" ], [ "V1.0", "0.3.0" ],
-                   [ "nightly", "0.3.0" ], [ "v0.4.0", "not-a-version" ] ];
-      var decided;
-      try { decided = rows.map( function( r ) { return r[0] + " over " + r[1] + ": " + decides( r[0], r[1] ); } ); }
-      finally { removeTestFolder( dir ); }
-      check( "the release helper installs a tag only when it is newer, as Update.isNewerTag says",
-             decided,
-             rows.map( function( r ) { return r[0] + " over " + r[1] + ": " +
-                                              ( Update.isNewerTag( r[0], r[1] ) ? "failed" : "unchanged" ); } ) );
-      check( "...and leaves no temporary folder behind", File.directoryExists( dir ), false );
-   } )();
-   check( "...and no longer by comparing the tag for equality",
-          [ zs.indexOf( "if ! is_newer \"$TAG\" \"$CURRENT\"; then" ) >= 0, zs.indexOf( "= \"$CURRENT\" ]" ) < 0 ],
-          [ true, true ] );
 
    /*
     * Outcome records. A shell redirect would record TEXT, not outcome:
@@ -3006,67 +2899,6 @@ function runTests()
    check( "a quote in a real path is escaped in the generated script",
           psQuoted.indexOf( "'C:/Users/O''Brien/Loom'" ) >= 0, true );
 
-   var psZip = Update.zipScript( { dir: "C:/Users/x/Loom", stateDir: "C:/cache/update",
-                                   version: "0.1", owner: "o", repo: "r",
-                                   platform: Util.PLATFORM_WINDOWS } );
-   check( "the Windows download refuses a non-https asset",
-          psZip.indexOf( "StartsWith('https://')" ) >= 0, true );
-   /*
-    * PowerShell 5.1 inherits .NET's default protocol list, which on an
-    * un-updated machine still offers TLS 1.0 -- GitHub refuses it.
-    */
-   check( "TLS 1.2 is forced",
-          psZip.indexOf( "Tls12" ) >= 0, true );
-   /*
-    * Every network call of both release helpers carries Update.TIMEOUT_SECONDS,
-    * so a transfer that hangs on an unreachable or stalled host ends instead
-    * of leaving a worker behind. Built with another value too, so the
-    * scripts are seen to follow the setting rather than a copy of it.
-    */
-   ( function()
-   {
-      var saved = Update.TIMEOUT_SECONDS;
-      function timeouts( seconds )
-      {
-         Update.TIMEOUT_SECONDS = seconds;
-         try
-         {
-            var sh = Update.zipScript( { dir: "/x/Loom", stateDir: "/cache/update", version: "0.1",
-                                         owner: "o", repo: "r", platform: Util.PLATFORM_MACOS } );
-            var ps = Update.zipScript( { dir: "C:/x/Loom", stateDir: "C:/cache/update", version: "0.1",
-                                         owner: "o", repo: "r", platform: Util.PLATFORM_WINDOWS } );
-            var count = function( text, re ) { return ( text.match( re ) || [] ).length; };
-            return [ count( sh, /curl /g ), count( sh, new RegExp( "curl [^\\n]*--max-time " + seconds + " ", "g" ) ),
-                     count( ps, /Invoke-(RestMethod|WebRequest) /g ),
-                     count( ps, new RegExp( "Invoke-(RestMethod|WebRequest) [^\\n]*-TimeoutSec " + seconds + "( |$)", "gm" ) ) ];
-         }
-         finally { Update.TIMEOUT_SECONDS = saved; }
-      }
-      check( "every release download has the update timeout: curl calls, with it; PowerShell calls, with it",
-             [ timeouts( Update.TIMEOUT_SECONDS ), timeouts( 37 ) ], [ [ 2, 2, 2, 2 ], [ 2, 2, 2, 2 ] ] );
-   } )();
-   check( "the old copy is kept until the new one is in place on Windows",
-          psZip.indexOf( "Move-Item -LiteralPath $DIR -Destination ($DIR + '.old') -Force" ) >= 0,
-          true );
-   check( "a failed Windows install rolls back",
-          psZip.indexOf( "Move-Item -LiteralPath ($DIR + '.old') -Destination $DIR -Force" ) >= 0,
-          true );
-   check( "the installed tree is marked as a release install on Windows",
-          psZip.indexOf( Update.RELEASE_MARKER ) >= 0, true );
-   check( "the staging directory is cleaned up however it ends",
-          psZip.indexOf( "Remove-Item -LiteralPath $WORK" ) >= 0, true );
-   /*
-    * The Windows helper refuses a tag that is not newer by the same rule as
-    * the POSIX one (Update.isNewerTag); PowerShell cannot run here, so its
-    * text is what is pinned.
-    */
-   check( "the Windows download installs only a newer tag, never on equality",
-          [ psZip.indexOf( "if (-not (Test-Newer $TAG $CURRENT)) {" ) >= 0,
-            psZip.indexOf( "function Test-Newer($tag, $current) {" ) >= 0,
-            psZip.indexOf( "-eq $CURRENT" ) < 0,
-            psZip.indexOf( "'^[0-9]+\\.[0-9]+(\\.[0-9]+)?$'" ) >= 0,
-            psZip.indexOf( "if ($a[$i] -ne $b[$i]) { return ($a[$i] -gt $b[$i]) }" ) >= 0 ],
-          [ true, true, true, true, true ] );
 
    /*
     * And the whole path end to end: a Windows checkout writes a .ps1 and
@@ -3245,7 +3077,7 @@ function runTests()
     * The installation root is NOT the folder the script sits in.
     *
     * Loom.js lives in <root>/script and .git is at <root>/.git, so handing
-    * the script's own directory to installKind reported "unknown": the
+    * the script's own directory to the checkout test found no .git: the
     * updater silently did nothing and the title bar showed no commit.
     * Caught by rolling the checkout back a commit and watching nothing
     * happen, which is exactly the failure a silent updater hides.
@@ -3255,32 +3087,21 @@ function runTests()
    {
       Update.SCRIPT_DIR = "/x/Loom/script";
       check( "the root is found one level up from the script folder",
-             Update.installDir( fakeIo( [], [ "/x/Loom/.git" ] ) ), "/x/Loom" );
-      check( "a worktree root, where .git is a file, is found too",
-             Update.installDir( fakeIo( [ "/x/Loom/.git" ], [] ) ), "/x/Loom" );
-      check( "a release install is found by its marker",
-             Update.installDir( fakeIo( [ "/x/Loom/RELEASE" ], [] ) ), "/x/Loom" );
+             Update.installDir(), "/x/Loom" );
       /*
-       * Nothing recognised: report the parent, which is the installation
-       * root by layout and the directory a zip install would replace --
-       * never the script folder itself.
+       * The update repository installs Loom.js at the root itself, so a
+       * folder not named "script" is the root.
        */
-      check( "with nothing to recognise it still reports the root",
-             Update.installDir( fakeIo( [], [] ) ), "/x/Loom" );
+      Update.SCRIPT_DIR = "/h/PixInsight/scripts/Loom";
+      check( "a script folder not named script is the root itself",
+             Update.installDir(), "/h/PixInsight/scripts/Loom" );
       /*
-       * A checkout several levels up is still found, so the script folder
-       * can be nested without the updater going quiet.
+       * Never further up: a .git there belongs to some other repository,
+       * and walking to it is how Loom would update the wrong one.
        */
       Update.SCRIPT_DIR = "/x/Loom/a/b/script";
-      check( "a root further up is still found",
-             Update.installDir( fakeIo( [], [ "/x/Loom/.git" ] ) ), "/x/Loom" );
-      /*
-       * ...but not without limit: walking to / would let Loom decide that
-       * some unrelated repository above it was the thing to update.
-       */
-      Update.SCRIPT_DIR = "/a/b/c/d/e/f/script";
-      check( "the walk upwards is bounded",
-             Update.installDir( fakeIo( [], [ "/a/.git" ] ) ), "/a/b/c/d/e/f" );
+      check( "the root is never looked for further up",
+             Update.installDir(), "/x/Loom/a/b" );
    }
    finally { Update.SCRIPT_DIR = savedScriptDir; }
 
@@ -7668,7 +7489,7 @@ function runTests()
          "#69 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,743,141x14 / 84,743,141x14 in dialog",
          "#70 Label align=129 enabled=true tip=#88:ee3efb92 at 579,740,69x21 / 879,740,69x21 in dialog",
          "#71 PushButton \"Clear cache\" minWidth=93 enabled=true tip=\"Delete every cached stage result.\" at 472,740,93x21 / 772,740,93x21 in dialog",
-         "#72 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#324:6cd29352 at 310,743,156x14 / 610,743,156x14 in dialog",
+         "#72 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#337:1f0ebd26 at 310,743,156x14 / 610,743,156x14 in dialog",
          "#73 Control enabled=true at 8,767,640x21 / 8,767,940x21 in dialog",
          "#74 Label \"Cache folder:\" align=130 enabled=true at 0,0,66x21 / 0,0,66x21 in #73",
          "#75 Edit \"\" enabled=true tip=#325:8999df7d at 72,0,469x20 / 72,0,769x20 in #73",
@@ -7806,6 +7627,8 @@ function runTests()
          swap( Steps, "configuredMGC", function() { return null; } );
          swap( Steps, "moduleAvailable", function( n ) { return n == "GraXpert"; } );
          swap( Steps, "studioAvailable", function() { return true; } );
+         // a checkout, so the update checkbox is laid out wherever the suite runs from
+         swap( Update, "isCheckout", function() { return true; } );
          made = [];
          /*
           * By direct eval: some of these classes are lexical globals, which
@@ -16982,6 +16805,41 @@ function runPixInsightGapTests()
 
    } if ( testGroup( "ui" ) ) {
    /*
+    * "Update Loom automatically" is offered only where Loom updates
+    * itself, a git checkout. A release install is updated by PixInsight's
+    * update repository, so a checkbox there would promise nothing.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var saved = [ Update.isCheckout, Steps.availableNoiseTools, Steps.availableSharpenTools,
+                    Steps.availableStarTools, Steps.studioAvailable, Steps.moduleAvailable ];
+      Steps.availableNoiseTools = function() { return []; };
+      Steps.availableSharpenTools = function() { return []; };
+      Steps.availableStarTools = function() { return []; };
+      Steps.studioAvailable = function() { return false; };
+      Steps.moduleAvailable = function() { return false; };
+      function offered( checkout )
+      {
+         Update.isCheckout = function() { return checkout; };
+         var d = tracked( new UI.SelectDialog( Config.defaults() ) );
+         return d.autoUpdate == null ? [ false ] : [ true, d.autoUpdate.text, d.autoUpdate.toolTip ];
+      }
+      var got, err = "";
+      try { got = [ offered( true ), offered( false ) ]; }
+      catch ( e ) { err = String( e ); }
+      finally
+      {
+         Update.isCheckout = saved[0];
+         Steps.availableNoiseTools = saved[1]; Steps.availableSharpenTools = saved[2];
+         Steps.availableStarTools = saved[3]; Steps.studioAvailable = saved[4];
+         Steps.moduleAvailable = saved[5];
+      }
+      check( "the update checkbox is shown in a checkout, with the true tooltip, and nowhere else" +
+             ( err ? ": " + err : "" ),
+             got, [ [ true, "Update Loom automatically", UI.autoUpdateToolTip() ], [ false ] ] );
+   } )();
+
+   /*
     * Every control of the main dialog writes the config field it stands
     * for. Built with a fixed set of installed tools, so the dropdowns hold
     * the same entries on every machine; each control is set and its
@@ -18151,8 +18009,8 @@ function runSolveTests()
             Util.checkCoreVersion = function( c ) { rec( "checkCoreVersion " + ( c === LOOM_CORE_CHECK ) ); return !s.oldCore; };
             Util.log = function( m, t ) { rec( "log " + m + ": " + t.replace( /\d{4}-[\d_-]+/g, "<stamp>" ) ); };
             Util.warn = function( m, t ) { rec( "warn " + m + ": " + t ); };
-            // the folder above Loom.js's own, whether main or a helper reads #__FILE__
-            Update.describeVersion = function( dir ) { rec( "describeVersion " + dir.replace( /^.*\/script\/\.\.$/, "<script>/.." ) ); return "Loom vX"; };
+            // Loom's root (the folder holding script/), however main finds it
+            Update.describeVersion = function( dir ) { rec( "describeVersion " + ( File.exists( dir + "/script/Loom.js" ) ? "<loom root>" : dir ) ); return "Loom vX"; };
             Update.reportLast = function() { rec( "Update.reportLast" ); };
             Update.checkNow = function( c ) { rec( "Update.checkNow " + ( c === config ) ); return s.update || null; };
             Update.relaunch = function() { rec( "Update.relaunch" ); return !!s.relaunches; };
@@ -18221,7 +18079,7 @@ function runSolveTests()
       };
       var LOG = "/cache/logs/loom-run-<stamp>.log";
       var START = [ "console.show", "console.writeln <end><cbr>Loom", "console.writeln <end><cbr>banner",
-                    "describeVersion <script>/..", "console.writeln <end><cbr>Loom vX",
+                    "describeVersion <loom root>", "console.writeln <end><cbr>Loom vX",
                     "console.writeln <end><cbr>", "checkCoreVersion true" ];
       var UPDATE = [ "loadConfig", "Update.reportLast", "Update.checkNow true" ];
       var RESTART = [ "log update: restarting Loom on 1.2.3...", "Update.relaunch" ];
@@ -21034,6 +20892,104 @@ function runFailurePathTests()
                          "start it again to use the new version" ] ] );
    }
    finally { Update.SCRIPT_FILE = savedScript; }
+
+   /*
+    * Only a git checkout updates itself. A release install -- the zip or
+    * PixInsight's update repository, both of which carry the RELEASE
+    * marker -- and a folder that is neither say once where their updates
+    * come from, and look for, write, run and spawn nothing, whatever the
+    * setting says (the checkbox is not even shown to them).
+    */
+   function installIo( files, dirs )
+   {
+      var did = [];
+      return {
+         did:             did,
+         fileExists:      function( p ) { return files.indexOf( p ) >= 0 || p == "/opt/homebrew/bin/git"; },
+         directoryExists: function( p ) { return dirs.indexOf( p ) >= 0; },
+         readText:        function() { return ""; },
+         writeText:       function( p ) { did.push( "write " + p ); },
+         remove:          function( p ) { did.push( "remove " + p ); },
+         rename:          function( a ) { did.push( "rename " + a ); },
+         makeDirectory:   function( p ) { did.push( "mkdir " + p ); },
+         platform:        function() { return Util.PLATFORM_MACOS; },
+         execute:         function( program ) { did.push( "execute " + program ); return { exitCode: 0, output: "" }; },
+         spawnDetached:   function( program ) { did.push( "spawn " + program ); }
+      };
+   }
+   var FROM_REPOSITORY = "log update: Loom updates itself only in a git checkout; this copy is " +
+                         "updated through PixInsight's update repository (Resources > Updates)";
+   check( "checkNow: a release install or any other non-checkout says where updates come from and does nothing",
+          [ [ "/x/Loom/RELEASE" ], [] ].map( function( files )
+          {
+             return [ true, false ].map( function( on )
+             {
+                var io = installIo( files, [] );
+                var r = updateSays( function() { return Update.checkNow( { autoUpdate: on }, io ); } );
+                return [ r[0], r[1], io.did ];
+             } );
+          } ),
+          [ [ [ null, [ FROM_REPOSITORY ], [] ], [ null, [ FROM_REPOSITORY ], [] ] ],
+            [ [ null, [ FROM_REPOSITORY ], [] ], [ null, [ FROM_REPOSITORY ], [] ] ] ] );
+   var savedDir = Update.SCRIPT_DIR;
+   Update.SCRIPT_DIR = "/x/Loom/script";
+   try
+   {
+      check( "isCheckout: a clone or a worktree is a checkout; a release install or a bare folder is not",
+             [ Update.isCheckout( installIo( [], [ "/x/Loom/.git" ] ) ),
+               Update.isCheckout( installIo( [ "/x/Loom/.git" ], [] ) ),
+               Update.isCheckout( installIo( [ "/x/Loom/RELEASE" ], [] ) ),
+               Update.isCheckout( installIo( [], [] ) ) ],
+             [ true, true, false, false ] );
+      /*
+       * Only a .git at Loom's OWN root makes a checkout, never one above
+       * it: a release install inside some other repository (dotfiles in
+       * the home folder, a versioned scripts folder) would otherwise have
+       * that repository fetched and fast-forwarded, and its commit shown
+       * in the title. Each case: checkout?, the check's result, what it
+       * said, what it did, the root, and the title.
+       */
+      var SHA = "a4c1f2e9876543210fedcba9876543210fedcba9";
+      function probe( scriptDir, files, dirs )
+      {
+         Update.SCRIPT_DIR = scriptDir;
+         var io = installIo( files, dirs );
+         io.fileExists = function( p ) { return files.indexOf( p ) >= 0 || /\/\.git\/HEAD$/.test( p ) &&
+                                                dirs.indexOf( p.replace( /\/HEAD$/, "" ) ) >= 0; };
+         io.readText = function() { return SHA + "\n"; };
+         var rec = recorder();
+         var r = withStubs( rec.stubs, function() { return Update.checkNow( { autoUpdate: true }, io ); } );
+         return [ Update.isCheckout( io ), r, rec.said, io.did, Update.installDir(),
+                  Update.describeVersion( Update.installDir(), io ) ];
+      }
+      var PLAIN = "Loom " + Util.LOOM_VERSION;
+      check( "only a .git at Loom's own root is a checkout; a repository above it is never updated",
+             [ probe( "/h/PixInsight/scripts/Loom/script", [ "/h/PixInsight/scripts/Loom/RELEASE" ],
+                      [ "/h/PixInsight/.git", "/h/.git" ] ),
+               probe( "/h/PixInsight/scripts/Loom/script", [], [ "/h/PixInsight/.git", "/h/.git" ] ),
+               probe( "/h/PixInsight/scripts/Loom", [ "/h/PixInsight/scripts/Loom/RELEASE" ],
+                      [ "/h/PixInsight/scripts/.git" ] ) ],
+             [ [ false, null, [ FROM_REPOSITORY ], [], "/h/PixInsight/scripts/Loom", PLAIN ],
+               [ false, null, [ FROM_REPOSITORY ], [], "/h/PixInsight/scripts/Loom", PLAIN ],
+               [ false, null, [ FROM_REPOSITORY ], [], "/h/PixInsight/scripts/Loom", PLAIN ] ] );
+      var atRoot = probe( "/h/PixInsight/scripts/Loom/script", [ "/opt/homebrew/bin/git" ],
+                          [ "/h/PixInsight/scripts/Loom/.git", "/h/.git" ] );
+      check( "a .git at Loom's own root is a checkout, and its commit is the title's",
+             [ atRoot[0], atRoot[4], atRoot[5] ],
+             [ true, "/h/PixInsight/scripts/Loom", PLAIN + " (a4c1f2e)" ] );
+   }
+   finally { Update.SCRIPT_DIR = savedDir; }
+   /*
+    * The checkbox's tooltip says what the updater does, which is the git
+    * path and nothing else: it blocks at startup, fast-forwards, relaunches.
+    */
+   check( "the Update Loom automatically tooltip describes the checkout updater",
+          UI.autoUpdateToolTip(),
+          "<p>Each time Loom starts, it checks this git checkout for a newer Loom " +
+          "before the dialog opens, waiting up to 15 s for the answer.</p>" +
+          "<p>If there is one, the checkout is fast-forwarded and Loom restarts itself " +
+          "on the new version. A checkout with local changes is never touched, and a " +
+          "failed update is reported in the Process console.</p>" );
 
    } if ( testGroup( "steps.characterization" ) ) {
    /*

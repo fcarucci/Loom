@@ -1,42 +1,18 @@
 /*
- * Keeping the installed copy of Loom current.
+ * Keeping a git checkout of Loom current.
  *
- * The whole feature rests on one fact: PJSR resolves #include at PARSE
- * time, so a running script cannot reload its own libraries. An update
- * can only ever take effect in a later execution -- which means there is
- * no reason to wait for it now. So nothing here is waited on. The update
- * is spawned detached, the dialog opens immediately, and the next launch
- * parses whatever landed.
- *
- * That single decision removes the relaunch, the restart prompt, the
- * cooldown and the loop guard an earlier design needed, along with every
- * way they could fail.
+ * Only a checkout updates itself: at startup, before the dialog, a
+ * blocking check fast-forwards it to its upstream and, if that moved it,
+ * Loom relaunches on the new code (PJSR resolves #include at parse time,
+ * so the running script cannot pick it up). Every other install -- the
+ * release zip or PixInsight's update repository -- is updated by
+ * PixInsight's own update mechanism, and this file leaves it alone.
  *
  * See docs/superpowers/specs/2026-09-17-auto-update-design.md.
  */
 
 var Update = {};
 
-/*
- * The GitHub repository the zip fallback reads releases from.
- *
- * Deliberately NOT configuration: a URL the user can set is a URL an
- * attacker can set, and this one names the code that will be executed.
- *
- * Empty until the mirror exists, and empty means the zip path does
- * nothing at all rather than guessing a URL.
- */
-Update.GITHUB_OWNER = "";
-Update.GITHUB_REPO = "";
-
-/*
- * Written by the zip installer into the directory it creates.
- *
- * The zip path REPLACES a directory, so it must never run against a
- * directory it did not create. Absence of .git is not enough to prove
- * that -- see Update.installKind.
- */
-Update.RELEASE_MARKER = "RELEASE";
 
 /*
  * Updater state lives in a SUBDIRECTORY of the cache, beside the run logs.
@@ -48,8 +24,8 @@ Update.RELEASE_MARKER = "RELEASE";
  * Not loose in the cache folder either -- Cache.clear deletes every
  * non-directory file there, so "Clear cache" would eat the record. It
  * skips directories, which is exactly why the run logs already live in
- * one. Nothing may live inside the installation, because a zip update
- * renames script/ out from under itself.
+ * one. Nothing may live inside the installation, because a fast-forward
+ * would see it as local changes and refuse to update.
  *
  * Changing the cache folder strands an unreported record. That is the
  * right trade: the state belongs to the cache the user pointed Loom at.
@@ -63,62 +39,6 @@ Update.OUTCOME_FILE = "update-last.txt";
 Update.HISTORY_FILE = "update.log";
 Update.LOCK_DIR = "update.lock";
 
-/*
- * How long one download of the release updater may take before it is
- * abandoned (curl --max-time, PowerShell -TimeoutSec). A fetch that sits on
- * an unreachable host must not leave a worker behind for the rest of the
- * session.
- */
-Update.TIMEOUT_SECONDS = 120;
-
-/* ------------------------------------------------------------------ */
-/* Versions                                                            */
-/* ------------------------------------------------------------------ */
-
-/*
- * "1.2.3", "1.2", "v1.2.3" -> [ 1, 2, 3 ]. Anything else -> null.
- *
- * A missing patch is zero, so "0.1" and "0.1.0" compare equal.
- */
-Update.parseVersion = function( text )
-{
-   if ( text == null )
-      return null;
-   var t = String( text ).trim();
-   if ( t.length > 0 && ( t[0] == "v" || t[0] == "V" ) )
-      t = t.substring( 1 );
-   if ( !/^\d+\.\d+(\.\d+)?$/.test( t ) )
-      return null;
-   var parts = t.split( "." );
-   return [ parseInt( parts[0], 10 ),
-            parseInt( parts[1], 10 ),
-            parts.length > 2 ? parseInt( parts[2], 10 ) : 0 ];
-};
-
-/* -1, 0 or 1. Null for either side means "cannot tell", reported as 0. */
-Update.compareVersions = function( a, b )
-{
-   var x = Update.parseVersion( a );
-   var y = Update.parseVersion( b );
-   if ( x == null || y == null )
-      return 0;
-   for ( var i = 0; i < 3; ++i )
-      if ( x[i] != y[i] )
-         return ( x[i] < y[i] ) ? -1 : 1;
-   return 0;
-};
-
-/*
- * Is this release tag worth downloading? Unparseable tags are NOT newer:
- * an update is only ever taken on a positive answer.
- */
-Update.isNewerTag = function( tag, current )
-{
-   if ( Update.parseVersion( tag ) == null )
-      return false;
-   return Update.compareVersions( tag, current ) > 0;
-};
-
 /* ------------------------------------------------------------------ */
 /* Where and what this installation is                                 */
 /* ------------------------------------------------------------------ */
@@ -128,9 +48,7 @@ Update.isNewerTag = function( tag, current )
  * worktree or a submodule checkout.
  *
  * Testing only for the directory reports "not a repository" for a real
- * checkout, which would route it into the zip path -- the path that
- * replaces the directory wholesale. That is precisely the outcome the
- * rule exists to prevent, so both forms count.
+ * checkout, which would then never be updated. Both forms count.
  */
 Update.isGitManaged = function( dir, io )
 {
@@ -139,18 +57,13 @@ Update.isGitManaged = function( dir, io )
 };
 
 /*
- * "git", "release" or "unknown".
- *
- * "unknown" -- no .git and no marker -- is left alone. A directory is
- * only ever replaced if this feature created it.
+ * Does this installation update itself? Only a git checkout does: the
+ * dialog offers "Update Loom automatically" on that answer alone.
  */
-Update.installKind = function( dir, io )
+Update.isCheckout = function( io )
 {
-   if ( Update.isGitManaged( dir, io ) )
-      return "git";
-   if ( io.fileExists( dir + "/" + Update.RELEASE_MARKER ) )
-      return "release";
-   return "unknown";
+   io = io || Update.io;
+   return Update.isGitManaged( Update.installDir(), io );
 };
 
 /*
@@ -404,7 +317,7 @@ Update.helperCommand = function( platform, path )
        * Windows install (Restricted) refuses to run a script FILE at all;
        * -NoProfile so a user profile cannot change git's environment or
        * slow the launch; -NonInteractive so nothing can ever sit waiting
-       * for input in a detached process nobody can see.
+       * for input in a process nobody can see.
        */
       return { program: "powershell.exe",
                args: [ "-NoProfile", "-NonInteractive",
@@ -419,16 +332,10 @@ Update.gitScript = function( o )
                                        : Update.gitScriptPosix( o );
 };
 
-Update.zipScript = function( o )
-{
-   return Util.isWindows( o.platform ) ? Update.zipScriptPowerShell( o )
-                                       : Update.zipScriptPosix( o );
-};
-
 /*
  * Written to a file and run as `/bin/sh <file>` rather than interpolated
- * into `sh -c`: paths, branch names and URLs cannot then break quoting or
- * turn into shell syntax.
+ * into `sh -c`: paths and branch names cannot then break quoting or turn
+ * into shell syntax.
  *
  * Every guard below earned its place by being wrong in an earlier draft;
  * the selftest asserts each one is still present.
@@ -614,208 +521,6 @@ Update.gitScriptPowerShell = function( o )
    ].join( "\n" );
 };
 
-/*
- * The zip fallback, for installations that did not come from git.
- *
- * curl and tar rather than PJSR's in-process NetworkTransfer, because
- * this runs detached and nothing here may touch the main thread.
- *
- * The swap is two renames on one filesystem. A process killed between
- * them leaves script.old in place; recovery is one mv, which is the
- * accepted trade against building an immutable-release launcher.
- */
-Update.zipScriptPosix = function( o )
-{
-   var q = Update.quotePosix;
-   var api = "https://api.github.com/repos/" + o.owner + "/" + o.repo +
-             "/releases/latest";
-   return [
-      "#!/bin/sh",
-      "DIR=" + q( o.dir ),
-      "STATE=" + q( o.stateDir ),
-      "CURRENT=" + q( o.version ),
-      "LOCK=$STATE/" + Update.LOCK_DIR,
-      "OUT=$STATE/" + Update.OUTCOME_FILE,
-      "TMP=$STATE/.update-$$",
-      "WORK=$STATE/staging-$$",
-      "",
-      "mkdir \"$LOCK\" 2>/dev/null || exit 0",
-      "trap 'rmdir \"$LOCK\" 2>/dev/null; rm -rf \"$WORK\"' EXIT",
-      "",
-      "report() {",
-      "  # git's own messages run to many lines -- a refused fast-forward",
-      "  # prints a paragraph of hints -- and a record is ONE line. Folding",
-      "  # them here keeps the file parseable and the log readable.",
-      "  MSG=$(printf '%s' \"$5\" | tr '\\n\\r' '  ')",
-      "  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$3\" \"$4\" \\",
-      "    \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$MSG\" > \"$TMP\"",
-      "  cat \"$TMP\" >> \"$STATE/" + Update.HISTORY_FILE + "\"",
-      "  mv \"$TMP\" \"$OUT\"",
-      "}",
-      "",
-      "# Exit 0 when release tag $1 is newer than version $2, by",
-      "# Update.isNewerTag's rule: one leading v, two or three numbers,",
-      "# a missing patch is 0, anything unparseable is never newer.",
-      "is_newer() {",
-      "  printf '%s\\n%s\\n' \"$1\" \"$2\" | awk '",
-      "    function parse(s, p) {",
-      "      gsub(/^[ \\t]+|[ \\t]+$/, \"\", s); sub(/^[vV]/, \"\", s)",
-      "      if (s !~ /^[0-9]+\\.[0-9]+(\\.[0-9]+)?$/) return 0",
-      "      if (split(s, p, \".\") < 3) p[3] = 0",
-      "      return 1",
-      "    }",
-      "    NR == 1 { ok = parse($0, t) }",
-      "    NR == 2 { ok = ok && parse($0, c) }",
-      "    END {",
-      "      if (!ok) exit 1",
-      "      for (i = 1; i <= 3; i++) if (t[i] + 0 != c[i] + 0) exit (t[i] + 0 > c[i] + 0) ? 0 : 1",
-      "      exit 1",
-      "    }'",
-      "}",
-      "",
-      "# -f so an HTML error page is an error, not a 200-byte 'release'.",
-      "# --proto '=https' so a redirect cannot downgrade the transport.",
-      "# --max-time so a stalled transfer ends rather than leaving a worker behind.",
-      "JSON=$(curl -fsSL --proto '=https' --max-time " + Update.TIMEOUT_SECONDS + " " + q( api ) + " 2>&1) || {",
-      "  report failed 1 \"$CURRENT\" - \"$JSON\"; exit 0; }",
-      "TAG=$(printf '%s' \"$JSON\" | sed -n 's/.*\"tag_name\"[ ]*:[ ]*\"\\([^\"]*\\)\".*/\\1/p' | head -1)",
-      "URL=$(printf '%s' \"$JSON\" | sed -n 's/.*\"browser_download_url\"[ ]*:[ ]*\"\\([^\"]*\\)\".*/\\1/p' | head -1)",
-      "if [ -z \"$TAG\" ] || [ -z \"$URL\" ]; then",
-      "  report failed 1 \"$CURRENT\" - 'no release asset published'; exit 0; fi",
-      "# Only a NEWER release is installed (Update.isNewerTag): an older one,",
-      "# the same one spelled differently, or a tag that is not a version at",
-      "# all would otherwise be installed over this copy.",
-      "if ! is_newer \"$TAG\" \"$CURRENT\"; then",
-      "  report unchanged 0 \"$CURRENT\" \"$CURRENT\" ''; exit 0; fi",
-      "",
-      "mkdir -p \"$WORK\" || exit 0",
-      "curl -fsSL --proto '=https' --max-time " + Update.TIMEOUT_SECONDS + " -o \"$WORK/release.zip\" \"$URL\" || {",
-      "  report failed 1 \"$CURRENT\" \"$TAG\" 'download failed'; exit 0; }",
-      "mkdir \"$WORK/tree\" || exit 0",
-      "tar -xf \"$WORK/release.zip\" -C \"$WORK/tree\" || {",
-      "  report failed 1 \"$CURRENT\" \"$TAG\" 'archive would not extract'; exit 0; }",
-      "",
-      "# Verify against the NEW release: requiring every file the OLD copy",
-      "# had would reject a release that legitimately renamed one.",
-      "if [ ! -f \"$WORK/tree/Loom.js\" ] || [ ! -d \"$WORK/tree/lib\" ]; then",
-      "  report failed 1 \"$CURRENT\" \"$TAG\" 'release is missing Loom.js or lib/'; exit 0; fi",
-      "",
-      "touch \"$WORK/tree/" + Update.RELEASE_MARKER + "\"",
-      "rm -rf \"$DIR.old\"",
-      "mv \"$DIR\" \"$DIR.old\" || { report failed 1 \"$CURRENT\" \"$TAG\" 'could not move the old copy aside'; exit 0; }",
-      "mv \"$WORK/tree\" \"$DIR\" || {",
-      "  mv \"$DIR.old\" \"$DIR\"",     // the one rollback that can still run
-      "  report failed 1 \"$CURRENT\" \"$TAG\" 'install failed, rolled back'; exit 0; }",
-      "rm -rf \"$DIR.old\"",
-      "report updated 0 \"$CURRENT\" \"$TAG\" ''",
-      ""
-   ].join( "\n" );
-};
-
-/*
- * The Windows zip fallback. Same shape as the POSIX one: fetch the
- * release metadata, refuse anything that is not newer, stage into a
- * scratch directory, and swap by rename with a rollback.
- *
- * Invoke-RestMethod and Expand-Archive rather than curl and tar. Windows
- * does ship both of those now, but only on recent builds, and tar.exe
- * reading a .zip is a bsdtar detail rather than a guarantee; the
- * PowerShell calls are present on every machine that can run the rest of
- * this file.
- *
- * TLS 1.2 is forced because PowerShell 5.1 inherits .NET's default, which
- * on an un-updated machine still offers TLS 1.0 -- and GitHub refuses it,
- * producing the unhelpful "the underlying connection was closed".
- */
-Update.zipScriptPowerShell = function( o )
-{
-   var q = Update.quotePowerShell;
-   var api = "https://api.github.com/repos/" + o.owner + "/" + o.repo +
-             "/releases/latest";
-   return [
-      "# Loom updater. Generated; do not edit.",
-      "$ErrorActionPreference = 'Stop'",
-      "$DIR     = " + q( o.dir ),
-      "$STATE   = " + q( o.stateDir ),
-      "$CURRENT = " + q( o.version ),
-      "$LOCK  = $STATE + '/" + Update.LOCK_DIR + "'",
-      "$OUT   = $STATE + '/" + Update.OUTCOME_FILE + "'",
-      "$HIST  = $STATE + '/" + Update.HISTORY_FILE + "'",
-      "$TMP   = $STATE + '/.update-' + $PID",
-      "$WORK  = $STATE + '/staging-' + $PID",
-      "",
-      "function Report($status, $code, $from, $to, $message) {",
-      "  $when = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')",
-      "  $msg  = ([string]$message) -replace '[\\r\\n]+', ' '",
-      "  $line = @($status, [string]$code, $from, $to, $when, $msg) -join \"`t\"",
-      "  [System.IO.File]::WriteAllText($TMP, $line + \"`n\")",
-      "  [System.IO.File]::AppendAllText($HIST, $line + \"`n\")",
-      "  Move-Item -LiteralPath $TMP -Destination $OUT -Force",
-      "}",
-      "",
-      "# True when release tag $tag is newer than version $current, by",
-      "# Update.isNewerTag's rule: one leading v, two or three numbers,",
-      "# a missing patch is 0, anything unparseable is never newer.",
-      "function Test-Newer($tag, $current) {",
-      "  $v = @(([string]$tag).Trim(), ([string]$current).Trim()) | ForEach-Object { $_ -replace '^[vV]', '' }",
-      "  if ($v[0] -notmatch '^[0-9]+\\.[0-9]+(\\.[0-9]+)?$' -or $v[1] -notmatch '^[0-9]+\\.[0-9]+(\\.[0-9]+)?$') { return $false }",
-      "  $a = @($v[0].Split('.') | ForEach-Object { [decimal]$_ }) + @(0)",
-      "  $b = @($v[1].Split('.') | ForEach-Object { [decimal]$_ }) + @(0)",
-      "  for ($i = 0; $i -lt 3; $i++) { if ($a[$i] -ne $b[$i]) { return ($a[$i] -gt $b[$i]) } }",
-      "  return $false",
-      "}",
-      "",
-      "try { New-Item -ItemType Directory -Path $LOCK -ErrorAction Stop | Out-Null }",
-      "catch { exit 0 }",
-      "",
-      "try {",
-      "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
-      "  $JSON = Invoke-RestMethod -UseBasicParsing -TimeoutSec " + Update.TIMEOUT_SECONDS +
-                " -Uri " + q( api ) + " -Headers @{ 'User-Agent' = 'Loom' }",
-      "  $TAG = [string]$JSON.tag_name",
-      "  $URL = ''",
-      "  if ($JSON.assets -and $JSON.assets.Count -gt 0) {",
-      "    $URL = [string]$JSON.assets[0].browser_download_url }",
-      "  if (-not $TAG -or -not $URL) {",
-      "    Report 'failed' 1 $CURRENT '-' 'no release asset published'; exit 0 }",
-      "  # The transport cannot be downgraded by whatever the API hands back.",
-      "  if (-not $URL.StartsWith('https://')) {",
-      "    Report 'failed' 1 $CURRENT $TAG 'release asset is not served over https'; exit 0 }",
-      "  # Only a NEWER release is installed (Update.isNewerTag).",
-      "  if (-not (Test-Newer $TAG $CURRENT)) {",
-      "    Report 'unchanged' 0 $CURRENT $CURRENT ''; exit 0 }",
-      "",
-      "  New-Item -ItemType Directory -Path $WORK -Force | Out-Null",
-      "  New-Item -ItemType Directory -Path ($WORK + '/tree') -Force | Out-Null",
-      "  Invoke-WebRequest -UseBasicParsing -TimeoutSec " + Update.TIMEOUT_SECONDS +
-                " -Uri $URL -OutFile ($WORK + '/release.zip')",
-      "  Expand-Archive -LiteralPath ($WORK + '/release.zip') -DestinationPath ($WORK + '/tree') -Force",
-      "",
-      "  # Verify against the NEW release: requiring every file the OLD copy",
-      "  # had would reject a release that legitimately renamed one.",
-      "  if (-not (Test-Path -LiteralPath ($WORK + '/tree/Loom.js')) -or",
-      "      -not (Test-Path -LiteralPath ($WORK + '/tree/lib'))) {",
-      "    Report 'failed' 1 $CURRENT $TAG 'release is missing Loom.js or lib/'; exit 0 }",
-      "",
-      "  [System.IO.File]::WriteAllText($WORK + '/tree/" + Update.RELEASE_MARKER + "', '')",
-      "  Remove-Item -LiteralPath ($DIR + '.old') -Recurse -Force -ErrorAction SilentlyContinue",
-      "  Move-Item -LiteralPath $DIR -Destination ($DIR + '.old') -Force",
-      "  try { Move-Item -LiteralPath ($WORK + '/tree') -Destination $DIR -Force }",
-      "  catch {",
-      "    Move-Item -LiteralPath ($DIR + '.old') -Destination $DIR -Force",  // the one rollback that can still run
-      "    Report 'failed' 1 $CURRENT $TAG 'install failed, rolled back'; exit 0 }",
-      "  Remove-Item -LiteralPath ($DIR + '.old') -Recurse -Force -ErrorAction SilentlyContinue",
-      "  Report 'updated' 0 $CURRENT $TAG ''",
-      "}",
-      "catch { Report 'failed' 1 $CURRENT '-' ([string]$_) }",
-      "finally {",
-      "  Remove-Item -LiteralPath $WORK -Recurse -Force -ErrorAction SilentlyContinue",
-      "  Remove-Item -LiteralPath $LOCK -Recurse -Force -ErrorAction SilentlyContinue",
-      "}",
-      ""
-   ].join( "\n" );
-};
-
 /* ------------------------------------------------------------------ */
 /* Real-world plumbing, isolated so everything above can be tested      */
 /* ------------------------------------------------------------------ */
@@ -944,78 +649,59 @@ Update.reportLast = function( io )
 };
 
 /*
+ * What a copy that is not a git checkout is told, once, at each launch.
+ * The release zip and PixInsight's update repository both install such a
+ * copy, and PixInsight's own update mechanism is what keeps it current.
+ */
+Update.NOT_A_CHECKOUT_MESSAGE =
+   "Loom updates itself only in a git checkout; this copy is updated " +
+   "through PixInsight's update repository (Resources > Updates)";
+
+/*
  * Works out what to run, writes the helper, and returns the command --
  * without running it. Returns null, having said why, when there is
  * nothing to do.
+ *
+ * Only a git checkout is ever updated here, and only by a fast-forward.
+ * Anything else is left to PixInsight: nothing is looked for, written,
+ * run or spawned for it, whatever the setting says -- the dialog does
+ * not even offer the setting there.
  */
 Update.prepareHelper = function( config, io )
 {
    io = io || Update.io;
    try
    {
+      var dir = Update.installDir();
+      if ( !Update.isGitManaged( dir, io ) )
+      {
+         Util.log( "update", Update.NOT_A_CHECKOUT_MESSAGE );
+         return null;
+      }
+
       if ( !config || !config.autoUpdate )
       {
          Util.log( "update", "automatic updating is off" );
          return null;
       }
 
-      var dir = Update.installDir( io );
-      var state = Update.stateDir();
-      if ( !io.directoryExists( state ) )
-         io.makeDirectory( state );
-
-      var kind = Update.installKind( dir, io );
       var platform = io.platform();
-      var script = null;
-
-      if ( kind == "git" )
+      var git = Update.usableGit( io, platform );
+      if ( git == null )
       {
-         /*
-          * A checkout is only ever updated by git. Falling through to the
-          * zip path here would replace a working tree behind git's back:
-          * permanently dirty, and refused by every later --ff-only.
-          */
-         var git = Update.usableGit( io, platform );
-         if ( git == null )
-         {
-            Util.warn( "update", "no usable git was found, so " + dir +
-                                 " cannot be updated" );
-            return null;
-         }
-         script = Update.gitScript( { git: git, dir: dir, stateDir: state,
-                                      platform: platform } );
-      }
-      else if ( kind == "release" )
-      {
-         if ( Update.GITHUB_OWNER.length == 0 || Update.GITHUB_REPO.length == 0 )
-         {
-            Util.log( "update", "this is a release install, but no download " +
-                                "source is configured" );
-            return null;          // guess nothing
-         }
-         script = Update.zipScript( { dir: dir, stateDir: state,
-                                      version: Util.LOOM_VERSION,
-                                      owner: Update.GITHUB_OWNER,
-                                      repo: Update.GITHUB_REPO,
-                                      platform: platform } );
-      }
-      else
-      {
-         /*
-          * Neither a checkout nor something this feature installed, so
-          * there is nothing safe to replace. Said out loud rather than
-          * passed over: a silent updater that has quietly decided it
-          * cannot act is indistinguishable from one that is broken.
-          */
-         Util.warn( "update", dir + " is not a git checkout and carries no " +
-                              "release marker; leaving it alone" );
+         Util.warn( "update", "no usable git was found, so " + dir +
+                              " cannot be updated" );
          return null;
       }
 
+      var state = Update.stateDir();
+      if ( !io.directoryExists( state ) )
+         io.makeDirectory( state );
       var path = state + "/" + Update.helperFileName( platform );
-      io.writeText( path, script );
+      io.writeText( path, Update.gitScript( { git: git, dir: dir, stateDir: state,
+                                              platform: platform } ) );
       var cmd = Update.helperCommand( platform, path );
-      return { kind: kind, dir: dir, program: cmd.program, args: cmd.args };
+      return { kind: "git", dir: dir, program: cmd.program, args: cmd.args };
    }
    catch ( e )
    {
@@ -1111,46 +797,27 @@ Update.relaunch = function( io )
 };
 
 /*
- * The installation directory: the folder holding Loom.js, found from the
- * script's own path rather than from configuration.
- */
-/*
- * The INSTALLATION's root, which is not the folder the script sits in.
+ * Loom's own root, from the folder its scripts sit in.
  *
- * Loom.js lives in <root>/script, and .git is at <root>/.git. Handing the
- * script's own directory to installKind reported "unknown" -- no .git, no
- * RELEASE marker -- so the updater silently did nothing at all and the
- * title bar showed no commit. Found by rolling the checkout back a commit
- * and watching nothing happen.
- *
- * So walk UP from the script directory until something says "this is the
- * installation", and fall back to the parent, which is where it is.
+ * A checkout (and the release zip) keeps Loom.js in <root>/script, so the
+ * root is the parent of a folder named "script"; the update repository
+ * installs Loom.js at the root itself. Only a .git exactly HERE makes a
+ * checkout. Nothing walks further up: a Loom installed inside some other
+ * repository -- dotfiles in the home folder, a versioned scripts folder --
+ * would otherwise have THAT repository fetched and fast-forwarded, and its
+ * commit shown as Loom's.
  */
-Update.MAX_ROOT_DEPTH = 4;
-
-Update.installDir = function( io )
+Update.rootOf = function( scriptDir )
 {
-   io = io || Update.io;
-   var dir = Update.SCRIPT_DIR || "";
-   if ( dir.length == 0 )
-      return "";
+   var dir = String( scriptDir || "" ).replace( /\/+$/, "" );
+   var slash = dir.lastIndexOf( "/" );
+   if ( slash > 0 && dir.substring( slash + 1 ) == "script" )
+      return dir.substring( 0, slash );
+   return dir;
+};
 
-   var here = dir;
-   for ( var up = 0; up <= Update.MAX_ROOT_DEPTH; ++up )
-   {
-      if ( Update.installKind( here, io ) != "unknown" )
-         return here;
-      var slash = here.lastIndexOf( "/" );
-      if ( slash <= 0 )
-         break;
-      here = here.substring( 0, slash );
-   }
-   /*
-    * Nothing recognised it. The parent of the script folder is the
-    * installation root by layout, so report that rather than the script
-    * folder -- installKind will call it "unknown" either way, and this is
-    * the directory a zip install would replace.
-    */
-   var s = dir.lastIndexOf( "/" );
-   return ( s > 0 ) ? dir.substring( 0, s ) : dir;
+/* The installation root of the running script; see Update.rootOf. */
+Update.installDir = function()
+{
+   return Update.rootOf( Update.SCRIPT_DIR );
 };

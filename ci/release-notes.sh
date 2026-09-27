@@ -23,6 +23,6 @@ then **Check for Updates**. Or unzip the archive into your PixInsight scripts
 folder, so that you have `<scripts>/Loom`, then **Script → Feature Scripts →
 Add** and point it at that folder.
 
-The archive carries a `RELEASE` marker, which is what lets Loom recognise
-the install as its own and update it in place.
+A release install does not update itself: use **Check for Updates** in
+PixInsight's update repository to get the next release.
 INSTALL

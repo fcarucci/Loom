@@ -18,8 +18,7 @@ var Util = {};
  * a syntax error, on which PixInsight discards the entire script with no
  * message, no console output and exit status 0.
  *
- * Two or three numeric components; Update.compareVersions treats a missing
- * patch as zero, so "0.1" and "0.1.0" are the same version.
+ * Two or three numeric components; the selftest holds it to that form.
  *
  * Bumped to the NEXT version as soon as one is tagged, so the tip is
  * never mistaken for the release behind it. A build from here reports

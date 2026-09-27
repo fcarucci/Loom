@@ -169,9 +169,10 @@ Config.defaults = function()
       noiseLevelL: "",
       starReduction: "none",
       detailLevel: "none",
-      // Keep the installed copy current. See lib/Update.js: the update is
-      // spawned detached and takes effect on the NEXT launch, so this can
-      // never delay or block startup.
+      // Keep a git checkout current. See lib/Update.js: at startup a
+      // blocking check (up to 15 s) fast-forwards the checkout and Loom
+      // relaunches on the new code. Read only in a checkout; any other
+      // install is updated through PixInsight's update repository.
       autoUpdate: true,
       useCache: true,
       // Empty means the system temp dir -- see Cache.dir().

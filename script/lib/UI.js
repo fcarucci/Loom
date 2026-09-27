@@ -179,6 +179,21 @@ UI.label = function( parent, text, minWidth )
 };
 
 /*
+ * What "Update Loom automatically" does, which is the checkout updater in
+ * lib/Update.js and nothing else. The wait is read from the deadline the
+ * check actually runs under, so the two cannot disagree.
+ */
+UI.autoUpdateToolTip = function()
+{
+   return "<p>Each time Loom starts, it checks this git checkout for a newer Loom " +
+          "before the dialog opens, waiting up to " +
+          Math.round( Update.CHECK_DEADLINE_MS / 1000 ) + " s for the answer.</p>" +
+          "<p>If there is one, the checkout is fast-forwarded and Loom restarts itself " +
+          "on the new version. A checkout with local changes is never touched, and a " +
+          "failed update is reported in the Process console.</p>";
+};
+
+/*
  * A row of controls `spacing` apart. In `items` a number is a gap of that
  * many pixels, "stretch" a stretch, and [control, factor] a control with
  * a stretch factor.
@@ -1560,25 +1575,27 @@ UI.SelectDialog = class extends Dialog
       this.updateClearCacheLabel();
 
       /*
-       * Updating is opt-out. Off means nothing is spawned and nothing is
-       * reported -- not a quieter updater, no updater.
+       * Updating is opt-out, and offered only in a git checkout: that is
+       * the only install Loom updates itself. A release install is kept
+       * current by PixInsight's update repository, so a checkbox there
+       * would promise something that never happens. Off means nothing is
+       * run and nothing is reported -- not a quieter updater, no updater.
        */
-      this.autoUpdate = new CheckBox( this );
-      this.autoUpdate.text = "Update Loom automatically";
-      this.autoUpdate.toolTip =
-         "<p>Checks for a newer Loom each time this dialog opens, in the " +
-         "background. Nothing is waited on: the check runs while you work " +
-         "and the new version is used the <i>next</i> time you start Loom.</p>" +
-         "<p>A checkout with local changes is never touched, and a failed " +
-         "update is reported in the Process console at the next launch.</p>";
-      this.autoUpdate.checked = !!config.autoUpdate;
-      this.autoUpdate.onCheck = function( c )
+      var items = [ this.useCache, this.ignoreCache, "stretch" ];
+      if ( Update.isCheckout() )
       {
-         self.config.autoUpdate = c;
-      };
+         this.autoUpdate = new CheckBox( this );
+         this.autoUpdate.text = "Update Loom automatically";
+         this.autoUpdate.toolTip = UI.autoUpdateToolTip();
+         this.autoUpdate.checked = !!config.autoUpdate;
+         this.autoUpdate.onCheck = function( c )
+         {
+            self.config.autoUpdate = c;
+         };
+         items.push( this.autoUpdate );
+      }
 
-      return UI.row( 6, [ this.useCache, this.ignoreCache, "stretch",
-                          this.autoUpdate, this.clearCacheButton, 8, this.cacheInfo ] );
+      return UI.row( 6, items.concat( [ this.clearCacheButton, 8, this.cacheInfo ] ) );
    }
 
    /* The cache folder row. */

@@ -46,10 +46,10 @@ mkdir -p "$stage/Loom"
 cp -R script "$stage/Loom/script"
 cp README.md LICENSE "$stage/Loom/"
 
-# The marker that tells the updater this installation came from a release
-# and may therefore be replaced wholesale. Update.installKind refuses to
-# touch a directory carrying neither this nor a .git, precisely so that a
-# stray folder is never swapped out from under someone.
+# A marker naming the release this installation came from. Loom no longer
+# reads it -- only a git checkout updates itself, and a release install is
+# updated through PixInsight's update repository -- but it records where
+# the copy came from.
 printf '%s\n' "$version" > "$stage/Loom/RELEASE"
 
 # Hidden directories are development apparatus, never payload: agent

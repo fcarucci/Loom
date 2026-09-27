@@ -109,7 +109,7 @@ function writeBanner()
    for ( var bl = 0; bl < Util.BANNER.length; ++bl )
       console.writeln( "<end><cbr>" + Util.BANNER[bl] );
    console.writeln( "<end><cbr>" +
-                    Update.describeVersion( File.extractDirectory( #__FILE__ ) + "/..",
+                    Update.describeVersion( Update.rootOf( File.extractDirectory( #__FILE__ ) ),
                                             Update.io ) );
    console.writeln( "<end><cbr>" );
 }
@@ -117,7 +117,8 @@ function writeBanner()
 /*
  * Any record left by an older asynchronous check, then the check for
  * this launch -- which BLOCKS, because "the result is reported at the
- * next launch" is not an answer to "is there a new version?".
+ * next launch" is not an answer to "is there a new version?". Only a git
+ * checkout is checked; see Update.prepareHelper.
  *
  * An update that lands cannot apply to this run: #include is resolved
  * when the script is parsed, and that has already happened. So Loom
@@ -305,10 +306,12 @@ function main()
    /*
     * The updater, before anything else and before the dialog.
     *
-    * reportLast() says what the PREVIOUS launch's update did; start()
-    * spawns this launch's, detached. Neither waits: #include is resolved
-    * at parse time, so an update cannot apply to the script already
-    * running, and there is nothing to be gained by waiting for it.
+    * Only a git checkout updates itself: a blocking check (at most
+    * Update.CHECK_DEADLINE_MS) fast-forwards it, and if that moved it,
+    * Loom relaunches on the new code, because #include was resolved when
+    * this script was parsed. Any other install -- the release zip or
+    * PixInsight's update repository -- is updated by PixInsight; it gets
+    * one line saying so, and nothing is run.
     */
    Update.SCRIPT_DIR = File.extractDirectory( #__FILE__ );
    Update.SCRIPT_FILE = #__FILE__;

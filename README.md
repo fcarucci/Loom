@@ -42,7 +42,8 @@ copies register the scripts twice.
 
 The scripts appear under **Script → Loom**: **Loom**, **Frame Selector** and
 **Loom Fly-Through**. If they do not, run **Script → Feature Scripts →
-Regenerate**, then **Done**. To update later, use **Check for Updates** again.
+Regenerate**, then **Done**. To update later, use **Check for Updates** again:
+an install from the repository (or from a release zip) does not update itself.
 
 ### From git
 
@@ -58,14 +59,14 @@ registers scripts by absolute path, so after moving or renaming the folder, add
 it again. To remove a stale entry, untick it and click **Done** (there is no
 Remove button); **Regenerate** drops entries whose file no longer exists.
 
-With **Update Loom automatically** ticked in the Loom dialog, each launch of a
-git checkout checks for a newer Loom before the dialog opens and says what it
-found. If there is one, it is fast-forwarded and **Loom restarts itself** on
-the new version. The check gives up after fifteen seconds. A checkout with
-local changes is never touched, a diverged branch is refused rather than
-merged, and any failure is named in the Process Console and recorded in
-`<cache>/update/update.log`. The title bar shows version and commit, for
-example `Loom 0.1 (a4c1f2e)`.
+A git checkout updates itself. With **Update Loom automatically** ticked in the
+Loom dialog (the option appears only in a checkout), each launch checks for a
+newer Loom before the dialog opens and says what it found. If there is one, it
+is fast-forwarded and **Loom restarts itself** on the new version. The check
+gives up after fifteen seconds. A checkout with local changes is never touched,
+a diverged branch is refused rather than merged, and any failure is named in
+the Process Console and recorded in `<cache>/update/update.log`. The title bar
+shows version and commit, for example `Loom 0.1 (a4c1f2e)`.
 
 ### Optional tools
 
