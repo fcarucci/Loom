@@ -10448,6 +10448,268 @@ function runTests()
              [ got, cancelOn ], [ 42, false ] );
    } )();
 
+   /*
+    * Import mode routes Run to the import and NEVER to delete-in-place.
+    * The guard is the mode flag (state.cardRoot), not a path comparison:
+    * even with the destination on the frames' own folder -- the setting
+    * that means "delete the rejected ones where they are" -- a review of a
+    * card's frames must reach commitImport. execute() is a recorder that
+    * throws, so a routing slip fails here instead of deleting anything.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var entries = [], metrics = {};
+      for ( var i = 0; i < 6; ++i )
+      {
+         var p = "/nowhere/route_" + i + "_c.xisf";
+         entries.push( { path: p, identity: { digest: "r" + i, size: 1, mtime: 1 } } );
+         metrics[p] = { psfSNR: 13 + ( i % 3 ), fwhm: 3.8 + ( i % 5 )*0.3,
+                        eccentricity: 0.6, stars: 8900 - i*40 };
+      }
+      var state = FrameSelector.emptyState( "/nowhere" );
+      state.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+      state.order.push( "H" );
+      state.cardRoot = "/nowhere-card";
+      var realExecute = FrameSelector.execute, executed = 0;
+      FrameSelector.execute = function() { ++executed; throw new Error( "execute must not run in this test" ); };
+      try
+      {
+         var dlg = tracked( new FrameSelector.Dialog( state ) );
+         state.channels.H.rows[0].override = Frames.OVERRIDE.CONDEMNED;
+         dlg.refresh();
+         var calls = [];
+         dlg.commitImport = function() { calls.push( "import" ); return "imported"; };
+         dlg.commitCopy = function() { calls.push( "copy" ); return "copied"; };
+         check( "T5 the review would delete a frame if it were not an import",
+                Frames.buildManifest( dlg.committableRows().rows ).entries.length, 1 );
+         /*
+          * The delete path is recorded and handed nothing to delete, so a
+          * routing slip fails a check here instead of opening the modal
+          * "Delete N frame(s)?" box, which would hold a dispatched run.
+          */
+         dlg.committableRows = function() { calls.push( "delete" ); return { rows: [], perChannel: [] }; };
+         check( "T5 with a card, the destination on the frames' folder is still an import",
+                [ dlg.importing(), dlg.destinationIsSource() ], [ true, true ] );
+         check( "T5 so Run imports, and never reaches the deletion",
+                [ dlg.commit(), calls, executed ], [ "imported", [ "import" ], 0 ] );
+
+         state.destination = "/elsewhere";
+         calls = [];
+         check( "T5 with a card and another folder it is still an import, not a copy",
+                [ dlg.importing(), dlg.copyingOut(), dlg.commit(), calls, executed ],
+                [ true, true, "imported", [ "import" ], 0 ] );
+
+         state.cardRoot = null;
+         calls = [];
+         check( "T5 without a card, another folder is a copy",
+                [ dlg.importing(), dlg.commit(), calls, executed ], [ false, "copied", [ "copy" ], 0 ] );
+
+         state.phase = Frames.PHASE.DONE;
+         state.cardRoot = "/nowhere-card";
+         calls = [];
+         check( "T5 a review that is no longer editable runs nothing",
+                [ dlg.commit(), calls, executed ], [ null, [], 0 ] );
+         dlg.cancel();
+
+         /* Delete-in-place with nothing to delete asks nothing and runs nothing. */
+         var own = FrameSelector.emptyState( "/nowhere" );
+         own.channels.H = FrameSelector.recompute( FrameSelector.newChannel( "H", entries, metrics, [] ) );
+         own.order.push( "H" );
+         var d2 = tracked( new FrameSelector.Dialog( own ) );
+         var rowsAsked = 0, realRows = d2.committableRows;
+         d2.committableRows = function() { ++rowsAsked; return realRows.call( d2 ); };
+         check( "T5 no card, own folder, nothing rejected: the delete path runs nothing",
+                [ d2.importing(), d2.copyingOut(), d2.commit(), rowsAsked, executed ], [ false, false, null, 1, 0 ] );
+         d2.cancel();
+      }
+      finally { FrameSelector.execute = realExecute; }
+   } )();
+
+   /*
+    * The import's write path. Users wipe the card after "Imported N
+    * frame(s).", so every copy is verified -- geometry and the keywords
+    * WBPP needs -- and a bad copy is DELETED, so it cannot block its own
+    * replacement.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var src = synthDir( "fs-imp-src" ), dst = synthDir( "fs-imp-dst" );
+      var a = synthFrame( src + "/a.xisf", { width: 64, height: 48, stars: 0, fwhm: 3,
+                                              background: 0.02, noise: 0.002, seed: 7, filter: "R" } );
+      var progress = [];
+      var res = FrameSelector.writeManifest(
+         { lights: [ { src: a, dst: dst + "/Light/a.xisf" } ],
+           flats: [ { src: "/nonexistent/x.fits", dst: dst + "/Flat/x.xisf" } ] },
+         function( done, total ) { progress.push( done + "/" + total ); } );
+      check( "T6 one frame written, the missing source failed with its reason", res,
+             { written: 1, failed: [ { src: "/nonexistent/x.fits", reason: "source is gone" } ] } );
+      check( "T6 progress after every file", progress, [ "1/2", "2/2" ] );
+      check( "T6 Light/ and Flat/ are made, and the copy is there",
+             [ File.directoryExists( dst + "/Light" ), File.directoryExists( dst + "/Flat" ),
+               File.exists( dst + "/Light/a.xisf" ) ], [ true, true, true ] );
+      check( "T6 a good copy verifies", FrameSelector.verifyImported( a, dst + "/Light/a.xisf" ),
+             { ok: true, reason: "" } );
+      check( "T6 no copy at all is reported", FrameSelector.verifyImported( a, dst + "/none.xisf" ),
+             { ok: false, reason: "nothing was written" } );
+
+      function writeCopy( path, w, h, keywords )
+      {
+         var win = new ImageWindow( w, h, 1, 32, true, false, Util.freeWindowId( "fs_imp" ) );
+         try { win.keywords = keywords; win.saveAs( path, false, false, false, false ); }
+         finally { win.forceClose(); }
+         return path;
+      }
+      var kept = [ new FITSKeyword( "EXPTIME", "60", "" ),
+                   new FITSKeyword( "DATE-OBS", "'2026-01-01T00:00:00'", "" ) ];
+      var noFilter = writeCopy( dst + "/nofilter.xisf", 64, 48, kept );
+      check( "T6 a copy that lost FILTER fails, and is deleted",
+             [ FrameSelector.verifyImported( a, noFilter ), File.exists( noFilter ) ],
+             [ { ok: false, reason: "FILTER did not survive" }, false ] );
+      var small = writeCopy( dst + "/small.xisf", 32, 48,
+                             kept.concat( [ new FITSKeyword( "FILTER", "'R'", "" ) ] ) );
+      check( "T6 a copy of another size fails, and is deleted",
+             [ FrameSelector.verifyImported( a, small ), File.exists( small ) ],
+             [ { ok: false, reason: "geometry changed" }, false ] );
+
+      var R = Frames.STATE.REJECTED, A = Frames.STATE.APPROVED;
+      check( "T6 the lights to import: enabled channels, not rejected, tagged with the channel",
+             FrameSelector.approvedLightRecords( {
+                order: [ "R", "G", "B" ],
+                channels: {
+                   R: { settings: { enabled: true },
+                        rows: [ { path: "a", state: A }, { path: "b", state: R },
+                                { path: "c", state: R, override: Frames.OVERRIDE.RESCUED },
+                                { path: "d", state: A, override: Frames.OVERRIDE.CONDEMNED } ] },
+                   G: { settings: { enabled: false }, rows: [ { path: "g", state: A } ] },
+                   B: { settings: { enabled: true }, rows: [ { path: "e", state: A } ] } } } ),
+             [ { path: "a", filter: "R" }, { path: "c", filter: "R" }, { path: "e", filter: "B" } ] );
+   } )();
+
+   /*
+    * The deletion guards: a first row not shaped like its columns, or a
+    * result path that was not asked for or came twice, abandons the
+    * channel; and a measurement is cached under the measurement version,
+    * the SubframeSelector settings and the file's digest, so a change to
+    * any of them measures again.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var realError = Util.error, errors = [];
+      Util.error = function( stage, message ) { errors.push( message ); };
+      try
+      {
+         var good = { path: "/fx/a.xisf", fwhm: 3.5, eccentricity: 0.4, psfSNR: 31.7, stars: 812,
+                      background: 0.02, snrWeight: 20.5, altitude: 45.5, psfFlux: 12.5 };
+         check( "T19 a row shaped like its columns keeps the channel, nothing blanked",
+                [ FrameSelector.checkSchema( good ), errors.length ], [ {}, 0 ] );
+         var swapped = { path: good.path, fwhm: 3.5, eccentricity: 0.4, psfSNR: 812, stars: 31.7 };
+         check( "T19 a star count in the PSF SNR slot abandons the channel, saying why",
+                [ FrameSelector.checkSchema( swapped ), errors.length,
+                  /Abandoning this channel/.test( errors[0] || "" ) ], [ null, 1, true ] );
+      }
+      finally { Util.error = realError; }
+
+      check( "T19 a path nobody asked for is refused",
+             /unexpected path \(x\)/.test( FrameSelector.pathProblem( { path: "x" }, { a: true }, {} ) ), true );
+      check( "T19 an empty path is refused",
+             /unexpected path/.test( FrameSelector.pathProblem( { path: "" }, { "": true }, {} ) ), true );
+      check( "T19 a second measurement of one path is refused",
+             FrameSelector.pathProblem( { path: "a" }, { a: true }, { a: {} } ), "two measurements for a" );
+      check( "T19 an asked-for path measured once is fine",
+             FrameSelector.pathProblem( { path: "a" }, { a: true }, {} ), null );
+
+      var sig = FrameSelector.configSignature();
+      check( "T19 the settings signature is 12 hex digits", /^[0-9a-f]{12}$/.test( sig ), true );
+      check( "T19 the key is version | settings | digest",
+             FrameSelector.measurementKey( { digest: "d" } ), Frames.MEASURE_VERSION + "|" + sig + "|d" );
+      var realNew = FrameSelector.newMeasureProcess;
+      try
+      {
+         FrameSelector.newMeasureProcess = function() { var P = realNew(); P.subframeScale = 2; return P; };
+         check( "T19 other SubframeSelector settings give another key",
+                FrameSelector.measurementKey( { digest: "d" } ) != Frames.MEASURE_VERSION + "|" + sig + "|d", true );
+      }
+      finally { FrameSelector.newMeasureProcess = realNew; }
+
+      var realLoad = FrameSelector.loadTable, entry = {};
+      Frames.STORED_KEYS.forEach( function( k ) { entry[k] = 1; } );
+      try
+      {
+         var table = {};
+         table["v0|" + sig + "|d"] = entry;
+         FrameSelector.loadTable = function() { return table; };
+         check( "T19 an entry stored under another measurement version is not used",
+                FrameSelector.cachedMeasurement( { digest: "d" } ), null );
+         table[FrameSelector.measurementKey( { digest: "d" } )] = entry;
+         check( "T19 the same entry under this version is", FrameSelector.cachedMeasurement( { digest: "d" } ), entry );
+         table[FrameSelector.measurementKey( { digest: "e" } )] = { fwhm: 1 };
+         check( "T19 an entry missing a stored figure is not used",
+                FrameSelector.cachedMeasurement( { digest: "e" } ), null );
+      }
+      finally { FrameSelector.loadTable = realLoad; }
+   } )();
+
+   /*
+    * The card flow's paths that ask nothing: no card, a detection that
+    * throws, a picker left with Cancel, a read stopped half way -- all
+    * fall back to the folder chooser (null) -- and a chosen night, whose
+    * state carries the card root and the night's flats. Without cardRoot
+    * on that state, Run would take the delete-in-place path on the card.
+    * (The paths that show a message need the tell/ask seam: package P2.)
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var real = { detect: Asiair.detect, scan: Asiair.scanCard, survey: NightDialog.surveyOf,
+                   flats: NightDialog.flatsForNight, dialog: NightDialog.Dialog,
+                   build: FrameSelector.buildStateFrom };
+      var night = { target: "M42", date: "2026-01-02", frames: [ { path: "/card/a.fit" }, { path: "/card/b.fit" } ] };
+      var detected = [ "/card" ], picked = true, built = null, asked = [];
+      try
+      {
+         Asiair.detect = function( stop, report ) { if ( detected == null ) throw new Error( "no volumes" ); return detected; };
+         Asiair.scanCard = function( root, onProgress ) { onProgress( 3 ); return { lights: [ 1 ], flats: [], removed: false }; };
+         NightDialog.surveyOf = function( scan, gap ) { return { nights: [ night ] }; };
+         NightDialog.flatsForNight = function( survey, n ) { return [ { path: "/card/flat.fit" } ]; };
+         NightDialog.Dialog = function( survey, root )
+         {
+            this.selectedNight = null;
+            this.execute = function() { this.selectedNight = picked ? night : null; return picked; };
+            this.release = function() {};
+         };
+         FrameSelector.buildStateFrom = function( paths, label, cb )
+         {
+            asked.push( [ paths, label, typeof cb.reading, typeof cb.measuring ] );
+            return built;
+         };
+
+         built = { order: [ "R" ], channels: {} };
+         var state = FrameSelector.offerCard();
+         check( "T22 a chosen night is read, labelled by target and date",
+                asked, [ [ [ "/card/a.fit", "/card/b.fit" ], "M42 2026-01-02", "function", "function" ] ] );
+         check( "T22 and its state is an import from that card, with the night's flats",
+                state && [ state.cardRoot, state.candidateFlats ], [ "/card", [ { path: "/card/flat.fit" } ] ] );
+
+         built = { order: [ "R" ], channels: {}, cancelled: true };
+         check( "T22 a read stopped half way falls back", FrameSelector.offerCard(), null );
+         built = null;
+         check( "T22 a read that returns nothing falls back", FrameSelector.offerCard(), null );
+
+         picked = false; asked = [];
+         check( "T22 the picker left with Cancel falls back, reading nothing",
+                [ FrameSelector.offerCard(), asked.length ], [ null, 0 ] );
+         detected = [];
+         check( "T22 no card falls back", FrameSelector.offerCard(), null );
+         detected = null;
+         check( "T22 a detection that throws is no card", FrameSelector.offerCard(), null );
+      }
+      finally
+      {
+         Asiair.detect = real.detect; Asiair.scanCard = real.scan;
+         NightDialog.surveyOf = real.survey; NightDialog.flatsForNight = real.flats;
+         NightDialog.Dialog = real.dialog; FrameSelector.buildStateFrom = real.build;
+      }
+   } )();
+
    check( "an AppleDouble sidecar is not a frame",
           AsiairNames.parseName(
              "._Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit" ),
