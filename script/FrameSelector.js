@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom Frame Selector : Loom > Frame Selector
+#feature-id    LoomFrameSelector : Loom > Frame Selector
 #feature-info  Measures every subframe in a folder, groups them by filter, and \
                removes the ones this night's own statistics condemn.
 
@@ -3237,7 +3237,7 @@ FrameSelector.exportApproved = function( approved, destination )
 FrameSelector.emptyDirectory = function( dir )
 {
    var out = { removed: 0, failed: [] };
-   var entries = Util.findEntries( dir + "/*" ).map( function( e )
+   var entries = Util.findEntries( dir + "/*", true ).map( function( e )
    {
       return { path: dir + "/" + e.name, folder: e.isDirectory && !e.isSymbolicLink };
    } );

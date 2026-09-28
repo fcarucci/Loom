@@ -292,7 +292,7 @@ Cache.totalBytes = function()
    if ( !File.directoryExists( Cache.dir() ) )
       return 0;
    var total = 0;
-   Util.findEntries( Cache.dir() + "/*" ).forEach( function( e ) { if ( !e.isDirectory ) total += e.size; } );
+   Util.findEntries( Cache.dir() + "/*", true ).forEach( function( e ) { if ( !e.isDirectory ) total += e.size; } );
    return total;
 };
 
@@ -302,7 +302,7 @@ Cache.clear = function()
    var freed = Cache.totalBytes();
    if ( !File.directoryExists( Cache.dir() ) )
       return 0;
-   Util.findEntries( Cache.dir() + "/*" ).forEach( function( e )
+   Util.findEntries( Cache.dir() + "/*", true ).forEach( function( e )
    {
       if ( !e.isDirectory )
          try { File.remove( Cache.dir() + "/" + e.name ); }

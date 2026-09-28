@@ -1901,12 +1901,10 @@ UI.SelectDialog = class extends Dialog
    scanMasterFolder( dir )
    {
       var scan = { named: [], unnamed: [], total: 0, skipped: 0 };
-      var found = new FileFind;
-      if ( !found.begin( dir + "/*" ) )
+      if ( !File.directoryExists( dir ) )
          return null;
-      do
-         UI.classifyMasterFile( scan, dir, found );
-      while ( found.next() );
+      // Util.findEntries: hidden files (macOS's "._name" twins) are never candidates
+      Util.findEntries( dir + "/*" ).forEach( function( e ) { UI.classifyMasterFile( scan, dir, e ); } );
 
       return scan;
    }

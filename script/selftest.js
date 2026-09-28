@@ -1000,6 +1000,38 @@ function runTests()
    runStepsIccTests();
 
    } if ( testGroup( "util" ) ) {
+   /*
+    * Hidden entries are never listed. macOS writes an AppleDouble twin,
+    * "._name", beside every file on a non-Mac volume (the exFAT A008 disk,
+    * an ASIAIR card): it is not an image, and a masters scan tried to open
+    * each one as XISF ("Not a monolithic XISF file"). .DS_Store is the
+    * same kind of thing.
+    */
+   ( function()
+   {
+      var dir = File.systemTempDirectory + "/loom-selftest-hidden-" + Date.now();
+      File.createDirectory( dir, true );
+      try
+      {
+         [ "masterFlat_B.xisf", "._masterFlat_B.xisf", ".DS_Store" ].forEach( function( n ) { File.writeTextFile( dir + "/" + n, "x" ); } );
+         File.createDirectory( dir + "/Light", true );
+         File.createDirectory( dir + "/._hidden", true );
+         check( "a folder listing skips AppleDouble ._ files and other hidden entries",
+                Util.findEntries( dir + "/*" ).map( function( e ) { return e.name; } ).sort(),
+                [ "Light", "masterFlat_B.xisf" ] );
+         check( "...and so does the plain name list",
+                Util.directoryEntries( dir ).sort(), [ "Light", "masterFlat_B.xisf" ] );
+         check( "a listing for emptying or removing a folder still sees every entry",
+                Util.directoryEntries( dir, true ).sort(), [ ".DS_Store", "._hidden", "._masterFlat_B.xisf", "Light", "masterFlat_B.xisf" ] );
+      }
+      finally
+      {
+         [ "masterFlat_B.xisf", "._masterFlat_B.xisf", ".DS_Store" ].forEach( function( n ) { try { File.remove( dir + "/" + n ); } catch ( e ) {} } );
+         [ "Light", "._hidden" ].forEach( function( n ) { try { File.removeDirectory( dir + "/" + n ); } catch ( e ) {} } );
+         try { File.removeDirectory( dir ); } catch ( e ) {}
+      }
+   } )();
+
    // uniqueWindowId: no clash returns the bare base
    check( "uniqueWindowId no clash",
           Util.uniqueWindowId( "RGB", function( id ) { return false; } ),
@@ -15854,6 +15886,19 @@ function runFlyTestsClean()
          var m = /#feature-id\s+[^:\n]+:\s*([^\n]+)/.exec( File.readTextFile( LOOM_DIR + "/" + f ) );
          check( f + " is in the Loom folder (" + ( m && m[1].trim() ) + ")", !!m && /^Loom > /.test( m[1].trim() ), true );
       } );
+      /*
+       * The id before the colon is one word, as in PixInsight's own scripts
+       * ("3DPlot : Render > 3DPlot"). An id with a space ("Loom Fly-Through")
+       * is not split at the colon: the whole "Loom Fly-Through : Loom" became
+       * a menu category of its own beside the Loom folder.
+       */
+      check( "every script's feature id is one word",
+             [ "Loom.js", "FrameSelector.js", "FlyThrough.js" ].map( function( f )
+             {
+                var id = /#feature-id\s+([^:\n]+):/.exec( File.readTextFile( LOOM_DIR + "/" + f ) );
+                return f + " " + ( id != null && /^\S+$/.test( id[1].trim() ) );
+             } ),
+             [ "Loom.js true", "FrameSelector.js true", "FlyThrough.js true" ] );
       var fly = /#feature-id\s+[^:\n]+:\s*([^\n]+)/.exec( File.readTextFile( LOOM_DIR + "/FlyThrough.js" ) );
       check( "Fly-Through is listed by its full name", fly && fly[1].trim(), "Loom > Loom Fly-Through" );
    } )();
@@ -19753,9 +19798,10 @@ function runPipeTests()
          return withGlobals( { FileFind: fakeFind( names, failAt ) },
                              function() { return Util.directoryEntries( root ); } );
       }
-      check( "directoryEntries: FileFind's order, only the two dot entries dropped",
-             list( [ ".", "..", "b.txt", "a", ".hidden", "..x" ], -1, "/root/dir" ),
-             [ "b.txt", "a", ".hidden", "..x" ] );
+      // Every hidden entry is dropped, not only "." and "..": macOS's "._name" twins (see the util group)
+      check( "directoryEntries: FileFind's order, every hidden entry dropped",
+             list( [ ".", "..", "b.txt", "a", ".hidden", "..x", "._b.txt" ], -1, "/root/dir" ),
+             [ "b.txt", "a" ] );
       check( "directoryEntries: one level, the root's own wildcard",
              patterns.splice( 0 ), [ "/root/dir/*" ] );
       check( "directoryEntries: an empty listing is empty", list( [], -1, "/r" ), [] );

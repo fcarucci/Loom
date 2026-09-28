@@ -1,6 +1,6 @@
 #engine v8
 
-#feature-id    Loom Fly-Through : Loom > Loom Fly-Through
+#feature-id    LoomFlyThrough : Loom > Loom Fly-Through
 #feature-info  Turns a finished astrophoto into a push-in video: the photo's \
                own stars move at their real Gaia distances.
 
@@ -292,7 +292,7 @@ FlyThrough.clearFrames = function( dir, countOnly )
       frames += ours.filter( Fly.isFrameFile ).length;
       if ( countOnly ) return;
       ours.forEach( function( e ) { FlyThrough.removeQuietly( f + "/" + e ); } );
-      if ( Util.directoryEntries( f ).length == 0 )
+      if ( Util.directoryEntries( f, true ).length == 0 )
          try { File.removeDirectory( f ); } catch ( e ) { Util.warn( "fly", "could not remove " + f + ": " + e ); }
    } );
    return { frames: frames, folders: folders };
@@ -884,7 +884,7 @@ FlyThrough.prune = function( root, keep )
 FlyThrough.removeTree = function( dir )
 {
    var subs = [], files = [];
-   Util.findEntries( dir + "/*" ).forEach( function( e ) { ( e.isDirectory ? subs : files ).push( dir + "/" + e.name ); } );
+   Util.findEntries( dir + "/*", true ).forEach( function( e ) { ( e.isDirectory ? subs : files ).push( dir + "/" + e.name ); } );
    files.forEach( function( f ) { try { File.remove( f ); } catch ( e ) {} } );
    subs.forEach( FlyThrough.removeTree );
    try { File.removeDirectory( dir ); } catch ( e ) {}

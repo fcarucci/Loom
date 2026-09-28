@@ -1083,25 +1083,32 @@ Util.fileCreatedMs = function( path, io )
  * error: the scan walks a list of places applications MIGHT live, and one
  * of them being absent is the normal case, not a fault.
  */
-Util.directoryEntries = function( root )
+Util.directoryEntries = function( root, withHidden )
 {
-   try { return Util.findEntries( root + "/*" ).map( function( e ) { return e.name; } ); }
+   try { return Util.findEntries( root + "/*", withHidden ).map( function( e ) { return e.name; } ); }
    catch ( e ) { return []; }
 };
 
 /*
  * What FileFind lists for `pattern` (a folder and a mask, "dir/*.xmars"),
- * one level, in its order, without "." and "..": { name, isDirectory,
+ * one level, in its order, without hidden entries: { name, isDirectory,
  * isFile, isSymbolicLink, size } per entry. Every directory walk in Loom
  * reads its folder through here.
+ *
+ * Hidden means a name starting with ".": "." and "..", and the AppleDouble
+ * "._name" twin macOS writes beside every file on a non-Mac volume (an
+ * exFAT disk, an ASIAIR card), which is not an image and must not be
+ * opened as one; .DS_Store likewise. `withHidden` lists them too (only
+ * "." and ".." dropped): for whatever empties, removes or sizes a folder,
+ * which must see every entry in it.
  */
-Util.findEntries = function( pattern )
+Util.findEntries = function( pattern, withHidden )
 {
    var out = [], find = new FileFind;
    if ( find.begin( pattern ) )
       do
       {
-         if ( find.name != "." && find.name != ".." )
+         if ( find.name != "." && find.name != ".." && ( withHidden || find.name.charAt( 0 ) != "." ) )
             out.push( { name: find.name, isDirectory: find.isDirectory, isFile: find.isFile,
                         isSymbolicLink: find.isSymbolicLink, size: find.size } );
       }
