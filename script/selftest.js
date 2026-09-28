@@ -864,7 +864,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 302 );
+      check( "Steps: the member count", Object.keys( have ).length, 304 );
    }
 
    /*
@@ -5154,7 +5154,7 @@ function runTests()
           Pipeline.stretchParams( { stretch: false }, true ), null );
    check( "stretch params carry the target, linkage and linear-keeping",
           Pipeline.stretchParams( { stretch: true }, true ),
-          { target: Steps.STRETCH_SKY_TARGET, linked: true, keepLinear: false } );
+          { target: Steps.STRETCH_SKY_TARGET, linked: true, keepLinear: false, blackPoint: "clip-safe" } );
 
    /*
     * The linear composite is stored as a COMPANION of the stretch stage,
@@ -5675,8 +5675,8 @@ function runTests()
                                     stretchMethod: Steps.STRETCH_METHOD_MAS }, true ),
           null );
    var mtfP = Pipeline.stretchParams( { stretch: true, keepLinear: false }, true );
-   check( "the MTF stretch keys on its sky target, unchanged",
-          mtfP, { target: Steps.STRETCH_SKY_TARGET, linked: true, keepLinear: false } );
+   check( "the MTF stretch keys on its sky target and its black-point rule",
+          mtfP, { target: Steps.STRETCH_SKY_TARGET, linked: true, keepLinear: false, blackPoint: "clip-safe" } );
    var masP = Pipeline.stretchParams( { stretch: true, keepLinear: false,
                                         stretchMethod: Steps.STRETCH_METHOD_MAS }, true );
    check( "the MAS stretch names its method", masP.method, Steps.STRETCH_METHOD_MAS );
@@ -8389,6 +8389,109 @@ function runTests()
    var f15 = Steps.prismStretchStats( veryFlat, x0p, 0.15 ).std;
    var f35 = Steps.prismStretchStats( veryFlat, x0p, 0.35 ).std;
    check( "raising the target lifts contrast for a flat image", f35 > f15, true );
+
+   } if ( testGroup( "steps.clipping" ) ) {
+   /*
+    * THE INVARIANT: Loom's own stretch never clips a channel's real signal
+    * to 0. After the MTF stretch -- linked, unlinked, and the linked stars
+    * stretch -- a channel gains at most one zero pixel in ten thousand over
+    * the zeros it already had.
+    *
+    * Two ways it did (found 2026-09-27): the black point is the 3x3-median
+    * minimum, and a channel with a long dark noise tail has more than
+    * isolated pixels below it (0.1-1% of these frames went to 0); and an
+    * UNLINKED stretch of a colour plate applied channel 0's black point to
+    * all three, cutting off any darker channel (up to 59%).
+    *
+    * Each case is generated: a nebula filling most of the frame, a gradient,
+    * one faint channel, one channel offset below the others, and a sweep of
+    * random per-channel offsets and scales.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var CLIP_BUDGET = 1e-4, W = 640, H = 480;
+      function nebula( x, y )
+      {
+         // a smooth cloud over ~3/4 of the frame, sky in one corner
+         var d = Math.sqrt( Math.pow( ( x - 0.62*W )/W, 2 ) + Math.pow( ( y - 0.55*H )/H, 2 ) );
+         return Math.max( 0, 0.55 - d )*( 1 + 0.3*Math.sin( x/37 )*Math.cos( y/23 ) );
+      }
+      function makeImage( id, nc, fn, noise, seed )
+      {
+         var rnd = synthRandom( seed ), w = new ImageWindow( W, H, nc, 32, true, nc == 3, Util.freeWindowId( id ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < nc; ++c )
+         {
+            var buf = new Float32Array( W*H );
+            for ( var y = 0; y < H; ++y )
+               for ( var x = 0; x < W; ++x )
+               {
+                  var u = Math.max( 1e-12, rnd() ), v = rnd();
+                  var g = Math.sqrt( -2*Math.log( u ) )*Math.cos( 2*Math.PI*v );
+                  buf[y*W + x] = Math.min( 1, Math.max( 1e-6, fn( x, y, c ) + noise*g ) );
+               }
+            w.mainView.image.setSamples( buf, new Rect( 0, 0, W, H ), c );
+         }
+         w.mainView.endProcess();
+         return w;
+      }
+      function zerosPerChannel( img )
+      {
+         var z = [];
+         for ( var c = 0; c < img.numberOfChannels; ++c )
+         {
+            var b = new Float32Array( img.width*img.height ), n = 0;
+            img.getSamples( b, new Rect( 0, 0, img.width, img.height ), c );
+            for ( var i = 0; i < b.length; ++i ) if ( b[i] <= 0 ) ++n;
+            z.push( n );
+         }
+         return z;
+      }
+      var cases = [
+         { name: "nebula filling the frame (mono)", nc: 1, noise: 0.0004,
+           fn: function( x, y ) { return 0.004 + 0.02*nebula( x, y ); } },
+         { name: "a gradient (mono)", nc: 1, noise: 0.0004,
+           fn: function( x, y ) { return 0.004 + 0.012*x/W + 0.01*nebula( x, y ); } },
+         { name: "one faint channel", nc: 3, noise: 0.0004,
+           fn: function( x, y, c ) { return c == 0 ? 0.002 + 0.004*nebula( x, y ) : 0.006 + 0.03*nebula( x, y ); } },
+         { name: "one channel offset below the others", nc: 3, noise: 0.0004,
+           fn: function( x, y, c ) { return ( c == 0 ? 0.001 : 0.006 ) + 0.02*nebula( x, y ); } }
+      ];
+      var sweep = synthRandom( 4242 );
+      for ( var s = 0; s < 4; ++s ) ( function( off, sc )
+      {
+         cases.push( { name: "sweep " + s + " offsets " + off.map( function( o ) { return o.toFixed( 4 ); } ).join( "/" ),
+                       nc: 3, noise: 0.0003,
+                       fn: function( x, y, c ) { return off[c] + 0.02*sc[c]*nebula( x, y ); } } );
+      } )( [ 0.0005 + 0.01*sweep(), 0.0005 + 0.01*sweep(), 0.0005 + 0.01*sweep() ],
+           [ 0.2 + 1.8*sweep(), 0.2 + 1.8*sweep(), 0.2 + 1.8*sweep() ] );
+
+      var methods = [
+         { name: "MTF",   run: function( v ) { Steps.stretchBy( Steps.STRETCH_METHOD_MTF, v, true, v.id ); } },
+         { name: "MTF unlinked", run: function( v ) { Steps.stretchBy( Steps.STRETCH_METHOD_MTF, v, false, v.id ); } },
+         { name: "stars", run: function( v ) { Steps.stretch( v, true, v.id, Steps.STRETCH_STARS_TARGET ); } }
+      ];
+      var failures = [];
+      for ( var k = 0; k < cases.length; ++k )
+         for ( var m = 0; m < methods.length; ++m )
+         {
+            var w = makeImage( "clip_" + k, cases[k].nc, cases[k].fn, cases[k].noise, 100 + k );
+            try
+            {
+               var before = zerosPerChannel( w.mainView.image );
+               methods[m].run( w.mainView );
+               var after = zerosPerChannel( w.mainView.image );
+               for ( var c = 0; c < after.length; ++c )
+                  if ( after[c] - before[c] > CLIP_BUDGET*W*H )
+                     failures.push( methods[m].name + " / " + cases[k].name + " ch" + c + ": " +
+                                    ( 100*( after[c] - before[c] )/( W*H ) ).toFixed( 3 ) + "% clipped to 0" );
+            }
+            catch ( e ) { failures.push( methods[m].name + " / " + cases[k].name + ": " + e ); }
+            finally { w.forceClose(); }
+         }
+      check( "no MTF stretch clips a channel's real signal to 0 (all cases, linked, unlinked, stars)", failures, [] );
+
+   } )();
 
    } if ( testGroup( "steps.palettes" ) ) {
    // ---- narrowband normalization -------------------------------------------
@@ -20138,9 +20241,9 @@ function runFinishingTests()
           kinds.map( function( k ) { return Object.keys( distinct[k] ).length; } ),
           [ 600, 600, 600 ] );
    check( "finishing: params, runner names and stage keys over the matrix", digests,
-          { RGB: "50186b918cf963bbfee01a87dd0be0710e3dc1fc",
-            SHO: "444d5ab6fb056a6707ba0d1b2278db1e3f8fefbc",
-            HOO: "b1bd98020c928830da1bfbc70c7ec7a2faf730ba" } );
+          { RGB: "5984dda258d3f2c25cb58faa6fa314f86ca11ffa",
+            SHO: "e2cc2f25938098e4bbd0ac0b5af13be5d5467746",
+            HOO: "2674ab767fc450a5d77d903ee1116753cfa41499" } );
 
    /* Corners in the clear, so a digest failure has a readable neighbour. */
    var everything = { useCache: true, filters: {}, narrowbandBandwidth: 7, narrowbandNormalize: false,
@@ -20190,7 +20293,7 @@ function runFinishingTests()
            "spccRGB": {"filters": {}, "instrume": "ZWO ASI2600MM", "whiteBalance": "direct"},
            "sharpenRGB": {"tool": "BlurXTerminator", "stars": "medium", "detail": "medium", "starsAmount": 0.5, "detailAmount": 0.5},
            "extractRGB": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
-           "stretchRGB": {"target": 0.25, "linked": true, "keepLinear": false},
+           "stretchRGB": {"target": 0.25, "linked": true, "keepLinear": false, "blackPoint": "clip-safe"},
            "denoiseRGB": {"tool": "SyQon Prism", "level": "medium", "stretched": true, "amount": 0.85} },
         [ ["combine", "solveRGB", "spfcRGB", "spccRGB", "sharpenRGB", "extractRGB", "stretchRGB", "denoiseLinearRGB", "denoiseRGB"],
           [ "combine e0715c5e0182c33d1cb66687503ff6e023274353",
@@ -20199,21 +20302,21 @@ function runFinishingTests()
             "spccRGB 0e0274c4add6fa2b3ed82843d27017638130374f",
             "sharpenRGB 2d8597f0f3ef560590994a6695e3871011b18ed4",
             "extractRGB bdf0d0ed303f0f94136704589d2a7e02ff13a08b +stars",
-            "stretchRGB c0e45d2de3a541ac2844b98c7e82c04f2dbdf2ec",
-            "denoiseRGB 5a1f9a986f207dd31fc5b30b57f7c09b3f2da596" ] ] ],
+            "stretchRGB 44f8d9d2b58b75698ee441f2b8224821d01baf7d",
+            "denoiseRGB 576d10247a932b9b89d9e56cddf546031ba21e2a" ] ] ],
       [ { "paletteCombine": {},
            "paletteSpcc": {"palette": "HOO", "bandwidth": 7},
            "paletteSharpen": {"tool": "BlurXTerminator", "stars": "medium", "detail": "medium", "starsAmount": 0.5, "detailAmount": 0.5},
            "paletteExtract": {"tool": "SyQon Starless", "starsTarget": 0.5, "stretchStars": true},
-           "paletteStretch": {"target": 0.25, "linked": true, "keepLinear": false},
+           "paletteStretch": {"target": 0.25, "linked": true, "keepLinear": false, "blackPoint": "clip-safe"},
            "paletteDenoise": {"tool": "SyQon Prism", "level": "medium", "stretched": true, "amount": 0.85} },
         [ ["paletteCombine", "paletteSpcc", "paletteNorm", "paletteSharpen", "paletteExtract", "paletteStretch", "paletteDenoiseLinear", "paletteDenoise"],
           [ "paletteCombine 9c465d77e74cdf129f5a2a3245248a4e2357ca29",
             "paletteSpcc f5ba8e73827b8ea61618fc2fef432d51af30e00c",
             "paletteSharpen 76f4bdf0b9c774fe49efa9b952c2abfaf9c00ea8",
             "paletteExtract 9c2773d95fe904be6479f6050d8a0b998249fffa +stars",
-            "paletteStretch 50207e6de8ef757f6c9d799a14fd7cc0d39b3bf5",
-            "paletteDenoise f39fe7d42e18fff4d022a320252d8ca3b2362cc8" ] ] ] ];
+            "paletteStretch 4a4d85de4bbd26c18e32b6f7e128a56c5fbcc2f0",
+            "paletteDenoise 24fa783b905a7c4107dc429f9045051f73aeac9a" ] ] ] ];
    [ [ "RGB", everything ], [ "SHO", everything ], [ "RGB", prism ], [ "HOO", prism ] ].forEach( function( c, i )
    {
       var got = capture( c[0], c[1] );
@@ -20633,7 +20736,7 @@ function runFinishingTests()
    check( "finishing: L distinct params over the matrix and Prism 2.0",
           Object.keys( lDistinct ).length, 74 );
    check( "finishing: L params, runner names and stage keys over the matrix and Prism 2.0",
-          lDigest, "6b1bb2a3c46bbecad2bc0b96f007fcfc2574e3bc" );
+          lDigest, "aec7e451553d92bb200dd66c87e7f4e7604380ac" );
    var L_CORNERS = [
        [
         {
@@ -20689,7 +20792,8 @@ function runFinishingTests()
          "stretchL": {
           "target": 0.25,
           "linked": false,
-          "keepLinear": false
+          "keepLinear": false,
+          "blackPoint": "clip-safe"
          },
          "denoiseL": {
           "tool": "SyQon Prism",
@@ -20706,8 +20810,8 @@ function runFinishingTests()
         ],
         [
          "extractL 0c45ccdde47f1adae8b0a0ebcf454ca34f665594 +stars",
-         "stretchL a93f0dec9823e7df38ceab21e219b31d346c04cb",
-         "denoiseL 27b8d4f8acffe3d3b9e847c1792c780c609597b8"
+         "stretchL 70b11554837e9891fb56250bd020cd84f6dc2f15",
+         "denoiseL 4fbba561131e8c05f1ace9c4c14aa6542ada06a8"
         ]
        ]
       ];

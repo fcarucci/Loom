@@ -373,8 +373,9 @@ Pipeline.stretchParams = function( config, linked )
       return { method: method, linked: !!linked,
                keepLinear: !!config.keepLinear,
                mas: Steps.MAS_PARAMETERS };
+   // the black point keeps all but STRETCH_CLIP_BUDGET of each channel (Steps.clipSafeBlackPoint)
    return { target: Steps.STRETCH_SKY_TARGET, linked: !!linked,
-            keepLinear: !!config.keepLinear };
+            keepLinear: !!config.keepLinear, blackPoint: "clip-safe" };
 };
 
 /*

@@ -2799,14 +2799,72 @@ Steps.robustMinimumPerChannel = function( window )
    }
 };
 
+/*
+ * The black point for one channel: its robust minimum, lowered if need be
+ * so that at most STRETCH_CLIP_BUDGET of its pixels lie below it.
+ *
+ * The 3x3-median minimum rejects isolated defects, but on a channel with a
+ * long lower noise tail more than isolated pixels sit below it, and those
+ * are real data: measured on generated Gaussian skies it zeroed 0.1-1% of
+ * the frame. Real stacked masters have a short tail and are untouched --
+ * there, fewer pixels than the budget lie below the robust minimum and it
+ * is returned as it is.
+ */
+Steps.STRETCH_CLIP_BUDGET = 1e-4;     // one pixel in ten thousand: a defect may go to 0, a region may not
+
+Steps.clipSafeBlackPoint = function( img, c, robustMin )
+{
+   var n = img.width*img.height, budget = Math.floor( Steps.STRETCH_CLIP_BUDGET*n );
+   var buf = new Float32Array( n ), below = [];
+   img.getSamples( buf, new Rect( 0, 0, img.width, img.height ), c );
+   for ( var i = 0; i < n; ++i )
+      if ( buf[i] < robustMin )
+         below.push( buf[i] );
+   if ( below.length <= budget )
+      return robustMin;
+   below.sort( function( a, b ) { return a - b; } );
+   /*
+    * Pixels AT the black point map to 0 as well, so the answer is the
+    * highest value with at most `budget` pixels at or below it -- stepping
+    * down past ties. If even the lowest value is shared by more than the
+    * budget, 0: it clips only what is already at or below 0.
+    */
+   var j = budget - 1;
+   while ( j >= 0 && below[j + 1] == below[j] )
+      --j;
+   return ( j >= 0 ) ? below[j] : Math.min( 0, below[0] );
+};
+
 Steps.stretchParametersForView = function( view, linked, target )
 {
    var img = view.image;
    var window = view.isMainView ? view.window : view.mainView.window;
    var mins = Steps.robustMinimumPerChannel( window );
+   for ( var bc = 0; bc < mins.length; ++bc )
+      mins[bc] = Steps.clipSafeBlackPoint( img, bc, mins[bc] );
 
-   if ( !linked || img.numberOfChannels < 3 )
+   if ( img.numberOfChannels < 3 )
       return Steps.stretchParametersFrom( img.median(), mins[0], target );
+
+   var rect = new Rect( 0, 0, img.width, img.height );
+   var meds = [];
+   for ( var c = 0; c < 3; ++c )
+      meds.push( img.median( rect, c, c ) );
+
+   /*
+    * UNLINKED colour: each channel its own black point and midtone. This
+    * used to take channel 0's minimum and median and apply them to all
+    * three, cutting off any channel darker than the first (a third to a
+    * half of it, on generated data). `channels` carries the three; the
+    * top-level numbers are channel 0's, for the log.
+    */
+   if ( !linked )
+   {
+      var per = [];
+      for ( var pc = 0; pc < 3; ++pc )
+         per.push( Steps.stretchParametersFrom( meds[pc], mins[pc], target ) );
+      return { c0: per[0].c0, m: per[0].m, skyOut: per[0].skyOut, channels: per };
+   }
 
    /*
     * One black point and one midtone for all three channels. The black point
@@ -2814,10 +2872,6 @@ Steps.stretchParametersForView = function( view, linked, target )
     * whichever channel sits lowest; the midtone follows the channel mean, so
     * no channel is privileged.
     */
-   var rect = new Rect( 0, 0, img.width, img.height );
-   var meds = [];
-   for ( var c = 0; c < 3; ++c )
-      meds.push( img.median( rect, c, c ) );
    var c0 = Math.max( 0, Math.min( mins[0], Math.min( mins[1], mins[2] ) ) );
    var medMean = ( meds[0] + meds[1] + meds[2] ) / 3;
    var x = ( medMean - c0 ) / ( 1 - c0 );
@@ -2848,8 +2902,10 @@ Steps.applyStretch = function( view, params, linked, label )
     * were correct.
     */
    var combined = linked || view.image.numberOfChannels < 3;
+   var rows = params.channels ? params.channels.map( function( q ) { return [ q.c0, q.m, 1, 0, 1 ]; } )
+                              : [ row, row, row ];
    P.H = combined ? [ id, id, id, row, id ]
-                  : [ row, row, row, id, id ];
+                  : [ rows[0], rows[1], rows[2], id, id ];
    if ( !P.executeOn( view ) )
       throw new Error( "Stretch failed on " + ( label || view.id ) );
 };
