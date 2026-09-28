@@ -1623,7 +1623,7 @@ UI.SelectDialog = class extends Dialog
 
       this.clearCacheButton = new PushButton( this );
       this.clearCacheButton.text = "Clear cache";
-      this.clearCacheButton.toolTip = "Delete every cached stage result.";
+      this.clearCacheButton.toolTip = "Delete every cached stage result, and the Frame Selector's cached previews.";
       this.clearCacheButton.onClick = function() { self.clearCache(); };
       this.updateClearCacheLabel();
 
@@ -2228,7 +2228,8 @@ UI.SelectDialog = class extends Dialog
    }
 
    /*
-    * Deletes every cached stage result.
+    * Deletes every cached stage result, and the Frame Selector's cached
+    * previews with them.
     *
     * No confirmation and no report: the label beside the button already
     * shows the size, and it drops to "empty" the moment this returns --
@@ -2237,6 +2238,7 @@ UI.SelectDialog = class extends Dialog
    clearCache()
    {
       try { Cache.clear(); } catch ( e ) {}
+      try { Cache.clearPreviews(); } catch ( e ) {}
       this.updateClearCacheLabel();
    }
 

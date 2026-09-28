@@ -431,3 +431,162 @@ Cache.entryCount = function()
       return !e.isDirectory && !Cache.isCompanionFileName( e.name );
    } ).length;
 };
+
+/* ------------------------------------------------------------------------
+ * Frame previews: the Frame Selector's stretched renders, kept on disk.
+ *
+ * Clicking a frame used to read the whole sub and run a
+ * HistogramTransformation every time, and every thumbnail was read and
+ * stretched again on every launch. Each render is kept here as an 8-bit
+ * image, keyed by the frame's path, size and modification time, what it is
+ * (a full preview or a thumbnail) and every setting that changes the
+ * render, so a frame replaced under the same name, or a changed stretch,
+ * is a different key rather than a stale hit.
+ *
+ * Its own folder in the system temp directory, NOT Cache.dir(): these are
+ * small, disposable and per machine, and must not count against, or be
+ * placed on, the drive a user chose for stage results. Capped by size,
+ * least recently used first; Loom's "Clear cache" empties it too.
+ * ---------------------------------------------------------------------- */
+
+Cache.PREVIEW_VERSION = "1";
+
+/* About forty full-size 26 MP previews (25 MB each at 8 bits), and every thumbnail. */
+Cache.PREVIEW_CAP_BYTES = 1024*1024*1024;
+
+/* Empty means the default; the suite points it at its own scratch folder. */
+Cache.previewDirOverride = "";
+
+Cache.previewDir = function()
+{
+   return ( Cache.previewDirOverride.length > 0 )
+      ? Cache.previewDirOverride : File.systemTempDirectory + "/Loom-previews";
+};
+
+Cache.previewPath = function( key )
+{
+   return Cache.previewDir() + "/" + key + ".xisf";
+};
+
+Cache.previewIndexPath = function()
+{
+   return Cache.previewDir() + "/index.json";
+};
+
+/* Pure: the key for one render of one version of one file. */
+Cache.previewKeyOf = function( path, size, modified, kind, params )
+{
+   return Cache.hash( "preview|" + Cache.PREVIEW_VERSION + "|" + kind + "|" +
+                      path + "|" + size + "|" + modified + "|" +
+                      Cache.paramsString( params ) );
+};
+
+/* The key for `path` as it is on disk now, or null when it is not there. */
+Cache.previewKey = function( path, kind, params )
+{
+   var info = new FileInfo( path );
+   if ( !info.exists )
+      return null;
+   return Cache.previewKeyOf( path, info.size, info.lastModified.toISOString(),
+                              kind, params );
+};
+
+/*
+ * When each entry was last used: { key: time }. A missing or unreadable
+ * index is an empty one -- the entries still work, they are just the
+ * first to go when the folder is trimmed.
+ */
+Cache.readPreviewIndex = function()
+{
+   try
+   {
+      if ( File.exists( Cache.previewIndexPath() ) )
+      {
+         var idx = JSON.parse( File.readTextFile( Cache.previewIndexPath() ) );
+         if ( idx != null && typeof idx == "object" )
+            return idx;
+      }
+   }
+   catch ( e ) {}
+   return {};
+};
+
+/*
+ * Records a use of `key`. Strictly later than every use already recorded,
+ * so two uses in the same millisecond still have an order.
+ */
+Cache.notePreviewUse = function( key )
+{
+   try
+   {
+      Util.ensureDirectory( Cache.previewDir() );
+      var idx = Cache.readPreviewIndex(), latest = 0;
+      for ( var k in idx )
+         latest = Math.max( latest, Number( idx[k] ) || 0 );
+      idx[key] = Math.max( Date.now(), latest + 1 );
+      File.writeTextFile( Cache.previewIndexPath(), JSON.stringify( idx ) );
+   }
+   catch ( e ) { /* the order is advisory; the entry itself is intact */ }
+};
+
+/* Every entry on disk: { key, bytes, used }. */
+Cache.previewEntries = function()
+{
+   if ( !File.directoryExists( Cache.previewDir() ) )
+      return [];
+   var idx = Cache.readPreviewIndex();
+   return Util.findEntries( Cache.previewDir() + "/*.xisf" ).filter( function( e )
+   {
+      return !e.isDirectory && /\.xisf$/.test( e.name );
+   } ).map( function( e )
+   {
+      var key = e.name.replace( /\.xisf$/, "" );
+      return { key: key, bytes: e.size, used: Number( idx[key] ) || 0 };
+   } );
+};
+
+Cache.previewBytes = function()
+{
+   return Cache.previewEntries().reduce( function( t, e ) { return t + e.bytes; }, 0 );
+};
+
+/*
+ * Pure: which keys to remove so what is left fits `cap`, least recently
+ * used first. `keep` -- the entry just stored -- is never one of them.
+ */
+Cache.previewEvictions = function( entries, cap, keep )
+{
+   var total = entries.reduce( function( t, e ) { return t + e.bytes; }, 0 );
+   var order = entries.filter( function( e ) { return e.key !== keep; } )
+                      .sort( function( a, b ) { return a.used - b.used; } );
+   var out = [];
+   for ( var i = 0; i < order.length && total > cap; ++i )
+   {
+      out.push( order[i].key );
+      total -= order[i].bytes;
+   }
+   return out;
+};
+
+/* Removes the least recently used entries until the folder fits `cap`. */
+Cache.trimPreviews = function( cap, keep )
+{
+   var gone = Cache.previewEvictions( Cache.previewEntries(), cap, keep );
+   for ( var i = 0; i < gone.length; ++i )
+      try { File.remove( Cache.previewPath( gone[i] ) ); } catch ( e ) {}
+   return gone.length;
+};
+
+/* Deletes every preview and the index. Returns the bytes the previews held. */
+Cache.clearPreviews = function()
+{
+   var freed = Cache.previewBytes();
+   if ( !File.directoryExists( Cache.previewDir() ) )
+      return 0;
+   Util.findEntries( Cache.previewDir() + "/*", true ).forEach( function( e )
+   {
+      if ( !e.isDirectory )
+         try { File.remove( Cache.previewDir() + "/" + e.name ); } catch ( x ) {}
+   } );
+   return freed;
+};

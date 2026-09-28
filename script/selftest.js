@@ -4623,6 +4623,97 @@ function runTests()
       }
    } )();
 
+   /*
+    * The Frame Selector's preview cache: stretched renders kept on disk so
+    * a frame clicked again, or shown again after a relaunch, is not read
+    * and stretched again. The key is path, size, modification time, kind
+    * and every render setting -- any one differing is a different key.
+    * The folder is capped, least recently used first, and the entry just
+    * stored is never the one evicted. Clearing removes every file.
+    */
+   ( function()
+   {
+      var base = [ "/a/f.xisf", 100, "2026-01-01T00:00:00.000Z", "preview",
+                   { shadows: 2.8, target: 0.25 } ];
+      function k( i, v )
+      {
+         var a = base.slice();
+         if ( i != null )
+            a[i] = v;
+         return Cache.previewKeyOf( a[0], a[1], a[2], a[3], a[4] );
+      }
+      check( "a preview key is stable", k(), k() );
+      check( "a preview key is a hex digest", /^[0-9a-f]{40}$/.test( k() ), true );
+      check( "the path is in the preview key", k( 0, "/a/g.xisf" ) != k(), true );
+      check( "the size is in the preview key", k( 1, 101 ) != k(), true );
+      check( "the modification time is in the preview key",
+             k( 2, "2026-01-01T00:00:01.000Z" ) != k(), true );
+      check( "the kind is in the preview key", k( 3, "thumb" ) != k(), true );
+      check( "every render setting is in the preview key",
+             k( 4, { shadows: 3, target: 0.25 } ) != k() &&
+             k( 4, { shadows: 2.8, target: 0.2 } ) != k(), true );
+
+      function E( key, bytes, used ) { return { key: key, bytes: bytes, used: used }; }
+      check( "under the cap no preview is evicted",
+             Cache.previewEvictions( [ E( "a", 10, 1 ), E( "b", 10, 2 ) ], 20, null ), [] );
+      check( "over the cap the least recently used previews go first",
+             Cache.previewEvictions( [ E( "a", 10, 3 ), E( "b", 10, 1 ), E( "c", 10, 2 ) ], 15, null ),
+             [ "b", "c" ] );
+      check( "the preview just stored is never evicted",
+             Cache.previewEvictions( [ E( "a", 10, 1 ), E( "b", 10, 2 ) ], 5, "a" ), [ "b" ] );
+
+      var saved = Cache.previewDirOverride, dir = TEST_SCRATCH + "/loom-previews";
+      try
+      {
+         Cache.previewDirOverride = dir;
+         check( "the preview folder is the one chosen", Cache.previewDir(), dir );
+         Util.ensureDirectory( dir );
+         var kb = new Array( 1001 ).join( "x" );
+         [ "k1", "k2", "k3" ].forEach( function( key )
+         {
+            File.writeTextFile( Cache.previewPath( key ), kb );
+            Cache.notePreviewUse( key );
+         } );
+         Cache.notePreviewUse( "k1" );                   // k2 is now the oldest
+         File.writeTextFile( Cache.previewPath( "k4" ), kb );   // on disk, never noted
+         check( "the preview folder holds four entries", Cache.previewBytes(), 4000 );
+         Cache.trimPreviews( 2500, "k4" );
+         check( "trimming keeps the kept entry and the most recent",
+                [ "k1", "k2", "k3", "k4" ].map( function( key )
+                   { return File.exists( Cache.previewPath( key ) ); } ),
+                [ true, false, false, true ] );
+         check( "clearing reports what it freed", Cache.clearPreviews(), 2000 );
+         check( "and leaves no file behind",
+                Util.findEntries( dir + "/*", true ).filter( function( e ) { return !e.isDirectory; } ).length, 0 );
+         check( "an empty preview folder holds nothing", Cache.previewBytes(), 0 );
+      }
+      finally { Cache.previewDirOverride = saved; }
+      Cache.previewDirOverride = "";
+      check( "by default previews live in the system temp folder",
+             Cache.previewDir(), File.systemTempDirectory + "/Loom-previews" );
+      Cache.previewDirOverride = saved;
+   } )();
+
+   // Loom's "Clear cache" empties the previews too, not only stage results.
+   ( function()
+   {
+      var realClear = Cache.clear, realPreviews = Cache.clearPreviews, calls = [];
+      try
+      {
+         Cache.clear = function() { calls.push( "stages" ); return 0; };
+         Cache.clearPreviews = function() { calls.push( "previews" ); return 0; };
+         UI.SelectDialog.prototype.clearCache.call(
+            { updateClearCacheLabel: function() { calls.push( "label" ); } } );
+         check( "Clear cache empties stage results and previews, then relabels",
+                calls, [ "stages", "previews", "label" ] );
+      }
+      finally
+      {
+         Cache.clear = realClear;
+         Cache.clearPreviews = realPreviews;
+      }
+   } )();
+
    } if ( testGroup( "steps.chain" ) ) {
    check( "the shipped model container is recognised",
           Steps.isMLDenoiseModelName( "MLDenoise_v41.xmlm" ), true );
@@ -6523,6 +6614,118 @@ function runTests()
       finally { FrameSelector.closeAll( ws ); }
    } )();
 
+   /*
+    * Previews and thumbnails come from the disk cache after the first
+    * render. Clicking a frame used to read the whole sub and run a
+    * HistogramTransformation on every click, and every thumbnail was read
+    * and stretched again on every launch. Counted by the reader's own
+    * counter, and checked against the workspace (no window left) and the
+    * Process Console's text, where an ImageWindow read prints "Reading
+    * image" and a process its name.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dst = synthDir( "fs-preview-cache" );
+      for ( var i = 0; i < 3; ++i )
+         synthFrame( dst + "/frame_0" + i + ".xisf",
+                     { fwhm: 3.0 + 0.1*i, background: 0.02, noise: 0.002, seed: 300 + i,
+                       date: "2026-01-01T03:0" + i + ":00" } );
+      var savedDir = Cache.previewDirOverride, dlg = null, dlg2 = null;
+      function counted( fn )
+      {
+         var r0 = FrameSelector.io.frameReads, w0 = ImageWindow.windows.length;
+         console.beginLog();
+         try { fn(); }
+         finally { console.flush(); var text = console.endLog().toString(); }
+         return { reads: FrameSelector.io.frameReads - r0,
+                  windows: ImageWindow.windows.length - w0,
+                  readLines: ( text.match( /Reading image/g ) || [] ).length,
+                  processLines: ( text.match( /HistogramTransformation/g ) || [] ).length };
+      }
+      var NONE = { reads: 0, windows: 0, readLines: 0, processLines: 0 };
+      function pixels( bmp )
+      {
+         return [ [ 10, 10 ], [ 400, 300 ], [ 799, 599 ], [ 123, 456 ] ].map( function( q )
+            { return bmp.pixel( Math.min( q[0], bmp.width - 1 ), Math.min( q[1], bmp.height - 1 ) ); } );
+      }
+      try
+      {
+         Cache.previewDirOverride = TEST_SCRATCH + "/fs-previews";
+         Cache.clearPreviews();
+         var state = FrameSelector.buildState( dst, null );
+         dlg = new FrameSelector.Dialog( state );
+         dlg.loaderTimer.stop();
+         var rows = dlg.channel().rows;
+
+         var first = counted( function() { dlg.selectRow( 1 ); } );
+         check( "a first click reads the frame once", first.reads, 1 );
+         var shown = dlg.preview.bmp, firstPixels = pixels( shown );
+         check( "the render is full size", [ shown.width, shown.height ], [ 800, 600 ] );
+         check( "and was stored in the preview folder", Cache.previewEntries().length >= 2, true );
+         // One byte a pixel: the writer's default format would be two.
+         var storedKey = Cache.previewKey( rows[1].path, "preview", FrameSelector.renderParams( "preview" ) );
+         var stored = Cache.previewEntries().filter( function( e ) { return e.key == storedKey; } );
+         check( "as an 8-bit image", stored.length == 1 && stored[0].bytes > 800*600 &&
+                stored[0].bytes < 800*600*1.5, true );
+
+         dlg.selectRow( 2 );
+         var again = counted( function() { dlg.selectRow( 1 ); } );
+         check( "a second click on the same frame reads nothing and runs nothing", again, NONE );
+         check( "and shows the same picture", pixels( dlg.preview.bmp ), firstPixels );
+
+         dlg.release(); dlg.cancel(); dlg = null;
+         var state2 = FrameSelector.buildState( dst, null );
+         var relaunch = counted( function()
+         {
+            dlg2 = new FrameSelector.Dialog( state2 );
+            dlg2.loaderTimer.stop();
+            dlg2.selectRow( 1 );
+         } );
+         check( "after a relaunch, frames already seen are not read again", relaunch, NONE );
+
+         var t1 = counted( function() { FrameSelector.thumbnailOf( rows[2].path ); } );
+         check( "a first thumbnail is read once", t1.reads, 1 );
+         var t2b = null;
+         var t2 = counted( function() { t2b = FrameSelector.thumbnailOf( rows[2].path ); } );
+         check( "the same thumbnail again reads nothing and runs nothing", t2, NONE );
+         check( "and fits the tile", t2b != null && t2b.width <= FrameSelector.THUMB.W &&
+                t2b.height <= FrameSelector.THUMB.H && ( t2b.width == FrameSelector.THUMB.W ||
+                t2b.height == FrameSelector.THUMB.H ), true );
+
+         // The loader of a relaunched dialog reads nothing it has cached.
+         dlg2.thumbs = {}; dlg2.thumbFailed = {};
+         dlg2.mayLoad = function() { return true; };
+         dlg2.rebuildQueue();
+         dlg2.loaderTimer.stop();
+         var queued = dlg2.loadQueue.length;
+         var ticks = counted( function()
+         {
+            while ( dlg2.loadQueue.length > 0 ) { dlg2.loaderTick(); dlg2.loaderTimer.stop(); }
+         } );
+         check( "the loader queued every frame", queued, 3 );
+         check( "and read only the two thumbnails never rendered", ticks.reads, 2 );
+
+         // A frame rewritten under the same name is a different key.
+         synthFrame( rows[2].path, { fwhm: 3.9, background: 0.03, noise: 0.002, seed: 999,
+                                     width: 820, date: "2026-01-01T03:02:00" } );
+         var changed = null;
+         var t3 = counted( function() { changed = FrameSelector.thumbnailOf( rows[2].path ); } );
+         check( "a rewritten frame is read again", t3.reads, 1 );
+
+         check( "clearing empties the preview folder", Cache.clearPreviews() > 0 &&
+                Cache.previewEntries().length == 0, true );
+         var t4 = counted( function() { FrameSelector.thumbnailOf( rows[0].path ); } );
+         check( "and a cleared frame is read again", t4.reads, 1 );
+      }
+      finally
+      {
+         try { if ( dlg ) { dlg.release(); dlg.cancel(); } } catch ( e ) {}
+         try { if ( dlg2 ) { dlg2.release(); dlg2.cancel(); } } catch ( e ) {}
+         try { Cache.clearPreviews(); } catch ( e ) {}
+         Cache.previewDirOverride = savedDir;
+      }
+   } )();
+
    /* ---- digests, which are what authorise a deletion -------------------- */
 
    if ( IN_PIXINSIGHT ) ( function()
@@ -7848,7 +8051,7 @@ function runTests()
          "#68 CheckBox \"Use cache\" checked=true enabled=true tip=#226:ade2cbc4 at 8,743,70x14 / 8,743,70x14 in dialog",
          "#69 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,743,141x14 / 84,743,141x14 in dialog",
          "#70 Label align=129 enabled=true tip=#88:ee3efb92 at 579,740,69x21 / 879,740,69x21 in dialog",
-         "#71 PushButton \"Clear cache\" minWidth=93 enabled=true tip=\"Delete every cached stage result.\" at 472,740,93x21 / 772,740,93x21 in dialog",
+         "#71 PushButton \"Clear cache\" minWidth=93 enabled=true tip=#75:7c91fdd9 at 472,740,93x21 / 772,740,93x21 in dialog",
          "#72 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#337:1f0ebd26 at 310,743,156x14 / 610,743,156x14 in dialog",
          "#73 Control enabled=true at 8,767,640x21 / 8,767,940x21 in dialog",
          "#74 Label \"Cache folder:\" align=130 enabled=true at 0,0,66x21 / 0,0,66x21 in #73",
@@ -21934,6 +22137,13 @@ function main()
    var aborted = false;
    silenceLogging();
    guardMessageBoxes();
+   /*
+    * The Frame Selector's preview cache goes to this run's scratch folder,
+    * never the user's own: dialogs built by the suite render frames, and
+    * those renders must neither land in nor be served from the real one.
+    */
+   var savedPreviewDir = Cache.previewDirOverride;
+   Cache.previewDirOverride = TEST_SCRATCH + "/previews";
    try { TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); checkNoMessageBoxes(); }
    catch ( e )
    {
@@ -21943,6 +22153,7 @@ function main()
    }
    finally
    {
+      Cache.previewDirOverride = savedPreviewDir;
       /*
        * Before the log is restored and before this function returns, so
        * the widget trees are detached while the script context is still

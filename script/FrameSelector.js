@@ -11,6 +11,9 @@
 #include <pjsr/TextAlign.jsh>
 #include <pjsr/BrushStyle.jsh>
 #include <pjsr/CryptographicHash.jsh>
+#include <pjsr/ColorSpace.jsh>
+#include <pjsr/SampleType.jsh>
+#include <pjsr/ImageOp.jsh>
 
 /*
  * selftest.js includes this file to reach the functions below, and it has
@@ -217,22 +220,27 @@ FrameSelector.detach = function( control, names )
 };
 
 /*
+ * How a frame is stretched for display: shadows this many MADs below the
+ * median, the median moved to TARGET. Part of every cached render's key,
+ * so changing either is a cold cache rather than a stale picture.
+ */
+FrameSelector.STRETCH = { SHADOWS: 2.8, TARGET: 0.25 };
+
+/*
  * Frames read for display, counted: the tests hold the reading paths to
- * one read per frame shown.
+ * one read per frame shown, and to none for a render the preview cache
+ * already holds.
  */
 FrameSelector.io = { frameReads: 0 };
 
 /*
- * A frame's first image read straight from its file, or null.
- *
- * NOT through ImageWindow.open, and nothing here runs a process: the
- * thumbnail loader calls this from a Timer while the review is open, and
- * every image window it created and closed, and every process it ran into
- * the Process Console, happened in PixInsight's workspace underneath the
- * dialog -- which closed a metric drop-down the moment it had been opened.
- * With the reader's verbosity at 0 nothing reaches the console either.
+ * The first image in a file, read without a window, a process or a line
+ * on the console ("verbosity 0"). The caller frees it; null when the file
+ * holds none. `image`, when given, is what it is read into, in that
+ * image's sample format: an empty Image is 32-bit float, four times the
+ * memory an 8-bit preview needs.
  */
-FrameSelector.readFrame = function( path )
+FrameSelector.readQuietly = function( path, image )
 {
    var F = new FileFormat( File.extractExtension( path ), true, false );
    if ( F.isNull )
@@ -243,8 +251,7 @@ FrameSelector.readFrame = function( path )
       var d = f.open( path, "verbosity 0" );
       if ( d == null || d.length < 1 )
          return null;
-      ++FrameSelector.io.frameReads;
-      img = new Image;
+      img = image || new Image;
       if ( !f.readImage( img ) )
          return null;
       var out = img;
@@ -259,6 +266,22 @@ FrameSelector.readFrame = function( path )
    }
 };
 
+/*
+ * A frame's first image read straight from its file, or null.
+ *
+ * NOT through ImageWindow.open, and nothing here runs a process: the
+ * thumbnail loader calls this from a Timer while the review is open, and
+ * every image window it created and closed, and every process it ran into
+ * the Process Console, happened in PixInsight's workspace underneath the
+ * dialog -- which closed a metric drop-down the moment it had been opened.
+ * With the reader's verbosity at 0 nothing reaches the console either.
+ */
+FrameSelector.readFrame = function( path )
+{
+   ++FrameSelector.io.frameReads;
+   return FrameSelector.readQuietly( path );
+};
+
 /* The midtones transfer function, inlined: Math.mtf per sample is a native call. */
 FrameSelector.mtf = function( m, x )
 {
@@ -271,16 +294,17 @@ FrameSelector.mtf = function( m, x )
 
 /*
  * Stretch an image in place, as HistogramTransformation would with the
- * shadows clipped at median - 2.8 MAD and the median sent to a quarter.
- * Image.render() applies no STF, so a linear frame renders black without
- * this. Done on the samples, band by band, so no window and no process
- * is involved (see readFrame).
+ * shadows clipped at median - STRETCH.SHADOWS MAD and the median sent to
+ * STRETCH.TARGET. Image.render() applies no STF, so a linear frame renders
+ * black without this. Done on the samples, band by band, so no window and
+ * no process is involved (see readFrame).
  */
 FrameSelector.stretchInPlace = function( img )
 {
+   var S = FrameSelector.STRETCH;
    var med = img.median(), mad = img.MAD()*1.4826;
-   var shadows = Math.max( 0, med - 2.8*mad );
-   var midtone = Math.mtf( 0.25, Math.max( 1e-8, med - shadows ) );
+   var shadows = Math.max( 0, med - S.SHADOWS*mad );
+   var midtone = Math.mtf( S.TARGET, Math.max( 1e-8, med - shadows ) );
    var span = Math.max( 1e-8, 1 - shadows );
    var band = Math.max( 1, Math.floor( 1048576/img.width ) );
    for ( var c = 0; c < img.numberOfChannels; ++c )
@@ -320,30 +344,145 @@ FrameSelector.stretchedImage = function( path, fit )
    }
 };
 
-/* A frame stretched and rendered, the image freed either way; null when unreadable. */
-FrameSelector.renderedFrame = function( path, fit )
+/* An 8-bit copy of an image in [0,1]: what a render shows, at a quarter of the bytes. */
+FrameSelector.eightBit = function( img )
 {
-   var img = FrameSelector.stretchedImage( path, fit );
-   if ( img == null )
-      return null;
-   try { return img.render(); }
-   finally { img.free(); }
+   var out = new Image( img.width, img.height, img.numberOfChannels,
+                        img.isColor ? ColorSpace_RGB : ColorSpace_Gray,
+                        8, SampleType_Integer );
+   // Every channel, explicitly: the default is the source's current selection.
+   out.apply( img, ImageOp_Mov, new Point( 0, 0 ), 0,
+              new Rect( img.width, img.height ), 0, img.numberOfChannels - 1 );
+   return out;
 };
 
-/* One frame's thumbnail, or null when it cannot be read. */
-FrameSelector.thumbnailOf = function( path )
+/* Everything that changes a render of `kind`, for its cache key. */
+FrameSelector.renderParams = function( kind )
 {
-   if ( !File.exists( path ) )
+   var p = { shadows: FrameSelector.STRETCH.SHADOWS, target: FrameSelector.STRETCH.TARGET };
+   if ( kind == "thumb" )
+   {
+      p.w = FrameSelector.THUMB.W;
+      p.h = FrameSelector.THUMB.H;
+   }
+   return p;
+};
+
+/*
+ * A cached render as a bitmap, or null when there is none. An entry that
+ * will not read is removed, so it is rendered afresh rather than failing
+ * on every click.
+ */
+FrameSelector.cachedRender = function( key )
+{
+   var p = Cache.previewPath( key ), img = null;
+   if ( !File.exists( p ) )
       return null;
    try
    {
-      return FrameSelector.renderedFrame( path, FrameSelector.THUMB );
+      img = FrameSelector.readQuietly( p, new Image( 1, 1, 1, ColorSpace_Gray, 8, SampleType_Integer ) );
+      if ( img == null )
+         throw new Error( "it holds no image" );
+      var bmp = img.render();
+      Cache.notePreviewUse( key );
+      return bmp;
    }
    catch ( e )
    {
-      Util.warn( "frames", "no thumbnail for " + path + ": " + e );
+      Util.warn( "frames", "a cached preview could not be read, rendering again: " + e );
+      try { File.remove( p ); } catch ( x ) {}
       return null;
    }
+   finally
+   {
+      if ( img != null )
+         img.free();
+   }
+};
+
+/*
+ * How a cached render is written: silently, and NOT compressed. Measured
+ * on a 6248x4176 sub: zstd shrank an entry from 25 to 16 MB but took the
+ * write from 19 to 251 ms and a cached click from 48 to 80 ms.
+ */
+FrameSelector.PREVIEW_HINTS = "verbosity 0";
+
+/*
+ * Writes a render to the preview cache as an 8-bit XISF, through a
+ * temporary name so a half-written file is never an entry, then trims
+ * the folder to its cap. A render that cannot be cached is still shown.
+ */
+FrameSelector.storeRender = function( key, img )
+{
+   var p = Cache.previewPath( key ), part = p + ".part";
+   try
+   {
+      Util.ensureDirectory( Cache.previewDir() );
+      var f = new FileFormatInstance( new FileFormat( ".xisf", false, true ) );
+      if ( f.isNull || !f.create( part, FrameSelector.PREVIEW_HINTS ) )
+         throw new Error( "the file could not be created" );
+      // 8-bit integer, stated: the writer's default is not the image's own format.
+      var d = new ImageDescription;
+      d.bitsPerSample = 8;
+      d.ieeefpSampleFormat = false;
+      var ok = f.setOptions( d ) && f.writeImage( img );
+      f.close();
+      if ( !ok )
+         throw new Error( "the image could not be written" );
+      if ( File.exists( p ) )
+         File.remove( p );
+      File.move( part, p );
+      Cache.notePreviewUse( key );
+      Cache.trimPreviews( Cache.PREVIEW_CAP_BYTES, key );
+   }
+   catch ( e )
+   {
+      Util.warn( "frames", "could not cache a preview: " + e );
+      try { if ( File.exists( part ) ) File.remove( part ); } catch ( x ) {}
+   }
+};
+
+/*
+ * A frame drawn for display, from the preview cache when it is there and
+ * read and stretched (then cached) when it is not. `kind` is "preview",
+ * full size, or "thumb", fitted to a filmstrip tile. Null when the frame
+ * cannot be read.
+ */
+FrameSelector.renderFrame = function( path, kind )
+{
+   var img = null;
+   try
+   {
+      var key = Cache.previewKey( path, kind, FrameSelector.renderParams( kind ) );
+      var hit = ( key != null ) ? FrameSelector.cachedRender( key ) : null;
+      if ( hit != null )
+         return hit;
+      var full = FrameSelector.stretchedImage( path, kind == "thumb" ? FrameSelector.THUMB : null );
+      if ( full == null )
+         return null;
+      // Shown as it will be stored, so the first view and every later one are the same picture.
+      try { img = FrameSelector.eightBit( full ); }
+      finally { full.free(); }
+      if ( key != null )
+         FrameSelector.storeRender( key, img );
+      return img.render();
+   }
+   catch ( e )
+   {
+      Util.warn( "frames", "no " + kind + " for " + path + ": " + e );
+      return null;
+   }
+   finally
+   {
+      if ( img != null )
+         img.free();
+   }
+};
+
+/* One frame's thumbnail. Null when it cannot be read. */
+FrameSelector.thumbnailOf = function( path )
+{
+   return File.exists( path ) ? FrameSelector.renderFrame( path, "thumb" ) : null;
 };
 
 /*
@@ -940,8 +1079,8 @@ FrameSelector.execute = function( manifest, onProgress )
  *
  * Image.render() does NOT apply a screen stretch -- its own documentation
  * excludes it -- so an STF on the view renders nothing different. The
- * duplicate's PIXELS are stretched with a HistogramTransformation built from
- * the frame's own median and MAD, and THAT is what is rendered.
+ * frame's PIXELS are stretched (FrameSelector.stretchInPlace) from its own
+ * median and MAD, and THAT is what is rendered, and cached.
  *
  * Rendered once per selected frame rather than once per paint, so panning is
  * a blit. The prototype measured 341 ms from open to a drawn bitmap on a
@@ -1434,24 +1573,18 @@ FrameSelector.PreviewControl = class extends ScrollBox
          return false;
       }
 
-      try
-      {
-         /*
-          * Stretched before rendering: Image.render() does NOT apply an
-          * STF, so a linear sub renders as a black rectangle. Read and
-          * stretched without a window or a process (see readFrame).
-          */
-         self.bmp = FrameSelector.renderedFrame( path, null );
-         if ( self.bmp == null )
-            return false;
-         self.layOutScroll();
-         return true;
-      }
-      catch ( e )
-      {
-         Util.warn( "frames", "could not preview " + path + ": " + e );
+      /*
+       * From the preview cache when this frame has been drawn before --
+       * in this dialog or an earlier one -- so a second click neither
+       * reads the frame nor runs a process. Stretched before rendering
+       * otherwise: Image.render() does NOT apply an STF, so a linear sub
+       * renders as a black rectangle.
+       */
+      self.bmp = FrameSelector.renderFrame( path, "preview" );
+      if ( self.bmp == null )
          return false;
-      }
+      self.layOutScroll();
+      return true;
    }
 };
 
