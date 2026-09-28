@@ -217,67 +217,132 @@ FrameSelector.detach = function( control, names )
 };
 
 /*
- * Stretch an image in a throwaway window and render it. Image.render()
- * applies no STF, so a linear frame renders black without this; the
- * stretch is built from the image's own median and MAD. The window is
- * closed in finally, success or not.
+ * Frames read for display, counted: the tests hold the reading paths to
+ * one read per frame shown.
  */
-FrameSelector.stretchedRender = function( img )
+FrameSelector.io = { frameReads: 0 };
+
+/*
+ * A frame's first image read straight from its file, or null.
+ *
+ * NOT through ImageWindow.open, and nothing here runs a process: the
+ * thumbnail loader calls this from a Timer while the review is open, and
+ * every image window it created and closed, and every process it ran into
+ * the Process Console, happened in PixInsight's workspace underneath the
+ * dialog -- which closed a metric drop-down the moment it had been opened.
+ * With the reader's verbosity at 0 nothing reaches the console either.
+ */
+FrameSelector.readFrame = function( path )
+{
+   var F = new FileFormat( File.extractExtension( path ), true, false );
+   if ( F.isNull )
+      return null;
+   var f = new FileFormatInstance( F ), img = null;
+   try
+   {
+      var d = f.open( path, "verbosity 0" );
+      if ( d == null || d.length < 1 )
+         return null;
+      ++FrameSelector.io.frameReads;
+      img = new Image;
+      if ( !f.readImage( img ) )
+         return null;
+      var out = img;
+      img = null;
+      return out;
+   }
+   finally
+   {
+      if ( img != null )
+         img.free();
+      try { f.close(); } catch ( e ) {}
+   }
+};
+
+/* The midtones transfer function, inlined: Math.mtf per sample is a native call. */
+FrameSelector.mtf = function( m, x )
+{
+   if ( x <= 0 )
+      return 0;
+   if ( x >= 1 )
+      return 1;
+   return ( m - 1 )*x/( ( 2*m - 1 )*x - m );
+};
+
+/*
+ * Stretch an image in place, as HistogramTransformation would with the
+ * shadows clipped at median - 2.8 MAD and the median sent to a quarter.
+ * Image.render() applies no STF, so a linear frame renders black without
+ * this. Done on the samples, band by band, so no window and no process
+ * is involved (see readFrame).
+ */
+FrameSelector.stretchInPlace = function( img )
 {
    var med = img.median(), mad = img.MAD()*1.4826;
    var shadows = Math.max( 0, med - 2.8*mad );
    var midtone = Math.mtf( 0.25, Math.max( 1e-8, med - shadows ) );
-   var dup = null;
-   try
-   {
-      dup = new ImageWindow( img.width, img.height, img.numberOfChannels,
-                             img.bitsPerSample, img.isReal, img.isColor,
-                             Util.freeWindowId( "fs_render" ) );
-      dup.mainView.beginProcess( UndoFlag_NoSwapFile );
-      dup.mainView.image.assign( img );
-      dup.mainView.endProcess();
-      var H = new HistogramTransformation;
-      H.H = [ [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ],
-              [ shadows, midtone, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ] ];
-      H.executeOn( dup.mainView );
-      return dup.mainView.image.render();
-   }
-   finally
-   {
-      try { if ( dup != null && !dup.isNull ) dup.forceClose(); } catch ( e ) {}
-   }
+   var span = Math.max( 1e-8, 1 - shadows );
+   var band = Math.max( 1, Math.floor( 1048576/img.width ) );
+   for ( var c = 0; c < img.numberOfChannels; ++c )
+      for ( var y = 0; y < img.height; y += band )
+      {
+         var r = new Rect( 0, y, img.width, Math.min( img.height, y + band ) );
+         var a = new Float32Array( r.width*r.height );
+         img.getSamples( a, r, c );
+         for ( var i = 0; i < a.length; ++i )
+            a[i] = FrameSelector.mtf( midtone, ( a[i] - shadows )/span );
+         img.setSamples( a, r, c );
+      }
 };
 
 /*
- * One frame's thumbnail: opened, shrunk IN its own throwaway window (no
- * full-size copy), stretched, rendered. Null when it cannot be read.
- * resample's single-factor form keeps the aspect by construction.
+ * A frame stretched for display, or null when it cannot be read. `fit`,
+ * a { W, H } box, shrinks it into the box first (a thumbnail; resample's
+ * single-factor form keeps the aspect); null keeps full size. The caller
+ * frees the image.
  */
+FrameSelector.stretchedImage = function( path, fit )
+{
+   var img = FrameSelector.readFrame( path );
+   if ( img == null )
+      return null;
+   try
+   {
+      if ( fit != null )
+         img.resample( Math.min( fit.W/img.width, fit.H/img.height ) );
+      FrameSelector.stretchInPlace( img );
+      return img;
+   }
+   catch ( e )
+   {
+      img.free();
+      throw e;
+   }
+};
+
+/* A frame stretched and rendered, the image freed either way; null when unreadable. */
+FrameSelector.renderedFrame = function( path, fit )
+{
+   var img = FrameSelector.stretchedImage( path, fit );
+   if ( img == null )
+      return null;
+   try { return img.render(); }
+   finally { img.free(); }
+};
+
+/* One frame's thumbnail, or null when it cannot be read. */
 FrameSelector.thumbnailOf = function( path )
 {
    if ( !File.exists( path ) )
       return null;
-   var ws = [];
    try
    {
-      ws = ImageWindow.open( path );
-      if ( ws.length == 0 )
-         return null;
-      var view = ws[0].mainView, img = view.image;
-      var s = Math.min( FrameSelector.THUMB.W/img.width, FrameSelector.THUMB.H/img.height );
-      view.beginProcess( UndoFlag_NoSwapFile );
-      view.image.resample( s );
-      view.endProcess();
-      return FrameSelector.stretchedRender( view.image );
+      return FrameSelector.renderedFrame( path, FrameSelector.THUMB );
    }
    catch ( e )
    {
       Util.warn( "frames", "no thumbnail for " + path + ": " + e );
       return null;
-   }
-   finally
-   {
-      FrameSelector.closeAll( ws );
    }
 };
 
@@ -1357,8 +1422,8 @@ FrameSelector.PreviewControl = class extends ScrollBox
        * layOutScroll clamps it in case this frame is smaller.
        */
       /*
-       * Checked before opening, because ImageWindow.open raises a MODAL
-       * error box for a file that is not there -- one the user has to
+       * Checked before reading: ImageWindow.open raised a MODAL error
+       * box for a file that is not there -- one the user has to
        * dismiss, per frame. A frame can vanish between the scan and the
        * review, and that is a preview which does not appear, not a dialog
        * demanding attention.
@@ -1369,19 +1434,16 @@ FrameSelector.PreviewControl = class extends ScrollBox
          return false;
       }
 
-      var win = null, ws = [];
       try
       {
-         ws = ImageWindow.open( path );
-         if ( ws.length == 0 )
-            return false;
-         win = ws[0];
          /*
           * Stretched before rendering: Image.render() does NOT apply an
-          * STF, so a linear sub renders as a black rectangle. The helper
-          * closes its own working window whatever happens.
+          * STF, so a linear sub renders as a black rectangle. Read and
+          * stretched without a window or a process (see readFrame).
           */
-         self.bmp = FrameSelector.stretchedRender( win.mainView.image );
+         self.bmp = FrameSelector.renderedFrame( path, null );
+         if ( self.bmp == null )
+            return false;
          self.layOutScroll();
          return true;
       }
@@ -1389,11 +1451,6 @@ FrameSelector.PreviewControl = class extends ScrollBox
       {
          Util.warn( "frames", "could not preview " + path + ": " + e );
          return false;
-      }
-      finally
-      {
-         // EVERY window the open produced, not only the first.
-         FrameSelector.closeAll( ws );
       }
    }
 };

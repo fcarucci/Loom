@@ -6423,6 +6423,106 @@ function runTests()
       check( "every cycle closed with loading still pending", midLoad, 5 );
    } )();
 
+   /*
+    * The metric drop-downs closed by themselves: the thumbnail loader's
+    * Timer kept firing under an open drop-down, and every tick opened an
+    * image window, made a second one, ran HistogramTransformation into
+    * the Process Console and closed both -- workspace activity that
+    * closes an open drop-down. No tick touched the combos themselves.
+    *
+    * A tick, and a preview, must now leave the workspace alone: no window
+    * id taken, no image read into the console (ImageWindow.open's
+    * "Reading image"), no process in it, the combos
+    * untouched -- and the picture the same as the HistogramTransformation
+    * it replaces.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dst = synthDir( "fs-quiet-loader" );
+      for ( var i = 0; i < 3; ++i )
+         synthFrame( dst + "/frame_0" + i + ".xisf",
+                     { fwhm: 3.0 + 0.2*i, background: 0.02, noise: 0.002, seed: 300 + i,
+                       date: "2026-01-01T03:0" + i + ":00" } );
+      var dlg = new FrameSelector.Dialog( FrameSelector.buildState( dst, null ) );
+      var origFree = Util.freeWindowId;
+      var seen = { ids: 0, combo: 0 }, preview = null;
+      try
+      {
+         dlg.loaderTimer.stop();
+         dlg.mayLoad = function() { return true; };      // stands in for "on screen"
+         var rows = dlg.channel().rows;
+         rows.forEach( function( r ) { delete dlg.thumbs[r.path]; } );
+         dlg.rebuildQueue();
+         dlg.loaderTimer.stop();
+         check( "the quiet-loader fixture queues its three frames", dlg.loadQueue.length, 3 );
+         [ dlg.plotCombo, dlg.stripMetric ].forEach( function( c )
+         {
+            [ "clear", "addItem", "insertItem", "removeItem", "setItemText" ].forEach( function( m )
+            {
+               var orig = c[m];
+               c[m] = function() { ++seen.combo; return orig.apply( c, arguments ); };
+            } );
+         } );
+         var combosBefore = [ dlg.plotCombo.currentItem, dlg.stripMetric.currentItem,
+                              dlg.plotCombo.enabled, dlg.stripMetric.enabled ].join();
+         Util.freeWindowId = function() { ++seen.ids; return origFree.apply( Util, arguments ); };
+         var io = FrameSelector.io || { frameReads: 0 }, reads = io.frameReads, text = "";
+         console.beginLog();
+         try
+         {
+            while ( dlg.loadQueue.length > 0 )
+            {
+               dlg.loaderTick();
+               dlg.loaderTimer.stop();
+            }
+            dlg.loadPreview( rows[1].path );
+         }
+         finally { console.flush(); text = console.endLog().toString(); }
+         preview = dlg.preview.bmp;
+         check( "every thumbnail arrived", rows.every( function( r ) { return dlg.thumbs[r.path] != null; } ), true );
+         check( "and the preview", preview != null && preview.width == 800, true );
+         check( "one read per frame shown", io.frameReads - reads, 4 );
+         check( "loading makes no image window", seen.ids, 0 );
+         check( "and writes nothing to the Process Console",
+                text.split( "\n" ).filter( function( l ) { return /Reading image|HistogramTransformation|Loading image/.test( l ); } ), [] );
+         check( "and never touches the metric combos", seen.combo, 0 );
+         check( "whose choice and state are unchanged",
+                [ dlg.plotCombo.currentItem, dlg.stripMetric.currentItem,
+                  dlg.plotCombo.enabled, dlg.stripMetric.enabled ].join(), combosBefore );
+         var thumb = FrameSelector.thumbnailOf( rows[1].path );
+         check( "a thumbnail fits the tile, aspect kept",
+                thumb.height == 80 && Math.abs( thumb.width - 800*80/600 ) <= 1, true );
+      }
+      finally
+      {
+         Util.freeWindowId = origFree;
+         dlg.release(); dlg.cancel();
+      }
+
+      /*
+       * The same picture as before: the frame stretched by
+       * HistogramTransformation in a window (the old way, kept here only
+       * as the reference) against the preview's bitmap.
+       */
+      var ws = ImageWindow.open( dst + "/frame_01.xisf" );
+      try
+      {
+         var img = ws[0].mainView.image;
+         var med = img.median(), mad = img.MAD()*1.4826;
+         var sh = Math.max( 0, med - 2.8*mad ), mt = Math.mtf( 0.25, Math.max( 1e-8, med - sh ) );
+         var H = new HistogramTransformation;
+         H.H = [ [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ],
+                 [ sh, mt, 1, 0, 1 ], [ 0, 0.5, 1, 0, 1 ] ];
+         H.executeOn( ws[0].mainView, false );
+         var ref = ws[0].mainView.image.render(), worst = 0;
+         for ( var y = 0; y < ref.height; y += 7 )
+            for ( var x = 0; x < ref.width; x += 7 )
+               worst = Math.max( worst, Math.abs( ( ref.pixel( x, y ) & 0xff ) - ( preview.pixel( x, y ) & 0xff ) ) );
+         check( "the preview is what HistogramTransformation rendered (within 1/255)", worst <= 1, true );
+      }
+      finally { FrameSelector.closeAll( ws ); }
+   } )();
+
    /* ---- digests, which are what authorise a deletion -------------------- */
 
    if ( IN_PIXINSIGHT ) ( function()
