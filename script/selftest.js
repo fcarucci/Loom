@@ -12451,6 +12451,68 @@ function runTests()
       run = Frames.measureInBatches( [], 8, fake( asked = [] ), function() { return false; } );
       check( "nothing to measure runs nothing and cancels nothing",
              [ asked.length, run.cancelled, run.abandoned ], [ 0, false, false ] );
+
+      /*
+       * The settle overlaps the next measurement: batch k's digests are
+       * started as soon as it is measured and finished only after batch
+       * k+1 has been measured, so the hashing runs while SubframeSelector
+       * reads the next frames. Cancel finishes the batch in hand, so what
+       * was measured is kept; an abandoned channel stops its digests.
+       */
+      function settler( log )
+      {
+         return { start: function( batch, got ) { log.push( "start " + batch.join( "" ) + " " + Object.keys( got ).sort().join( "" ) ); return batch.join( "" ); },
+                  finish: function( token ) { log.push( "finish " + token ); },
+                  kill: function( token ) { log.push( "kill " + token ); } };
+      }
+      function logged( log, measure )
+      {
+         return function( batch ) { log.push( "measure " + batch.join( "" ) ); return measure( batch ); };
+      }
+      var order = [];
+      run = Frames.measureInBatches( paths, 2, logged( order, fake( [] ) ),
+                                     function( done ) { order.push( "told " + done ); return true; }, settler( order ) );
+      check( "a batch's settle starts once it is measured and finishes after the next one is",
+             order, [ "measure ab", "start ab ab", "told 2",
+                      "measure cd", "finish ab", "start cd cd", "told 4",
+                      "measure e", "finish cd", "start e e", "told 5", "finish e" ] );
+      check( "and the measurements are the same", Object.keys( run.measured ).sort(), paths );
+      order = [];
+      run = Frames.measureInBatches( paths, 2, logged( order, fake( [] ) ),
+                                     function( done ) { order.push( "told " + done ); return done < 4; }, settler( order ) );
+      check( "Cancel finishes the batch in hand before it returns",
+             [ order, run.cancelled ],
+             [ [ "measure ab", "start ab ab", "told 2", "measure cd", "finish ab", "start cd cd", "told 4", "finish cd" ], true ] );
+      order = [];
+      calls = 0;
+      run = Frames.measureInBatches( paths, 2, logged( order, function( batch )
+      {
+         return ( ++calls == 2 ) ? null : fake( [] )( batch );
+      } ), null, settler( order ) );
+      check( "an abandoned channel still settles the batch in hand, and starts none",
+             [ order, run.abandoned ], [ [ "measure ab", "start ab ab", "measure cd", "finish ab" ], true ] );
+      order = [];
+      run = Frames.measureInBatches( paths, 2, logged( order, function( batch )
+      {
+         var out = fake( [] )( batch );
+         if ( batch[0] == "c" ) out["z"] = { path: "z" };
+         return out;
+      } ), null, settler( order ) );
+      check( "and so does a result that does not fit its batch",
+             [ order, run.abandoned ], [ [ "measure ab", "start ab ab", "measure cd", "finish ab" ], true ] );
+      order = [];
+      var thrown = null;
+      try
+      {
+         Frames.measureInBatches( paths, 2, logged( order, function( batch )
+         {
+            if ( batch[0] == "c" ) throw new Error( "SubframeSelector failed" );
+            return fake( [] )( batch );
+         } ), null, settler( order ) );
+      }
+      catch ( e ) { thrown = e.message; }
+      check( "a measurement that throws stops the settle in hand and passes the error on",
+             [ order, thrown ], [ [ "measure ab", "start ab ab", "measure cd", "kill ab" ], "SubframeSelector failed" ] );
    } )();
 
    /*
@@ -12734,8 +12796,11 @@ function runTests()
          File.writeTextFile( FrameSelector.digestCachePath(), JSON.stringify( forged ) );
          var stale = scan( [ a ] );
          check( "a stale entry is what the pre-scan sees", digestOf( stale, a ), ZERO );
+         var settledNow = null;
+         var settle = FrameSelector.settler( hasher(), function( batch, measured, now ) { settledNow = now; } );
+         settle.finish( settle.start( [ a ], {} ) );
          check( "the settle's identities never ask the cache",
-                FrameSelector.identitiesNow( [ a ], hasher() )[a].digest, FrameSelector.digest( a ) );
+                settledNow[a].digest, FrameSelector.digest( a ) );
          var man = Frames.buildManifest( [
             { path: a, state: Frames.STATE.REJECTED, reasons: [ "test" ],
               digest: stale.before[a].digest, size: stale.before[a].size, mtime: stale.before[a].mtime } ] );
@@ -22900,6 +22965,46 @@ function hasherChecks()
       catch ( e ) { settled = { threw: String( e ) }; }
       check( "hasher: the settle digests go through the hasher; a changed frame is unstable",
              [ settled.unstable, asked.slice().sort() ], [ [ subs[1] ], subs.slice().sort() ] );
+
+      /*
+       * Overlapped: batch k's digests are asked for as soon as it is
+       * measured and waited for only after batch k+1 is, so they run while
+       * SubframeSelector reads the next frames. Batches of one here.
+       */
+      var trace = [], stored = [];
+      FrameSelector.storeMeasurement = function( id ) { stored.push( id.digest ); };
+      FrameSelector.measure = function( batch )
+      {
+         trace.push( "measure " + File.extractName( batch[0] ) );
+         var m = {};
+         batch.forEach( function( p ) { m[p] = { measuredStub: true }; } );
+         return m;
+      };
+      var overlapping = { start: function()
+      {
+         var mine = [];
+         return { add: function( p ) { mine.push( p ); trace.push( "digest " + File.extractName( p ) ); },
+                  poll: function() { return false; }, kill: function() { trace.push( "kill" ); },
+                  wait: function()
+                  {
+                     var d = {};
+                     mine.forEach( function( p ) { trace.push( "settle " + File.extractName( p ) ); d[p] = before[p].digest; } );
+                     return { digests: d, cancelled: false };
+                  } };
+      } };
+      var realBatch = FrameSelector.MEASURE_BATCH;
+      var overlapped = null;
+      try
+      {
+         FrameSelector.MEASURE_BATCH = 1;
+         overlapped = FrameSelector.measureGroup( group, before, null, null, overlapping );
+      }
+      finally { FrameSelector.MEASURE_BATCH = realBatch; }
+      check( "overlap: each batch's digests run while the next batch is measured",
+             trace, [ "measure a", "digest a", "measure b", "settle a", "digest b",
+                      "measure c", "settle b", "digest c", "settle c" ] );
+      check( "overlap: and every frame is settled and stored, none unstable",
+             [ overlapped.unstable, stored.length, Object.keys( overlapped.metrics ).length ], [ [], 3, 3 ] );
    }
    finally
    {

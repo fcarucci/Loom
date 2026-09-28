@@ -673,14 +673,6 @@ FrameSelector.Identities.prototype.remember = function( digests )
       FrameSelector.saveDigestCache( this.table );
 };
 
-/* Every path's identity, now, blocking. */
-FrameSelector.identitiesNow = function( paths, hasher )
-{
-   var ids = new FrameSelector.Identities( hasher );
-   paths.forEach( function( p ) { ids.request( p ); } );
-   return ids.finish( null ).ids;
-};
-
 /*
  * A header read that can never put a box on screen.
  *
@@ -932,18 +924,15 @@ FrameSelector.MEASURE_BATCH = 8;
 /*
  * Measure in batches of `size` through ONE schema, so the whole channel
  * is read exactly as a single call would read it. onBatch( done ) and
- * settle( batch, measured ) are optional; see Frames.measureInBatches.
+ * settler are optional; see Frames.measureInBatches.
  */
-FrameSelector.measureBatched = function( paths, size, onBatch, settle )
+FrameSelector.measureBatched = function( paths, size, onBatch, settler )
 {
    var schema = {};
    return Frames.measureInBatches( paths, size, function( batch )
    {
-      var measured = FrameSelector.measure( batch, schema );
-      if ( measured != null && settle != null )
-         settle( batch, measured );
-      return measured;
-   }, onBatch );
+      return FrameSelector.measure( batch, schema );
+   }, onBatch, settler );
 };
 
 /* A channel's frames split into those already measured and those not. */
@@ -971,8 +960,10 @@ FrameSelector.cachedSplit = function( group )
  * authorises deleting B on A's numbers. An unstable frame is dropped from
  * the cohort entirely rather than shown with numbers nobody can act on.
  *
- * Done per batch, right after it is measured, and each batch's numbers are
- * cached then: a scan cancelled half way keeps the half it measured.
+ * Done per batch, and each batch's numbers are cached then: a scan
+ * cancelled half way keeps the half it measured. A batch's second
+ * fingerprint is taken while the next batch is measured (see
+ * FrameSelector.settler), so the hashing overlaps the measuring.
  *
  * Returns null when the group must be abandoned, which discards the
  * channel's numbers too -- a channel measured over a set that is not the
@@ -986,30 +977,49 @@ FrameSelector.measureGroup = function( group, before, onBatch, split, hasher )
    if ( plan.need.length == 0 )
       return { metrics: metrics, unstable: [], cancelled: false };
 
-   var run = FrameSelector.measureBatched( plan.need, FrameSelector.MEASURE_BATCH, onBatch,
-      function( batch, measured )
+   var settler = FrameSelector.settler( hasher, function( batch, measured, now )
+   {
+      for ( var k = 0; k < batch.length; ++k )
       {
-         var nowIds = FrameSelector.identitiesNow( batch, hasher );
-         for ( var k = 0; k < batch.length; ++k )
+         var path = batch[k];
+         if ( now[path] == null || now[path].digest != before[path].digest )
          {
-            var path = batch[k];
-            var now = nowIds[path];
-            if ( now == null || now.digest != before[path].digest )
-            {
-               unstable.push( path );
-               continue;                  // the measured bytes are gone
-            }
-            if ( measured[path] != null )
-            {
-               var stored = Frames.storedMetrics( measured[path] );
-               FrameSelector.storeMeasurement( before[path], stored );
-               metrics[path] = stored;
-            }
+            unstable.push( path );
+            continue;                  // the measured bytes are gone
          }
-      } );
+         if ( measured[path] != null )
+         {
+            var stored = Frames.storedMetrics( measured[path] );
+            FrameSelector.storeMeasurement( before[path], stored );
+            metrics[path] = stored;
+         }
+      }
+   } );
+   var run = FrameSelector.measureBatched( plan.need, FrameSelector.MEASURE_BATCH, onBatch, settler );
    if ( run.abandoned )
       return null;
    return { metrics: metrics, unstable: unstable, cancelled: run.cancelled };
+};
+
+/*
+ * The settle for Frames.measureInBatches: a measured batch's identities are
+ * asked for at once and finished later, then handed to
+ * check( batch, measured, now ) with now = { path: identity or null }.
+ * Fresh Identities each time: the digest cache never answers here.
+ */
+FrameSelector.settler = function( hasher, check )
+{
+   return {
+      start: function( batch, measured )
+      {
+         var ids = new FrameSelector.Identities( hasher );
+         batch.forEach( function( p ) { ids.request( p ); } );
+         ids.poll();
+         return { batch: batch, measured: measured, ids: ids };
+      },
+      finish: function( s ) { check( s.batch, s.measured, s.ids.finish( null ).ids ); },
+      kill: function( s ) { s.ids.kill(); }
+   };
 };
 
 /*

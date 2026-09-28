@@ -2003,30 +2003,84 @@ Frames.batchesOf = function( list, size )
  *
  * Returns { measured, cancelled, abandoned }; measured is null when
  * abandoned, and holds the batches completed before a cancel.
+ *
+ * `settler`, optional, checks each batch after it is measured:
+ * start( batch, got ) begins it and returns a token, finish( token )
+ * completes it, kill( token ) drops it. Batch k's settle is finished only
+ * after batch k+1 has been measured, so its digests are taken while
+ * SubframeSelector reads the next frames -- still after batch k was
+ * measured, which is all the check needs. A cancel finishes the batch in
+ * hand, so a scan stopped half way keeps the half it measured, and so
+ * does an abandoned channel, as before; only an exception kills it.
  */
-Frames.measureInBatches = function( paths, size, measureBatch, onBatch )
+Frames.measureInBatches = function( paths, size, measureBatch, onBatch, settler )
 {
-   var measured = {}, done = 0;
-   var batches = Frames.batchesOf( paths || [], size );
+   var s = settler || Frames.NO_SETTLER;
+   var state = { measured: {}, pending: null };
+   try { return Frames.runBatches( Frames.batchesOf( paths || [], size ), measureBatch, onBatch, s, state ); }
+   catch ( e )
+   {
+      // nothing is left digesting, or holding temporary files, behind an error
+      if ( state.pending != null )
+         s.kill( state.pending );
+      throw e;
+   }
+};
+
+/* measureInBatches' loop; state.pending is the batch whose settle is still open. */
+Frames.runBatches = function( batches, measureBatch, onBatch, s, state )
+{
+   var measured = state.measured, done = 0;
+   function finishPending()
+   {
+      if ( state.pending != null )
+         s.finish( state.pending );
+      state.pending = null;
+   }
    for ( var b = 0; b < batches.length; ++b )
    {
       var batch = batches[b], got = measureBatch( batch );
-      if ( got == null )
+      /*
+       * An abandoned channel still settles the batch before: it was
+       * measured, and caching it is what happened before the settles
+       * overlapped.
+       */
+      finishPending();
+      if ( !Frames.mergeBatch( batch, got, measured ) )
          return { measured: null, cancelled: false, abandoned: true };
-      var asked = {};
-      for ( var i = 0; i < batch.length; ++i )
-         asked[batch[i]] = true;
-      for ( var p in got )
-      {
-         if ( !asked[p] || measured[p] != null )
-            return { measured: null, cancelled: false, abandoned: true };
-         measured[p] = got[p];
-      }
+      state.pending = s.start( batch, got );
       done += batch.length;
       if ( onBatch != null && onBatch( done ) === false )
+      {
+         finishPending();
          return { measured: measured, cancelled: true, abandoned: false };
+      }
    }
+   finishPending();
    return { measured: measured, cancelled: false, abandoned: false };
+};
+
+Frames.NO_SETTLER = { start: function() { return null; }, finish: function() {}, kill: function() {} };
+
+/*
+ * One batch's results into `measured`; false when they cannot be used: no
+ * result at all, or one for a path the batch did not ask for or that is
+ * already measured.
+ */
+Frames.mergeBatch = function( batch, got, measured )
+{
+   if ( got == null )
+      return false;
+   var asked = {};
+   for ( var i = 0; i < batch.length; ++i )
+      asked[batch[i]] = true;
+   for ( var p in got )
+   {
+      if ( !asked[p] || measured[p] != null )
+         return false;
+      measured[p] = got[p];
+   }
+   return true;
 };
 
 /*
