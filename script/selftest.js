@@ -121,6 +121,63 @@ var FAILURES = [];
  * output that means anything is the PASS/FAIL line. Restored in main() so
  * a crash still reports through the normal channels.
  */
+/*
+ * No test may ever open a message box. A modal box in the test instance
+ * holds PixInsight's script queue with nobody there to dismiss it: it
+ * stopped slot 2 several times (a delete confirmation, a missing-file
+ * error, an astrometry question).
+ *
+ * In PJSR `execute` is a native method on each MessageBox INSTANCE, not on
+ * MessageBox.prototype (measured on build 1706: the prototype has no
+ * execute), so stubbing the prototype intercepts nothing. The guard
+ * replaces the MessageBox constructor itself for the whole run: a box a
+ * test builds records its caption and text and answers as a user
+ * dismissing it would (its last button: No, Cancel, or the only OK). The
+ * last check fails and names every box a test tried to open, so the
+ * offender is an ordinary failure instead of a stuck instance. A test that
+ * substitutes MessageBox itself (withGlobals) restores the guard after.
+ *
+ * Dialog.execute is native per instance as well and cannot be guarded
+ * here: tests build dialogs and drive their methods, and never execute
+ * them. PixInsight's own error boxes (ImageWindow.open on a missing file)
+ * are not MessageBoxes either: code must not open what it has not found.
+ */
+var MESSAGE_BOXES = [];
+var REAL_MESSAGE_BOX = null;
+function guardMessageBoxes()
+{
+   if ( !IN_PIXINSIGHT || typeof MessageBox == "undefined" )
+      return;
+   REAL_MESSAGE_BOX = MessageBox;
+   MessageBox = function( text, caption, icon, b0, b1, b2 )
+   {
+      this.text = text;
+      this.caption = caption;
+      this.escapeButton = ( b2 !== undefined ) ? b2 : ( b1 !== undefined ) ? b1 : b0;
+      this.execute = function()
+      {
+         MESSAGE_BOXES.push( String( this.caption || "" ) + ": " + String( this.text || "" ).substring( 0, 120 ) );
+         return this.escapeButton;
+      };
+   };
+}
+function restoreMessageBoxes()
+{
+   if ( REAL_MESSAGE_BOX != null )
+      MessageBox = REAL_MESSAGE_BOX;
+}
+function checkNoMessageBoxes()
+{
+   if ( REAL_MESSAGE_BOX == null )
+      return;
+   // The guard itself: a box is recorded and answered, not shown.
+   var answer = ( new MessageBox( "guard probe", "Loom selftest", 0, 1 ) ).execute();
+   check( "the message-box guard records a box instead of showing it",
+          [ MESSAGE_BOXES[MESSAGE_BOXES.length - 1], answer ], [ "Loom selftest: guard probe", 1 ] );
+   MESSAGE_BOXES.pop();
+   check( "no test opened a message box", MESSAGE_BOXES, [] );
+}
+
 var REAL_LOG = Util.log, REAL_WARN = Util.warn, REAL_OPERATION = Util.operation;
 function silenceLogging()
 {
@@ -21671,7 +21728,8 @@ function main()
 {
    var aborted = false;
    silenceLogging();
-   try { TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); }
+   guardMessageBoxes();
+   try { TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); checkNoMessageBoxes(); }
    catch ( e )
    {
       aborted = true;
@@ -21686,6 +21744,7 @@ function main()
        * whole. Leaving it to teardown is what killed the application.
        */
       releaseDialogs();
+      restoreMessageBoxes();
       restoreLogging();
       removeTestFolder( TEST_SCRATCH );
    }
