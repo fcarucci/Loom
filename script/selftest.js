@@ -419,7 +419,7 @@ function synthFrame( path, o )
       win.mainView.endProcess();
       win.keywords = [ new FITSKeyword( "FILTER", "'" + ( o.filter || "S" ) + "'", "" ),
                        new FITSKeyword( "EXPTIME", "60", "" ),
-                       new FITSKeyword( "IMAGETYP", "'Light Frame'", "" ),
+                       new FITSKeyword( "IMAGETYP", "'" + ( o.imageType || "Light Frame" ) + "'", "" ),
                        new FITSKeyword( "DATE-OBS", "'" + ( o.date || "2026-01-01T00:00:00" ) + "'", "" ) ];
       win.saveAs( path, false, false, false, false );
    }
@@ -12126,6 +12126,111 @@ function runTests()
       var bare = Frames.measuringLines( "H", 1, 2, null );
       check( "without the whole-scan figures the bar is the channel",
              [ bare.title, bare.detail, bare.fraction ], [ "Measuring H (1 of 2 frames)", "", 0.5 ] );
+   } )();
+
+   } if ( testGroup( "frames" ) ) {
+   /*
+    * The Frame Selector reviews the SUBFRAMES of a night. Pointed at a
+    * WBPP masters folder it listed every masterLight beside its 2x drizzle
+    * -- FWHM 3.78, 7.72, 3.76, 7.68: the same stars in pixels half the
+    * size -- as if they were consecutive subs, and masterFlats with no
+    * measurement at all. IMAGETYP decides; the name only when it is absent.
+    */
+   check( "a light sub is a subframe", Frames.notSubframe( "Light_S_0001.xisf", "Light" ), null );
+   check( "so is one written as Light Frame", Frames.notSubframe( "a.xisf", "'Light Frame'" ), null );
+   check( "a master light is not, by IMAGETYP",
+          Frames.notSubframe( "stack.xisf", "Master Light" ), "master" );
+   check( "a master flat is not",
+          Frames.notSubframe( "masterFlat_FILTER-S.xisf", "Master Flat" ), "master" );
+   check( "a flat sub is not", Frames.notSubframe( "Flat_S_0001.fit", "Flat Field" ), "flat" );
+   check( "nor a dark", Frames.notSubframe( "Dark_300s.fit", "Dark Frame" ), "dark" );
+   check( "nor a bias", Frames.notSubframe( "Bias_0001.fit", "Bias Frame" ), "bias" );
+   check( "nor an offset frame, which is a bias", Frames.notSubframe( "x.fit", "Offset" ), "bias" );
+   check( "a WBPP master named so is not, even when IMAGETYP says Light",
+          Frames.notSubframe( "masterLight_BIN-1_FILTER-S_mono_drizzle_2x.xisf", "Light" ), "master" );
+   check( "without IMAGETYP the name decides: masterLight",
+          Frames.notSubframe( "masterLight_BIN-1_FILTER-S_mono.xisf", null ), "master" );
+   check( "an ASIAIR flat by name", Frames.notSubframe( "Flat_1.0ms_Bin1_S_0001.fit", "" ), "flat" );
+   check( "a dark by name", Frames.notSubframe( "Dark_180.0s_Bin1_0001.fit", null ), "dark" );
+   check( "an ImageIntegration result keeps its lights' IMAGETYP but is not a sub",
+          Frames.notSubframe( "integration_S.xisf", "Light Frame" ), "master" );
+   check( "biases are counted as biases",
+          Frames.skippedLine( [ { kind: "bias" }, { kind: "bias" } ] ),
+          "Skipped 2 files that are not light subframes: 2 biases." );
+   check( "an unknown file with no IMAGETYP is kept",
+          Frames.notSubframe( "IC1396_0001.fit", null ), null );
+   check( "an unfamiliar IMAGETYP is kept rather than hidden",
+          Frames.notSubframe( "a.fit", "Science" ), null );
+   check( "a name that merely contains flat is kept",
+          Frames.notSubframe( "Light_flatfield-test_0001.fit", null ), null );
+
+   /* What is said about the files left out. */
+   check( "nothing skipped says nothing", Frames.skippedLine( [] ), "" );
+   check( "the skipped files are counted by kind",
+          Frames.skippedLine( [ { kind: "master" }, { kind: "flat" }, { kind: "master" } ] ),
+          "Skipped 3 files that are not light subframes: 2 masters, 1 flat." );
+   check( "one of one kind",
+          Frames.skippedLine( [ { kind: "dark" } ] ),
+          "Skipped 1 file that is not a light subframe: 1 dark." );
+   check( "a folder of only masters is told so plainly",
+          Frames.noSubframesMessage( [ { kind: "master" }, { kind: "master" } ] ),
+          "This folder holds no light subframes: 2 masters.\n\n" +
+          "The Frame Selector reviews the individual subframes of a night. " +
+          "Point it at the folder of lights, not at masters or calibration frames." );
+   check( "an empty folder keeps its old message",
+          Frames.noSubframesMessage( [] ), "No readable frames in that folder." );
+
+   } if ( testGroup( "frameselector" ) ) {
+   /*
+    * Masters and calibration frames are left out of the cohort before a
+    * byte of them is digested, and reported. A plain light stays.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fs-not-subs" ), o = { fwhm: 3.0, background: 0.02, noise: 0.002, stars: 50 };
+      var light = synthFrame( dir + "/Light_S_0001.xisf", o );
+      synthFrame( dir + "/stack.xisf", { fwhm: 3.0, background: 0.02, noise: 0.002, stars: 50,
+                                         imageType: "Master Light" } );
+      synthFrame( dir + "/masterLight_BIN-1_FILTER-S_mono_drizzle_2x.xisf", o );
+      synthFrame( dir + "/Flat_S_0001.xisf", { fwhm: 3.0, background: 0.5, noise: 0.002, stars: 0,
+                                               imageType: "Flat Field" } );
+      var cohort = FrameSelector.cohortFrom( FrameSelector.frameFilesIn( dir ) );
+      check( "only the light sub is in the cohort",
+             cohort.entries.map( function( e ) { return e.path; } ), [ light ] );
+      check( "and the rest are reported by kind",
+             ( cohort.skipped || [] ).map( function( s )
+                { return File.extractName( s.path ) + ":" + s.kind; } ).sort(),
+             [ "Flat_S_0001:flat", "masterLight_BIN-1_FILTER-S_mono_drizzle_2x:master", "stack:master" ] );
+      var state = FrameSelector.buildState( dir, null );
+      check( "the review state carries what was skipped", ( state.skipped || [] ).length, 3 );
+   } )();
+
+   /*
+    * The scan never shows a box. Reading IMAGETYP before the digest sent a
+    * missing file through Util.readImageInfo, whose full-read fallback
+    * (ImageWindow.open) raised a modal "No such file" and stopped a
+    * dispatched run. The scan reads headers only, never opens what is not
+    * there, and reports what it could not read. readImageInfo is stubbed
+    * here so that even a failing run of this test opens nothing.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var realRead = Util.readImageInfo, fullReads = 0, cohort = null, entry = null;
+      try
+      {
+         Util.readImageInfo = function() { ++fullReads; return { keywords: [], width: 0, height: 0 }; };
+         cohort = FrameSelector.cohortFrom( [ "/nope/a_c.xisf", "/nope/b.fit" ] );
+         entry = FrameSelector.entryFor( "/nope/c.xisf" );
+      }
+      finally { Util.readImageInfo = realRead; }
+      check( "scanning missing files asks for no full read, so no window and no box", fullReads, 0 );
+      check( "they are not in the cohort", cohort.entries.length, 0 );
+      check( "and are reported as unreadable", ( cohort.unreadable || [] ).length, 2 );
+      check( "a missing file's entry is nulls", [ entry.filter, entry.imageType, entry.width ], [ null, null, 0 ] );
+      check( "the console line counts them",
+             Frames.unreadableLine( [ "/a", "/b" ] ), "Could not read 2 files; they are left out." );
+      check( "one of them", Frames.unreadableLine( [ "/a" ] ), "Could not read 1 file; it is left out." );
+      check( "none, nothing", Frames.unreadableLine( [] ), "" );
    } )();
 
    } if ( testGroup( "frameselector" ) ) {

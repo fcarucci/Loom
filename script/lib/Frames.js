@@ -901,6 +901,86 @@ Frames.round = function( v )
    return v.toPrecision( 3 );
 };
 
+/*
+ * What a file is when it is NOT a light subframe: "master", "flat", "dark"
+ * or "bias"; null when it is one, or when nothing says otherwise.
+ *
+ * The Frame Selector reviews the subframes of a night. Pointed at a WBPP
+ * masters folder it used to list each masterLight beside its 2x drizzle
+ * as if they were consecutive subs -- FWHM 3.78, 7.72, 3.76, 7.68, the
+ * same stars measured in pixels half the size -- and every masterFlat as
+ * a frame with nothing measured.
+ *
+ * IMAGETYP decides when present ("Light", "Light Frame", "Master Light",
+ * "Flat Field", "Dark Frame", "Bias Frame", "Offset"); a WBPP master's
+ * name decides regardless, since nothing named masterX is a sub, and so
+ * does ImageIntegration's own "integration" name, which keeps the
+ * IMAGETYP of the lights it stacked; without
+ * IMAGETYP the ASIAIR and WBPP name prefixes are the fallback. Anything
+ * unfamiliar is KEPT: hiding a light is worse than showing a stranger.
+ */
+Frames.CALIBRATION_KINDS = [ [ /flat/i, "flat" ], [ /dark/i, "dark" ],
+                             [ /bias|offset|zero/i, "bias" ] ];
+
+Frames.notSubframe = function( name, imageType )
+{
+   var n = String( name || "" ), t = String( imageType || "" ).replace( /'/g, "" ).trim();
+   if ( /^(master|integration)/i.test( n ) || /master/i.test( t ) )
+      return "master";
+   var subject = t.length > 0 ? t : ( /^([A-Za-z]+)[_ -]/.exec( n ) || [ "", "" ] )[1];
+   for ( var i = 0; i < Frames.CALIBRATION_KINDS.length; ++i )
+      if ( Frames.CALIBRATION_KINDS[i][0].test( subject ) &&
+           ( t.length > 0 || /^(flat|dark|bias|darkflat|flatdark|offset)$/i.test( subject ) ) )
+         return Frames.CALIBRATION_KINDS[i][1];
+   return null;
+};
+
+/* "2 masters, 1 flat": the skipped files counted by kind, in first-seen order. */
+Frames.skippedCounts = function( skipped )
+{
+   var counts = Object.create( null ), order = [];
+   for ( var i = 0; i < skipped.length; ++i )
+   {
+      var k = skipped[i].kind;
+      if ( counts[k] == null ) { counts[k] = 0; order.push( k ); }
+      ++counts[k];
+   }
+   return order.map( function( k )
+   {
+      return counts[k] + " " + k + ( counts[k] == 1 ? "" : ( k == "bias" ? "es" : "s" ) );
+   } ).join( ", " );
+};
+
+/* The console line for files left out of a scan; "" when none were. */
+Frames.skippedLine = function( skipped )
+{
+   if ( skipped == null || skipped.length == 0 )
+      return "";
+   var one = skipped.length == 1;
+   return "Skipped " + skipped.length + ( one ? " file that is not a light subframe: "
+                                              : " files that are not light subframes: " ) +
+          Frames.skippedCounts( skipped ) + ".";
+};
+
+/* The console line for files a scan could not read; "" when there were none. */
+Frames.unreadableLine = function( paths )
+{
+   if ( paths == null || paths.length == 0 )
+      return "";
+   return "Could not read " + paths.length +
+          ( paths.length == 1 ? " file; it is left out." : " files; they are left out." );
+};
+
+/* What to say when a folder gave the review nothing to show. */
+Frames.noSubframesMessage = function( skipped )
+{
+   if ( skipped == null || skipped.length == 0 )
+      return "No readable frames in that folder.";
+   return "This folder holds no light subframes: " + Frames.skippedCounts( skipped ) + ".\n\n" +
+          "The Frame Selector reviews the individual subframes of a night. " +
+          "Point it at the folder of lights, not at masters or calibration frames.";
+};
+
 Frames.NO_FILTER = "(no filter)";
 
 /*

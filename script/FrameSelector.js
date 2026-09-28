@@ -341,6 +341,25 @@ FrameSelector.fileIdentity = function( path )
 };
 
 /*
+ * A header read that can never put a box on screen.
+ *
+ * Util.readHeader falls back to a FULL read through ImageWindow.open when
+ * the header-only reader fails, and ImageWindow.open raises a modal error
+ * for a file that is missing or unreadable -- which stops a scan, and a
+ * dispatched run with nobody there to dismiss it. A scan reads the header
+ * only, and a file that is not there is not opened at all.
+ */
+FrameSelector.quietHeader = function( path )
+{
+   var info = null;
+   try { info = File.exists( path ) ? Util.tryHeaderRead( path ).info : null; }
+   catch ( e ) { info = null; }
+   var kw = info ? info.keywords : null;
+   return { info: info,
+            keyword: function( name ) { return kw ? Util.keywordValue( kw, name ) : null; } };
+};
+
+/*
  * The header fields the comparability check needs. Calibration state is one
  * of them: raw and calibrated frames of one filter can agree on exposure,
  * binning and geometry, and an uncalibrated frame among calibrated ones
@@ -348,7 +367,7 @@ FrameSelector.fileIdentity = function( path )
  */
 FrameSelector.entryFor = function( path )
 {
-   var header = Util.readHeader( path ), info = header.info, keyword = header.keyword;
+   var header = FrameSelector.quietHeader( path ), info = header.info, keyword = header.keyword;
 
    /*
     * WBPP's calibrated frames carry a _c suffix and a calibration history.
@@ -473,10 +492,14 @@ FrameSelector.frameFilesIn = function( folder )
  * BEFORE that file is read -- so the label names what is being read now,
  * and a path that turns out to be unreadable still advances the count.
  * Returning false from it abandons the scan.
+ *
+ * A master or calibration frame is left out -- and listed in `skipped` as
+ * { path, kind } -- on its header alone, BEFORE it is digested: a masters
+ * folder is gigabytes nobody asked to have read. See Frames.notSubframe.
  */
 FrameSelector.cohortFrom = function( paths, progress )
 {
-   var entries = [], before = {}, cancelled = false;
+   var entries = [], before = {}, skipped = [], unreadable = [], cancelled = false;
    for ( var i = 0; i < paths.length; ++i )
    {
       if ( progress != null &&
@@ -485,15 +508,30 @@ FrameSelector.cohortFrom = function( paths, progress )
          cancelled = true;
          break;
       }
+      if ( !File.exists( paths[i] ) )
+      {
+         unreadable.push( paths[i] );
+         continue;
+      }
+      var e = FrameSelector.entryFor( paths[i] );
+      var kind = Frames.notSubframe( File.extractName( paths[i] ), e.imageType );
+      if ( kind != null )
+      {
+         skipped.push( { path: paths[i], kind: kind } );
+         continue;
+      }
       var id = FrameSelector.fileIdentity( paths[i] );
       if ( id == null )
+      {
+         unreadable.push( paths[i] );
          continue;
+      }
       before[paths[i]] = id;
-      var e = FrameSelector.entryFor( paths[i] );
       e.identity = id;
       entries.push( e );
    }
-   return { entries: entries, before: before, cancelled: cancelled };
+   return { entries: entries, before: before, skipped: skipped, unreadable: unreadable,
+            cancelled: cancelled };
 };
 
 /*
@@ -614,7 +652,9 @@ FrameSelector.scanPaths = function( paths, progress )
    var cohort = FrameSelector.cohortFrom( paths,
                                           progress ? progress.reading : null );
    if ( cohort.cancelled )
-      return { channels: {}, unstable: [], cancelled: true };
+      return { channels: {}, unstable: [], skipped: cohort.skipped, cancelled: true };
+   [ Frames.skippedLine( cohort.skipped ), Frames.unreadableLine( cohort.unreadable ) ]
+      .forEach( function( line ) { if ( line.length > 0 ) Util.log( "frames", line ); } );
 
    var groups = Frames.groupByFilter( cohort.entries );
    var channels = {}, unstable = [];
@@ -634,7 +674,7 @@ FrameSelector.scanPaths = function( paths, progress )
                                                   group.length - splits[g].need.length, overall );
       overall.channel = g + 1;
       if ( !tell( 0 ) )
-         return { channels: channels, unstable: unstable, cancelled: true };
+         return { channels: channels, unstable: unstable, skipped: cohort.skipped, cancelled: true };
       var measured = FrameSelector.measureGroup( group, cohort.before, tell, splits[g] );
       overall.done = tell.base + splits[g].need.length;
       if ( measured == null )             // the channel was abandoned
@@ -649,11 +689,11 @@ FrameSelector.scanPaths = function( paths, progress )
        * statistics would describe a set that is not the channel.
        */
       if ( measured.cancelled )
-         return { channels: channels, unstable: unstable, cancelled: true };
+         return { channels: channels, unstable: unstable, skipped: cohort.skipped, cancelled: true };
       channels[keys[g]] = { entries: group, metrics: measured.metrics,
                             problems: Frames.comparability( group ).problems };
    }
-   return { channels: channels, unstable: unstable, cancelled: false };
+   return { channels: channels, unstable: unstable, skipped: cohort.skipped, cancelled: false };
 };
 
 /*
@@ -1404,6 +1444,7 @@ FrameSelector.stateFromScan = function( state, scan )
 {
    state.cancelled = !!scan.cancelled;
    state.unstable = scan.unstable;
+   state.skipped = scan.skipped || [];
    var keys = Object.keys( scan.channels );
    keys.sort();
    for ( var i = 0; i < keys.length; ++i )
@@ -4135,7 +4176,7 @@ FrameSelector.main = function()
 
    if ( state.order.length == 0 )
    {
-      FrameSelector.tell( "No readable frames in that folder.", StdIcon_Information );
+      FrameSelector.tell( Frames.noSubframesMessage( state.skipped ), StdIcon_Information );
       return;
    }
    /*
