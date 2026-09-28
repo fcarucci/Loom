@@ -9,28 +9,25 @@ section of this file.
 
 ### Frame Selector
 
-- **Much faster reading.** Frames are fingerprinted with the system's own SHA-1 tool (shasum on macOS, PowerShell on Windows), several at a time, while earlier frames are still being measured: "Reading frames" on 126 subframes went from about 97 s to 4 s. The tool is checked against PixInsight on every scan; if it is missing, fails or disagrees, PixInsight reads the frames itself, as before. The fingerprints are the same, so measurements already cached stay valid.
-- **Re-opening a night is instant.** Each frame's fingerprint is remembered in **frame-digests.json** in Loom's cache folder, keyed by path, size and file times, so 126 subframes re-open in under a second. A frame edited in place is read again. One gap: on Windows, a tool that rewrites a frame at the same size and puts its modification time back is not noticed, and that frame shows its earlier numbers until **Clear cache**. Deleting always re-reads every frame, so a frame whose bytes were not measured is never deleted.
-- **Previews are cached.** Clicking a frame you have already looked at shows it straight away: previews and thumbnails are kept in a **Loom-previews** folder in the system temporary folder (up to 1 GB, least recently viewed dropped first; **Clear cache** empties it).
-- **The metric drop-downs no longer close by themselves** while thumbnails load, so the metric can be changed. Thumbnails are now read without opening image windows, and nothing is written to the Process Console while you browse.
-- **Masters and calibration frames are skipped.** Pointing the Frame Selector at a masters folder no longer lists master flats and darks as subframes; a folder with no light frames says so.
-- "Light" and "Light Frame" from two capture programs are no longer reported as "mixed image types".
-- **Import from an ASIAIR:** Cancel now stops an import and a card read; the review is locked after an import, so the same night can't be imported twice; the night's description lists flats filter by filter, with a filter that has no flats shown in red.
-- The Process Console no longer prints "Warning: msleep() is deprecated".
+- **Much faster:** "Reading frames" on 126 subs went from ~97 s to 4 s, and re-opening a night takes under a second. Existing cached measurements stay valid.
+- **Previews are cached**, so clicking a frame you've seen shows it instantly.
+- The metric drop-downs no longer close by themselves.
+- Master and calibration frames are skipped; "Light" and "Light Frame" count as the same type.
+- ASIAIR import: Cancel works, a night can't be imported twice, and missing flats are shown per filter.
+- No more "msleep() is deprecated" warning.
 
 ### Loom
 
-- **Noise reduction, SyQon Studio Prism 2.0:** runs after the stretch only, Ultra at Medium and Max at High (Max takes about 40 times as long as Ultra). Its Advanced pass on the linear image is off, and with it Low: it left faint tile seams that the stretch turned into a flat band along the edges of the image. It stays off until SyQon fixes it. With the stretch off, only Medium is offered (Ultra on the linear image). A saved Low loads as Medium. The console names each pass, and the tooltips say where each tool runs.
-- **Stretch:** Loom's own stretch (used when MultiscaleAdaptiveStretch is not chosen, and for every stars image) no longer turns faint real pixels black, and a colour image stretched unlinked gets each channel's own black point and midtone. Cached results of this stretch are re-run once.
-- **Scan Masters Folder and Add Files:** a progress bar shows how far the scan is, and each master appears in the table as soon as it is measured.
-- **MARS check:** a run with a broadband channel and no MARS database is refused before it starts, instead of stopping at gradient correction.
-- **MLDenoise:** cached results now record their strength, so they are re-run once.
+- **Prism 2.0** runs after the stretch only (Medium = Ultra, High = Max). Low and the linear Advanced pass are off until SyQon fixes the tile seams they left.
+- **Stretch** no longer clips faint pixels to black, and unlinked colour stretches use each channel's own settings.
+- Progress bar when scanning masters.
+- A broadband run without a MARS database is refused before it starts.
 
 ### Everywhere
 
-- **Script menu:** Loom, Loom Fly-Through and Frame Selector are all in one **Loom** folder under Script.
-- **Non-Mac disks:** macOS's hidden "._" files on exFAT drives and ASIAIR cards are no longer opened as images.
-- **Updates:** a release install no longer updates itself; PixInsight's update repository (Resources → Updates) keeps it current. A git checkout still updates itself at startup.
+- All scripts are in one **Loom** folder under Script.
+- Hidden "._" files on exFAT drives and ASIAIR cards are ignored.
+- Release installs update through PixInsight's update repository; only a git checkout updates itself.
 
 ## [0.3.1] — 2026-09-26
 
