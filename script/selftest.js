@@ -2218,6 +2218,11 @@ function runTests()
    check( "Windows is Windows", Util.isWindows( Util.PLATFORM_WINDOWS ), true );
    check( "macOS is not Windows", Util.isWindows( Util.PLATFORM_MACOS ), false );
    check( "linux is not Windows", Util.isWindows( Util.PLATFORM_UNIX ), false );
+   var slept = [];
+   Util.sleep( 7, { msleep: function( ms ) { slept.push( ms ); } } );
+   check( "Util.sleep waits through System.msleep, not the deprecated global msleep", slept, [ 7 ] );
+   check( "and returns without waiting where there is no System.msleep",
+          Util.sleep( 7, {} ), undefined );
 
    } if ( testGroup( "steps.syqon" ) ) {
    /*
@@ -12669,7 +12674,7 @@ function runTests()
          File.writeTextFile( a, "frame a" );
          File.writeTextFile( b, "frame b" );
          File.writeTextFile( c, "frame c" );
-         msleep( 2100 );
+         Util.sleep( 2100 );
          check( "the digest cache is a file in the cache folder",
                 FrameSelector.digestCachePath(), dir + "/cache/frame-digests.json" );
 
@@ -12692,14 +12697,14 @@ function runTests()
 
          if ( Util.platform() == Util.PLATFORM_MACOS )
          {
-            msleep( 2100 );
+            Util.sleep( 2100 );
             scan( all );                 // remembers b, now that it has settled
             check( "and remembers it once it has settled", stored()[b] !== undefined, true );
             var swap = dir + "/c.swap";
             File.writeTextFile( swap, "frame C" );
             Render.runProcess( "/usr/bin/touch", [ "-r", c, swap ], 10000 );
             Render.runProcess( "/bin/mv", [ "-f", swap, c ], 10000 );
-            msleep( 2100 );
+            Util.sleep( 2100 );
             var now = FrameSelector.fileStat( c );
             check( "the replacement kept the old size and mtime",
                    [ now.size, now.mtime ], [ third.before[c].size, third.before[c].mtime ] );
@@ -12710,7 +12715,7 @@ function runTests()
                    digestOf( fourth, c ), FrameSelector.digest( c ) );
          }
 
-         msleep( 2100 );
+         Util.sleep( 2100 );
          File.writeTextFile( FrameSelector.digestCachePath(), "{ not json" );
          scan( all );
          check( "a corrupt cache file is an empty cache", digested.slice().sort(),

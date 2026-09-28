@@ -291,6 +291,18 @@ Util.platform = function( platform )
    return platform || Util.PLATFORM;
 };
 
+/*
+ * Waits ms milliseconds. The global msleep() is deprecated and warns in the
+ * Process Console on every script run; System.msleep() is its replacement.
+ * The system is injectable so the selftest can see the call.
+ */
+Util.sleep = function( ms, system )
+{
+   var sys = system || ( typeof System != "undefined" ? System : null );
+   if ( sys && typeof sys.msleep == "function" )
+      sys.msleep( ms );
+};
+
 Util.isWindows = function( platform )
 {
    return Util.platform( platform ) == Util.PLATFORM_WINDOWS;

@@ -275,7 +275,7 @@ Sky.now = function() { return Date.now(); };
 Sky.pause = function( ms, tick )
 {
    var end = Date.now() + ms;
-   while ( Date.now() < end ) { tick(); if ( typeof msleep == "function" ) msleep( 100 ); }
+   while ( Date.now() < end ) { tick(); Util.sleep( 100 ); }
 };
 
 /*

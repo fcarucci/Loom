@@ -53,8 +53,7 @@ Hasher.PAUSE_MS = 5;
 
 Hasher.pause = function()
 {
-   if ( typeof msleep == "function" )
-      msleep( Hasher.PAUSE_MS );
+   Util.sleep( Hasher.PAUSE_MS );
 };
 
 Hasher.supported = function( platform )
