@@ -3969,6 +3969,28 @@ function runTests()
                    .indexOf( "binning" ) >= 0, true );
 
       /*
+       * IMAGETYP says the same thing in different words: "Light", "Light
+       * Frame", "LIGHT", with or without FITS quotes and padding. A folder
+       * of lights from two capture programs was reported as "mixed image
+       * types". A genuinely different type still is.
+       */
+      function typed( t, k )
+      {
+         return { path: "/t/" + k + ".xisf", filter: "H", exposure: 180, binning: 1,
+                  width: 6248, height: 4176, calibrated: true, imageType: t };
+      }
+      var lights = [ "Light", "Light Frame", "'LIGHT  frame '", "light" ].map( typed );
+      check( "Light and Light Frame are one image type",
+             Frames.comparability( lights ).problems, [] );
+      check( "a dark among lights is still a mixed image type",
+             Frames.comparability( lights.concat( [ typed( "Dark Frame", 9 ) ] ) ).problems,
+             [ "mixed image types" ] );
+      check( "image types normalise to one word",
+             [ "Light Frame", "'Flat Field'", " DARK  frame", "Bias", "Master Light", null ]
+                .map( Frames.normalImageType ),
+             [ "light", "flat", "dark", "bias", "master light", "" ] );
+
+      /*
        * A filter named like an Object.prototype member. Absurd as a filter,
        * fatal as a bare-object map key: out["constructor"] is inherited and
        * not null, so the group array was never created and push() was called

@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Frame Selector:** frames whose image type is written differently, such as "Light" and "Light Frame" from two capture programs, are no longer reported as "mixed image types".
 - **Frame Selector:** the metric drop-downs (the one beside the filmstrip and **Plot:**) no longer close by themselves while the thumbnails are loading, so the metric can be changed. Each thumbnail used to be read by opening the frame in PixInsight's workspace, stretching it with HistogramTransformation and closing it again, every ~0.5 s for every frame of the channel; that closed an open drop-down. Frames are now read and stretched without a window or a process, and nothing is written to the Process Console while the review loads thumbnails or shows a frame.
 - **Frame Selector:** clicking a frame you have already looked at shows it straight away: previews and filmstrip thumbnails are now kept in a **Loom-previews** folder in the system temporary folder, so a frame is read and stretched once, not on every click or every launch. An entry is used only while the frame's path, size and modification date are unchanged. The folder is kept under 1 GB, dropping the least recently viewed frames first, and Loom's **Clear cache** empties it.
 - **Folders on non-Mac disks:** Loom no longer tries to open macOS's hidden "._" companion files (and other hidden files) as images when scanning a masters or frames folder on an exFAT disk such as an external drive or an ASIAIR card. Emptying or removing a folder still removes them.

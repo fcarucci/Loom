@@ -1033,17 +1033,28 @@ Frames.autoRejectAllowed = function( filterKey )
  * not withheld: a tool that measures frames and then refuses to act on
  * its own measurements is an obstacle, not a safeguard.
  */
+/*
+ * An IMAGETYP value as the one word it means: "Light Frame", "'LIGHT '"
+ * and "light" are all "light", "Flat Field" is "flat". Capture programs
+ * disagree on the wording, not on the type; "" when there is none.
+ */
+Frames.normalImageType = function( t )
+{
+   return String( t == null ? "" : t ).replace( /'/g, " " ).trim().toLowerCase()
+      .replace( /\s+/g, " " ).replace( / (frame|field)$/, "" );
+};
+
 Frames.comparability = function( group )
 {
    var problems = [];
-   function distinct( field )
+   function distinct( field, norm )
    {
       // prototype-less for the same reason groupByFilter is: an inherited
       // key reads as already-seen, and the value is then never counted.
       var seen = Object.create( null ), n = 0;
       for ( var i = 0; i < group.length; ++i )
       {
-         var v = String( group[i][field] );
+         var v = norm ? norm( group[i][field] ) : String( group[i][field] );
          if ( !seen[v] ) { seen[v] = true; ++n; }
       }
       return n;
@@ -1055,7 +1066,7 @@ Frames.comparability = function( group )
       problems.push( "mixed exposure times" );
    if ( distinct( "binning" ) > 1 || distinct( "binningY" ) > 1 )
       problems.push( "mixed binning" );
-   if ( distinct( "imageType" ) > 1 )
+   if ( distinct( "imageType", Frames.normalImageType ) > 1 )
       problems.push( "mixed image types" );
    if ( distinct( "width" ) > 1 || distinct( "height" ) > 1 )
       problems.push( "mixed image geometry" );
