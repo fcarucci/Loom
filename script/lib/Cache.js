@@ -568,13 +568,37 @@ Cache.previewEvictions = function( entries, cap, keep )
    return out;
 };
 
-/* Removes the least recently used entries until the folder fits `cap`. */
+/*
+ * Removes the least recently used entries until the folder fits `cap`,
+ * then rewrites the index with only the entries still on disk, so it does
+ * not keep a line for every frame ever shown.
+ */
 Cache.trimPreviews = function( cap, keep )
 {
    var gone = Cache.previewEvictions( Cache.previewEntries(), cap, keep );
    for ( var i = 0; i < gone.length; ++i )
       try { File.remove( Cache.previewPath( gone[i] ) ); } catch ( e ) {}
+   Cache.prunePreviewIndex();
    return gone.length;
+};
+
+/* Drops index entries whose preview file is gone. */
+Cache.prunePreviewIndex = function()
+{
+   try
+   {
+      var idx = Cache.readPreviewIndex(), kept = {}, changed = false;
+      for ( var k in idx )
+      {
+         if ( File.exists( Cache.previewPath( k ) ) )
+            kept[k] = idx[k];
+         else
+            changed = true;
+      }
+      if ( changed )
+         File.writeTextFile( Cache.previewIndexPath(), JSON.stringify( kept ) );
+   }
+   catch ( e ) { /* the index is advisory; a stale line is only a stale line */ }
 };
 
 /* Deletes every preview and the index. Returns the bytes the previews held. */

@@ -4682,6 +4682,12 @@ function runTests()
                 [ "k1", "k2", "k3", "k4" ].map( function( key )
                    { return File.exists( Cache.previewPath( key ) ); } ),
                 [ true, false, false, true ] );
+         check( "and the index forgets what was evicted",
+                Object.keys( Cache.readPreviewIndex() ).sort(), [ "k1" ] );
+         Cache.notePreviewUse( "gone" );               // an entry whose file was removed by hand
+         Cache.trimPreviews( 1e12, null );
+         check( "an entry with no file is dropped from the index even under the cap",
+                Object.keys( Cache.readPreviewIndex() ).sort(), [ "k1" ] );
          check( "clearing reports what it freed", Cache.clearPreviews(), 2000 );
          check( "and leaves no file behind",
                 Util.findEntries( dir + "/*", true ).filter( function( e ) { return !e.isDirectory; } ).length, 0 );
