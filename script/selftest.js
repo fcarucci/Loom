@@ -191,6 +191,35 @@ function checkNoMessageBoxes()
    check( "no test opened a message box", MESSAGE_BOXES, [] );
 }
 
+/*
+ * The user's own Loom cache folder, the default one in the system temp
+ * folder, is left as the suite found it: no measurement, digest or other
+ * cache file is added, rewritten or removed. The suite used to grow the
+ * real frame-quality.json by a few hundred loom-suite entries per run.
+ * A Frame Selector scan in the user's own PixInsight during a run would
+ * also trip this; run the suite again.
+ */
+var REAL_CACHE_DIR = File.systemTempDirectory + "/Loom-cache";
+
+function realCacheSnapshot()
+{
+   if ( !IN_PIXINSIGHT )
+      return null;
+   return Util.findEntries( REAL_CACHE_DIR + "/*", true )
+      .filter( function( e ) { return e.isFile; } )
+      .map( function( e )
+      {
+         var info = new FileInfo( REAL_CACHE_DIR + "/" + e.name );
+         return e.name + " " + e.size + " " + info.lastModified.getTime();
+      } ).sort();
+}
+
+function checkRealCacheUntouched( before )
+{
+   if ( before != null )
+      check( "the suite left the user's own Loom cache folder untouched", realCacheSnapshot(), before );
+}
+
 var REAL_LOG = Util.log, REAL_WARN = Util.warn, REAL_OPERATION = Util.operation;
 function silenceLogging()
 {
@@ -8267,9 +8296,16 @@ function runTests()
       }
 
       var lines = [], err = "";
+      /*
+       * The pin was taken with the default cache folder, whose path is in a
+       * tooltip; the suite's own scratch folder is put back afterwards.
+       */
+      var suiteCacheDir = Cache.overrideDir;
       try
       {
+         Cache.setDir( "" );
          var d = build( layoutConfig() );
+         Cache.setDir( suiteCacheDir );
          if ( recordOf( d.sizer ) == null )
             throw new Error( made.length + " objects recorded, the dialog's sizer not among them" );
          measure( d );
@@ -8279,6 +8315,7 @@ function runTests()
          render( d, lines );
       }
       catch ( e ) { err = String( e ); }
+      finally { Cache.setDir( suiteCacheDir ); }
       check( "the laid-out dialog serialises" + ( err ? ": " + err : "" ), err, "" );
       var diff = null;
       for ( var i = 0; i < Math.max( lines.length, PINNED.length ) && diff == null; ++i )
@@ -23178,7 +23215,20 @@ function main()
     */
    var savedPreviewDir = Cache.previewDirOverride;
    Cache.previewDirOverride = TEST_SCRATCH + "/previews";
-   try { TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); checkNoMessageBoxes(); }
+   /*
+    * Likewise Loom's cache folder: the Frame Selector's measurements and
+    * digests, master scores and every other cache entry the suite writes
+    * go to scratch. Tests of the cache folder itself set their own.
+    */
+   var savedCacheDir = Cache.overrideDir;
+   Util.ensureDirectory( TEST_SCRATCH + "/cache" );
+   Cache.setDir( TEST_SCRATCH + "/cache" );
+   var realCacheBefore = realCacheSnapshot();
+   try
+   {
+      TEST_ONLY = readTestFilter(); runTests(); checkTestFilter(); checkNoMessageBoxes();
+      checkRealCacheUntouched( realCacheBefore );
+   }
    catch ( e )
    {
       aborted = true;
@@ -23188,6 +23238,7 @@ function main()
    finally
    {
       Cache.previewDirOverride = savedPreviewDir;
+      Cache.setDir( savedCacheDir );
       /*
        * Before the log is restored and before this function returns, so
        * the widget trees are detached while the script context is still
