@@ -24,6 +24,7 @@
  */
 #ifndef LOOM_LIBS_INCLUDED
 #include "lib/Util.js"
+#include "lib/Hasher.js"
 #include "lib/Cache.js"
 #include "lib/AsiairNames.js"
 #include "lib/Asiair.js"
@@ -528,7 +529,8 @@ FrameSelector.digest = function( path )
    }
 };
 
-FrameSelector.fileIdentity = function( path )
+/* Size and time, or null for a file that is not there; taken BEFORE the digest. */
+FrameSelector.fileStat = function( path )
 {
    try
    {
@@ -536,12 +538,79 @@ FrameSelector.fileIdentity = function( path )
          return null;
       var fi = new FileInfo( path );
       var t = fi.lastModified;
-      var d = FrameSelector.digest( path );
-      if ( d == null )
-         return null;
-      return { digest: d, size: fi.size, mtime: t ? t.getTime() : 0 };
+      return { size: fi.size, mtime: t ? t.getTime() : 0 };
    }
    catch ( e ) { return null; }
+};
+
+FrameSelector.identityOf = function( stat, digest )
+{
+   return ( stat == null || digest == null ) ? null
+          : { digest: digest, size: stat.size, mtime: stat.mtime };
+};
+
+FrameSelector.fileIdentity = function( path )
+{
+   var stat = FrameSelector.fileStat( path );
+   return stat == null ? null : FrameSelector.identityOf( stat, FrameSelector.digest( path ) );
+};
+
+/*
+ * One scan's SHA-1 hasher: the system's tool where there is one, checked
+ * against and backed by FrameSelector.digest (see lib/Hasher.js).
+ * Deleting never goes through it: execute digests afresh with PixInsight.
+ */
+FrameSelector.newHasher = function()
+{
+   return Hasher.forScan( { fallback: function( path ) { return FrameSelector.digest( path ); } } );
+};
+
+/*
+ * Identities for many files at once, digested in the background.
+ * request( path ) takes the size and time NOW, before the digest, as
+ * fileIdentity does, and queues the digest; poll() moves it along;
+ * finish( cancelled ) waits and gives { ids: { path: identity or null },
+ * cancelled }, each identity exactly what fileIdentity would have given.
+ * `opts` is for what later changes add; nothing reads it yet.
+ */
+FrameSelector.Identities = function( hasher, opts )
+{
+   this.opts = opts || {};
+   this.stats = {};
+   this.job = ( hasher || FrameSelector.newHasher() ).start( [] );
+};
+
+FrameSelector.Identities.prototype.request = function( path )
+{
+   this.stats[path] = FrameSelector.fileStat( path );
+   if ( this.stats[path] != null )
+      this.job.add( path );
+};
+
+FrameSelector.Identities.prototype.poll = function()
+{
+   return this.job.poll();
+};
+
+FrameSelector.Identities.prototype.kill = function()
+{
+   this.job.kill();
+};
+
+FrameSelector.Identities.prototype.finish = function( cancelled )
+{
+   var r = this.job.wait( cancelled ), ids = {};
+   for ( var path in this.stats )
+      ids[path] = FrameSelector.identityOf( this.stats[path], r.digests[path] );
+   return { ids: ids, cancelled: r.cancelled };
+};
+
+/* Every path's identity, now, blocking. */
+FrameSelector.identitiesNow = function( paths, hasher )
+{
+   var ids = new FrameSelector.Identities( hasher );
+   paths.forEach( function( p ) { ids.request( p ); } );
+   return ids.finish( null ).ids;
 };
 
 /*
@@ -701,41 +770,79 @@ FrameSelector.frameFilesIn = function( folder )
  * { path, kind } -- on its header alone, BEFORE it is digested: a masters
  * folder is gigabytes nobody asked to have read. See Frames.notSubframe.
  */
-FrameSelector.cohortFrom = function( paths, progress )
+FrameSelector.cohortFrom = function( paths, progress, hasher )
 {
-   var entries = [], before = {}, skipped = [], unreadable = [], cancelled = false;
+   var ids = new FrameSelector.Identities( hasher );
+   var read = FrameSelector.readHeaders( paths, progress, ids );
+   var cohort = { entries: [], before: {}, skipped: read.skipped, unreadable: read.unreadable,
+                  cancelled: read.cancelled };
+   if ( read.cancelled )
+   {
+      ids.kill();
+      return cohort;
+   }
+   /*
+    * The digests finish after the last header is read. The window keeps
+    * showing the last file meanwhile, and asking it is what reads Cancel.
+    */
+   var last = paths.length > 0 ? File.extractName( paths[paths.length - 1] ) : "";
+   var done = ids.finish( function()
+   {
+      return progress != null && progress( paths.length, paths.length, last ) === false;
+   } );
+   if ( done.cancelled )
+   {
+      cohort.cancelled = true;
+      return cohort;
+   }
+   read.subs.forEach( function( e )
+   {
+      var id = done.ids[e.path];
+      if ( id == null )
+      {
+         cohort.unreadable.push( e.path );
+         return;
+      }
+      cohort.before[e.path] = id;
+      e.identity = id;
+      cohort.entries.push( e );
+   } );
+   return cohort;
+};
+
+/*
+ * cohortFrom's loop over the headers: each subframe's digest is asked for
+ * as soon as its header says it is one, so the hashing runs while the
+ * rest of the headers are read.
+ */
+FrameSelector.readHeaders = function( paths, progress, ids )
+{
+   var out = { subs: [], skipped: [], unreadable: [], cancelled: false };
    for ( var i = 0; i < paths.length; ++i )
    {
       if ( progress != null &&
            progress( i + 1, paths.length, File.extractName( paths[i] ) ) === false )
       {
-         cancelled = true;
+         out.cancelled = true;
          break;
       }
+      ids.poll();
       if ( !File.exists( paths[i] ) )
       {
-         unreadable.push( paths[i] );
+         out.unreadable.push( paths[i] );
          continue;
       }
       var e = FrameSelector.entryFor( paths[i] );
       var kind = Frames.notSubframe( File.extractName( paths[i] ), e.imageType );
       if ( kind != null )
       {
-         skipped.push( { path: paths[i], kind: kind } );
+         out.skipped.push( { path: paths[i], kind: kind } );
          continue;
       }
-      var id = FrameSelector.fileIdentity( paths[i] );
-      if ( id == null )
-      {
-         unreadable.push( paths[i] );
-         continue;
-      }
-      before[paths[i]] = id;
-      e.identity = id;
-      entries.push( e );
+      ids.request( paths[i] );
+      out.subs.push( e );
    }
-   return { entries: entries, before: before, skipped: skipped, unreadable: unreadable,
-            cancelled: cancelled };
+   return out;
 };
 
 /*
@@ -801,7 +908,7 @@ FrameSelector.cachedSplit = function( group )
  * set on screen has no statistics worth showing. `cancelled` is set when
  * onBatch returned false.
  */
-FrameSelector.measureGroup = function( group, before, onBatch, split )
+FrameSelector.measureGroup = function( group, before, onBatch, split, hasher )
 {
    var plan = split || FrameSelector.cachedSplit( group );
    var metrics = plan.metrics, unstable = [];
@@ -811,10 +918,11 @@ FrameSelector.measureGroup = function( group, before, onBatch, split )
    var run = FrameSelector.measureBatched( plan.need, FrameSelector.MEASURE_BATCH, onBatch,
       function( batch, measured )
       {
+         var nowIds = FrameSelector.identitiesNow( batch, hasher );
          for ( var k = 0; k < batch.length; ++k )
          {
             var path = batch[k];
-            var now = FrameSelector.fileIdentity( path );
+            var now = nowIds[path];
             if ( now == null || now.digest != before[path].digest )
             {
                unstable.push( path );
@@ -853,8 +961,9 @@ FrameSelector.measureGroup = function( group, before, onBatch, split )
  */
 FrameSelector.scanPaths = function( paths, progress )
 {
+   var hasher = FrameSelector.newHasher();
    var cohort = FrameSelector.cohortFrom( paths,
-                                          progress ? progress.reading : null );
+                                          progress ? progress.reading : null, hasher );
    if ( cohort.cancelled )
       return { channels: {}, unstable: [], skipped: cohort.skipped, cancelled: true };
    [ Frames.skippedLine( cohort.skipped ), Frames.unreadableLine( cohort.unreadable ) ]
@@ -879,7 +988,7 @@ FrameSelector.scanPaths = function( paths, progress )
       overall.channel = g + 1;
       if ( !tell( 0 ) )
          return { channels: channels, unstable: unstable, skipped: cohort.skipped, cancelled: true };
-      var measured = FrameSelector.measureGroup( group, cohort.before, tell, splits[g] );
+      var measured = FrameSelector.measureGroup( group, cohort.before, tell, splits[g], hasher );
       overall.done = tell.base + splits[g].need.length;
       if ( measured == null )             // the channel was abandoned
       {

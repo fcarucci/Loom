@@ -14,6 +14,7 @@
 #include <pjsr/UndoFlag.jsh>
 
 #include "lib/Util.js"
+#include "lib/Hasher.js"
 #include "lib/Cache.js"
 #include "lib/Psb.js"
 #include "lib/Steps.js"
@@ -2253,7 +2254,7 @@ function runTests()
                      "StepsSyqon.js", "StepsIcc.js", "Config.js",
                      "Pipeline.js", "Update.js", "UI.js",
                      "Fly.js", "Sky.js", "Render.js",
-                     "Frames.js", "Solve.js", "AsiairNames.js", "Asiair.js", "NightDialog.js" ];
+                     "Frames.js", "Solve.js", "AsiairNames.js", "Asiair.js", "NightDialog.js", "Hasher.js" ];
    var hardcoded = [];
    for ( var lf = 0; lf < LIB_FILES.length; ++lf )
    {
@@ -17730,6 +17731,7 @@ function runFlyTestsClean()
    runPipeTests();
    runFinishingTests();
    runFailurePathTests();
+   runHasherTests();
 }
 
 /*
@@ -22157,6 +22159,512 @@ function runFailurePathTests()
              [ 0, 0, 0 ] );
    }
    finally { Cache.setDir( savedDir ); }
+   }
+}
+
+/*
+ * The system SHA-1 hasher, lib/Hasher.js: the commands, the strict reading
+ * of what the tool says, and the runner against scripted processes -- a
+ * tool that will not start, fails, talks nonsense or disagrees with
+ * PixInsight is switched off and PixInsight's own digests are the answer.
+ * Then, in PixInsight, the real /usr/bin/shasum on small synthetic files
+ * and the Frame Selector's use of it. Synthetic names and files only.
+ */
+function runHasherTests()
+{
+   if ( testGroup( "hasher" ) ) {
+   hasherChecks();
+   }
+}
+
+function hasherChecks()
+{
+   var MAC = Util.PLATFORM_MACOS, WIN = Util.PLATFORM_WINDOWS, UNIX = Util.PLATFORM_UNIX;
+
+   function sha1Text( text )
+   {
+      return ( new CryptographicHash( CryptographicHash.SHA1 ) ).hash( ByteArray.stringToUTF8( text ) ).toHex();
+   }
+   /* Synthetic paths and the digest each one "really" has. */
+   function synthPaths( n, root )
+   {
+      var paths = [];
+      for ( var i = 0; i < n; ++i )
+         paths.push( ( root || "/syn/night" ) + "/sub_" + i + ".fit" );
+      return paths;
+   }
+   var TRUTH = {};
+   function truth( p )
+   {
+      if ( TRUTH[p] === undefined )
+         TRUTH[p] = sha1Text( "frame " + p );
+      return TRUTH[p];
+   }
+   function truths( paths )
+   {
+      var o = {};
+      paths.forEach( function( p ) { o[p] = truth( p ); } );
+      return sorted( o );
+   }
+   /* An object with its keys in order, so two maps compare by content alone. */
+   function sorted( o )
+   {
+      var out = {};
+      Object.keys( o || {} ).sort().forEach( function( k ) { out[k] = o[k]; } );
+      return out;
+   }
+
+   /*
+    * Processes that answer from a script: answer( program, args ) gives
+    * { start: false } for one that will not start, or { exit, out, passes,
+    * forever } -- passes is how many polls it keeps running for.
+    */
+   function scripted( answer )
+   {
+      var log = { started: [], terminated: 0, live: 0, most: 0, made: 0 };
+      function Fake()
+      {
+         var spec = {}, passes = 0, over = false, killed = false;
+         ++log.made;
+         function end() { if ( !over ) { over = true; --log.live; } }
+         this.start = function( program, args )
+         {
+            log.started.push( [ program ].concat( args ) );
+            spec = answer( program, args ) || {};
+            if ( spec.start === false ) { over = true; return false; }
+            log.most = Math.max( log.most, ++log.live );
+            return true;
+         };
+         this.terminate = function() { ++log.terminated; killed = true; end(); };
+         Object.defineProperty( this, "isStarting", { get: function() { return false; } } );
+         Object.defineProperty( this, "isRunning", { get: function()
+         {
+            if ( !over && !spec.forever && ++passes > ( spec.passes || 0 ) )
+               end();
+            return !over;
+         } } );
+         Object.defineProperty( this, "exitCode", { get: function() { return killed ? 15 : ( spec.exit || 0 ); } } );
+         Object.defineProperty( this, "stdout", { get: function() { return spec.out || ""; } } );
+      }
+      return { Process: Fake, log: log };
+   }
+   /* What shasum prints for the files named after "--". */
+   function shasumSays( args, hexOf )
+   {
+      return args.slice( args.indexOf( "--" ) + 1 ).map( function( p )
+         { return ( hexOf || truth )( p ) + "  " + p + "\n"; } ).join( "" );
+   }
+   function shasumLike( extra )
+   {
+      return function( program, args )
+      {
+         var o = { out: shasumSays( args ), passes: 1 };
+         for ( var k in extra || {} ) o[k] = extra[k];
+         return o;
+      };
+   }
+   /* A scan hasher over scripted processes; fallback() counts PixInsight's reads. */
+   function scanWith( platform, answer, jobs )
+   {
+      var p = scripted( answer ), reads = [];
+      var h = Hasher.forScan( { platform: platform, Process: p.Process, jobs: jobs,
+                                fallback: function( path ) { reads.push( path ); return truth( path ); } } );
+      return { h: h, log: p.log, reads: reads };
+   }
+   /* Runs fn with Util.warn recorded; returns what fn returned and what was warned. */
+   function warned( fn )
+   {
+      var real = Util.warn, said = [];
+      Util.warn = function( s, m ) { said.push( s + ": " + m ); };
+      try { return { out: fn(), said: said }; }
+      finally { Util.warn = real; }
+   }
+
+   /* ---- the pure part ---------------------------------------------------- */
+
+   check( "hasher: macOS and Windows have a system SHA-1; everything else is PixInsight's",
+          [ Hasher.supported( MAC ), Hasher.supported( WIN ), Hasher.supported( UNIX ) ], [ true, true, false ] );
+   check( "hasher: on macOS a newline, a tab, a backslash or a relative path goes to PixInsight",
+          [ "/n/a.fit", "/n/sp ace.fit", "/n/quo'te\".fit", "/n/\u00fcn\u00ef\u65e5.fit", "/n/-dash.fit",
+            "/n/new\nline.fit", "/n/tab\t.fit", "/n/back\\slash.fit", "n/rel.fit" ].map(
+             function( p ) { return Hasher.awkward( p, MAC ); } ),
+          [ false, false, false, false, false, true, true, true, true ] );
+   check( "hasher: on Windows a drive or UNC path is fine, backslashes too; a relative path or a control character is not",
+          [ "C:/n/a.fit", "C:\\n\\a.fit", "//nas/share/a.fit", "C:/n/\u00fcn\u00ef.fit", "C:/n/quo'te.fit",
+            "n/rel.fit", "/n/no-drive.fit", "C:/n/new\nline.fit" ].map(
+             function( p ) { return Hasher.awkward( p, WIN ); } ),
+          [ false, false, false, false, false, true, true, true ] );
+   var twenty = synthPaths( 20 );
+   var mixed = twenty.slice( 0, 19 ).concat( [ "/syn/night/odd\\name.fit" ] );
+   var macCut = Hasher.batches( mixed, MAC ), winCut = Hasher.batches( synthPaths( 20, "C:/n" ), WIN );
+   check( "hasher: batches of 8 on macOS, 16 on Windows, the awkward left to PixInsight",
+          [ macCut.external.map( function( b ) { return b.length; } ), macCut.pjsr,
+            winCut.external.map( function( b ) { return b.length; } ), winCut.pjsr ],
+          [ [ 8, 8, 3 ], [ "/syn/night/odd\\name.fit" ], [ 16, 4 ], [] ] );
+   check( "hasher: in batch order, nothing lost", [].concat.apply( [], macCut.external ), twenty.slice( 0, 19 ) );
+   check( "hasher: on any other platform, all of it to PixInsight",
+          [ Hasher.batches( twenty, UNIX ).external, Hasher.batches( twenty, UNIX ).pjsr.length ], [ [], 20 ] );
+
+   check( "hasher: macOS runs shasum directly, no shell, the names as arguments after --",
+          Hasher.command( [ "/n/a b.fit", "/n/-c.fit" ], MAC ),
+          { program: "/usr/bin/shasum", args: [ "-a", "1", "--", "/n/a b.fit", "/n/-c.fit" ] } );
+   check( "hasher: Windows runs the script file with the updater's launch flags, the list as its argument",
+          Hasher.command( [ "C:/n/a.fit", "C:/n/\u00fcn\u00ef.fit" ], WIN,
+                          { script: "C:/T/loom-sha1-1.ps1", list: "C:/T/loom-sha1-2.txt" } ),
+          { program: "powershell.exe",
+            args: [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", "C:/T/loom-sha1-1.ps1", "C:/T/loom-sha1-2.txt" ],
+            list: "C:/n/a.fit\nC:/n/\u00fcn\u00ef.fit" } );
+   check( "hasher: the updater launches its helper with the same flags, from the same place",
+          Update.helperCommand( WIN, "C:/s/update-run.ps1" ), Util.powerShellFile( "C:/s/update-run.ps1" ) );
+   check( "hasher: no command anywhere else", Hasher.command( [ "/n/a.fit" ], UNIX ), null );
+   check( "hasher: the Windows script, word for word",
+          Hasher.POWERSHELL,
+          "param([string]$List)\r\n" +
+          "$ErrorActionPreference = 'Stop'\r\n" +
+          "$i = 0\r\n" +
+          "foreach ($p in @(Get-Content -LiteralPath $List -Encoding UTF8)) {\r\n" +
+          "   try {\r\n" +
+          "      $h = (Get-FileHash -LiteralPath $p -Algorithm SHA1).Hash\r\n" +
+          "      if (-not $h) { throw 'no hash' }\r\n" +
+          "      Write-Output ('' + $i + ' ' + $h)\r\n" +
+          "   } catch {\r\n" +
+          "      Write-Output ('' + $i + ' ERR')\r\n" +
+          "   }\r\n" +
+          "   $i++\r\n" +
+          "}\r\n" );
+   check( "hasher: and it is pure ASCII, which PowerShell 5.1 reads the same in every locale",
+          /^[\x09\x0a\x0d\x20-\x7e]*$/.test( Hasher.POWERSHELL ), true );
+
+   var b3 = [ "/n/a.fit", "/n/b c.fit", "/n/\u00fc.fit" ];
+   var h3 = [ truth( b3[0] ), truth( b3[1] ), truth( b3[2] ) ];
+   var good = h3[0] + "  " + b3[0] + "\n" + h3[1] + "  " + b3[1] + "\n" + h3[2] + "  " + b3[2] + "\n";
+   check( "hasher: shasum's answer, read back to each path", sorted( Hasher.parse( good, b3, MAC ) ), truths( b3 ) );
+   var badMac = {
+      "garbage": "shasum: something went wrong\n",
+      "short": h3[0] + "  " + b3[0] + "\n" + h3[1] + "  " + b3[1] + "\n",
+      "an extra line": good + h3[0] + "  " + b3[0] + "\n",
+      "a hex one digit short": good.replace( h3[1], h3[1].slice( 1 ) ),
+      "a hex one digit long": good.replace( h3[1], h3[1] + "0" ),
+      "upper case, which shasum never prints": good.replace( h3[2], h3[2].toUpperCase() ),
+      "a path twice": good.replace( b3[2], b3[1] ),
+      "two lines swapped, which shasum never does": good.split( "\n" ).slice( 0, 3 ).reverse().join( "\n" ) + "\n",
+      "a non-ASCII letter where there was none": good.replace( b3[0], "/n/\u00e0.fit" ),
+      "a path not asked for": good.replace( b3[2], "/n/other.fit" ),
+      "one space instead of two": good.replace( h3[0] + "  ", h3[0] + " " ),
+      "shasum's escaped-name marker": good.replace( h3[0], "\\" + h3[0] ),
+      "nothing at all": "" };
+   check( "hasher: odd shasum output is not believed at all",
+          Object.keys( badMac ).filter( function( k ) { return Hasher.parse( badMac[k], b3, MAC ) !== null; } ), [] );
+   check( "hasher: an empty batch never reads a stray line", Hasher.parse( "\n", [ "/n/a.fit" ], MAC ), null );
+   /*
+    * shasum prints a macOS name decomposed (u + combining diaeresis) whatever
+    * form it was asked with; the file is the same one, so the names match
+    * in composed form.
+    */
+   var composed = "/n/\u00fcn\u00ef\u65e5.fit";
+   var nfd = {}; nfd[composed] = truth( composed );
+   check( "hasher: a name shasum prints decomposed is the composed path asked for",
+          Hasher.parse( truth( composed ) + "  /n/u\u0308ni\u0308\u65e5.fit\n", [ composed ], MAC ), nfd );
+
+   var w3 = [ "C:/n/a.fit", "C:/n/b.fit", "C:/n/c.fit" ];
+   var wgood = "0 " + truth( w3[0] ).toUpperCase() + "\r\n2 " + truth( w3[2] ).toUpperCase() + "\r\n1 ERR\r\n";
+   var wout = {}; wout[w3[0]] = truth( w3[0] ); wout[w3[2]] = truth( w3[2] );
+   check( "hasher: Get-FileHash's answer, by index, upper case folded; a file it could not read is left out",
+          sorted( Hasher.parse( wgood, w3, WIN ) ), sorted( wout ) );
+   var badWin = {
+      "garbage": "Get-Content : Cannot find path\r\n",
+      "short": "0 " + truth( w3[0] ) + "\r\n1 " + truth( w3[1] ) + "\r\n",
+      "an extra line": wgood + "0 " + truth( w3[0] ) + "\r\n",
+      "an index twice": wgood.replace( "2 ", "0 " ),
+      "an index past the end": wgood.replace( "2 ", "3 " ),
+      "an index with a leading zero": wgood.replace( "2 ", "02 " ),
+      "a hex one digit short": wgood.replace( truth( w3[2] ).toUpperCase(), truth( w3[2] ).toUpperCase().slice( 1 ) ),
+      "a word that is not ERR": wgood.replace( "ERR", "FAIL" ) };
+   check( "hasher: odd PowerShell output is not believed at all",
+          Object.keys( badWin ).filter( function( k ) { return Hasher.parse( badWin[k], w3, WIN ) !== null; } ), [] );
+
+   /* ---- the runner, on scripted processes -------------------------------- */
+
+   var ok = scanWith( MAC, shasumLike() );
+   var okRun = ok.h.start( twenty ).wait();
+   check( "hasher: twenty frames, every digest the true one",
+          [ okRun.cancelled, sorted( okRun.digests ) ], [ false, truths( twenty ) ] );
+   check( "hasher: PixInsight read only the self-check file",
+          ok.reads, [ twenty[0] ] );
+   check( "hasher: the first batch is shasum on the first eight, run alone until it checked out",
+          [ ok.log.started[0], ok.log.started.length, ok.h.disabled, ok.h.verified ],
+          [ [ "/usr/bin/shasum", "-a", "1", "--" ].concat( twenty.slice( 0, 8 ) ), 3, false, true ] );
+   var many = scanWith( MAC, shasumLike( { passes: 3 } ) );
+   var hundred = synthPaths( 100, "/syn/big" );
+   check( "hasher: a hundred frames, at most JOBS processes at once, all of them used",
+          [ sorted( many.h.start( hundred ).wait().digests ), many.log.most ], [ truths( hundred ), Hasher.JOBS ] );
+   var again = many.h.start( synthPaths( 3, "/syn/again" ) ).wait();
+   check( "hasher: a second job in the same scan is not checked again",
+          [ sorted( again.digests ), many.reads.length ], [ truths( synthPaths( 3, "/syn/again" ) ), 1 ] );
+
+   /* Frames asked for one at a time, as headers are read: the first starts at once. */
+   var inc = scanWith( MAC, shasumLike() ), incJob = inc.h.start( [] );
+   incJob.add( twenty[0] );
+   incJob.poll();
+   check( "hasher: the first frame is being digested while the next header is read", inc.log.started.length, 1 );
+   twenty.slice( 1 ).forEach( function( p ) { incJob.add( p ); incJob.poll(); } );
+   incJob.add( twenty[3] );          // asked for twice: digested once
+   var incRun = incJob.wait();
+   var incAsked = [].concat.apply( [], inc.log.started.map( function( a ) { return a.slice( 4 ); } ) );
+   check( "hasher: added one by one, every digest the true one, each file asked for once",
+          [ sorted( incRun.digests ), incAsked.length ], [ truths( twenty ), 20 ] );
+
+   /* Switched off: every answer is PixInsight's, and the tool is not asked again. */
+   function offCase( name, answer, expectStarted )
+   {
+      var s = scanWith( MAC, answer );
+      var r = warned( function() { return s.h.start( twenty ).wait(); } );
+      var second = s.h.start( synthPaths( 5, "/syn/second" ) ).wait();
+      check( "hasher: " + name + ": every digest PixInsight's, the tool switched off for the scan, said once",
+             [ sorted( r.out.digests ), s.h.disabled, r.said.length, s.log.started.length, sorted( second.digests ) ],
+             [ truths( twenty ), true, 1, expectStarted, truths( synthPaths( 5, "/syn/second" ) ) ] );
+      return r.said[0] || "";
+   }
+   var notThere = offCase( "a tool that will not start", function() { return { start: false }; }, 1 );
+   check( "hasher: and the warning says what happened",
+          notThere, "frames: The system SHA-1 tool is off for this scan (/usr/bin/shasum could not be run); PixInsight reads the files itself." );
+   offCase( "a tool that exits non-zero", shasumLike( { exit: 1 } ), 1 );
+   offCase( "a tool that throws on start", function() { throw new Error( "no such program" ); }, 1 );
+   Object.keys( badMac ).forEach( function( k )
+   {
+      offCase( "output with " + k, function() { return { out: badMac[k] }; }, 1 );
+   } );
+   var liar = offCase( "a tool whose SHA-1 is not PixInsight's",
+                       function( program, args ) { return { out: shasumSays( args, function( p ) { return sha1Text( "not " + p ); } ) }; }, 1 );
+   check( "hasher: and the warning names the disagreement",
+          liar.indexOf( "disagree on " + twenty[0] ) >= 0, true );
+
+   /* A later batch going wrong switches it off too, and its frames go to PixInsight. */
+   var later = scanWith( MAC, function( program, args )
+   {
+      return args.indexOf( twenty[8] ) >= 0 ? { out: "garbage\n" } : { out: shasumSays( args ) };
+   } );
+   var laterRun = warned( function() { return later.h.start( twenty ).wait(); } );
+   check( "hasher: a bad batch after the self-check: switched off, every digest still the true one",
+          [ sorted( laterRun.out.digests ), later.h.disabled, laterRun.said.length ], [ truths( twenty ), true, 1 ] );
+
+   var slow = scanWith( MAC, function() { return { forever: true }; } );
+   var realTimeout = Hasher.TIMEOUT_MS;
+   var slowRun;
+   try { Hasher.TIMEOUT_MS = -1; slowRun = warned( function() { return slow.h.start( twenty.slice( 0, 3 ) ).wait(); } ); }
+   finally { Hasher.TIMEOUT_MS = realTimeout; }
+   check( "hasher: a tool that never finishes is stopped, switched off, and PixInsight answers",
+          [ sorted( slowRun.out.digests ), slow.h.disabled, slow.log.terminated ], [ truths( twenty.slice( 0, 3 ) ), true, 1 ] );
+
+   /* Odd names: the ones shasum would mangle never reach it, and every answer is right. */
+   var odd = [ "/n/plain.fit", "/n/new\nline.fit", "/n/back\\slash.fit", "/n/quo'te\".fit",
+               "/n/sp ace.fit", "/n/\u00fcn\u00ef\u65e5.fit", "/n/-dash.fit" ];
+   var oddScan = scanWith( MAC, shasumLike() );
+   var oddRun = oddScan.h.start( odd ).wait();
+   var oddAsked = [].concat.apply( [], oddScan.log.started.map( function( a ) { return a.slice( 4 ); } ) );
+   check( "hasher: odd names: every digest the true one; newline and backslash read by PixInsight, the rest by shasum",
+          [ sorted( oddRun.digests ), oddScan.reads.slice().sort(), oddAsked.sort(), oddScan.h.disabled ],
+          [ truths( odd ), [ odd[1], odd[2], odd[0] ].sort(),
+            [ odd[0], odd[3], odd[4], odd[5], odd[6] ].sort(), false ] );
+
+   /*
+    * PixInsight's stdout is a ByteArray, and String() of it is Latin-1: a
+    * non-ASCII name came back mangled and switched the tool off for the
+    * scan. The text is read as UTF-8.
+    */
+   var bytesScan = scanWith( MAC, function( program, args )
+   {
+      var text = shasumSays( args );
+      return { out: { utf8ToString: function() { return text; },
+                      toString: function() { return unescape( encodeURIComponent( text ) ); } } };
+   } );
+   var utf8Paths = [ "/n/\u00fcn\u00ef\u65e5.fit", "/n/caf\u00e9.fit" ];
+   var utf8Run = bytesScan.h.start( utf8Paths ).wait();
+   check( "hasher: the tool's output is read as UTF-8, so non-ASCII names keep it on",
+          [ sorted( utf8Run.digests ), bytesScan.h.disabled ], [ truths( utf8Paths ), false ] );
+
+   /* Windows: the script and the list on disk, read back as the process starts. */
+   var seenFiles = [];
+   var win = scanWith( WIN, function( program, args )
+   {
+      var script = args[args.length - 2], list = args[args.length - 1];
+      var names = File.readTextFile( list ).split( "\n" );
+      seenFiles.push( { program: program, flags: args.slice( 0, 5 ), script: File.readTextFile( script ),
+                        list: File.readTextFile( list ), scriptPath: script, listPath: list } );
+      return { out: names.map( function( p, i )
+         { return i + " " + ( p == "C:/n/unreadable.fit" ? "ERR" : truth( p ).toUpperCase() ); } ).join( "\r\n" ) + "\r\n" };
+   } );
+   var winPaths = synthPaths( 20, "C:/n" ).concat( [ "C:/n/unreadable.fit", "C:/n/\u00fcn\u00ef \u65e5'.fit" ] );
+   var winRun = win.h.start( winPaths ).wait();
+   var winTrue = truths( winPaths );
+   check( "hasher: Windows: every digest the true one, the unreadable one PixInsight's",
+          [ sorted( winRun.digests ), win.reads, win.h.disabled ], [ winTrue, [ winPaths[0], "C:/n/unreadable.fit" ], false ] );
+   check( "hasher: Windows: powershell.exe with the launch flags, one script, a list per batch of 16",
+          [ seenFiles.length, seenFiles[0].program, seenFiles[0].flags,
+            seenFiles[0].script == Hasher.POWERSHELL, seenFiles[1].scriptPath == seenFiles[0].scriptPath,
+            seenFiles[0].list, seenFiles[1].list.split( "\n" ).length ],
+          [ 2, "powershell.exe", [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File" ],
+            true, true, winPaths.slice( 0, 16 ).join( "\n" ), 6 ] );
+   check( "hasher: Windows: the list is the paths as they are, non-ASCII included",
+          seenFiles[1].list.split( "\n" ).slice( -1 )[0], "C:/n/\u00fcn\u00ef \u65e5'.fit" );
+   check( "hasher: Windows: the script and the lists are gone afterwards",
+          seenFiles.map( function( f ) { return File.exists( f.scriptPath ) || File.exists( f.listPath ); } ),
+          [ false, false ] );
+
+   /* Anywhere else no process is ever made. */
+   var none = scanWith( UNIX, function() { throw new Error( "must not start" ); } );
+   var noneRun = warned( function() { return none.h.start( twenty ).wait(); } );
+   check( "hasher: on any other platform no process at all, PixInsight answers, nothing is warned",
+          [ sorted( noneRun.out.digests ), none.log.made, none.h.disabled, noneRun.said ], [ truths( twenty ), 0, true, [] ] );
+
+   /* Cancel stops the processes, not only the wait. */
+   var hang = scanWith( MAC, function( program, args )
+   {
+      return args.indexOf( hundred[0] ) >= 0 ? { out: shasumSays( args ) } : { forever: true };
+   } );
+   var polls = 0;
+   var hangRun = hang.h.start( hundred.slice( 0, 40 ) ).wait( function() { return ++polls > 1; } );
+   check( "hasher: Cancel terminates every running process and reads nothing more",
+          [ hangRun.cancelled, hang.log.terminated, hang.log.live, hang.reads ],
+          [ true, 4, 0, [ hundred[0] ] ] );
+   var killed = scanWith( MAC, function() { return { forever: true }; } ), kjob = killed.h.start( twenty );
+   kjob.poll();
+   kjob.kill();
+   check( "hasher: kill terminates what is running", [ killed.log.terminated, killed.log.live ], [ 1, 0 ] );
+
+   if ( !IN_PIXINSIGHT )
+      return;
+
+   /* ---- PixInsight: the real tool, and the Frame Selector's use of it ---- */
+
+   var dir = TEST_SCRATCH + "/hasher-real";
+   ensureDir( dir );
+   var names = [ "plain.fit", "sp ace.fit", "quo'te\".fit", "\u00fcn\u00ef\u65e5.fit", "e\u0301.fit",
+                 "-dash.fit", "back\\slash.fit", "new\nline.fit" ];
+   var real = [];
+   for ( var i = 0; i < names.length; ++i )
+   {
+      var p = dir + "/" + names[i];
+      try { File.writeTextFile( p, "synthetic frame " + i + " " + names[i] ); } catch ( e ) {}
+      if ( File.exists( p ) )           // PixInsight will not make some of these names
+         real.push( p );
+   }
+   for ( var j = 0; j < 12; ++j )
+   {
+      File.writeTextFile( dir + "/sub_" + j + ".fit", "synthetic sub " + j );
+      real.push( dir + "/sub_" + j + ".fit" );
+   }
+   if ( Util.PLATFORM == MAC )
+   {
+      var pjsrReads = 0, pjsrTruth = {};
+      real.forEach( function( p ) { pjsrTruth[p] = FrameSelector.digest( p ); } );
+      var realScan = Hasher.forScan( { fallback: function( p ) { ++pjsrReads; return FrameSelector.digest( p ); } } );
+      var realRun = realScan.start( real ).wait();
+      var awkwardCount = real.filter( function( p ) { return Hasher.awkward( p, MAC ); } ).length;
+      check( "hasher: the real shasum on synthetic files: the same hex as PixInsight's CryptographicHash for every name",
+             [ sorted( realRun.digests ), realScan.disabled, pjsrReads ], [ sorted( pjsrTruth ), false, 1 + awkwardCount ] );
+   }
+
+   /* Identities: exactly what fileIdentity says, a missing file null. */
+   var gone = dir + "/not-there.fit";
+   var ids = new FrameSelector.Identities( null );
+   real.concat( [ gone ] ).forEach( function( p ) { ids.request( p ); ids.poll(); } );
+   var idsDone = ids.finish();
+   var expectIds = {};
+   real.forEach( function( p ) { expectIds[p] = FrameSelector.fileIdentity( p ); } );
+   expectIds[gone] = null;
+   check( "hasher: Identities give exactly what fileIdentity gives, a missing file null",
+          [ idsDone.cancelled, sorted( idsDone.ids ) ], [ false, sorted( expectIds ) ] );
+
+   /*
+    * cohortFrom asks for each subframe's digest as its header is read,
+    * then waits while re-reporting the last file, so Cancel still works.
+    */
+   var cdir = TEST_SCRATCH + "/hasher-cohort";
+   ensureDir( cdir );
+   var o = { fwhm: 3.0, background: 0.02, noise: 0.002, stars: 20, width: 64, height: 48 };
+   var subs = [ synthFrame( cdir + "/a.xisf", o ), synthFrame( cdir + "/b.xisf", o ), synthFrame( cdir + "/c.xisf", o ) ];
+   var events = [];
+   var tracer = { start: function()
+   {
+      return { add: function( p ) { events.push( "add " + File.extractName( p ) ); },
+               poll: function() { return false; },
+               kill: function() { events.push( "kill" ); },
+               wait: function( cancelled )
+               {
+                  events.push( "wait" );
+                  var stopped = cancelled != null && cancelled();
+                  var d = {};
+                  if ( !stopped )
+                     subs.forEach( function( s ) { d[s] = FrameSelector.digest( s ); } );
+                  return { digests: d, cancelled: stopped };
+               } };
+   } };
+   var cohort = FrameSelector.cohortFrom( subs, function( done, total, name )
+   {
+      events.push( "progress " + done + "/" + total + " " + name );
+      return true;
+   }, tracer );
+   check( "hasher: cohortFrom asks for each digest as its header is read, then waits re-reporting the last file",
+          events, [ "progress 1/3 a", "add a", "progress 2/3 b", "add b", "progress 3/3 c", "add c",
+                    "wait", "progress 3/3 c" ] );
+   check( "hasher: and the cohort's identities are fileIdentity's",
+          [ cohort.cancelled, cohort.entries.map( function( e ) { return e.path; } ),
+            subs.map( function( s ) { return JSON.stringify( cohort.before[s] ) == JSON.stringify( FrameSelector.fileIdentity( s ) ); } ) ],
+          [ false, subs, [ true, true, true ] ] );
+   events = [];
+   var stoppedCohort = FrameSelector.cohortFrom( subs, function( done ) { return done < 3 || events.indexOf( "wait" ) < 0; }, tracer );
+   check( "hasher: Cancel while the digests finish cancels the read",
+          [ stoppedCohort.cancelled, stoppedCohort.entries.length ], [ true, 0 ] );
+   events = [];
+   FrameSelector.cohortFrom( subs, function( done ) { return done < 2; }, tracer );
+   check( "hasher: Cancel while headers are read stops the digests too", events.slice( -1 ), [ "kill" ] );
+
+   /*
+    * The settle digest goes through the hasher, never the cache and never
+    * fileIdentity: a frame whose bytes changed while it was measured is
+    * unstable.
+    */
+   var realFileIdentity = FrameSelector.fileIdentity, realMeasure = FrameSelector.measure,
+       realStore = FrameSelector.storeMeasurement, realCached = FrameSelector.cachedMeasurement;
+   try
+   {
+      var before = {}, group = [];
+      subs.forEach( function( s ) { before[s] = realFileIdentity( s ); group.push( { path: s, identity: before[s] } ); } );
+      FrameSelector.fileIdentity = function() { throw new Error( "settle must not use fileIdentity" ); };
+      FrameSelector.cachedMeasurement = function() { return null; };
+      FrameSelector.storeMeasurement = function() {};
+      FrameSelector.measure = function( batch )
+      {
+         var m = {};
+         batch.forEach( function( p ) { m[p] = { measuredStub: true }; } );
+         return m;
+      };
+      var asked = [];
+      var changed = { start: function()
+      {
+         var mine = [];
+         return { add: function( p ) { mine.push( p ); asked.push( p ); }, poll: function() { return true; }, kill: function() {},
+                  wait: function()
+                  {
+                     var d = {};
+                     mine.forEach( function( p ) { d[p] = p == subs[1] ? "0000000000000000000000000000000000000000" : before[p].digest; } );
+                     return { digests: d, cancelled: false };
+                  } };
+      } };
+      var settled = null;
+      try { settled = FrameSelector.measureGroup( group, before, null, null, changed ); }
+      catch ( e ) { settled = { threw: String( e ) }; }
+      check( "hasher: the settle digests go through the hasher; a changed frame is unstable",
+             [ settled.unstable, asked.slice().sort() ], [ [ subs[1] ], subs.slice().sort() ] );
+   }
+   finally
+   {
+      FrameSelector.fileIdentity = realFileIdentity;
+      FrameSelector.measure = realMeasure;
+      FrameSelector.storeMeasurement = realStore;
+      FrameSelector.cachedMeasurement = realCached;
    }
 }
 

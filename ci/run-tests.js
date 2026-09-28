@@ -65,7 +65,7 @@ function load( file )
    return { src, full };
 }
 
-const LIBS = [ "lib/Util.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+const LIBS = [ "lib/Util.js", "lib/Hasher.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
                "lib/StepsSyqon.js", "lib/StepsIcc.js",
                "lib/Config.js",
                "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",

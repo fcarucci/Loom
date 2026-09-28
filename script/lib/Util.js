@@ -297,6 +297,21 @@ Util.isWindows = function( platform )
 };
 
 /*
+ * How Loom runs a PowerShell script FILE, the updater's helper and the
+ * Frame Selector's hasher alike. -ExecutionPolicy Bypass because the
+ * default policy on a fresh Windows install (Restricted) refuses to run a
+ * script file at all; -NoProfile so a user profile cannot change the
+ * environment or slow the launch; -NonInteractive so nothing can ever sit
+ * waiting for input in a process nobody can see. `args` go to the script.
+ */
+Util.powerShellFile = function( script, args )
+{
+   return { program: "powershell.exe",
+            args: [ "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                    "-File", script ].concat( args || [] ) };
+};
+
+/*
  * PJSR's File API speaks forward slashes on every platform, including
  * Windows: File.homeDirectory and CoreApplication.baseDirPath come back
  * as C:/Users/... and C:/Program Files/PixInsight, and File.exists

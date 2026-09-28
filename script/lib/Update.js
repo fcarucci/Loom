@@ -312,16 +312,7 @@ Update.helperFileName = function( platform )
 Update.helperCommand = function( platform, path )
 {
    if ( Util.isWindows( platform ) )
-      /*
-       * -ExecutionPolicy Bypass because the default policy on a fresh
-       * Windows install (Restricted) refuses to run a script FILE at all;
-       * -NoProfile so a user profile cannot change git's environment or
-       * slow the launch; -NonInteractive so nothing can ever sit waiting
-       * for input in a process nobody can see.
-       */
-      return { program: "powershell.exe",
-               args: [ "-NoProfile", "-NonInteractive",
-                       "-ExecutionPolicy", "Bypass", "-File", path ] };
+      return Util.powerShellFile( path );
    return { program: "/bin/sh", args: [ path ] };
 };
 
