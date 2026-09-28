@@ -864,7 +864,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 295 );
+      check( "Steps: the member count", Object.keys( have ).length, 302 );
    }
 
    /*
@@ -2472,6 +2472,8 @@ function runTests()
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO, "high" ) ],
           [ 0.60, 1.00, 1.00 ] );
 
+   // the two-pass ladder, Advanced first: Steps.PRISM2_LINEAR_PASS on (it is off by default)
+   var p2WasA = Steps.setPrism2LinearPass( true );
    /*
     * Prism 2.0: Studio's paid Deep Prism models, run in TWO passes -- the
     * maintainer's ladder (2026-09-26), every model at Studio's 1.00 blend:
@@ -2485,9 +2487,9 @@ function runTests()
           [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low", "linear" ),
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium", "linear" ),
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high", "linear" ) ],
-          [ { model: "prism-advanced", application: 1.00 },
-            { model: "prism-advanced", application: 1.00 },
-            { model: "prism-advanced", application: 1.00 } ] );
+          [ { model: "prism-advanced", application: 1.00, fineScale: 4 },
+            { model: "prism-advanced", application: 1.00, fineScale: 4 },
+            { model: "prism-advanced", application: 1.00, fineScale: 4 } ] );
    check( "Prism 2.0's post-stretch pass: none, Ultra, Max",
           [ Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "low", "stretched" ),
             Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "medium", "stretched" ),
@@ -2497,7 +2499,7 @@ function runTests()
             { model: "prism-max",   application: 1.00 } ] );
    check( "a Prism 2.0 level's amount without a pass names both passes",
           Steps.noiseAmountFor( Steps.NR_TOOL_STUDIO2, "high" ),
-          { linear:    { model: "prism-advanced", application: 1.00 },
+          { linear:    { model: "prism-advanced", application: 1.00, fineScale: 4 },
             stretched: { model: "prism-max",      application: 1.00 } } );
    check( "every Deep Prism model is Prism 2.0, Essential is not",
           [ "prism-advanced", "prism-ultra", "prism-max", "prism-essential" ].map( Steps.studioIsPrism2 ),
@@ -2521,7 +2523,7 @@ function runTests()
           Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
                                           noiseLevel: "high", stretch: true }, "RGB" ),
           { tool: Steps.NR_TOOL_STUDIO2, pass: "linear",
-            amount: { model: "prism-advanced", application: 1.00 } } );
+            amount: { model: "prism-advanced", application: 1.00, fineScale: 4 } } );
    check( "Prism 2.0's stretched slot keys on the level's post-stretch model",
           Pipeline.stretchedDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO2,
                                              noiseLevel: "high", stretch: true }, "RGB" ),
@@ -2554,24 +2556,24 @@ function runTests()
                                    sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                    starTool: Steps.STAR_TOOL_STUDIO,
                                    gradientTool: Steps.GRADIENT_TOOL_STUDIO } ),
-          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-ultra", "prism-max" ] );
+          [ "deep-gradient", "parallax", "axiom", "prism-advanced", "prism-max" ] );
    /*
-    * Prism 2.0 is offered only to an account licensed for all three of its
-    * models, so every Prism 2.0 run checks all three, whatever the level
-    * and whether or not there is a stretch (maintainer, 2026-09-26).
+    * Prism 2.0 checks the models the chosen strengths run, with the
+    * stretch as it is (maintainer, 2026-09-27; it used to be all three
+    * whatever the level). Here with the linear pass on: Advanced first.
     */
-   check( "Prism 2.0 Medium checks Advanced, Ultra and Max",
+   check( "Prism 2.0 Medium checks Advanced and Ultra",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "medium",
                                    noiseLevelL: "medium", stretch: true } ),
-          [ "prism-advanced", "prism-ultra", "prism-max" ] );
-   check( "Prism 2.0 with the stretch off still checks all three",
+          [ "prism-advanced", "prism-ultra" ] );
+   check( "Prism 2.0 with the stretch off checks Advanced alone",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "high",
                                    stretch: false } ),
-          [ "prism-advanced", "prism-ultra", "prism-max" ] );
-   check( "Prism 2.0 Low still checks all three",
+          [ "prism-advanced" ] );
+   check( "Prism 2.0 Low checks Advanced alone",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_STUDIO2, noiseLevel: "low",
                                    stretch: true } ),
-          [ "prism-advanced", "prism-ultra", "prism-max" ] );
+          [ "prism-advanced" ] );
    /*
     * The console's operation line names Prism 2.0's pass: which model,
     * and whether it is the one before or after the stretch. Other tools
@@ -2603,6 +2605,89 @@ function runTests()
                opLine( Steps.NR_TOOL_STUDIO, "low", false, "linear" ) ],
              [ [ "noise reduction", Steps.NR_TOOL_NXT, "high", "RGB" ],
                [ "noise reduction", Steps.NR_TOOL_STUDIO, "low", "RGB" ] ] );
+   } )();
+   Steps.setPrism2LinearPass( p2WasA );
+
+   /*
+    * Prism 2.0 with its linear pass OFF, the default since 2026-09-27
+    * (Steps.PRISM2_LINEAR_PASS): Advanced's tile offsets became a band
+    * after the stretch. With the stretch on, Medium runs Ultra and High
+    * Max, both after it; with the stretch off only Medium is offered, Ultra
+    * on the linear plate, and Max never runs on linear data. No Low.
+    */
+   ( function()
+   {
+      var S2 = Steps.NR_TOOL_STUDIO2;
+      var ultra = { model: "prism-ultra", application: 1.00 }, max = { model: "prism-max", application: 1.00 };
+      check( "Prism 2.0's linear pass is off by default", Steps.PRISM2_LINEAR_PASS, false );
+      check( "...so Prism 2.0 is not a linear-stage denoiser", Steps.denoiseIsLinear( S2 ), false );
+      check( "...its ladder: Medium Ultra, High Max after the stretch; unstretched, Medium Ultra only; no Low",
+             Steps.NOISE_LEVELS.studio2,
+             { medium: { linear: null, stretched: ultra, unstretched: ultra },
+               high:   { linear: null, stretched: max, unstretched: null } } );
+      check( "...the strengths offered: Prism 2.0 Medium and High, only Medium unstretched; other tools all three",
+             [ Steps.noiseLevelsFor( S2, true ), Steps.noiseLevelsFor( S2, false ), Steps.noiseLevelsFor( S2 ),
+               Steps.noiseLevelsFor( Steps.NR_TOOL_NXT, false ), Steps.noiseLevelsFor( Steps.NR_TOOL_STUDIO, true ),
+               Steps.noiseLevelsFor( Steps.NR_TOOL_PRISM, false ) ],
+             [ [ "medium", "high" ], [ "medium" ], [ "medium", "high" ], [ "low", "medium", "high" ],
+               [ "low", "medium", "high" ], [ "low", "medium", "high" ] ] );
+      check( "...a strength not offered is Medium, for Prism 2.0 only; unknown levels and none as they are",
+             [ Steps.supportedNoiseLevel( S2, "low", true ), Steps.supportedNoiseLevel( S2, "high", true ),
+               Steps.supportedNoiseLevel( S2, "high", false ), Steps.supportedNoiseLevel( Steps.NR_TOOL_NXT, "low", false ),
+               Steps.supportedNoiseLevel( S2, "extreme", true ), Steps.supportedNoiseLevel( S2, "none", false ) ],
+             [ "medium", "high", "medium", "low", "extreme", "none" ] );
+      function migrated( tool, colour, L, stretch )
+      {
+         var c = Steps.migrateConfig( { noiseTool: tool, noiseLevel: colour, noiseLevelL: L,
+                                        stretch: stretch, gradientTool: "none" }, true );
+         return [ c.noiseLevel, c.noiseLevelL ];
+      }
+      check( "...saved strengths load as offered: Prism 2.0 Low as Medium, High as Medium unstretched; NXT's kept",
+             [ migrated( S2, "low", "low", true ), migrated( S2, "high", "low", true ),
+               migrated( S2, "high", "high", false ), migrated( Steps.NR_TOOL_NXT, "low", "high", false ) ],
+             [ [ "medium", "medium" ], [ "high", "medium" ], [ "medium", "medium" ], [ "low", "high" ] ] );
+      var cfg = function( level, stretch ) { return { noiseTool: S2, noiseLevel: level, stretch: stretch }; };
+      check( "...stretched, Medium fills the post-stretch slot only, keyed on Ultra as before",
+             [ Pipeline.linearDenoiseParams( cfg( "medium", true ), "RGB" ),
+               Pipeline.stretchedDenoiseParams( cfg( "medium", true ), "RGB" ) ],
+             [ null, { tool: S2, pass: "stretched", amount: ultra } ] );
+      check( "...High keys on Max",
+             Pipeline.stretchedDenoiseParams( cfg( "high", true ), "RGB" ),
+             { tool: S2, pass: "stretched", amount: max } );
+      check( "...a Low that reaches the pipeline runs as Medium",
+             Pipeline.stretchedDenoiseParams( cfg( "low", true ), "RGB" ),
+             Pipeline.stretchedDenoiseParams( cfg( "medium", true ), "RGB" ) );
+      check( "...unstretched, Medium is Ultra in the linear slot, and a High there runs as Medium: never Max on linear data",
+             [ Pipeline.linearDenoiseParams( cfg( "medium", false ), "RGB" ),
+               Pipeline.stretchedDenoiseParams( cfg( "medium", false ), "RGB" ),
+               Pipeline.linearDenoiseParams( cfg( "high", false ), "RGB" ) ],
+             [ { tool: S2, pass: "unstretched", amount: ultra }, null,
+               { tool: S2, pass: "unstretched", amount: ultra } ] );
+      check( "...an unknown level still reaches a runner, to be refused by name",
+             [ Pipeline.stretchedDenoiseParams( cfg( "extreme", true ), "RGB" ),
+               Pipeline.linearDenoiseParams( cfg( "extreme", false ), "RGB" ) ],
+             [ { tool: S2, level: "extreme", stretched: true, amount: null },
+               { tool: S2, level: "extreme", stretched: false, amount: null } ] );
+      var models = function( colour, L, stretch )
+      {
+         return Steps.studioModelsFor( { noiseTool: S2, noiseLevel: colour, noiseLevelL: L, stretch: stretch } );
+      };
+      check( "...preflight checks only the models the chosen strengths run",
+             [ models( "medium", "medium", true ), models( "high", "high", true ), models( "medium", "high", true ),
+               models( "high", "high", false ), models( "low", null, true ) ],
+             [ [ "prism-ultra" ], [ "prism-max" ], [ "prism-ultra", "prism-max" ], [ "prism-ultra" ],
+               [ "prism-ultra" ] ] );
+      var on = Steps.setPrism2LinearPass( true );
+      var onLadder = Steps.NOISE_LEVELS.studio2, onLinear = Steps.denoiseIsLinear( S2 ),
+          onLevels = Steps.noiseLevelsFor( S2, true ), onModels = models( "medium", "high", true );
+      Steps.setPrism2LinearPass( on );
+      check( "switched on, Prism 2.0 is two passes again: Advanced (fine scale only) first, Low offered",
+             [ onLinear, onLadder.medium.linear, onLevels, onModels ],
+             [ true, { model: "prism-advanced", application: 1.00, fineScale: 4 }, [ "low", "medium", "high" ],
+               [ "prism-advanced", "prism-ultra", "prism-max" ] ] );
+      check( "...and switched back, off again",
+             [ Steps.PRISM2_LINEAR_PASS, Steps.denoiseIsLinear( S2 ), Steps.noiseLevelsFor( S2, true ) ],
+             [ false, false, [ "medium", "high" ] ] );
    } )();
    check( "a run with no Studio tool uses no Studio model",
           Steps.studioModelsFor( { noiseTool: Steps.NR_TOOL_NXT, noiseLevel: "medium",
@@ -4481,6 +4566,8 @@ function runTests()
           denoiseSlots( Steps.NR_TOOL_PRISM ), "stretched" );
    check( "with no tool, neither slot is filled",
           denoiseSlots( "none" ), "" );
+   // the two-pass ladder, Advanced first: Steps.PRISM2_LINEAR_PASS on (it is off by default)
+   var p2WasB = Steps.setPrism2LinearPass( true );
    /*
     * The one exception: Prism 2.0 is two passes, Advanced on the linear
     * plate and Ultra or Max after the stretch, so Medium and High fill
@@ -4595,6 +4682,7 @@ function runTests()
    check( "with the stretch off the linear runner asks for the whole level",
           prism2RunnerCalls( false ),
           [ [ "rgb", "high", "RGB linear", false, "all" ] ] );
+   Steps.setPrism2LinearPass( p2WasB );
 
    /*
     * Medium is the tool's own default for every tool, so "Medium" means
@@ -4634,16 +4722,18 @@ function runTests()
           readmeSrc.indexOf( "MLDenoise" ) >= 0, true );
    /*
     * Prism 2.0's ladder is stated in three places a user reads: the README,
-    * the dialog's help and the changelog. All three say the two-pass
-    * ladder, and none the one-model-per-level ladder it replaced.
+    * the dialog's help and the changelog. The README and the help say what
+    * runs with the Advanced pass off, and none the one-model-per-level
+    * ladder of 2026-09-26.
     */
    var uiSrc = File.readTextFile( LOOM_DIR + "/lib/UI.js" );
-   check( "the README states Prism 2.0's two passes",
-          readmeSrc.indexOf( "Medium: Advanced then Ultra, High: Advanced then Max" ) >= 0, true );
-   check( "the dialog's help states them",
-          UI.noiseToolToolTip().indexOf( "Ultra (Medium) or Max (High) after it. Low is Advanced only" ) >= 0 &&
-          UI.prism2LevelsToolTip().indexOf( "Medium: Advanced, then Ultra after the stretch. " +
-                                            "High: Advanced, then Max after the stretch." ) >= 0, true );
+   check( "the README states Prism 2.0's ladder, after the stretch, Advanced off",
+          readmeSrc.indexOf( "runs after the\nstretch (Medium: Ultra, High: Max)" ) >= 0 &&
+          readmeSrc.indexOf( "Its Advanced pass on linear data, and with it Low,\nis off" ) >= 0, true );
+   check( "the dialog's help states it",
+          UI.noiseToolToolTip().indexOf( "after the stretch, Ultra (Medium) or Max (High)" ) >= 0 &&
+          UI.prism2LevelsToolTip().indexOf( "Medium: Ultra after the stretch, or on the linear image " +
+                                            "with the stretch off. High: Max after the stretch" ) >= 0, true );
    check( "neither still states one model per level",
           [ readmeSrc.indexOf( "Medium: Max" ), uiSrc.indexOf( "Medium is Max" ) ], [ -1, -1 ] );
 
@@ -7537,11 +7627,11 @@ function runTests()
          "#36 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #32",
          "#37 Control enabled=true at 8,488,640x20 / 8,488,940x20 in dialog",
          "#38 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #37",
-         "#39 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#881:d6cff24 at 87,0,127x20 / 87,0,127x20 in #37",
+         "#39 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#976:88691db2 at 87,0,127x20 / 87,0,127x20 in #37",
          "#40 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #37",
-         "#41 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#441:1c06dc49 at 274,0,79x20 / 274,0,79x20 in #37",
+         "#41 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#470:10ab1be7 at 274,0,79x20 / 274,0,79x20 in #37",
          "#42 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #37",
-         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#304:ad6f28d8 at 382,0,79x20 / 382,0,79x20 in #37",
+         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#333:a1120256 at 382,0,79x20 / 382,0,79x20 in #37",
          "#44 Control enabled=true at 8,514,640x20 / 8,514,940x20 in dialog",
          "#45 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #44",
          "#46 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #44",
@@ -8387,13 +8477,15 @@ function runTests()
               { model: Steps.STUDIO_MODEL_DENOISE, domain: "linear", application: 1.00 } ] ] );
    check( "denoise: Studio Prism already stretched is declared nonlinear",
           denoiseCall( Steps.NR_TOOL_STUDIO, "low", true )[0][3].domain, "nonlinear" );
+   // the two-pass ladder, Advanced first: Steps.PRISM2_LINEAR_PASS on (it is off by default)
+   var p2WasD = Steps.setPrism2LinearPass( true );
    /*
     * Prism 2.0 is two passes, and the pipeline runs each in its own slot:
     * Advanced on linear data, then Ultra (Medium) or Max (High) on the
     * stretched plate, declared nonlinear. Low has no second pass.
     */
    var advancedLinear = [ "studio", "dn", "noise reduction",
-                          { model: "prism-advanced", domain: "linear", application: 1.00 } ];
+                          { model: "prism-advanced", domain: "linear", application: 1.00, fineScale: 4 } ];
    check( "denoise: Prism 2.0's linear pass is Advanced, declared linear",
           denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false, "linear" ), [ advancedLinear ] );
    check( "denoise: Prism 2.0 High's stretched pass is Max, declared nonlinear",
@@ -8435,6 +8527,28 @@ function runTests()
           denoiseCall( Steps.NR_TOOL_STUDIO2, "low", true, "all", p2Said ), [] );
    check( "...and warns, once",
           p2Said.filter( function( m ) { return /^warn .*nothing/.test( m ); } ).length, 1 );
+   Steps.setPrism2LinearPass( p2WasD );
+   /*
+    * With the linear pass off (the default), Prism 2.0 runs only on the
+    * stretched plate: never Ultra or Max on linear data.
+    */
+   var offSaid = [];
+   check( "denoise, Prism 2.0 off-linear: Medium after the stretch is Ultra, declared nonlinear",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "medium", true, "stretched" ),
+          [ [ "studio", "dn", "noise reduction",
+              { model: "prism-ultra", domain: "nonlinear", application: 1.00 } ] ] );
+   check( "...High after the stretch is Max",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", true, "stretched" )[0][3].model, "prism-max" );
+   check( "...a linear-slot call with a stretch to follow runs nothing",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "medium", false, "linear" ), [] );
+   check( "...Medium with no stretch at all is Ultra, declared linear",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "medium", false, "all" ),
+          [ [ "studio", "dn", "noise reduction",
+              { model: "prism-ultra", domain: "linear", application: 1.00 } ] ] );
+   check( "...High with no stretch runs nothing: Max never on linear data",
+          denoiseCall( Steps.NR_TOOL_STUDIO2, "high", false, undefined, offSaid ), [] );
+   check( "...and warns once, naming Max",
+          offSaid.filter( function( m ) { return /^warn .*Max.*only after the stretch.*nothing runs/.test( m ); } ).length, 1 );
    check( "denoise: other tools ignore the pass",
           denoiseCall( Steps.NR_TOOL_STUDIO, "medium", false, "linear" ),
           denoiseCall( Steps.NR_TOOL_STUDIO, "medium", false ) );
@@ -8447,6 +8561,140 @@ function runTests()
       check( "denoise: " + dnTools[dnt] + " refuses an unknown level",
              denoiseCall( dnTools[dnt], "extreme" ),
              [ [ "error", "Unknown noise reduction level: extreme" ] ] );
+
+   /*
+    * Prism 2.0's linear pass, when switched on (Steps.PRISM2_LINEAR_PASS),
+    * keeps only its FINE-SCALE change.
+    *
+    * SyQon's prism-advanced works tile by tile on linear data, and each
+    * tile comes back carrying its own small level offset, strongest in the
+    * faintest sky. Linear, the offsets are far below the noise; the stretch
+    * lifts them into a flat band with a hard seam (the Elephant Trunk HSO of
+    * 2026-09-27: a green-teal band along the top and left edges). The
+    * stand-in CLI below does what the model did there: it removes most of
+    * the noise and adds a checkerboard of 64-pixel tile offsets. The pass
+    * must keep the noise reduction and drop the offsets, before and after
+    * a stretch. Synthetic data, real images: PixInsight only.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var N = 192, T = 64, OFF = 4e-6;
+      var base = function( x, y, c ) { return 3e-4 + 1e-5*x/N + 5e-6*y/N + 2e-5*c; };
+      var tileOffset = function( x, y ) { return ( ( Math.floor( x/T ) + Math.floor( y/T ) ) % 2 ) ? OFF : -OFF; };
+      var rnd = synthRandom( 4242 ), noise = [];
+      for ( var i = 0; i < N*N*3; ++i ) noise.push( 4e-5*( rnd() - 0.5 ) );
+      function plate( id, f )
+      {
+         var w = new ImageWindow( N, N, 3, 32, true, true, Util.freeWindowId( id ) );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < 3; ++c )
+         {
+            var a = [];
+            for ( var y = 0; y < N; ++y )
+               for ( var x = 0; x < N; ++x )
+                  a.push( f( x, y, c, noise[( c*N + y )*N + x] ) );
+            w.mainView.image.setSamples( a, new Rect( 0, 0, N, N ), c );
+         }
+         w.mainView.endProcess();
+         return w;
+      }
+      function samples( img, c )
+      {
+         var a = [];
+         img.getSamples( a, new Rect( 0, 0, N, N ), c );
+         return a;
+      }
+      /*
+       * Per 64-pixel tile, the mean of (image - base) in channel c over the
+       * tile's interior, 12 pixels (3 sigma) in from its edges: the level
+       * a stretch turns into a band. Right at a tile edge the fine-scale
+       * part of the step stays, a line a few pixels wide either side.
+       */
+      var M = 12;
+      function tileMeans( img, c, ref )
+      {
+         var a = samples( img, c ), b = samples( ref, c ), m = [];
+         for ( var ty = 0; ty < N/T; ++ty )
+            for ( var tx = 0; tx < N/T; ++tx )
+            {
+               var s = 0, n = 0;
+               for ( var y = ty*T + M; y < ( ty + 1 )*T - M; ++y )
+                  for ( var x = tx*T + M; x < ( tx + 1 )*T - M; ++x, ++n )
+                     s += a[y*N + x] - b[y*N + x];
+               m.push( s/n );
+            }
+         return m;
+      }
+      function spread( v ) { return Math.max.apply( null, v ) - Math.min.apply( null, v ); }
+      // the noise's standard deviation, from neighbouring pixels' differences
+      function noiseSd( img, c )
+      {
+         var a = samples( img, c ), s = 0, n = 0;
+         for ( var y = 8; y < N - 8; ++y )
+            for ( var x = 8; x < N - 8; ++x, ++n )
+            {
+               var d = a[y*N + x] - a[y*N + x - 1] - ( base( x, y, c ) - base( x - 1, y, c ) );
+               s += d*d;
+            }
+         return Math.sqrt( s/n/2 );
+      }
+
+      var names = [ "studioExecutable", "studioNoteKeychain", "syqonRunProcessBlocking" ];
+      var saved = {}, realLog = Util.log, wins = [];
+      for ( var k = 0; k < names.length; ++k ) saved[names[k]] = Steps[names[k]];
+      var wasEntitled = Steps.studioSession.entitled["prism-advanced"];
+      var linearWas = Steps.setPrism2LinearPass( true );   // B is Advanced's; it runs only with the pass on
+      try
+      {
+         Util.log = function() {};
+         Steps.studioExecutable = function() { return "/opt/syqon-cli"; };
+         Steps.studioNoteKeychain = function() {};
+         // the stand-in: 25% of the noise left, plus the tile offsets
+         Steps.syqonRunProcessBlocking = function( exe, args )
+         {
+            var out = plate( "fine_cli_out", function( x, y, c, n ) { return base( x, y, c ) + 0.25*n + tileOffset( x, y ); } );
+            Steps.studioSaveXisf( args[args.length - 1], out.mainView );
+            out.forceClose();
+            return { stdout: "", stderr: "", sawError: false, errorCodes: [] };
+         };
+         var noisy = function( x, y, c, n ) { return base( x, y, c ) + n; };
+         var w = plate( "fine_in", noisy ), was = plate( "fine_was", noisy );
+         wins.push( w, was );
+         var img = w.mainView.image;
+         var noiseIn = noiseSd( img, 1 );
+         Steps.denoise( w.mainView, Steps.NR_TOOL_STUDIO2, "medium", null, false, "linear" );
+         // the pass's change, tile by tile: the offsets, if they survived
+         var worst = 0;
+         for ( var c = 0; c < 3; ++c ) worst = Math.max( worst, spread( tileMeans( img, c, was.mainView.image ) ) );
+         check( "Prism 2.0 linear pass: tile offsets (8e-6 peak to peak) do not survive it inside the tiles",
+                worst < 0.15*2*OFF ? "ok" : worst.toExponential( 2 ), "ok" );
+         check( "...while the noise reduction does (noise at most half the input's)",
+                noiseSd( img, 1 ) < 0.5*noiseIn ? "ok" : ( noiseSd( img, 1 )/noiseIn ).toFixed( 3 ), "ok" );
+
+         // and through a stretch: the result against the plate it came from, stretched alike
+         var p = Steps.stretch( w.mainView, true );
+         Steps.applyStretch( was.mainView, p, true );
+         var tiles = spread( tileMeans( img, 1, was.mainView.image ) );
+         // what the same stretch makes of the offsets alone, on the smooth field
+         var off = plate( "fine_off", function( x, y, c ) { return base( x, y, c ) + tileOffset( x, y ); } );
+         var smooth = plate( "fine_smooth", function( x, y, c ) { return base( x, y, c ); } );
+         wins.push( off, smooth );
+         Steps.applyStretch( off.mainView, p, true );
+         Steps.applyStretch( smooth.mainView, p, true );
+         var band = spread( tileMeans( off.mainView.image, 1, smooth.mainView.image ) );
+         check( "...nor the stretch: stretched tile levels differ by under a tenth of the offsets' band",
+                tiles < 0.1*band ? "ok" : ( tiles/band ).toFixed( 3 ), "ok" );
+      }
+      catch ( x ) { check( "Prism 2.0 linear pass fine-scale test ran", String( x ), "" ); }
+      finally
+      {
+         for ( var r = 0; r < names.length; ++r ) Steps[names[r]] = saved[names[r]];
+         Util.log = realLog;
+         Steps.studioSession.entitled["prism-advanced"] = wasEntitled;
+         Steps.setPrism2LinearPass( linearWas );
+         for ( var q = 0; q < wins.length; ++q ) try { wins[q].forceClose(); } catch ( e ) {}
+      }
+   } )();
 
    /*
     * Characterization of the denoise tool catalogue, pinned before the
@@ -8497,9 +8745,9 @@ function runTests()
         "none": [null, null, null, null],
         "null": [null, null, null, null],
         "extreme": [null, null, null, null] },
-      { "low": [{"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}, {"model": "prism-advanced", "application": 1}, null, null],
-        "medium": [{"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-ultra", "application": 1}}, {"model": "prism-advanced", "application": 1}, {"model": "prism-ultra", "application": 1}, null],
-        "high": [{"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-max", "application": 1}}, {"model": "prism-advanced", "application": 1}, {"model": "prism-max", "application": 1}, null],
+      { "low": [null, null, null, null],
+        "medium": [{"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}, null, {"model": "prism-ultra", "application": 1}, null],
+        "high": [{"linear": null, "stretched": {"model": "prism-max", "application": 1}}, null, {"model": "prism-max", "application": 1}, null],
         "none": [null, null, null, null],
         "null": [null, null, null, null],
         "extreme": [null, null, null, null] },
@@ -8601,18 +8849,18 @@ function runTests()
         ["high", true, "L", {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": true, "amount": 0.6}, null],
         ["high", false, "undefined", {"tool": "SyQon Studio Prism Essential", "level": "high", "stretched": false, "amount": 1}, {"tool": "SyQon Studio Prism Essential", "level": "high", "stretched": false, "amount": 1}, null],
         ["high", false, "L", {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": false, "amount": 0.6}, {"tool": "SyQon Studio Prism Essential", "level": "low", "stretched": false, "amount": 0.6}, null] ],
-      [ ["low", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["low", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["low", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["low", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["medium", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
-        ["medium", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["medium", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["medium", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["high", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "high", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-max", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-max", "application": 1}}],
-        ["high", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": true, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["high", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "high", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": {"model": "prism-max", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null],
-        ["high", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "low", "stretched": false, "amount": {"linear": {"model": "prism-advanced", "application": 1}, "stretched": null}}, {"tool": "SyQon Studio Prism 2.0", "pass": "linear", "amount": {"model": "prism-advanced", "application": 1}}, null] ],
+      [ ["low", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
+        ["low", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
+        ["low", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null],
+        ["low", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null],
+        ["medium", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
+        ["medium", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
+        ["medium", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null],
+        ["medium", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null],
+        ["high", true, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "high", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-max", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-max", "application": 1}}],
+        ["high", true, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": true, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, null, {"tool": "SyQon Studio Prism 2.0", "pass": "stretched", "amount": {"model": "prism-ultra", "application": 1}}],
+        ["high", false, "undefined", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null],
+        ["high", false, "L", {"tool": "SyQon Studio Prism 2.0", "level": "medium", "stretched": false, "amount": {"linear": null, "stretched": {"model": "prism-ultra", "application": 1}}}, {"tool": "SyQon Studio Prism 2.0", "pass": "unstretched", "amount": {"model": "prism-ultra", "application": 1}}, null] ],
       [ ["low", true, "undefined", null, null, null],
         ["low", true, "L", null, null, null],
         ["low", false, "undefined", null, null, null],
@@ -8635,7 +8883,7 @@ function runTests()
       .concat( Steps.noiseToolsFrom( { studio: true, prism2Unavailable: true } ) )
       .forEach( function( tool )
       {
-         [ "low", "medium", "high" ].forEach( function( level )
+         Steps.noiseLevelsFor( tool, true ).forEach( function( level )
          {
             if ( Steps.noiseAmountFor( tool, level ) == null )
                keyless.push( tool + " " + level );
@@ -8686,12 +8934,13 @@ function runTests()
                                                                     ["NoiseXTerminator", "SyQon Prism", "SyQon Studio Prism Essential"],
                                                                     ["MLDenoise", "NoiseXTerminator", "SyQon Prism", "SyQon Studio Prism Essential"] ] );
 
+   // Prism 2.0 (fifth) is not linear: its Advanced pass is off (Steps.PRISM2_LINEAR_PASS)
    check( "denoiseIsLinear for every name",
           catNames.concat( [ null, undefined ] ).map( Steps.denoiseIsLinear ), [ true,
                                                                                  false,
                                                                                  true,
                                                                                  true,
-                                                                                 true,
+                                                                                 false,
                                                                                  false,
                                                                                  false,
                                                                                  false,
@@ -16943,8 +17192,8 @@ function runPixInsightGapTests()
    } if ( testGroup( "ui" ) ) {
    /*
     * The noise-reduction tooltips say where each tool runs, and what each
-    * strength runs for Prism 2.0 -- which is two passes, Advanced before
-    * the stretch and Ultra or Max after it, not "linear, like NXT".
+    * strength runs for Prism 2.0 -- Ultra or Max after the stretch, its
+    * Advanced pass off (Steps.PRISM2_LINEAR_PASS), not "linear, like NXT".
     */
    check( "the noise tool tooltip: one line per tool on where it runs, strength, account check",
           UI.noiseToolToolTip(),
@@ -16953,19 +17202,20 @@ function runPixInsightGapTests()
           "<p><b>NoiseXTerminator</b>, <b>MLDenoise</b>: linear, before the stretch.<br/>" +
           "<b>SyQon Prism</b>: after the stretch.<br/>" +
           "<b>SyQon Studio Prism Essential</b>: linear, before the stretch.<br/>" +
-          "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
-          "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
-          "stretch off, only Advanced runs. Max is very slow: about 20 minutes a " +
+          "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra (Medium) or Max " +
+          "(High); with the stretch off, Medium only, Ultra on the linear image. Its " +
+          "Advanced pass before the stretch, and with it Low, is off until SyQon fixes " +
+          "the tile seams it left in faint sky. Max is very slow: about 20 minutes a " +
           "plate where Ultra took 30 seconds, on the same image.</p>" +
           "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
           "High pushes past it (Essential\'s High is its Medium).</p>" +
           "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
-          "Advanced, Ultra and Max; if it cannot, Loom offers Prism Essential " +
+          "the models your strengths will use; if it cannot, Loom offers Prism Essential " +
           "(included) instead until a check succeeds.</p>" );
-   var PRISM2_LEVELS = "<p>SyQon Studio Prism 2.0 at each strength: Low: Advanced only. " +
-                       "Medium: Advanced, then Ultra after the stretch. " +
-                       "High: Advanced, then Max after the stretch. High is very slow: Max " +
-                       "takes about 40 times as long as Ultra.</p>";
+   var PRISM2_LEVELS = "<p>SyQon Studio Prism 2.0 at each strength: " +
+                       "Medium: Ultra after the stretch, or on the linear image with the stretch off. " +
+                       "High: Max after the stretch; not offered with the stretch off. High is very " +
+                       "slow: Max takes about 40 times as long as Ultra.</p>";
    check( "the Colour and L tooltips: what each is for, and Prism 2.0's passes per strength",
           [ UI.noiseLevelToolTip( "colour" ), UI.noiseLevelToolTip( "L" ) ],
           [ "<p>Strength for the RGB composite and the narrowband palettes.</p>" +
@@ -17041,7 +17291,7 @@ function runPixInsightGapTests()
       function tick( control, on ) { dlg[control].checked = on; dlg[control].onCheck( on ); }
       function value( control, v ) { dlg[control].setValue( v ); dlg[control].onValueUpdated( v ); }
       var rows = [
-         [ "noiseCombo", pick, 2, "noiseTool", Steps.NR_TOOL_STUDIO2 ],
+         [ "noiseCombo", pick, 1, "noiseTool", Steps.NR_TOOL_NXT ],
          [ "noiseLevelCombo", pick, 2, "noiseLevel", "high" ],
          [ "noiseLevelLCombo", pick, 0, "noiseLevelL", "low" ],
          [ "noiseCombo", pick, 0, "noiseTool", "none" ],
@@ -17074,6 +17324,31 @@ function runPixInsightGapTests()
       check( "every control writes its own config field",
              got, rows.map( function( r ) { return r[0] + " -> " + r[3] + " = " + JSON.stringify( r[4] ); } ) );
       check( "turning the cache off greys out Ignore cache", dlg.ignoreCache.enabled, false );
+      /*
+       * The strength dropdowns offer what the tool runs with the Stretch
+       * box as it is: Prism 2.0 has no Low, and no High without a stretch
+       * (a High then becomes Medium); every other tool keeps all three.
+       */
+      function items( c )
+      {
+         var a = [];
+         for ( var i = 0; i < dlg[c].numberOfItems; ++i )
+            a.push( dlg[c].itemText( i ) );
+         return a;
+      }
+      tick( "stretchCheck", true );
+      pick( "noiseCombo", 2 );   // Prism 2.0
+      var withStretch = [ items( "noiseLevelCombo" ), items( "noiseLevelLCombo" ) ];
+      pick( "noiseLevelCombo", 1 );
+      var high = dlg.config.noiseLevel;
+      tick( "stretchCheck", false );
+      var without = [ items( "noiseLevelCombo" ), dlg.config.noiseLevel ];
+      tick( "stretchCheck", true );
+      pick( "noiseCombo", 1 );   // NoiseXTerminator
+      check( "Prism 2.0's strengths follow the Stretch box, other tools keep Low, Medium and High",
+             [ withStretch, high, without, items( "noiseLevelCombo" ) ],
+             [ [ [ "Medium", "High" ], [ "Medium", "High" ] ], "high", [ [ "Medium" ], "medium" ],
+               [ "Low", "Medium", "High" ] ] );
    } )();
 
    } if ( testGroup( "asiair.night" ) ) {
@@ -20354,10 +20629,11 @@ function runFinishingTests()
          } );
       } );
    } );
+   // 74: Prism 2.0's Low is gone, and runs as Medium (Steps.PRISM2_LINEAR_PASS off)
    check( "finishing: L distinct params over the matrix and Prism 2.0",
-          Object.keys( lDistinct ).length, 75 );
+          Object.keys( lDistinct ).length, 74 );
    check( "finishing: L params, runner names and stage keys over the matrix and Prism 2.0",
-          lDigest, "b6d76e8e765636dc627a6e9d7befb8393c148ebf" );
+          lDigest, "6b1bb2a3c46bbecad2bc0b96f007fcfc2574e3bc" );
    var L_CORNERS = [
        [
         {

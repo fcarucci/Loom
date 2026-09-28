@@ -1597,6 +1597,27 @@ Steps.noiseToolsFrom = function( found )
  * pushing past it, so Medium means "what the tool author considered normal"
  * rather than a number invented here.
  */
+/*
+ * Prism 2.0's Advanced pass on the LINEAR plate, before the stretch: OFF.
+ *
+ * SyQon's prism-advanced works tile by tile on linear data and hands back
+ * each tile with its own small level offset, a few 1e-6, strongest in the
+ * faintest sky. Linear it is far below the noise; the stretch makes it a
+ * flat band with a hard seam -- on the Elephant Trunk HSO of 2026-09-27, a
+ * green-teal band along the top and left edges. The CLI's --tile-size and
+ * --overlap do not change Advanced's output, and neither does scaling its
+ * input. Off until SyQon fixes it (maintainer, 2026-09-27: "disable it
+ * for now and remove the Low option until they fix it, keep the code").
+ *
+ * Off, Prism 2.0 runs after the stretch: Ultra at Medium, Max at High,
+ * and it has no Low (Steps.noiseLevelsFor). With the stretch off it offers
+ * Medium only, Ultra on the linear plate. On, the ladder is the two-pass
+ * one below, Advanced first at every level, and Advanced keeps only its
+ * fine-scale change (Steps.keepFineScaleChange), which removed the band in
+ * the same measurement. Steps.setPrism2LinearPass switches it.
+ */
+Steps.PRISM2_LINEAR_PASS = false;
+
 Steps.NOISE_LEVELS = {
    // MEDIUM IS EACH TOOL'S OWN DEFAULT, read from the tool, not chosen here:
    // NoiseXTerminator denoise 0.90 / detail 0.15, SyQon Prism strength 0.85.
@@ -1678,19 +1699,53 @@ Steps.NOISE_LEVELS = {
     * the strong models now run after the stretch, on top of Advanced,
     * instead of in its place.
     *
+    * The linear pass also carries `fineScale`, the Gaussian sigma in
+    * pixels above which its change is discarded (Steps.keepFineScaleChange):
+    * Advanced works tile by tile and hands back each tile with its own
+    * small level offset, which the stretch turns into flat bands with hard
+    * seams. Measured on the Elephant Trunk HSO of 2026-09-27 (drizzled,
+    * 11963x7649): Advanced's change, in 32-pixel block means, was
+    * rectangular tile-shaped blocks of a few 1e-6 in all three channels,
+    * strongest in the faintest sky; after MAS and Ultra they were a flat
+    * green-teal band along the left edge ending in a seam near x=410 (S
+    * .1207-.1228 then +.007 within 40 px). The same plate without Advanced
+    * ramped smoothly. Keeping only Advanced's change finer than sigma 4
+    * removed the band (seam residual .0022 -> .0010 in S, .0020 -> .0007
+    * in O, the no-Advanced plate .0007/.0003), kept its noise reduction,
+    * and left colour and contrast within 1.6% of the run with the band.
+    * The CLI's --tile-size and --overlap do not change Advanced's output,
+    * and neither does scaling its input, so this is where it is fixed.
+    *
     * Each pass is { model, application }; a level without a pass after the
     * stretch has `stretched: null`. Every model here is a Prism 2.0 model
-    * (Steps.studioIsPrism2), and preflight checks all three on every
-    * Prism 2.0 run, whatever the level (Steps.studioModelsFor), so the
-    * entry is offered only to an account licensed for all of them.
+    * (Steps.studioIsPrism2); preflight checks the ones the chosen
+    * strengths will run (Steps.studioModelsFor).
     */
-   studio2: { low:    { linear:    { model: "prism-advanced", application: 1.00 },
+   studio2: { low:    { linear:    { model: "prism-advanced", application: 1.00, fineScale: 4 },
                         stretched: null },
-              medium: { linear:    { model: "prism-advanced", application: 1.00 },
+              medium: { linear:    { model: "prism-advanced", application: 1.00, fineScale: 4 },
                         stretched: { model: "prism-ultra",    application: 1.00 } },
-              high:   { linear:    { model: "prism-advanced", application: 1.00 },
+              high:   { linear:    { model: "prism-advanced", application: 1.00, fineScale: 4 },
                         stretched: { model: "prism-max",      application: 1.00 } } }
 };
+
+/*
+ * Prism 2.0's two ladders: with the linear Advanced pass (the one above),
+ * and without it, Ultra or Max after the stretch alone -- the same
+ * post-stretch passes, so Medium and High keep their post-stretch keys.
+ * `unstretched` is what a level runs when there is no stretch at all:
+ * Medium runs Ultra on the linear plate, which SyQon's contract allows
+ * ("Linear or non-linear"); High is not offered without a stretch
+ * (maintainer, 2026-09-27), so Max never runs on linear data.
+ */
+Steps.PRISM2_LADDER_LINEAR = Steps.NOISE_LEVELS.studio2;
+Steps.PRISM2_LADDER_STRETCHED = {
+   medium: { linear: null, stretched:   { model: "prism-ultra", application: 1.00 },
+                           unstretched: { model: "prism-ultra", application: 1.00 } },
+   high:   { linear: null, stretched:   { model: "prism-max",   application: 1.00 },
+                           unstretched: null } };
+Steps.NOISE_LEVELS.studio2 = Steps.PRISM2_LINEAR_PASS ? Steps.PRISM2_LADDER_LINEAR
+                                                      : Steps.PRISM2_LADDER_STRETCHED;
 
 /*
  * `pass` matters only to a tool that runs in both slots (Prism 2.0):
@@ -1730,7 +1785,9 @@ Steps.denoiseOperationDetail = function( tool, level, alreadyStretched, pass )
    }
    if ( pass == "stretched" || ( alreadyStretched && step.stretched ) )
       return step.stretched ? named( step.stretched, "after stretch" ) : level;
-   return named( step.linear, ( pass == "linear" ) ? "before stretch" : "no stretch" );
+   if ( step.linear )
+      return named( step.linear, ( pass == "linear" ) ? "before stretch" : "no stretch" );
+   return ( step.unstretched && pass != "linear" ) ? named( step.unstretched, "no stretch" ) : level;
 };
 
 // A tool's setting for `level`, refusing a level the tool has no entry for.
@@ -1809,12 +1866,30 @@ Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
    {
       Util.log( "denoise", name + " (" + Steps.studioModelLabel( p.model ) + ", " + domain +
                            ", application " + p.application.toFixed( 2 ) + ")" );
-      Steps.studioRun( view, "noise reduction",
-                       { model: p.model, domain: domain, application: p.application } );
+      var opts = { model: p.model, domain: domain, application: p.application };
+      if ( p.fineScale != null )
+         opts.fineScale = p.fineScale;
+      Steps.studioRun( view, "noise reduction", opts );
    }
 
-   // Advanced: linear input only, by SyQon's contract
-   if ( pass != "stretched" )
+   /*
+    * No stretch at all, and no linear pass: the level's unstretched model
+    * (Ultra at Medium) runs on the linear plate, or nothing if it has none.
+    */
+   if ( !step.linear && !alreadyStretched && pass != "stretched" )
+   {
+      if ( pass == "linear" )
+         return;
+      if ( step.unstretched )
+         run( step.unstretched, "linear" );
+      else
+         Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.stretched.model ) +
+                    " runs only after the stretch and there is no stretch, so nothing runs" );
+      return;
+   }
+
+   // Advanced: linear input only, by SyQon's contract; off, the ladder has no linear pass
+   if ( pass != "stretched" && step.linear )
    {
       if ( !alreadyStretched )
          run( step.linear, "linear" );
@@ -1856,7 +1931,7 @@ Steps.NOISE_TOOLS[Steps.NR_TOOL_PRISM] = { linear: false, run: Steps.denoisePris
    levels: Steps.NOISE_LEVELS.prism };
 Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO] = { linear: true, run: Steps.denoiseStudio,
    levels: Steps.NOISE_LEVELS.studio };
-Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2] = { linear: true, run: Steps.denoiseStudio2,
+Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2] = { linear: Steps.PRISM2_LINEAR_PASS, run: Steps.denoiseStudio2,
    levels: Steps.NOISE_LEVELS.studio2,
    /*
     * Per pass, the model as well as the blend: every pass runs at 1.00,
@@ -1865,7 +1940,15 @@ Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2] = { linear: true, run: Steps.denoiseStu
     */
    amount: function( m, pass )
    {
-      function one( p ) { return ( p == null ) ? null : { model: p.model, application: p.application }; }
+      function one( p )
+      {
+         if ( p == null )
+            return null;
+         var a = { model: p.model, application: p.application };
+         if ( p.fineScale != null )
+            a.fineScale = p.fineScale;
+         return a;
+      }
       return ( pass == null ) ? { linear: one( m.linear ), stretched: one( m.stretched ) } : one( m[pass] );
    } };
 
@@ -1873,6 +1956,55 @@ Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2] = { linear: true, run: Steps.denoiseStu
 Steps.noiseTool = function( tool )
 {
    return Object.prototype.hasOwnProperty.call( Steps.NOISE_TOOLS, tool ) ? Steps.NOISE_TOOLS[tool] : null;
+};
+
+/*
+ * Switches Prism 2.0's linear Advanced pass (Steps.PRISM2_LINEAR_PASS) on
+ * or off: its ladder, and the slot its tool entry claims. Returns the
+ * setting it replaced.
+ */
+Steps.setPrism2LinearPass = function( on )
+{
+   var was = Steps.PRISM2_LINEAR_PASS;
+   Steps.PRISM2_LINEAR_PASS = !!on;
+   var ladder = on ? Steps.PRISM2_LADDER_LINEAR : Steps.PRISM2_LADDER_STRETCHED;
+   Steps.NOISE_LEVELS.studio2 = ladder;
+   Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2].levels = ladder;
+   Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2].linear = !!on;
+   return was;
+};
+
+/*
+ * The strengths a noise tool offers, in dropdown order, with the stretch
+ * on or off (`stretch` false is off; anything else on). Every tool has
+ * Low, Medium and High, except Prism 2.0 without its linear pass: its Low
+ * was Advanced alone, so it has none, and without a stretch only Medium,
+ * Ultra on the linear plate.
+ */
+Steps.noiseLevelsFor = function( tool, stretch )
+{
+   var all = [ "low", "medium", "high" ];
+   if ( tool != Steps.NR_TOOL_STUDIO2 )
+      return all;
+   var ladder = Steps.NOISE_LEVELS.studio2;
+   return all.filter( function( l )
+   {
+      var step = ladder[l];
+      return step != null && ( stretch !== false || step.linear != null || step.unstretched != null );
+   } );
+};
+
+/*
+ * `level` for `tool` with the stretch on or off: a strength the tool does
+ * not offer there (Prism 2.0's Low, or its High without a stretch) is
+ * Medium; "none" and a level no tool knows are left as they are, so an
+ * unknown one is still refused by name.
+ */
+Steps.supportedNoiseLevel = function( tool, level, stretch )
+{
+   if ( [ "low", "medium", "high" ].indexOf( level ) < 0 )
+      return level;
+   return ( Steps.noiseLevelsFor( tool, stretch ).indexOf( level ) < 0 ) ? "medium" : level;
 };
 
 /*

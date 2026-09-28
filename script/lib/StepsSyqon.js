@@ -1513,6 +1513,14 @@ Steps.migrateConfig = function( config, prism2Offered )
    else if ( prism2Offered === false && config.noiseTool == Steps.NR_TOOL_STUDIO2 )
       config.noiseTool = Steps.NR_TOOL_STUDIO;
    /*
+    * A strength the tool does not offer loads as Medium: Prism 2.0's Low,
+    * and its High when the stretch is off.
+    */
+   config.noiseLevel = Steps.supportedNoiseLevel( config.noiseTool, config.noiseLevel, config.stretch !== false );
+   if ( config.noiseLevelL )
+      config.noiseLevelL = Steps.supportedNoiseLevel( config.noiseTool, config.noiseLevelL,
+                                                      config.stretch !== false );
+   /*
     * Studio Parallax (correct only) was a dropdown entry for a while. It
     * is BlurXTerminator now, whose aberration pass Studio runs when found;
     * star reduction and detail were greyed out under it, so they stay off
@@ -1564,20 +1572,28 @@ Steps.studioModelsFor = function( config, studioFound )
    if ( config.noiseTool == Steps.NR_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_DENOISE );
    /*
-    * Prism 2.0: ALL of its models, whatever the level and whether or not
-    * there is a stretch. The entry is offered only to an account licensed
-    * for Advanced, Ultra and Max together (maintainer, 2026-09-26), so a
-    * Low run checks Max too: otherwise Low would keep the entry offered on
-    * an account that High then finds refused. Slower, by design.
+    * Prism 2.0: the models the chosen Colour and L strengths will run,
+    * with the stretch as it is (maintainer, 2026-09-27; it used to check
+    * all three whatever the level). With the stretch: the linear pass when
+    * it is on (Steps.PRISM2_LINEAR_PASS), then Ultra or Max. Without: the
+    * linear pass when on, else the level's unstretched model.
     */
    if ( config.noiseTool == Steps.NR_TOOL_STUDIO2 )
-      for ( var level in Steps.NOISE_LEVELS.studio2 )
+   {
+      var stretch = config.stretch !== false;
+      [ config.noiseLevel, config.noiseLevelL || config.noiseLevel ].forEach( function( lv )
       {
-         var step = Steps.NOISE_LEVELS.studio2[level];
-         add( step.linear.model );
-         if ( step.stretched )
+         var step = Steps.NOISE_LEVELS.studio2[Steps.supportedNoiseLevel( config.noiseTool, lv, stretch )];
+         if ( step == null )
+            return;
+         if ( step.linear )
+            add( step.linear.model );
+         if ( stretch && step.stretched )
             add( step.stretched.model );
-      }
+         else if ( !stretch && !step.linear && step.unstretched )
+            add( step.unstretched.model );
+      } );
+   }
    return out;
 };
 
@@ -1625,13 +1641,17 @@ Steps.studioProbeProblem = function( model, res )
    return msg;
 };
 
-/* The Deep Prism models behind SyQon Studio Prism 2.0. */
+/*
+ * The Deep Prism models behind SyQon Studio Prism 2.0: every model of its
+ * two-pass ladder, whether or not the linear pass is on.
+ */
 Steps.studioIsPrism2 = function( model )
 {
-   for ( var level in Steps.NOISE_LEVELS.studio2 )
+   for ( var level in Steps.PRISM2_LADDER_LINEAR )
    {
-      var step = Steps.NOISE_LEVELS.studio2[level];
-      if ( step.linear.model == model || ( step.stretched && step.stretched.model == model ) )
+      var step = Steps.PRISM2_LADDER_LINEAR[level];
+      if ( ( step.linear && step.linear.model == model ) ||
+           ( step.stretched && step.stretched.model == model ) )
          return true;
    }
    return false;
@@ -2043,9 +2063,14 @@ Steps.studioRun = function( view, opLabel, opts )
    var outPath = stem + "_output.xisf";
    var declared = null;
 
-   var clone = null;
+   var clone = null, before = null;
    try
    {
+      // the plate as it was, when only the fine-scale change is to be kept
+      if ( opts.fineScale > 0 )
+         before = Steps.syqonCloneWindowForProcessing(
+                     targetWindow, Util.freeWindowId(
+                        Steps.syqonSanitizeFileName( view.id ) + "_before" ) );
       clone = Steps.syqonCloneWindowForProcessing(
                  targetWindow, Util.freeWindowId(
                     Steps.syqonSanitizeFileName( view.id ) + "_studio" ) );
@@ -2068,12 +2093,58 @@ Steps.studioRun = function( view, opLabel, opts )
       Steps.studioSession.entitled[opts.model] = true;
 
       Steps.studioApplyResult( produced, targetWindow, scale, opLabel, view.id );
+      if ( before != null )
+      {
+         Steps.keepFineScaleChange( targetWindow.mainView, before.mainView, opts.fineScale );
+         Util.log( "studio", opLabel + " " + view.id + ": kept only the change finer than " +
+                             "sigma " + opts.fineScale + " px" );
+      }
       Util.log( "studio", opLabel + " " + view.id + " complete" );
    }
    finally
    {
+      if ( before != null )
+         try { before.forceClose(); } catch ( e ) {}
       Steps.syqonCleanUp( clone, [ inPath, outPath, declared != outPath ? declared : null ] );
    }
+};
+
+/*
+ * Keeps only the part of an edit finer than a Gaussian of `sigma` pixels:
+ *
+ *    view = before + ( change - gauss( change, sigma ) ),  change = view - before
+ *
+ * A denoiser's own work is at the scale of the noise, a pixel or two, and
+ * survives whole; a level it shifted over a larger area -- the tile
+ * offsets Prism 2.0 Advanced leaves on linear data, see
+ * Steps.NOISE_LEVELS.studio2 -- is put back as it was. `before` must have
+ * the same geometry as `view`. Truncated to [0,1], as the edit was.
+ */
+Steps.keepFineScaleChange = function( view, before, sigma )
+{
+   var img = view.image;
+   var change = new ImageWindow( img.width, img.height, img.numberOfChannels,
+                                 32, true, img.isColor,
+                                 Util.freeWindowId( Steps.syqonSanitizeFileName( view.id ) + "_change" ) );
+   try
+   {
+      change.mainView.beginProcess( UndoFlag_NoSwapFile );
+      change.mainView.image.assign( img );
+      change.mainView.endProcess();
+      if ( !Steps.pixelMath( change.mainView, "$T - " + before.id ) )
+         throw new Error( "could not measure the change on " + view.id );
+      var P = new Convolution;
+      P.mode = Convolution.Parametric;
+      P.sigma = sigma;
+      P.shape = 2.00;          // Gaussian
+      P.aspectRatio = 1.00;
+      P.rotationAngle = 0.00;
+      if ( !P.executeOn( change.mainView ) )
+         throw new Error( "could not smooth the change on " + view.id );
+      if ( !Steps.pixelMath( view, "$T - " + change.mainView.id, true ) )
+         throw new Error( "could not restore the large scales on " + view.id );
+   }
+   finally { change.forceClose(); }
 };
 
 // A fresh per-run path stem in the temp folder, made if it is missing.

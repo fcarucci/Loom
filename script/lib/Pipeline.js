@@ -390,9 +390,10 @@ Pipeline.stretchParams = function( config, linked )
  */
 Pipeline.denoiseLevelFor = function( config, which )
 {
-   if ( which == "L" && config.noiseLevelL && config.noiseLevelL != "none" )
-      return config.noiseLevelL;
-   return config.noiseLevel;
+   var level = ( which == "L" && config.noiseLevelL && config.noiseLevelL != "none" )
+               ? config.noiseLevelL : config.noiseLevel;
+   // a strength the tool does not offer (Prism 2.0's Low, or High unstretched) runs as Medium
+   return Steps.supportedNoiseLevel( config.noiseTool, level, !!config.stretch );
 };
 
 Pipeline.compositeDenoiseParams = function( config, which )
@@ -425,9 +426,11 @@ Pipeline.compositeDenoiseParams = function( config, which )
  *
  * Prism runs after the stretch, which is the data it is built for.
  *
- * SyQon Studio Prism 2.0 is the exception: two passes, Advanced in the
- * linear slot at every level and, at Medium and High, Ultra or Max in the
- * stretched slot (Steps.NOISE_LEVELS.studio2 says why). Each slot keys on
+ * SyQon Studio Prism 2.0 runs Ultra (Medium) or Max (High) in the stretched
+ * slot. With its linear pass on (Steps.PRISM2_LINEAR_PASS, off since
+ * 2026-09-27) it is two passes, Advanced in the linear slot at every level
+ * and the post-stretch model at Medium and High (Steps.NOISE_LEVELS.studio2
+ * says why). Each slot keys on
  * ITS OWN model and blend and not on the level's name, so Low, Medium and
  * High share the Advanced result and a change of level re-runs only the
  * pass after the stretch. With the stretch off there is no stretched plate,
@@ -444,6 +447,13 @@ Pipeline.prism2PassParams = function( config, which, pass )
 Pipeline.linearDenoiseParams = function( config, which )
 {
    var p = Pipeline.compositeDenoiseParams( config, which );
+   /*
+    * Prism 2.0 without its linear pass, and no stretch: the plate stays
+    * linear, and Medium's Ultra runs on it here (Steps.NOISE_LEVELS.studio2).
+    */
+   if ( p != null && p.tool == Steps.NR_TOOL_STUDIO2 && !Steps.denoiseIsLinear( p.tool ) &&
+        !config.stretch )
+      return Pipeline.prism2PassParams( config, which, "unstretched" ) || p;
    if ( p == null || !Steps.denoiseIsLinear( p.tool ) )
       return null;
    /*
@@ -461,7 +471,16 @@ Pipeline.stretchedDenoiseParams = function( config, which )
    if ( p == null )
       return null;
    if ( p.tool == Steps.NR_TOOL_STUDIO2 )
-      return config.stretch ? Pipeline.prism2PassParams( config, which, "stretched" ) : null;
+   {
+      if ( !config.stretch )
+         return null;
+      /*
+       * A level Prism 2.0 does not know keeps the ordinary params when no
+       * linear slot takes it, so the runner is reached and refuses it by name.
+       */
+      return Pipeline.prism2PassParams( config, which, "stretched" ) ||
+             ( Steps.NOISE_LEVELS.studio2[p.level] == null && !Steps.denoiseIsLinear( p.tool ) ? p : null );
+   }
    return !Steps.denoiseIsLinear( p.tool ) ? p : null;
 };
 

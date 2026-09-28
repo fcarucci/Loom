@@ -204,14 +204,20 @@ UI.noiseToolToolTip = function()
           "<p><b>NoiseXTerminator</b>, <b>MLDenoise</b>: linear, before the stretch.<br/>" +
           "<b>SyQon Prism</b>: after the stretch.<br/>" +
           "<b>SyQon Studio Prism Essential</b>: linear, before the stretch.<br/>" +
-          "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
-          "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
-          "stretch off, only Advanced runs. Max is very slow: about 20 minutes a " +
+          ( Steps.PRISM2_LINEAR_PASS
+            ? "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
+              "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
+              "stretch off, only Advanced runs. "
+            : "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra (Medium) or Max " +
+              "(High); with the stretch off, Medium only, Ultra on the linear image. Its " +
+              "Advanced pass before the stretch, and with it Low, is off until SyQon fixes " +
+              "the tile seams it left in faint sky. " ) +
+          "Max is very slow: about 20 minutes a " +
           "plate where Ultra took 30 seconds, on the same image.</p>" +
           "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
           "High pushes past it (Essential\'s High is its Medium).</p>" +
           "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
-          "Advanced, Ultra and Max; if it cannot, Loom offers Prism Essential " +
+          "the models your strengths will use; if it cannot, Loom offers Prism Essential " +
           "(included) instead until a check succeeds.</p>";
 };
 
@@ -228,8 +234,14 @@ UI.prism2LevelsToolTip = function()
    for ( var level in ladder )
    {
       var step = ladder[level];
-      parts.push( level.charAt( 0 ).toUpperCase() + level.slice( 1 ) + ": " + name( step.linear ) +
-                  ( step.stretched ? ", then " + name( step.stretched ) + " after the stretch" : " only" ) + "." );
+      var label = level.charAt( 0 ).toUpperCase() + level.slice( 1 ) + ": ";
+      if ( !step.linear )
+         parts.push( label + name( step.stretched ) + " after the stretch" +
+                     ( step.unstretched ? ", or on the linear image with the stretch off."
+                                        : "; not offered with the stretch off." ) );
+      else
+         parts.push( label + name( step.linear ) +
+                     ( step.stretched ? ", then " + name( step.stretched ) + " after the stretch" : " only" ) + "." );
    }
    return "<p>SyQon Studio Prism 2.0 at each strength: " + parts.join( " " ) +
           " High is very slow: Max takes about 40 times as long as Ultra.</p>";
@@ -1093,6 +1105,7 @@ UI.SelectDialog = class extends Dialog
       UI.fillToolCombo( this.noiseCombo, noiseTools, config.noiseTool, function( tool )
       {
          self.config.noiseTool = tool;
+         self.fillNoiseLevels();
          self.updateNoiseEnabled();
       } );
       this.noiseCombo.toolTip = UI.noiseToolToolTip();
@@ -1100,9 +1113,6 @@ UI.SelectDialog = class extends Dialog
       this.noiseLevelLabel = UI.label( this.noiseGroup, "Colour:" );
 
       this.noiseLevelCombo = new ComboBox( this.noiseGroup );
-      var nlevels = [ "low", "medium", "high" ];
-      UI.fillLevelCombo( this.noiseLevelCombo, nlevels, config.noiseLevel || "medium",
-                         function( level ) { self.config.noiseLevel = level; } );
       this.noiseLevelCombo.toolTip = UI.noiseLevelToolTip( "colour" );
 
       /*
@@ -1114,10 +1124,8 @@ UI.SelectDialog = class extends Dialog
       this.noiseLevelLLabel = UI.label( this.noiseGroup, "L:" );
 
       this.noiseLevelLCombo = new ComboBox( this.noiseGroup );
-      UI.fillLevelCombo( this.noiseLevelLCombo, nlevels,
-                         config.noiseLevelL || config.noiseLevel || "medium",
-                         function( level ) { self.config.noiseLevelL = level; } );
       this.noiseLevelLCombo.toolTip = UI.noiseLevelToolTip( "L" );
+      this.fillNoiseLevels();
 
       this.noiseGroup.sizer = UI.row( 6, [ this.noiseLabel, this.noiseCombo, 12,
                                            this.noiseLevelLabel, this.noiseLevelCombo, 8,
@@ -1182,6 +1190,8 @@ UI.SelectDialog = class extends Dialog
       {
          self.config.stretch = checked;
          self.updateStretchEnabled();
+         if ( self.noiseLevelCombo )
+            self.fillNoiseLevels();   // Prism 2.0 offers High only with a stretch
       };
 
       /*
@@ -2149,6 +2159,27 @@ UI.SelectDialog = class extends Dialog
          drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) )
       } );
       this.rebuild();
+   }
+
+   /*
+    * The Colour and L strengths the chosen tool offers with the Stretch
+    * setting as it is (Steps.noiseLevelsFor: Prism 2.0 has no Low, and no
+    * High without a stretch). A strength the tool does not offer becomes
+    * Medium, in the configuration too. Refilled when either changes.
+    */
+   fillNoiseLevels()
+   {
+      var self = this, c = this.config, stretch = !!c.stretch;
+      var levels = Steps.noiseLevelsFor( c.noiseTool, stretch );
+      c.noiseLevel = Steps.supportedNoiseLevel( c.noiseTool, c.noiseLevel || "medium", stretch );
+      if ( c.noiseLevelL )
+         c.noiseLevelL = Steps.supportedNoiseLevel( c.noiseTool, c.noiseLevelL, stretch );
+      this.noiseLevelCombo.clear();
+      UI.fillLevelCombo( this.noiseLevelCombo, levels, c.noiseLevel,
+                         function( level ) { self.config.noiseLevel = level; } );
+      this.noiseLevelLCombo.clear();
+      UI.fillLevelCombo( this.noiseLevelLCombo, levels, c.noiseLevelL || c.noiseLevel,
+                         function( level ) { self.config.noiseLevelL = level; } );
    }
 
    /* The amount means nothing without a noise tool selected. */
