@@ -647,24 +647,34 @@ FrameSelector.Identities.prototype.kill = function()
    this.job.kill();
 };
 
+/* Cancelled before finish: stops the digests and remembers those already taken. */
+FrameSelector.Identities.prototype.abandon = function()
+{
+   this.job.kill();
+   this.remember( this.job.digests || {}, true );
+};
+
 FrameSelector.Identities.prototype.finish = function( cancelled )
 {
    var r = this.job.wait( cancelled ), ids = {};
    for ( var path in this.stats )
       ids[path] = FrameSelector.identityOf( this.stats[path],
                                             this.hits[path] || r.digests[path] || null );
-   this.remember( r.digests );
+   this.remember( r.digests, r.cancelled );
    return { ids: ids, cancelled: r.cancelled };
 };
 
-/* Every path read in full goes into the cache (or out of it); saved once, if any was. */
-FrameSelector.Identities.prototype.remember = function( digests )
+/*
+ * Every path read in full goes into the cache (or out of it); saved once,
+ * if any was. A cancelled scan leaves the entry of a path it never read.
+ */
+FrameSelector.Identities.prototype.remember = function( digests, cancelled )
 {
    if ( this.table == null )
       return;
    var read = 0;
    for ( var path in this.stats )
-      if ( this.stats[path] != null && this.hits[path] == null )
+      if ( this.stats[path] != null && this.hits[path] == null && !( cancelled && digests[path] == null ) )
       {
          Frames.digestCacheRecord( this.table, path, this.stats[path], digests[path] || null );
          ++read;
@@ -857,7 +867,7 @@ FrameSelector.cohortFrom = function( paths, progress, hasher )
                   cancelled: read.cancelled };
    if ( read.cancelled )
    {
-      ids.kill();
+      ids.abandon();
       return cohort;
    }
    /*

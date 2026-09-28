@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- **Frame Selector:** cancelling a scan keeps the frame fingerprints it had already taken, so the next scan doesn't read those frames again.
+
 ## [0.3.2] — 2026-09-28
 
 ### Frame Selector

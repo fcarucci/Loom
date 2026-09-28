@@ -12762,6 +12762,66 @@ function runTests()
    } )();
 
    /*
+    * A cancelled scan keeps what it read. Cancel in the headers or while
+    * the digests finish: the digests already taken are remembered, and an
+    * entry for a frame it never got to read is left as it was.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = TEST_SCRATCH + "/fs-digest-cancel";
+      ensureDir( dir );
+      var a = dir + "/a.fit", b = dir + "/b.fit", c = dir + "/c.fit";
+      [ a, b, c ].forEach( function( p ) { File.writeTextFile( p, p ); } );
+      var HEX_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      var OLD_B = { size: 1, mtime: 1000, created: 1000, digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+      var real = { stat: FrameSelector.fileStat, entry: FrameSelector.entryFor,
+                   load: FrameSelector.loadDigestCache, save: FrameSelector.saveDigestCache };
+      var saved = null;
+      function fakeHasher()
+      {
+         return { start: function()
+         {
+            return { digests: {},
+                     add: function( p ) { if ( p == a ) this.digests[p] = HEX_A; },
+                     poll: function() { return false; },
+                     kill: function() {},
+                     wait: function( stop ) { return { digests: this.digests, cancelled: stop != null && stop() }; } };
+         } };
+      }
+      function scan( paths, cancelAt )
+      {
+         saved = null;
+         var calls = 0;
+         FrameSelector.cohortFrom( paths, function() { return ++calls < cancelAt; }, fakeHasher() );
+         return saved;
+      }
+      try
+      {
+         FrameSelector.fileStat = function( p ) { return { size: 5, mtime: 50000, created: 50000, at: 90000 }; };
+         FrameSelector.entryFor = function( p ) { return { path: p, imageType: "Light" }; };
+         FrameSelector.saveDigestCache = function( t ) { saved = JSON.parse( JSON.stringify( t ) ); };
+         FrameSelector.loadDigestCache = function() { var t = {}; t[b] = OLD_B; return t; };
+
+         var inHeaders = scan( [ a, b, c ], 3 );
+         check( "a scan cancelled in the headers remembers the digests it took",
+                inHeaders && inHeaders[a] ? inHeaders[a].digest : null, HEX_A );
+         check( "and leaves an entry it never read as it was", inHeaders ? inHeaders[b] : null, OLD_B );
+
+         var inDigests = scan( [ a, b ], 3 );
+         check( "a scan cancelled while the digests finish remembers the digests it took",
+                inDigests && inDigests[a] ? inDigests[a].digest : null, HEX_A );
+         check( "and leaves an entry it never read as it was", inDigests ? inDigests[b] : null, OLD_B );
+      }
+      finally
+      {
+         FrameSelector.fileStat = real.stat;
+         FrameSelector.entryFor = real.entry;
+         FrameSelector.loadDigestCache = real.load;
+         FrameSelector.saveDigestCache = real.save;
+      }
+   } )();
+
+   /*
     * Wired into the scan: cohortFrom's identities come from the cache when
     * the file looks as it did, and are read whole otherwise. The hasher is
     * the "unix" one, so every read goes through the counted fallback.
