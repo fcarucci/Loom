@@ -2063,6 +2063,31 @@ Frames.runBatches = function( batches, measureBatch, onBatch, s, state )
 Frames.NO_SETTLER = { start: function() { return null; }, finish: function() {}, kill: function() {} };
 
 /*
+ * A progress callback called at most once every `ms`. Each call pumps the
+ * scan window's events, and with the digests running in the background a
+ * header takes a millisecond or two to read, so per-file reports were
+ * pacing the read. The first call always goes through, and so does the
+ * first report of the last file; a call held back answers "go on", so
+ * Cancel is read at the next one that is passed on.
+ */
+Frames.throttle = function( fn, ms, clock )
+{
+   if ( fn == null )
+      return null;
+   var now = clock || Date.now, last = null, lastDone = null;
+   return function( done, total, name )
+   {
+      var t = now();
+      var edge = last == null || ( done == total && lastDone != total );
+      if ( !edge && t - last < ms )
+         return true;
+      last = t;
+      lastDone = done;
+      return fn( done, total, name );
+   };
+};
+
+/*
  * One batch's results into `measured`; false when they cannot be used: no
  * result at all, or one for a path the batch did not ask for or that is
  * already measured.

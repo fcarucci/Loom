@@ -12513,6 +12513,28 @@ function runTests()
       catch ( e ) { thrown = e.message; }
       check( "a measurement that throws stops the settle in hand and passes the error on",
              [ order, thrown ], [ [ "measure ab", "start ab ab", "measure cd", "kill ab" ], "SubframeSelector failed" ] );
+
+      /*
+       * The reading callback at most once per interval: every call pumps
+       * the window's events, and a scan whose digests run in the
+       * background reads a header in a millisecond or two. The first file
+       * and the first report of the last one always go through; a skipped
+       * call is not a cancel.
+       */
+      var now = 0, heard = [];
+      var tell = Frames.throttle( function( done, total, name )
+      {
+         heard.push( now + " " + done + "/" + total + " " + name );
+         return name != "stop";
+      }, 100, function() { return now; } );
+      var answers = [ [ 0, 1, 5, "a" ], [ 10, 2, 5, "b" ], [ 120, 3, 5, "c" ], [ 130, 4, 5, "d" ],
+                      [ 140, 5, 5, "e" ], [ 150, 5, 5, "e" ], [ 260, 5, 5, "e" ], [ 270, 5, 5, "stop" ],
+                      [ 400, 5, 5, "stop" ] ].map( function( c ) { now = c[0]; return tell( c[1], c[2], c[3] ); } );
+      check( "throttle: the first, then one per 100 ms, the last file at once, then one per 100 ms while it waits",
+             heard, [ "0 1/5 a", "120 3/5 c", "140 5/5 e", "260 5/5 e", "400 5/5 stop" ] );
+      check( "throttle: a skipped call goes on; a heard false still stops",
+             answers, [ true, true, true, true, true, true, true, true, false ] );
+      check( "throttle: no callback stays no callback", Frames.throttle( null, 100 ), null );
    } )();
 
    /*
@@ -22891,7 +22913,12 @@ function hasherChecks()
    var cdir = TEST_SCRATCH + "/hasher-cohort";
    ensureDir( cdir );
    var o = { fwhm: 3.0, background: 0.02, noise: 0.002, stars: 20, width: 64, height: 48 };
-   var subs = [ synthFrame( cdir + "/a.xisf", o ), synthFrame( cdir + "/b.xisf", o ), synthFrame( cdir + "/c.xisf", o ) ];
+   /* Different seeds, so no two frames share a digest (the measurement key). */
+   var subs = [ "a", "b", "c" ].map( function( n, k )
+   {
+      return synthFrame( cdir + "/" + n + ".xisf", { fwhm: o.fwhm, background: o.background, noise: o.noise,
+                                                     stars: o.stars, width: o.width, height: o.height, seed: 11 + k } );
+   } );
    var events = [];
    var tracer = { start: function()
    {
@@ -23005,6 +23032,29 @@ function hasherChecks()
                       "measure c", "settle b", "digest c", "settle c" ] );
       check( "overlap: and every frame is settled and stored, none unstable",
              [ overlapped.unstable, stored.length, Object.keys( overlapped.metrics ).length ], [ [], 3, 3 ] );
+
+      /* The measurement table is written once per settled batch, not per frame. */
+      var saves = 0, realSave = FrameSelector.saveTable;
+      var keepDir = Cache.overrideDir, keepTable = FrameSelector.table;
+      FrameSelector.storeMeasurement = realStore;
+      try
+      {
+         // a scratch table: the entries stored here must never reach the user's
+         Cache.setDir( TEST_SCRATCH + "/hasher-batch-save" );
+         FrameSelector.table = null;
+         FrameSelector.saveTable = function() { ++saves; };
+         FrameSelector.MEASURE_BATCH = 2;
+         FrameSelector.measureGroup( group, before, null, null, overlapping );
+      }
+      finally
+      {
+         FrameSelector.saveTable = realSave;
+         FrameSelector.MEASURE_BATCH = realBatch;
+         FrameSelector.table = keepTable;
+         FrameSelector.tableChanged = false;
+         Cache.setDir( keepDir );
+      }
+      check( "batch save: three frames in batches of two write the table twice", saves, 2 );
    }
    finally
    {
@@ -23012,6 +23062,59 @@ function hasherChecks()
       FrameSelector.measure = realMeasure;
       FrameSelector.storeMeasurement = realStore;
       FrameSelector.cachedMeasurement = realCached;
+   }
+
+   /*
+    * A whole scan: the reading callback is throttled (these headers take a
+    * millisecond or two each), and a scan cancelled after its first batch
+    * has that batch in the table ON DISK, not only in memory.
+    */
+   var savedDir = Cache.overrideDir, savedTable = FrameSelector.table, savedMeasure = FrameSelector.measure,
+       savedBatch = FrameSelector.MEASURE_BATCH;
+   var cacheDir = TEST_SCRATCH + "/hasher-cache";
+   ensureDir( cacheDir );
+   try
+   {
+      Cache.setDir( cacheDir );
+      FrameSelector.table = null;
+      FrameSelector.MEASURE_BATCH = 2;
+      FrameSelector.measure = function( batch )
+      {
+         var m = {};
+         batch.forEach( function( p ) { m[p] = { fwhm: 3, eccentricity: 0.4, snr: 20, stars: 20,
+                                                  median: 0.02, noise: 0.002 }; } );
+         return m;
+      };
+      var readings = [];
+      var scan = FrameSelector.scanPaths( subs.concat( [ cdir + "/gone-1.xisf", cdir + "/gone-2.xisf" ] ), {
+         reading: function( done, total ) { readings.push( done + "/" + total ); return true; },
+         measuring: function( done, total, filter, overall ) { return overall.done < 2; } } );
+      check( "throttle: a fast read is told the first file and the last, not every one",
+             [ readings[0], readings.indexOf( "2/5" ) < 0 || readings.indexOf( "4/5" ) < 0, readings.indexOf( "5/5" ) >= 0 ],
+             [ "1/5", true, true ] );
+      FrameSelector.table = null;
+      var onDisk = File.exists( FrameSelector.cachePath() )
+                   ? Object.keys( JSON.parse( File.readTextFile( FrameSelector.cachePath() ) ) ).length : 0;
+      check( "batch save: cancelled after one batch, that batch is on disk", [ scan.cancelled, onDisk ], [ true, 2 ] );
+
+      /* A channel abandoned at its second batch keeps its first on disk, as before the overlap. */
+      File.remove( FrameSelector.cachePath() );
+      FrameSelector.table = null;
+      var fakeMeasure = FrameSelector.measure;
+      FrameSelector.measure = function( batch ) { return batch.indexOf( subs[2] ) >= 0 ? null : fakeMeasure( batch ); };
+      var dropped = FrameSelector.scanPaths( subs, null );
+      FrameSelector.table = null;
+      var keptOnDisk = File.exists( FrameSelector.cachePath() )
+                       ? Object.keys( JSON.parse( File.readTextFile( FrameSelector.cachePath() ) ) ).length : 0;
+      check( "batch save: an abandoned channel's settled batch is on disk",
+             [ dropped.channels.S ? dropped.channels.S.problems : null, keptOnDisk ], [ [ "measurement failed" ], 2 ] );
+   }
+   finally
+   {
+      Cache.setDir( savedDir );
+      FrameSelector.table = savedTable;
+      FrameSelector.measure = savedMeasure;
+      FrameSelector.MEASURE_BATCH = savedBatch;
    }
 }
 

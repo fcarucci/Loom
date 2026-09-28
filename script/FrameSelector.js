@@ -797,10 +797,26 @@ FrameSelector.cachedMeasurement = function( identity )
    return Frames.cacheEntryUsable( e ) ? e : null;
 };
 
+/*
+ * Into the table in memory; saveMeasurements() writes it. The table is
+ * every frame ever measured, so writing it per frame cost a scan seconds
+ * of JSON; it is written once per settled batch instead, which still
+ * leaves every finished batch on disk if the scan stops.
+ */
 FrameSelector.storeMeasurement = function( identity, metrics )
 {
    var t = FrameSelector.loadTable();
    t[FrameSelector.measurementKey( identity )] = metrics;
+   FrameSelector.tableChanged = true;
+};
+
+FrameSelector.tableChanged = false;
+
+FrameSelector.saveMeasurements = function()
+{
+   if ( !FrameSelector.tableChanged )
+      return;
+   FrameSelector.tableChanged = false;
    FrameSelector.saveTable();
 };
 
@@ -994,6 +1010,7 @@ FrameSelector.measureGroup = function( group, before, onBatch, split, hasher )
             metrics[path] = stored;
          }
       }
+      FrameSelector.saveMeasurements();
    } );
    var run = FrameSelector.measureBatched( plan.need, FrameSelector.MEASURE_BATCH, onBatch, settler );
    if ( run.abandoned )
@@ -1040,11 +1057,14 @@ FrameSelector.settler = function( hasher, check )
  * channels } over the frames still to be measured in the WHOLE scan, which
  * is what the bar shows. Cancel is read on every call.
  */
+/* The most often the scan window hears about reading; see Frames.throttle. */
+FrameSelector.READING_EVERY_MS = 100;
+
 FrameSelector.scanPaths = function( paths, progress )
 {
    var hasher = FrameSelector.newHasher();
-   var cohort = FrameSelector.cohortFrom( paths,
-                                          progress ? progress.reading : null, hasher );
+   var reading = Frames.throttle( progress ? progress.reading : null, FrameSelector.READING_EVERY_MS );
+   var cohort = FrameSelector.cohortFrom( paths, reading, hasher );
    if ( cohort.cancelled )
       return { channels: {}, unstable: [], skipped: cohort.skipped, cancelled: true };
    [ Frames.skippedLine( cohort.skipped ), Frames.unreadableLine( cohort.unreadable ) ]
