@@ -22724,6 +22724,54 @@ function hasherChecks()
    check( "hasher: the first batch is shasum on the first eight, run alone until it checked out",
           [ ok.log.started[0], ok.log.started.length, ok.h.disabled, ok.h.verified ],
           [ [ "/usr/bin/shasum", "-a", "1", "--" ].concat( twenty.slice( 0, 8 ) ), 3, false, true ] );
+   /*
+    * PixInsight's own read for the self-check takes as long as several
+    * shasum batches, so the rest are already running while it is taken;
+    * their answers are only believed once it agrees.
+    */
+   var ahead = scanWith( MAC, shasumLike( { passes: 2 } ) ), liveAtCheck = null;
+   var aheadFallback = ahead.h.fallback;
+   ahead.h.fallback = function( p ) { liveAtCheck = ahead.log.live; return aheadFallback( p ); };
+   var aheadRun = ahead.h.start( twenty ).wait();
+   check( "hasher: the other batches are running while PixInsight takes the self-check",
+          [ sorted( aheadRun.digests ), liveAtCheck ], [ truths( twenty ), 2 ] );
+   var liarAhead = scanWith( MAC, function( program, args )
+   {
+      return args.indexOf( twenty[0] ) >= 0
+             ? { out: shasumSays( args, function( p ) { return sha1Text( "not " + p ); } ) }
+             : { forever: true };
+   } );
+   var liarAheadRun = warned( function() { return liarAhead.h.start( twenty ).wait(); } );
+   check( "hasher: and when it disagrees they are stopped, and every answer is PixInsight's",
+          [ sorted( liarAheadRun.out.digests ), liarAhead.log.terminated, liarAhead.log.live, liarAhead.reads.length ],
+          [ truths( twenty ), 2, 0, 20 ] );
+
+   /*
+    * Once the tool is off, nothing it says is believed and it is never
+    * checked again -- not a batch that was already running, not one that
+    * finished in the same poll as the one that failed.
+    */
+   var fickle = scanWith( MAC, function( program, args )
+   {
+      var lie = args.indexOf( twenty[0] ) >= 0;
+      return { out: shasumSays( args, lie ? function( p ) { return sha1Text( "not " + p ); } : null ) };
+   } );
+   var fickleRun = warned( function() { return fickle.h.start( twenty ).wait(); } );
+   check( "hasher: a tool that disagrees once is not checked again, whatever it says next",
+          [ sorted( fickleRun.out.digests ), fickle.h.disabled, fickle.h.verified, fickleRun.said.length ],
+          [ truths( twenty ), true, false, 1 ] );
+   var sib = synthPaths( 32, "/syn/sib" );
+   var sibling = scanWith( MAC, function( program, args )
+   {
+      return { out: args.indexOf( sib[8] ) >= 0 ? "garbage\n" : shasumSays( args ), passes: 1 };
+   } );
+   sibling.h.start( sib.slice( 0, 8 ) ).wait();            // checked and trusted
+   sibling.reads.length = 0;
+   var siblingRun = warned( function() { return sibling.h.start( sib.slice( 8, 32 ) ).wait(); } );
+   check( "hasher: when one batch goes wrong, the batches finishing after it in the same poll are not believed",
+          [ sorted( siblingRun.out.digests ), sibling.h.disabled, sibling.reads.length ],
+          [ truths( sib.slice( 8, 32 ) ), true, 24 ] );
+
    var many = scanWith( MAC, shasumLike( { passes: 3 } ) );
    var hundred = synthPaths( 100, "/syn/big" );
    check( "hasher: a hundred frames, at most JOBS processes at once, all of them used",
@@ -22765,7 +22813,7 @@ function hasherChecks()
       offCase( "output with " + k, function() { return { out: badMac[k] }; }, 1 );
    } );
    var liar = offCase( "a tool whose SHA-1 is not PixInsight's",
-                       function( program, args ) { return { out: shasumSays( args, function( p ) { return sha1Text( "not " + p ); } ) }; }, 1 );
+                       function( program, args ) { return { out: shasumSays( args, function( p ) { return sha1Text( "not " + p ); } ), passes: 1 }; }, 3 );
    check( "hasher: and the warning names the disagreement",
           liar.indexOf( "disagree on " + twenty[0] ) >= 0, true );
 

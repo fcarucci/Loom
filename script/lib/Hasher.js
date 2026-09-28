@@ -12,7 +12,8 @@
  * trusted only as far as it proves itself:
  *
  *  - the first batch of a scan runs alone, and its first file is digested
- *    by PixInsight too; nothing else starts until the two agree;
+ *    by PixInsight too; the other batches start while PixInsight reads it,
+ *    but nothing they say is believed until the two agree;
  *  - output is read strictly: a line that is not exactly the expected
  *    shape, a hex that is not 40 lower-case digits, a line that names
  *    another file or an index that is unknown or repeated, or the wrong
@@ -293,9 +294,9 @@ Hasher.Job.prototype.poll = function()
 };
 
 /* Until the self-check has passed, one process; after it, up to scan.jobs. */
-Hasher.Job.prototype.launch = function()
+Hasher.Job.prototype.launch = function( most )
 {
-   var limit = this.scan.verified ? this.scan.jobs : 1;
+   var limit = most || ( this.scan.verified ? this.scan.jobs : 1 );
    while ( !this.scan.disabled && this.running.length < limit && this.queue.length > 0 )
       this.running.push( this.spawn( this.queue.shift() ) );
 };
@@ -353,15 +354,17 @@ Hasher.Job.prototype.finished = function( run )
    return true;
 };
 
+/* Settling can start processes (see settle), which join the ones still running. */
 Hasher.Job.prototype.collect = function()
 {
-   var still = [];
-   for ( var i = 0; i < this.running.length; ++i )
-      if ( this.finished( this.running[i] ) )
-         this.settle( this.running[i] );
+   var list = this.running, still = [];
+   this.running = [];
+   for ( var i = 0; i < list.length; ++i )
+      if ( this.finished( list[i] ) )
+         this.settle( list[i] );
       else
-         still.push( this.running[i] );
-   this.running = still;
+         still.push( list[i] );
+   this.running = still.concat( this.running );
 };
 
 /*
@@ -410,9 +413,23 @@ Hasher.Job.prototype.selfCheck = function( run )
 Hasher.Job.prototype.settle = function( run )
 {
    this.dropTemp( run.list );
-   var failure = this.failure( run );
+   /*
+    * Once the tool is off nothing it says is believed, and it is never
+    * checked again: not even a batch that finished in the same poll as
+    * the one that turned it off.
+    */
+   var failure = this.scan.disabled ? "switched off" : this.failure( run );
    if ( failure == null && !this.scan.verified )
+   {
+      /*
+       * PixInsight's read for the check takes as long as several batches,
+       * so the rest start first. Nothing they say is believed before the
+       * check passes: they are settled only later, and a failed check
+       * stops them and sends their files to PixInsight.
+       */
+      this.launch( this.scan.jobs );
       failure = this.selfCheck( run );
+   }
    if ( failure != null )
       this.scan.disable( failure );
    for ( var i = 0; i < run.batch.length; ++i )
