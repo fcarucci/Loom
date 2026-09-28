@@ -110,6 +110,18 @@ var LOOM_DIR = File.extractDirectory( #__FILE__ );
  */
 var IN_PIXINSIGHT = ( typeof LOOM_NODE_HARNESS == "undefined" );
 
+/*
+ * No suite run writes the real digest cache. Every scan in the suite --
+ * dialogs, filmstrips, cohorts -- goes through cohortFrom, which remembers
+ * what it read beside the measurements in Cache.dir(), and a verifier
+ * found Francesco's own cache collecting loom-suite-* paths, run after
+ * run. The suite keeps its copy in TEST_SCRATCH; the digestcache group
+ * puts the real path back, under a scratch Cache.dir, to test it.
+ */
+var REAL_DIGEST_CACHE_PATH = IN_PIXINSIGHT ? FrameSelector.digestCachePath : null;
+if ( IN_PIXINSIGHT )
+   FrameSelector.digestCachePath = function() { return TEST_SCRATCH + "/frame-digests.json"; };
+
 var TESTS_RUN = 0;
 var FAILURES = [];
 
@@ -12511,6 +12523,231 @@ function runTests()
           "Point it at the folder of lights, not at masters or calibration frames." );
    check( "an empty folder keeps its old message",
           Frames.noSubframesMessage( [] ), "No readable frames in that folder." );
+
+   } if ( testGroup( "digestcache" ) ) {
+   /*
+    * The digest cache spares a re-opened night from re-reading every frame
+    * whole just to learn it has not changed. It answers only when the file
+    * looks exactly as it did: same path, size, modification time AND
+    * FileInfo.timeCreated. On macOS that last one is st_ctime (probed on
+    * 1.9.5), which every write, rename and touch moves and nothing can set
+    * back: it catches a frame replaced by `mv` of another file whose size
+    * and mtime were copied onto it (touch -r), and one rewritten in place.
+    */
+   ( function()
+   {
+      var P = "/night/Light_S_0001.xisf", HEX = "0123456789abcdef0123456789abcdef01234567";
+      var HEX2 = "89abcdef0123456789abcdef0123456789abcdef";
+      var stat = { size: 52428800, mtime: 1790000000000, created: 1789999000000, at: 1790000100000 };
+      function withField( name, value )
+      {
+         var s = { size: stat.size, mtime: stat.mtime, created: stat.created, at: stat.at };
+         s[name] = value;
+         return s;
+      }
+      var t = {};
+      check( "an empty table is a miss", Frames.digestCacheHit( t, P, stat ), null );
+      Frames.digestCacheRecord( t, P, stat, HEX );
+      check( "a recorded file is a hit", Frames.digestCacheHit( t, P, stat ), HEX );
+      check( "the entry is keyed by path and carries what it matched",
+             t, { "/night/Light_S_0001.xisf": { size: stat.size, mtime: stat.mtime,
+                                                created: stat.created, digest: HEX } } );
+      check( "a changed size is a miss",
+             Frames.digestCacheHit( t, P, withField( "size", stat.size + 1 ) ), null );
+      check( "a changed mtime is a miss",
+             Frames.digestCacheHit( t, P, withField( "mtime", stat.mtime + 1 ) ), null );
+      check( "a file replaced by mv or rewritten in place, same size and mtime (touch -r), is a miss",
+             Frames.digestCacheHit( t, P, withField( "created", stat.created + 1500 ) ), null );
+      check( "a stat without the creation time is a miss for an entry that has one",
+             Frames.digestCacheHit( t, P, { size: stat.size, mtime: stat.mtime } ), null );
+      check( "a different path is a miss",
+             Frames.digestCacheHit( t, "/night/Light_S_0002.xisf", stat ), null );
+      check( "a path is matched exactly, not case-folded",
+             Frames.digestCacheHit( t, "/night/light_s_0001.xisf", stat ), null );
+      check( "no table is a miss", Frames.digestCacheHit( null, P, stat ), null );
+      check( "no stat is a miss", Frames.digestCacheHit( t, P, null ), null );
+
+      var newer = withField( "mtime", stat.mtime + 60000 );
+      Frames.digestCacheRecord( t, P, newer, HEX2 );
+      check( "a record replaces the old entry: one entry per path",
+             Object.keys( t ), [ P ] );
+      check( "the new record answers", Frames.digestCacheHit( t, P, newer ), HEX2 );
+      check( "the old stat no longer does", Frames.digestCacheHit( t, P, stat ), null );
+
+      Frames.digestCacheRecord( t, P, stat, "not a digest" );
+      check( "recording a bad digest drops the entry rather than keeping a stale one",
+             Object.keys( t ), [] );
+      Frames.digestCacheRecord( t, P, stat, HEX );
+      Frames.digestCacheRecord( t, P, { size: "52428800", mtime: stat.mtime, created: 1 }, HEX );
+      check( "recording a stat that is not numbers drops the entry too", Object.keys( t ), [] );
+
+      var noCreated = { size: 8, mtime: 1000, created: null, at: 100000 };
+      Frames.digestCacheRecord( t, P, noCreated, HEX );
+      check( "where no creation time is known, size and mtime decide",
+             Frames.digestCacheHit( t, P, { size: 8, mtime: 1000, created: null } ), HEX );
+      check( "but a creation time appearing later is a miss",
+             Frames.digestCacheHit( t, P, { size: 8, mtime: 1000, created: 5 } ), null );
+
+      /*
+       * Git's racy-clean rule. PixInsight's times are whole seconds, so a
+       * frame read in the same second it was written can change again
+       * without moving either time. A stat taken less than 2 s after the
+       * mtime or the creation time -- or before them, a clock ahead -- is
+       * read but not remembered, and whatever was remembered goes.
+       */
+      Frames.digestCacheRecord( t, P, stat, HEX );
+      Frames.digestCacheRecord( t, P, withField( "at", stat.mtime + 1999 ), HEX );
+      check( "a stat taken under 2 s after the mtime is not remembered", Object.keys( t ), [] );
+      Frames.digestCacheRecord( t, P, withField( "at", stat.mtime + 2000 ), HEX );
+      check( "at 2 s it is", Frames.digestCacheHit( t, P, stat ), HEX );
+      var recent = withField( "created", stat.mtime + 60000 );
+      recent.at = recent.created + 500;
+      Frames.digestCacheRecord( t, P, recent, HEX );
+      check( "nor one taken under 2 s after the creation time", Object.keys( t ), [] );
+      Frames.digestCacheRecord( t, P, withField( "at", stat.mtime - 5000 ), HEX );
+      check( "nor one taken before the mtime", Object.keys( t ), [] );
+      Frames.digestCacheRecord( t, P, withField( "at", undefined ), HEX );
+      check( "nor a stat that does not say when it was taken", Object.keys( t ), [] );
+
+      function malformed( entry )
+      {
+         var m = {};
+         m[P] = entry;
+         return Frames.digestCacheHit( m, P, stat );
+      }
+      function entry( name, value )
+      {
+         var e = { size: stat.size, mtime: stat.mtime, created: stat.created, digest: HEX };
+         e[name] = value;
+         return e;
+      }
+      check( "a well-formed entry is the control for the malformed ones",
+             malformed( entry( "digest", HEX ) ), HEX );
+      check( "a null entry is a miss", malformed( null ), null );
+      check( "a string entry is a miss", malformed( HEX ), null );
+      check( "an entry without a digest is a miss", malformed( entry( "digest", undefined ) ), null );
+      check( "a digest that is not 40 hex is a miss", malformed( entry( "digest", HEX + "0" ) ), null );
+      check( "an uppercase digest is a miss", malformed( entry( "digest", HEX.toUpperCase() ) ), null );
+      check( "a size as a string is a miss", malformed( entry( "size", String( stat.size ) ) ), null );
+      check( "a missing mtime is a miss", malformed( entry( "mtime", undefined ) ), null );
+      check( "a missing created is a miss", malformed( entry( "created", undefined ) ), null );
+      check( "an inherited property is not an entry",
+             Frames.digestCacheHit( {}, "constructor", { size: 0, mtime: 0, created: null } ), null );
+   } )();
+
+   /*
+    * Wired into the scan: cohortFrom's identities come from the cache when
+    * the file looks as it did, and are read whole otherwise. The hasher is
+    * the "unix" one, so every read goes through the counted fallback.
+    * Headers are stubbed: these are text files, and only the identity
+    * phase is under test. A digest is remembered only 2 s after the
+    * file's last change (the racy-clean rule), so the fixtures wait that
+    * long before the scans that must remember them.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var dir = synthDir( "fs-digest-cache" ), savedDir = Cache.overrideDir;
+      var realEntry = FrameSelector.entryFor, suitePath = FrameSelector.digestCachePath, digested = [];
+      var a = dir + "/a.fit", b = dir + "/b.fit", c = dir + "/c.fit", all = [ a, b, c ];
+      var ZERO = "0000000000000000000000000000000000000000";
+      function hasher()
+      {
+         return Hasher.forScan( { platform: Util.PLATFORM_UNIX, fallback: function( p )
+         {
+            digested.push( File.extractNameAndExtension( p ) );
+            return FrameSelector.digest( p );
+         } } );
+      }
+      function scan( paths ) { digested = []; return FrameSelector.cohortFrom( paths, null, hasher() ); }
+      function digestOf( cohort, p ) { return cohort.before[p] ? cohort.before[p].digest : null; }
+      function stored() { return JSON.parse( File.readTextFile( FrameSelector.digestCachePath() ) ); }
+      try
+      {
+         Cache.setDir( dir + "/cache" );
+         FrameSelector.digestCachePath = REAL_DIGEST_CACHE_PATH;
+         FrameSelector.entryFor = function( p ) { return { path: p, imageType: "Light" }; };
+         File.writeTextFile( a, "frame a" );
+         File.writeTextFile( b, "frame b" );
+         File.writeTextFile( c, "frame c" );
+         msleep( 2100 );
+         check( "the digest cache is a file in the cache folder",
+                FrameSelector.digestCachePath(), dir + "/cache/frame-digests.json" );
+
+         var first = scan( all );
+         check( "a first scan reads every frame", digested.slice().sort(), [ "a.fit", "b.fit", "c.fit" ] );
+         check( "and keeps what it read", Object.keys( stored() ).sort(), all.slice().sort() );
+         var second = scan( all );
+         check( "a second scan reads nothing", digested, [] );
+         check( "and gives the same identities", second.before, first.before );
+
+         File.writeTextFile( b, "frame B" );
+         var third = scan( all );
+         check( "a frame rewritten at the same size is read again, alone", digested, [ "b.fit" ] );
+         check( "and its identity is the new bytes'", digestOf( third, b ), FrameSelector.digest( b ) );
+         check( "which are not the old ones", digestOf( third, b ) != digestOf( first, b ), true );
+         check( "a frame read the instant it was written is not remembered",
+                stored()[b] === undefined && stored()[a] !== undefined, true );
+         scan( all );
+         check( "so the next scan reads it again", digested, [ "b.fit" ] );
+
+         if ( Util.platform() == Util.PLATFORM_MACOS )
+         {
+            msleep( 2100 );
+            scan( all );                 // remembers b, now that it has settled
+            check( "and remembers it once it has settled", stored()[b] !== undefined, true );
+            var swap = dir + "/c.swap";
+            File.writeTextFile( swap, "frame C" );
+            Render.runProcess( "/usr/bin/touch", [ "-r", c, swap ], 10000 );
+            Render.runProcess( "/bin/mv", [ "-f", swap, c ], 10000 );
+            msleep( 2100 );
+            var now = FrameSelector.fileStat( c );
+            check( "the replacement kept the old size and mtime",
+                   [ now.size, now.mtime ], [ third.before[c].size, third.before[c].mtime ] );
+            var fourth = scan( all );
+            check( "a frame replaced by mv with its mtime copied (touch -r) is read again",
+                   digested, [ "c.fit" ] );
+            check( "and its identity is the replacement's",
+                   digestOf( fourth, c ), FrameSelector.digest( c ) );
+         }
+
+         msleep( 2100 );
+         File.writeTextFile( FrameSelector.digestCachePath(), "{ not json" );
+         scan( all );
+         check( "a corrupt cache file is an empty cache", digested.slice().sort(),
+                [ "a.fit", "b.fit", "c.fit" ] );
+         check( "and is written back whole", Object.keys( stored() ).length, 3 );
+         File.writeTextFile( FrameSelector.digestCachePath(), "[ 1, 2 ]" );
+         scan( [ a ] );
+         check( "so is one that is not a table", digested, [ "a.fit" ] );
+
+         /*
+          * A stale entry -- here a forged one that matches the file's stat --
+          * is believed by the scan, and by nothing that decides anything.
+          */
+         var forged = stored();
+         forged[a].digest = ZERO;
+         File.writeTextFile( FrameSelector.digestCachePath(), JSON.stringify( forged ) );
+         var stale = scan( [ a ] );
+         check( "a stale entry is what the pre-scan sees", digestOf( stale, a ), ZERO );
+         check( "the settle's identities never ask the cache",
+                FrameSelector.identitiesNow( [ a ], hasher() )[a].digest, FrameSelector.digest( a ) );
+         var man = Frames.buildManifest( [
+            { path: a, state: Frames.STATE.REJECTED, reasons: [ "test" ],
+              digest: stale.before[a].digest, size: stale.before[a].size, mtime: stale.before[a].mtime } ] );
+         var result = FrameSelector.execute( man );
+         check( "deleting on a stale digest skips the frame: execute reads it afresh",
+                [ File.exists( a ), result.deleted, result.skipped ], [ true, 0, 1 ] );
+
+         Cache.clear();
+         check( "clearing the cache clears the digests", File.exists( FrameSelector.digestCachePath() ), false );
+      }
+      finally
+      {
+         FrameSelector.entryFor = realEntry;
+         FrameSelector.digestCachePath = suitePath;
+         Cache.setDir( savedDir );
+      }
+   } )();
 
    } if ( testGroup( "frameselector" ) ) {
    /*

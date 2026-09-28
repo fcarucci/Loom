@@ -1277,6 +1277,84 @@ Frames.identityMatches = function( entry, current )
 };
 
 /*
+ * The digest cache: a path's whole-file SHA-1 remembered with what the file
+ * looked like when it was read, so a re-opened night is not read whole
+ * again just to learn nothing changed. Keyed BY PATH, one entry per path,
+ * so it cannot grow beyond the files that exist.
+ *
+ * stat is { size, mtime, created } from FileInfo: size, lastModified and
+ * timeCreated in ms. On macOS timeCreated is st_ctime (probed on 1.9.5):
+ * every write, rename and utimes moves it and nothing sets it back, so a
+ * frame replaced by `mv` or rewritten in place with its mtime restored
+ * (touch -r) still misses. `created` is null where none is known; then
+ * size and mtime decide, and a null never matches a number.
+ *
+ * On Windows timeCreated is the file's CREATION time, which an in-place
+ * edit does not move. There, a frame rewritten in place at the same size
+ * with its modification time put back hits the cache with its old digest.
+ * Unmeasured on this machine; nothing Loom or a capture program does
+ * restores a modification time, but a user's tool could.
+ *
+ * stat.at is when the stat was taken. Those times are whole seconds, so a
+ * frame read within the second it was written can change again without
+ * moving either: git's racy-clean rule. A stat taken less than
+ * DIGEST_SETTLE_MS after its mtime or ctime (or before them: a clock
+ * ahead) is read but not remembered.
+ *
+ * Only the pre-scan identity uses this, and a stale hit costs this much:
+ * the frame keeps its OLD digest, so if that digest is in the measurement
+ * cache the review shows the old bytes' numbers without measuring the new
+ * ones (and if it is not, the new bytes are measured and the settle finds
+ * them UNSTABLE). It can never authorise deleting different bytes: the
+ * settle and the deletion always digest afresh, and execute SKIPS a frame
+ * whose bytes are not the ones in the manifest.
+ */
+Frames.DIGEST_HEX = /^[0-9a-f]{40}$/;
+Frames.DIGEST_SETTLE_MS = 2000;
+
+/* { size, mtime, created, digest } with created null when absent, or null. */
+Frames.digestCacheEntry = function( stat, hex )
+{
+   function number( v ) { return typeof v == "number" && isFinite( v ); }
+   if ( stat == null || typeof hex != "string" || !Frames.DIGEST_HEX.test( hex ) )
+      return null;
+   var created = stat.created === undefined ? null : stat.created;
+   if ( !number( stat.size ) || !number( stat.mtime ) || !( created === null || number( created ) ) )
+      return null;
+   return { size: stat.size, mtime: stat.mtime, created: created, digest: hex };
+};
+
+Frames.digestCacheHit = function( table, path, stat )
+{
+   if ( table == null || !Object.prototype.hasOwnProperty.call( table, path ) )
+      return null;
+   var e = table[path];
+   if ( e == null || typeof e != "object" || !( "created" in e ) )
+      return null;
+   var stored = Frames.digestCacheEntry( e, e.digest );
+   var now = stored && Frames.digestCacheEntry( stat, stored.digest );
+   return now && now.size === stored.size && now.mtime === stored.mtime &&
+          now.created === stored.created ? stored.digest : null;
+};
+
+/* Did the file change too recently for its times to vouch for it? */
+Frames.digestRacy = function( stat, e )
+{
+   function recent( t ) { return t !== null && !( stat.at - t >= Frames.DIGEST_SETTLE_MS ); }
+   return typeof stat.at != "number" || recent( e.mtime ) || recent( e.created );
+};
+
+/* A record replaces the path's entry; one that cannot be trusted removes it. */
+Frames.digestCacheRecord = function( table, path, stat, hex )
+{
+   var e = Frames.digestCacheEntry( stat, hex );
+   if ( e != null && !Frames.digestRacy( stat, e ) )
+      table[path] = e;
+   else
+      delete table[path];
+};
+
+/*
  * The part of each name that actually differs.
  *
  * Subframes of one channel share everything but a timestamp and a

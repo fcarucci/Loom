@@ -529,7 +529,12 @@ FrameSelector.digest = function( path )
    }
 };
 
-/* Size and time, or null for a file that is not there; taken BEFORE the digest. */
+/*
+ * Size and times, or null for a file that is not there; taken BEFORE the
+ * digest. `created` (FileInfo.timeCreated, st_ctime on macOS) and `at`,
+ * when the stat was taken, are for the digest cache; an identity carries
+ * size and mtime only.
+ */
 FrameSelector.fileStat = function( path )
 {
    try
@@ -537,8 +542,9 @@ FrameSelector.fileStat = function( path )
       if ( !File.exists( path ) )
          return null;
       var fi = new FileInfo( path );
-      var t = fi.lastModified;
-      return { size: fi.size, mtime: t ? t.getTime() : 0 };
+      var t = fi.lastModified, c = fi.timeCreated;
+      return { size: fi.size, mtime: t ? t.getTime() : 0, created: c ? c.getTime() : null,
+               at: Date.now() };
    }
    catch ( e ) { return null; }
 };
@@ -566,24 +572,68 @@ FrameSelector.newHasher = function()
 };
 
 /*
+ * The digest cache on disk (see Frames.digestCacheHit): beside the
+ * measurements, so Cache.setDir moves it and Cache.clear removes it. An
+ * unreadable or corrupt file is an empty cache: the cost of a bad one is
+ * reading the frames, never believing it.
+ */
+FrameSelector.digestCachePath = function()
+{
+   return Cache.dir() + "/frame-digests.json";
+};
+
+FrameSelector.loadDigestCache = function()
+{
+   try
+   {
+      var p = FrameSelector.digestCachePath();
+      var t = File.exists( p ) ? JSON.parse( File.readTextFile( p ) ) : null;
+      return ( t != null && typeof t == "object" && !Array.isArray( t ) ) ? t : {};
+   }
+   catch ( e ) { return {}; }
+};
+
+FrameSelector.saveDigestCache = function( table )
+{
+   try
+   {
+      Util.ensureDirectory( Cache.dir() );
+      File.writeTextFile( FrameSelector.digestCachePath(), JSON.stringify( table ) );
+   }
+   catch ( e ) { Util.warn( "frames", "could not save the frame digests: " + e ); }
+};
+
+/*
  * Identities for many files at once, digested in the background.
  * request( path ) takes the size and time NOW, before the digest, as
  * fileIdentity does, and queues the digest; poll() moves it along;
  * finish( cancelled ) waits and gives { ids: { path: identity or null },
  * cancelled }, each identity exactly what fileIdentity would have given.
- * `opts` is for what later changes add; nothing reads it yet.
+ *
+ * opts.useCache: answer from the digest cache where the file looks as it
+ * did, and remember what was read -- loaded here, saved once by finish.
+ * ONLY cohortFrom's pre-scan identity asks for it. The settle and the
+ * deletion digest afresh, so a stale entry can make a frame unstable or
+ * skipped, and never authorise deleting bytes nobody measured.
  */
 FrameSelector.Identities = function( hasher, opts )
 {
    this.opts = opts || {};
    this.stats = {};
+   this.hits = {};
+   this.table = this.opts.useCache ? FrameSelector.loadDigestCache() : null;
    this.job = ( hasher || FrameSelector.newHasher() ).start( [] );
 };
 
 FrameSelector.Identities.prototype.request = function( path )
 {
-   this.stats[path] = FrameSelector.fileStat( path );
-   if ( this.stats[path] != null )
+   var stat = this.stats[path] = FrameSelector.fileStat( path );
+   if ( stat == null )
+      return;
+   var hit = this.table != null ? Frames.digestCacheHit( this.table, path, stat ) : null;
+   if ( hit != null )
+      this.hits[path] = hit;
+   else
       this.job.add( path );
 };
 
@@ -601,8 +651,26 @@ FrameSelector.Identities.prototype.finish = function( cancelled )
 {
    var r = this.job.wait( cancelled ), ids = {};
    for ( var path in this.stats )
-      ids[path] = FrameSelector.identityOf( this.stats[path], r.digests[path] );
+      ids[path] = FrameSelector.identityOf( this.stats[path],
+                                            this.hits[path] || r.digests[path] || null );
+   this.remember( r.digests );
    return { ids: ids, cancelled: r.cancelled };
+};
+
+/* Every path read in full goes into the cache (or out of it); saved once, if any was. */
+FrameSelector.Identities.prototype.remember = function( digests )
+{
+   if ( this.table == null )
+      return;
+   var read = 0;
+   for ( var path in this.stats )
+      if ( this.stats[path] != null && this.hits[path] == null )
+      {
+         Frames.digestCacheRecord( this.table, path, this.stats[path], digests[path] || null );
+         ++read;
+      }
+   if ( read > 0 )
+      FrameSelector.saveDigestCache( this.table );
 };
 
 /* Every path's identity, now, blocking. */
@@ -769,10 +837,13 @@ FrameSelector.frameFilesIn = function( folder )
  * A master or calibration frame is left out -- and listed in `skipped` as
  * { path, kind } -- on its header alone, BEFORE it is digested: a masters
  * folder is gigabytes nobody asked to have read. See Frames.notSubframe.
+ *
+ * A frame that looks exactly as it did when last read -- path, size, mtime
+ * and ctime -- is not read again: its digest comes from the digest cache.
  */
 FrameSelector.cohortFrom = function( paths, progress, hasher )
 {
-   var ids = new FrameSelector.Identities( hasher );
+   var ids = new FrameSelector.Identities( hasher, { useCache: true } );
    var read = FrameSelector.readHeaders( paths, progress, ids );
    var cohort = { entries: [], before: {}, skipped: read.skipped, unreadable: read.unreadable,
                   cancelled: read.cancelled };
