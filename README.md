@@ -1,3 +1,5 @@
+![Loom: the Elephant Trunk Nebula](docs/images/banner.jpg)
+
 # Loom
 
 Three PixInsight scripts for the work between capture and making pictures:
