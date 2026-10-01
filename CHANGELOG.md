@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Layered PSB:** three neutral, visible adjustment layers for the nebula only, above the DSO groups and below the Stars: **Background Curve**, **Faint Nebulosity Curve** and **Color Vibrance** (a real Photoshop Vibrance layer).
 - **Frame Selector:** cancelling a scan keeps the frame fingerprints it had already taken, so the next scan doesn't read those frames again.
 
 ## [0.3.2] — 2026-09-28

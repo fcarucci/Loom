@@ -304,9 +304,37 @@ Psb.hueSaturationPayload = function()
 };
 
 /*
+ * A Vibrance adjustment layer's 'vibA' payload, vibrance 0 and saturation 0:
+ * it changes nothing until it is touched.
+ *
+ * Same provenance as the blocks above: psd-tools' reader/writer (its
+ * Vibrance layer reads 'vibrance' and 'Strt'), checked by generating the
+ * structure there with DescriptorBlock and comparing bytes. The block is
+ * an action DESCRIPTOR behind a version word:
+ *
+ *    I  version = 16
+ *    descriptor: unicode name (I count = 0), class id (I length = 0, then
+ *    'null'), I item count = 2, then per item: key (I length = 0, then
+ *    the 4-char key, or an explicit length for 'vibrance'), 'long', i value
+ *
+ * Items in Photoshop's order: 'vibrance', then 'Strt' (saturation).
+ */
+Psb.vibrancePayload = function()
+{
+   var b = new Psb.Buffer;
+   b.u32( 16 );                 // version
+   b.u32( 0 );                  // descriptor name: empty
+   b.u32( 0 ).ascii( "null" );  // class id
+   b.u32( 2 );                  // items
+   b.u32( 8 ).ascii( "vibrance" ).ascii( "long" ).u32( 0 );
+   b.u32( 0 ).ascii( "Strt" ).ascii( "long" ).u32( 0 );
+   return b;                    // 56 bytes, already a multiple of four
+};
+
+/*
  * The tagged blocks that follow a layer record: the unicode name, the
  * section divider for a group marker, and the adjustment data for a
- * curves or hue/saturation layer.
+ * curves, hue/saturation or vibrance layer.
  */
 Psb.layerExtraBlocks = function( layer )
 {
@@ -336,6 +364,9 @@ Psb.layerExtraBlocks = function( layer )
 
    if ( layer.hueSaturation )
       b.append( Psb.taggedBlock( "hue2", Psb.hueSaturationPayload() ) );
+
+   if ( layer.vibrance )
+      b.append( Psb.taggedBlock( "vibA", Psb.vibrancePayload() ) );
    return b;
 };
 
@@ -346,7 +377,8 @@ Psb.layerExtraBlocks = function( layer )
  */
 Psb.isAdjustment = function( layer )
 {
-   return ( layer.curves != null ) || ( layer.hueSaturation === true );
+   return ( layer.curves != null ) || ( layer.hueSaturation === true ) ||
+          ( layer.vibrance === true );
 };
 
 /* Whether a layer carries pixels: group dividers and adjustment layers do not. */
@@ -508,6 +540,7 @@ Psb.flatLayer = function( e )
             channelIds: [ -1, 0, 1, 2 ],
             curves: ( e.curves != null ) ? e.curves : null,
             hueSaturation: ( e.hueSaturation === true ),
+            vibrance: ( e.vibrance === true ),
             clipping: ( e.clipping === true ),
             mask: ( e.mask === true ),
             window: e.window };

@@ -3628,6 +3628,8 @@ Steps.buildPsbDocument = function( results )
    var broadband = Steps.psbBroadbandGroup( results );
    if ( broadband != null )
       doc.push( broadband );
+   if ( doc.length > 0 )
+      doc = doc.concat( Steps.psbDsoAdjustments() );
    var stars = Steps.psbStarLayers( results );
    if ( stars.length > 0 )
    {
@@ -3644,6 +3646,20 @@ Steps.buildPsbDocument = function( results )
                   clipping: true } );
    }
    return doc;
+};
+
+/*
+ * Three ready-made adjustment layers for the DSO, bottom to top: the
+ * background tone, the faint nebulosity, and a protected colour boost
+ * (Photoshop's Vibrance). All neutral, visible and NOT clipped: they sit
+ * at the root above the palette and broadband groups and below the Stars
+ * group, so they act on the DSO plates and never on the stars.
+ */
+Steps.psbDsoAdjustments = function()
+{
+   return [ { name: "Background Curve", curves: [ 0 ] },        // 0 = composite RGB
+            { name: "Faint Nebulosity Curve", curves: [ 0 ] },
+            { name: "Color Vibrance", vibrance: true } ];
 };
 
 /*

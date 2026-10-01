@@ -963,7 +963,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 304 );
+      check( "Steps: the member count", Object.keys( have ).length, 305 );
    }
 
    /*
@@ -5229,6 +5229,52 @@ function runTests()
    check( "it is clipped", topCurve != null && topCurve.clipping === true, true );
    check( "it sits directly above the Stars group -- what it clips TO",
           curveIndex - groupIndex, 1 );
+
+   /*
+    * The three neutral DSO layers. Bytes of the vibA payload are psd-tools'
+    * DescriptorBlock (version 16, class 'null', keys 'vibrance' and 'Strt',
+    * both long 0), written by its own writer.
+    */
+   var vibBytes = "0000001000000000000000006e756c6c000000020000000876696272616e63656c6f6e67" +
+                  "0000000000000000537472746c6f6e6700000000";
+   check( "Psb.vibrancePayload: psd-tools' bytes for vibrance 0, saturation 0",
+          psbHex( Psb.vibrancePayload() ), vibBytes );
+   check( "a vibrance layer is an adjustment and has no pixels",
+          [ Psb.isAdjustment( { vibrance: true } ), Psb.hasPixels( { vibrance: true } ) ], [ true, false ] );
+   check( "vibrance: false is a pixel layer",
+          [ Psb.isAdjustment( { vibrance: false } ), Psb.hasPixels( { vibrance: false } ) ], [ false, true ] );
+   check( "the layer extra blocks carry vibA for a vibrance layer",
+          psbHex( Psb.layerExtraBlocks( { name: "V", vibrance: true } ) ).indexOf( "3842494d76696241" ) > 0, true );
+   check( "...and not for a plain one",
+          psbHex( Psb.layerExtraBlocks( { name: "V" } ) ).indexOf( "76696241" ), -1 );
+   check( "flatLayer keeps the vibrance flag",
+          [ Psb.flatLayer( { name: "V", vibrance: true } ).vibrance, Psb.flatLayer( { name: "V" } ).vibrance ], [ true, false ] );
+
+   function topNames( results )
+   {
+      return Steps.buildPsbDocument( results ).map( function( e ) { return e.name; } ).join( "|" );
+   }
+   var dsoFake = { mainView: { image: { numberOfChannels: 3 } } };
+   var dsoTail = "Background Curve|Faint Nebulosity Curve|Color Vibrance";
+   check( "palette only: the three layers sit above the palette group",
+          topNames( { HSO_starless: dsoFake } ), "HSO|" + dsoTail );
+   check( "broadband only",
+          topNames( { RGB: dsoFake } ), "RGB|" + dsoTail );
+   check( "palette and broadband",
+          topNames( { HSO_starless: dsoFake, RGB_starless: dsoFake } ), "HSO|RGB|" + dsoTail );
+   check( "with stars: below the Stars group and its curve, which stay on top",
+          topNames( { HSO_starless: dsoFake, RGB_stars: dsoFake } ), "HSO|" + dsoTail + "|Stars|Stars Curve" );
+   check( "stars alone, no DSO plate: nothing is added",
+          topNames( { RGB_stars: dsoFake } ), "Stars|Stars Curve" );
+   check( "no plates at all: empty", topNames( {} ), "" );
+   var dsoDoc = Steps.buildPsbDocument( { HSO_starless: dsoFake } );
+   var dsoBg = dsoDoc[1], dsoFaint = dsoDoc[2], dsoVib = dsoDoc[3];
+   check( "the curves are identity composite RGB", [ dsoBg.curves, dsoFaint.curves ], [ [ 0 ], [ 0 ] ] );
+   check( "the vibrance layer is flagged", dsoVib.vibrance, true );
+   check( "all three are visible, unclipped, normal, full opacity",
+          [ dsoBg, dsoFaint, dsoVib ].map( function( l )
+             { return [ l.visible !== false, l.clipping === true, l.blend == null, l.opacity == null ].join(); } ),
+          [ "true,false,true,true", "true,false,true,true", "true,false,true,true" ] );
 
    check( "the ICC image resource is 1039", Psb.RESOURCE_ICC_PROFILE, 1039 );
    var res = Psb.imageResource( Psb.RESOURCE_ICC_PROFILE, [ 1, 2, 3 ] );
@@ -9764,7 +9810,7 @@ function runTests()
          var psbHash = new CryptographicHash( CryptographicHash.SHA1 );
          check( "Psb.write: the characterization document is byte-identical",
                 [ psbBytes.length, psbHash.hash( psbBytes ).toHex() ],
-                [ 4064, "2768c96247ab0d96ea41df03924423c78803dd46" ] );
+                [ 4682, "dc6f1caf9710ebd6c5c053f15f06991cd7fdb165" ] );
       }
       finally
       {
