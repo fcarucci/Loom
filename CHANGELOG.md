@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Solution check without a full Gaia DR3:** with only the Gaia DR3/SP database set up (all SPCC needs), PixInsight's solution check failed with "the Gaia process is not working, probably because of a wrong database configuration" for every channel, which blamed a database that is fine. Loom now asks once whether the check can run, and if not skips it with one plain note. The solutions themselves are unchanged.
 - **SyQon Studio Parallax profile:** a **Profile** drop-down on its own line under the sharpening tool, Classic (as before, and the default) or Aesthetics, for Studio Parallax as the sharpening tool only (BlurXTerminator has no profile, and the Studio aberration pass it borrows stays Classic); Classic results already in the cache still hit, Aesthetics is cached separately.
 - **Masters:** a drizzled master is recognised from the integration metadata PixInsight wrote (the DrizzleIntegration scale), not its pixel-size keyword, which a plate solve rewrites, so every drizzled channel reads 2x in the Drizzle column, the status line and the selection; files without that metadata use the old rule. The Source cell shows the full file name as a tooltip.
 - **Layered PSB:** three neutral, visible adjustment layers for the nebula only, above the DSO groups and below the Stars: **Background Curve**, **Faint Nebulosity Curve** and **Color Vibrance** (a real Photoshop Vibrance layer).

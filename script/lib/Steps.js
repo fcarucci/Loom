@@ -823,6 +823,48 @@ Steps.verifySolution = function( window )
 };
 
 /*
+ * Whether PixInsight's verifier has a Gaia catalog to work with. It asks
+ * the Gaia process for the "best available" release, which a DR3/SP-only
+ * setup (all SPCC needs) cannot answer: the verifier then throws "the Gaia
+ * process is not working, probably because of a wrong database
+ * configuration", which blames a database that is fine. Loom asks the same
+ * question once per run, and when the answer is no skips the check with one
+ * plain note (verifyAndReport) instead of a warning for every channel.
+ * Replaceable, so the suite can say yes or no.
+ */
+Steps.verifierCatalogOk = null;
+Steps.verifierNoted = false;
+
+Steps.resetVerifier = function()
+{
+   Steps.verifierCatalogOk = null;
+   Steps.verifierNoted = false;
+};
+
+Steps.askVerifierCatalog = function()
+{
+   if ( typeof Gaia == "undefined" )
+      return false;
+   try
+   {
+      var g = new Gaia;
+      g.verbosity = 0;
+      g.command = "get-info";
+      g.dataRelease = Gaia.DataRelease_BestAvailable;
+      g.executeGlobal();
+      return !!g.isValid;
+   }
+   catch ( e ) { return false; }
+};
+
+Steps.verifierCatalogAvailable = function()
+{
+   if ( Steps.verifierCatalogOk == null )
+      Steps.verifierCatalogOk = Steps.askVerifierCatalog();
+   return Steps.verifierCatalogOk;
+};
+
+/*
  * Verifies and reports. Never throws: a verification that cannot run is a
  * lost diagnostic, not a reason to lose the pipeline -- the solution it
  * was going to judge is still there and still usable. Returns the
@@ -831,6 +873,18 @@ Steps.verifySolution = function( window )
 Steps.verifyAndReport = function( window, label )
 {
    var r;
+   if ( !Steps.verifierCatalogAvailable() )
+   {
+      if ( !Steps.verifierNoted )
+      {
+         Steps.verifierNoted = true;
+         Util.log( "verify", "the astrometric solution check is skipped: PixInsight's verifier " +
+                             "asks the Gaia process for its best available release, which a " +
+                             "setup with only DR3/SP (all SPCC needs) cannot answer. The " +
+                             "solutions are unchanged." );
+      }
+      return null;
+   }
    try
    {
       Util.reportStage( "verifying astrometric solution \u2192 " + label );

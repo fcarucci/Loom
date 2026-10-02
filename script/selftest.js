@@ -963,7 +963,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 307 );
+      check( "Steps: the member count", Object.keys( have ).length, 312 );
    }
 
    /*
@@ -11342,6 +11342,82 @@ function runTests()
    check( "a failed verification is repeatable, not latched",
           Steps.verifyAndReport( { isNull: true, mainView: { id: "y" } }, "y" ),
           null );
+
+   // ---- no Gaia catalog for the verifier: one plain note, no warning ------
+
+   /*
+    * PixInsight's verifier asks the Gaia process for its "best available"
+    * release, which a DR3/SP-only setup (all SPCC needs) cannot answer; it
+    * then throws "wrong database configuration". Loom asks the same
+    * question once, and when the answer is no skips the check with ONE
+    * plain note per run instead of a pink warning per channel.
+    */
+   ( function()
+   {
+      var realAvail = Steps.verifierCatalogAvailable, realSolve = Steps.verifySolution;
+      var realLog = Util.log, realWarn = Util.warn, logs = [], warns = [], solved = 0;
+      Util.log = function( stage, m ) { logs.push( stage + ": " + m ); };
+      Util.warn = function( stage, m ) { warns.push( stage + ": " + m ); };
+      Steps.verifySolution = function() { ++solved; return null; };
+      try
+      {
+         Steps.resetVerifier();
+         Steps.verifierCatalogAvailable = function() { return false; };
+         var a = Steps.verifyAndReport( { isNull: true, mainView: { id: "x" } }, "G" );
+         var b = Steps.verifyAndReport( { isNull: true, mainView: { id: "y" } }, "B" );
+         check( "no catalog for the verifier: the check is skipped, null, never run", [ a, b, solved ], [ null, null, 0 ] );
+         check( "and says so once, as a note and not a warning",
+                [ warns.length, logs.length, /verify: .*skipped/.test( logs[0] || "" ),
+                  /unchanged/.test( logs[0] || "" ) ], [ 0, 1, true, true ] );
+         Steps.resetVerifier();
+         Steps.verifierCatalogAvailable = function() { return true; };
+         logs = [];
+         Steps.verifyAndReport( { isNull: true, mainView: { id: "z" } }, "R" );
+         check( "with a catalog the verifier runs and nothing is skipped", [ solved, logs.length ], [ 1, 0 ] );
+      }
+      finally
+      {
+         Steps.verifierCatalogAvailable = realAvail; Steps.verifySolution = realSolve;
+         Util.log = realLog; Util.warn = realWarn; Steps.resetVerifier();
+      }
+   } )();
+
+   /*
+    * The question itself, against a stand-in Gaia: valid -> yes, invalid or
+    * throwing -> no, asked once per run, and asked as "best available".
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var RealGaia = Gaia, asked = [];
+      var fake = function( valid, throws )
+      {
+         var F = function()
+         {
+            this.executeGlobal = function()
+            {
+               asked.push( [ this.command, this.dataRelease ] );
+               if ( throws ) throw new Error( "boom" );
+               this.isValid = valid;
+               return true;
+            };
+         };
+         F.DataRelease_BestAvailable = RealGaia.DataRelease_BestAvailable;
+         return F;
+      };
+      var answers = [];
+      try
+      {
+         Gaia = fake( true, false ); Steps.resetVerifier();
+         answers.push( Steps.verifierCatalogAvailable(), Steps.verifierCatalogAvailable() );
+         check( "a Gaia that answers: yes, asked once, for the best available release",
+                [ answers, asked ], [ [ true, true ], [ [ "get-info", RealGaia.DataRelease_BestAvailable ] ] ] );
+         Gaia = fake( false, false ); Steps.resetVerifier(); asked = [];
+         check( "a Gaia that says invalid: no", Steps.verifierCatalogAvailable(), false );
+         Gaia = fake( true, true ); Steps.resetVerifier();
+         check( "a Gaia that throws: no", Steps.verifierCatalogAvailable(), false );
+      }
+      finally { Gaia = RealGaia; Steps.resetVerifier(); }
+   } )();
 
    // ---- residual measurement configuration --------------------------------
 
