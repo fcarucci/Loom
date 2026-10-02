@@ -736,17 +736,82 @@ Util.deserializeEntries = function( text )
  */
 Util.NATIVE_PIXEL_SIZE = 3.76;
 
+/* "Nx" for a clean integer factor >= 2 (within 0.05), else "". */
+Util.factorLabel = function( factor )
+{
+   var rounded = Math.round( factor );
+   if ( !isFinite( factor ) || rounded < 2 || Math.abs( factor - rounded ) > 0.05 )
+      return "";
+   return rounded + "x";
+};
+
+/* The XPIXSZ rule alone: the fallback when a file carries no integration metadata. */
 Util.drizzleLabel = function( xpixsz )
 {
    var v = parseFloat( xpixsz );
    if ( !isFinite( v ) || v <= 0 )
       return "";
-   var factor = Util.NATIVE_PIXEL_SIZE / v;
-   var rounded = Math.round( factor );
-   // Only report clean integer factors; anything else is not a drizzle.
-   if ( rounded < 2 || Math.abs( factor - rounded ) > 0.05 )
+   return Util.factorLabel( Util.NATIVE_PIXEL_SIZE / v );
+};
+
+/* A ProcessingHistory as plain XML text: it may be stored escaped. */
+Util.unescapeHistory = function( history )
+{
+   return String( history == null ? "" : history )
+      .replace( /&lt;/g, "<" ).replace( /&gt;/g, ">" ).replace( /&quot;/g, "\"" ).replace( /&amp;/g, "&" );
+};
+
+/*
+ * The scale of the LAST DrizzleIntegration instance in a PixInsight
+ * ProcessingHistory: null when there is none, NaN when it has no readable
+ * scale. The history may be stored escaped; it is unescaped first. Only the
+ * instance's own text is searched, so another process's "scale" is not read.
+ */
+Util.drizzleScaleFromHistory = function( history )
+{
+   var h = Util.unescapeHistory( history );
+   var re = /<instance\s+class="DrizzleIntegration"[\s\S]*?(?=<instance\s|$)/g;
+   var last = null, m;
+   while ( ( m = re.exec( h ) ) != null )
+      last = m[0];
+   if ( last == null )
+      return null;
+   var sm = /<parameter\s+id="scale"\s+value="([^"]*)"/.exec( last );
+   return sm ? parseFloat( sm[1] ) : NaN;
+};
+
+/*
+ * Drizzle factor from the integration metadata PixInsight wrote into the
+ * master: the scale of its DrizzleIntegration instance, else the
+ * PCL:Signature:Integration property. It survives crops, resamples and a
+ * plate solution rewriting XPIXSZ, which the XPIXSZ rule does not.
+ *   1. a DrizzleIntegration scale: that factor (clean integer >= 2, else "")
+ *   2. a DrizzleIntegration signature without a scale: the XPIXSZ factor,
+ *      else "drizzle" (still ranks as drizzled)
+ *   3. an ImageIntegration signature or history: not drizzled ("")
+ *   4. no metadata: the XPIXSZ rule
+ */
+Util.integrationDrizzleLabel = function( history, signature, xpixsz )
+{
+   var scale = Util.drizzleScaleFromHistory( history );
+   if ( scale != null && isFinite( scale ) )
+      return Util.factorLabel( scale );
+   var sig = String( signature == null ? "" : signature );
+   if ( scale != null || /^process=DrizzleIntegration/.test( sig ) )
+      return Util.drizzleLabel( xpixsz ) || "drizzle";
+   if ( /^process=ImageIntegration/.test( sig ) ||
+        /<instance\s+class="ImageIntegration"/.test( Util.unescapeHistory( history ) ) )
       return "";
-   return rounded + "x";
+   return Util.drizzleLabel( xpixsz );
+};
+
+/* The drizzle label of an image's info ({ keywords, history, signature }), as Util.readImageInfo returns it. */
+Util.masterDrizzleLabel = function( info )
+{
+   if ( info == null )
+      return "";
+   return Util.integrationDrizzleLabel( info.history, info.signature,
+                                        Util.keywordValue( info.keywords || [], "XPIXSZ" ) );
 };
 
 /*
@@ -1188,6 +1253,17 @@ Util.imageInfoCacheKey = function( path )
    catch ( e ) { return null; }
 };
 
+/* An XISF image property of the open file as a string, or null when it is absent. */
+Util.readImageProperty = function( f, id )
+{
+   try
+   {
+      var v = f.readImageProperty( id );
+      return v == null ? null : String( v );
+   }
+   catch ( e ) { return null; }
+};
+
 /*
  * Reads geometry and keywords from `path`'s header alone, without decoding
  * a single pixel.
@@ -1224,6 +1300,14 @@ Util.tryHeaderRead = function( path )
          width: d[0].width,
          height: d[0].height
       };
+      /*
+       * PixInsight's integration metadata, read from the same open file with
+       * no pixel data. Both are absent in files from other software.
+       */
+      var sig = Util.readImageProperty( f, "PCL:Signature:Integration" );
+      var hist = Util.readImageProperty( f, "PixInsight:ProcessingHistory" );
+      if ( sig != null ) info.signature = sig;
+      if ( hist != null ) info.history = hist;
       // The header is already in hand; a close that fails now costs
       // nothing and must not send the caller down the full-read path.
       try { f.close(); } catch ( e1 ) {}

@@ -403,6 +403,17 @@ UI.classifyMasterFile = function( scan, dir, found )
       scan.unnamed.push( rec );
 };
 
+/* A view's string property, or null when it has none. */
+UI.viewProperty = function( view, id )
+{
+   try
+   {
+      var v = view.propertyValue( id );
+      return v == null ? null : String( v );
+   }
+   catch ( e ) { return null; }
+};
+
 /* A scanned file's record, with its times where the file system reports them. */
 UI.masterFileRecord = function( dir, found )
 {
@@ -439,7 +450,7 @@ UI.fileEntry = function( path )
       channel: Util.channelFromFilter( filter ),
       width: info ? info.width : 0,
       height: info ? info.height : 0,
-      drizzle: kws ? Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) ) : "",
+      drizzle: Util.masterDrizzleLabel( info ),
       created: Util.fileCreatedMs( path )
    };
 };
@@ -1958,7 +1969,7 @@ UI.SelectDialog = class extends Dialog
          var uc = Util.channelFromFilter( Util.keywordValue( ui.keywords, "FILTER" ) );
          if ( uc == null ) continue;
          rec.channel  = uc;
-         rec.drizzle  = Util.drizzleLabel( Util.keywordValue( ui.keywords, "XPIXSZ" ) );
+         rec.drizzle  = Util.masterDrizzleLabel( ui );
          rec.autocrop = Util.isAutocropName( rec.name );
          scan.named.push( rec );
       }
@@ -2051,7 +2062,7 @@ UI.SelectDialog = class extends Dialog
          channel: channel,
          width: info.width,
          height: info.height,
-         drizzle: Util.drizzleLabel( Util.keywordValue( info.keywords, "XPIXSZ" ) ),
+         drizzle: Util.masterDrizzleLabel( info ),
          autocrop: p.autocrop,
          mtime: p.mtime,
          created: p.created,
@@ -2186,7 +2197,9 @@ UI.SelectDialog = class extends Dialog
          channel: Util.channelFromFilter( filter ),
          width: view.image.width,
          height: view.image.height,
-         drizzle: Util.drizzleLabel( Util.keywordValue( kws, "XPIXSZ" ) )
+         drizzle: Util.masterDrizzleLabel( { keywords: kws,
+                                           signature: UI.viewProperty( view, "PCL:Signature:Integration" ),
+                                           history: UI.viewProperty( view, "PixInsight:ProcessingHistory" ) } )
       } );
       this.rebuild();
    }
@@ -2343,6 +2356,8 @@ UI.SelectDialog = class extends Dialog
          node.setText( 1, ( e.width && e.height ) ? ( e.width + " x " + e.height ) : "" );
          node.setText( 2, e.drizzle || "" );
          node.setText( 3, ( e.source == "view" ? "view: " : "" ) + e.label );
+         // the column elides the middle of a long name, which hides the variant
+         node.setToolTip( 3, e.label );
          node.setText( 4, Util.formatFileTime( e.created ) );
          var cells = UI.qualityCells( e.quality, e.delta );
          for ( var c = 0; c < cells.length; ++c )

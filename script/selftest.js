@@ -1360,6 +1360,89 @@ function runTests()
    check( "drizzleLabel zero", Util.drizzleLabel( 0 ), "" );
    check( "drizzleLabel non-integer factor", Util.drizzleLabel( 2.5 ), "" );
 
+   // drizzle from the integration metadata PixInsight wrote; XPIXSZ only as a fallback
+   ( function()
+   {
+      function hist( classes, scale )
+      {
+         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ProcessingHistory version=\"1.0\">" +
+            classes.map( function( c, i )
+            {
+               var sc = scale && scale[i] != null ? "<parameter id=\"scale\" value=\"" + scale[i] + "\"/>" : "";
+               return "<instance class=\"" + c + "\" version=\"256\" id=\"" + c + "_instance\">" +
+                      "<time start=\"2026-05-19T21:47:03.675Z\" span=\"77.08\"/>" +
+                      "<table id=\"inputData\" rows=\"1\"><tr><td id=\"enabled\" value=\"true\"/></tr></table>" +
+                      "<parameter id=\"dropShrink\" value=\"0.90\"/>" + sc + "</instance>";
+            } ).join( "" ) + "</ProcessingHistory>";
+      }
+      function esc( s ) { return s.replace( /&/g, "&amp;" ).replace( /</g, "&lt;" ).replace( />/g, "&gt;" ).replace( /"/g, "&quot;" ); }
+      var DRIZ = "process=DrizzleIntegration,version=1.7.2,timestamp=2026-05-19T21:48:20.759Z";
+      var PLAIN = "process=ImageIntegration,version=1.7.2,timestamp=2026-05-19T21:38:46.301Z";
+      var L = Util.integrationDrizzleLabel;
+      var h2 = hist( [ "ImageIntegration", "DrizzleIntegration" ], [ null, "2.00" ] );
+
+      check( "integrationDrizzleLabel: scale 2.00", L( h2, DRIZ, "" ), "2x" );
+      check( "integrationDrizzleLabel: escaped history", L( esc( h2 ), DRIZ, null ), "2x" );
+      check( "integrationDrizzleLabel: scale 3.00",
+             L( hist( [ "DrizzleIntegration" ], [ "3.00" ] ), DRIZ, "" ), "3x" );
+      check( "integrationDrizzleLabel: scale 1.50 is no clean factor",
+             L( hist( [ "DrizzleIntegration" ], [ "1.50" ] ), DRIZ, "1.88" ), "" );
+      check( "integrationDrizzleLabel: scale 1.00 is not a drizzle",
+             L( hist( [ "DrizzleIntegration" ], [ "1.00" ] ), DRIZ, "1.88" ), "" );
+      check( "integrationDrizzleLabel: the last drizzle instance wins",
+             L( hist( [ "DrizzleIntegration", "DrizzleIntegration" ], [ "3.00", "2.00" ] ), DRIZ, "" ), "2x" );
+      check( "integrationDrizzleLabel: a scale in another instance is not read",
+             L( hist( [ "DrizzleIntegration", "Other" ], [ null, "5.00" ] ), DRIZ, "1.88" ), "2x" );
+      check( "integrationDrizzleLabel: signature only, factor from XPIXSZ",
+             L( "", DRIZ, "0.94" ), "4x" );
+      check( "integrationDrizzleLabel: signature only, no factor known",
+             L( "", DRIZ, null ), "drizzle" );
+      check( "integrationDrizzleLabel: signature only, XPIXSZ unusable",
+             L( "", DRIZ, "2.7" ), "drizzle" );
+      check( "integrationDrizzleLabel: plain signature beats XPIXSZ claiming 2x",
+             L( "", PLAIN, "1.88" ), "" );
+      check( "integrationDrizzleLabel: plain history beats XPIXSZ claiming 2x",
+             L( hist( [ "ImageIntegration" ] ), null, "1.88" ), "" );
+      check( "integrationDrizzleLabel: plain signature and history",
+             L( hist( [ "ImageIntegration" ] ), PLAIN, "" ), "" );
+      check( "integrationDrizzleLabel: no metadata, XPIXSZ rule",
+             [ L( null, null, "1.88" ), L( "", "", "0.94" ), L( undefined, undefined, 3.76 ),
+               L( null, null, null ), L( null, null, 0 ), L( null, null, 2.5 ) ],
+             [ "2x", "4x", "", "", "", "" ] );
+      check( "integrationDrizzleLabel: history without integration, XPIXSZ rule",
+             L( hist( [ "Crop" ] ), null, "1.88" ), "2x" );
+
+      // the NGC 5907 masters: one drizzle, four different XPIXSZ values
+      var fact = [ "1.35", "1.88", "2.7", null ].map( function( x ) { return L( h2, DRIZ, x ); } );
+      check( "integrationDrizzleLabel: drizzled masters read 2x whatever XPIXSZ says",
+             fact, [ "2x", "2x", "2x", "2x" ] );
+      var plainFact = [ "2.7", "1.35", null, "5.4" ].map( function( x ) { return L( hist( [ "ImageIntegration" ] ), PLAIN, x ); } );
+      check( "integrationDrizzleLabel: plain masters read as plain whatever XPIXSZ says",
+             plainFact, [ "", "", "", "" ] );
+
+      // masterDrizzleLabel: from an image's info (what readImageInfo returns)
+      check( "masterDrizzleLabel: from info",
+             Util.masterDrizzleLabel( { keywords: [ { name: "XPIXSZ", value: "1.35" } ],
+                                        history: h2, signature: DRIZ } ), "2x" );
+      check( "masterDrizzleLabel: info without metadata falls back to XPIXSZ",
+             Util.masterDrizzleLabel( { keywords: [ { name: "XPIXSZ", value: "1.88" } ] } ), "2x" );
+      check( "masterDrizzleLabel: no info", Util.masterDrizzleLabel( null ), "" );
+
+      // selection: B, G, L drizzled with XPIXSZ 1.35 now outrank the plain masters
+      function cand( ch, drizzled, ref )
+      {
+         var info = { keywords: [ { name: "XPIXSZ", value: drizzled ? "1.35" : "2.7" } ],
+                      history: drizzled ? h2 : hist( [ "ImageIntegration" ] ),
+                      signature: drizzled ? DRIZ : PLAIN };
+         return { channel: ch, drizzle: Util.masterDrizzleLabel( info ), autocrop: true, mtime: drizzled ? 1 : 9, ref: ref };
+      }
+      var pick = Util.selectMasters( [ cand( "B", true, "Bd" ), cand( "B", false, "Bp" ),
+                                       cand( "G", true, "Gd" ), cand( "G", false, "Gp" ),
+                                       cand( "L", true, "Ld" ), cand( "L", false, "Lp" ) ] );
+      check( "selection: drizzled masters with XPIXSZ 1.35 outrank plain ones",
+             [ pick.B.ref, pick.G.ref, pick.L.ref ], [ "Bd", "Gd", "Ld" ] );
+   } )();
+
    // the QE curve follows the camera in the image's INSTRUME keyword
    check( "qeCurve ASI2600MM Air", Util.qeCurveNameForCamera( "ZWO ASI2600MM Air" ),
           "Sony IMX411/455/461/533/571" );
@@ -8653,7 +8736,12 @@ function runTests()
                                     { name: "INSTRUME", value: "'ZWO ASI2600MM Pro'" },
                                     { name: "XPIXSZ", value: "7.52" } ],
                         width: 6248, height: 4176 },
-         "/m/b.fits": { keywords: [], width: 10, height: 20 }
+         "/m/b.fits": { keywords: [], width: 10, height: 20 },
+         "/m/d.xisf": { keywords: [ { name: "FILTER", value: "'Blue'" },
+                                    { name: "XPIXSZ", value: "1.35" } ],
+                        width: 12136, height: 7956,
+                        signature: "process=DrizzleIntegration,version=1.7.2",
+                        history: "<instance class=\"DrizzleIntegration\" version=\"256\"><parameter id=\"scale\" value=\"2.00\"/></instance>" }
       };
       function add( d, paths, created )
       {
@@ -8689,6 +8777,11 @@ function runTests()
                [ Util.scanProgressMessage( "Reading masters", "b.fits", 1, 2 ),
                  Util.scanProgressMessage( "Reading masters", "gone.xisf", 2, 2 ),
                  null ], 3 ] );
+
+      var iz = dialog();
+      add( iz, [ "/m/d.xisf" ] );
+      check( "addFiles: a drizzled master reads 2x from its integration metadata, not its XPIXSZ",
+             iz.entries[0].drizzle, "2x" );
       check( "addFiles: the bar advances a file at a time, and each row shows as it is read",
              [ many.bars, many.rows ],
              [ [ Util.stepProgress( 1, 2, 0, 1 ), Util.stepProgress( 2, 2, 0, 1 ) ], [ 1, 2, 2 ] ] );

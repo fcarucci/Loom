@@ -99,7 +99,10 @@ executes nothing. Do this first on a new setup or a new dataset.
    filter from a WBPP masters folder, preferring drizzled and autocropped
    variants; **Add Files...** picks them directly. A view dragged onto the list
    also works, and beats a file for the same channel. The channel comes from
-   each file's `FILTER` keyword.
+   each file's `FILTER` keyword. Drizzle is read from the integration metadata
+   PixInsight wrote into the master (the DrizzleIntegration scale), so it holds
+   for cropped files and rewritten pixel sizes; a file without that metadata
+   falls back to its `XPIXSZ`. The **Source** cell's tooltip shows the full file name.
 2. **Check the list.** **Created**, **FWHM**, **Ecc**, **Noise** and **Stars**
    (from SubframeSelector) show each master against the previous integration of
    its channel, coloured when it got worse: Loom always uses the newest master.
