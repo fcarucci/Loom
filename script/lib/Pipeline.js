@@ -304,6 +304,17 @@ Pipeline.withStudioFamily = function( params, tool, family )
 };
 
 /*
+ * The Parallax profile a run hands to Studio. Only Studio Parallax as the
+ * sharpening tool has one; BlurXTerminator has none, and the Studio
+ * aberration pass it borrows is always Classic.
+ */
+Pipeline.studioFamily = function( config )
+{
+   return ( config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO )
+          ? Steps.studioFamilyOf( config.parallaxFamily ) : Steps.STUDIO_PARALLAX_FAMILY;
+};
+
+/*
  * The aberration stage's cache parameters. Keyed on the tool that really
  * corrects: BlurXTerminator without Studio keys byte-for-byte as it always
  * has, so its cached channels still hit, while BXT with Studio found adds
@@ -318,7 +329,7 @@ Pipeline.aberrationParams = function( config, studioFound )
    if ( corrector != tool )
    {
       p.corrector = corrector;
-      p.family = Steps.studioFamilyOf( config.parallaxFamily );
+      p.family = Pipeline.studioFamily( config );
       return p;
    }
    return Pipeline.withStudioFamily( p, tool, config.parallaxFamily );
@@ -1256,7 +1267,7 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
          {
             Steps.correctComposite( h.view, config.sharpenTool,
                                     config.starReduction, config.detailLevel, label,
-                                    Steps.studioFamilyOf( config.parallaxFamily ) );
+                                    Pipeline.studioFamily( config ) );
          }
          catch ( e ) { return keptAfter( "sharpen", e, "corrected", "as it is" ); }
       };
@@ -1775,7 +1786,7 @@ Pipeline.broadbandRunners = function( channel, config )
          // unlinked, on native pixels.
          if ( Steps.toolChosen( config.sharpenTool ) )
             Steps.aberration( c.view, config.sharpenTool, false, channel,
-                             Steps.studioFamilyOf( config.parallaxFamily ) );
+                             Pipeline.studioFamily( config ) );
       }
    };
 };

@@ -2983,11 +2983,16 @@ function runTests()
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                        parallaxFamily: "aesthetics" }, true ),
           { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "aesthetics" } );
-   check( "and BXT's Studio corrector too",
+   check( "BXT's Studio corrector stays Classic whatever the profile: BXT has no profile",
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
                                        parallaxFamily: "aesthetics" }, true ),
           { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1",
-            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "aesthetics" } );
+            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "classic" } );
+   check( "the family a run hands to Studio is the profile for Studio Parallax and Classic for BXT",
+          [ Pipeline.studioFamily( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO, parallaxFamily: "aesthetics" } ),
+            Pipeline.studioFamily( { sharpenTool: Steps.SHARPEN_TOOL_BXT, parallaxFamily: "aesthetics" } ),
+            Pipeline.studioFamily( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO } ) ],
+          [ "aesthetics", "classic", "classic" ] );
    check( "the profile is not in the key of a BXT pass Studio does not run",
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
                                        parallaxFamily: "aesthetics" }, false ),
@@ -8210,7 +8215,7 @@ function runTests()
          "#26 Label \"Sharpening:\" align=130 minWidth=100 enabled=true at 0,0,100x20 / 0,0,100x20 in #25",
          "#27 ComboBox items=[\"None\",\"BlurXTerminator\",\"SyQon Parallax\"] current=2 enabled=true tip=#239:ed575898 at 104,0,119x20 / 104,0,119x20 in #25",
          "#28 Label \"Profile:\" align=130 minWidth=100 enabled=false at 0,24,100x20 / 0,24,100x20 in #25",
-         "#29 ComboBox items=[\"Classic\",\"Aesthetics\"] current=0 enabled=false tip=#481:9b68dfe1 at 104,24,92x20 / 104,24,92x20 in #25",
+         "#29 ComboBox items=[\"Classic\",\"Aesthetics\"] current=0 enabled=false tip=#493:57abfc06 at 104,24,92x20 / 104,24,92x20 in #25",
          "#30 Label \"Star reduction:\" align=130 minWidth=100 enabled=true at 239,0,100x20 / 239,0,100x20 in #25",
          "#31 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 343,0,79x20 / 343,0,79x20 in #25",
          "#32 Label \"Detail:\" align=130 minWidth=100 enabled=true at 438,0,100x20 / 438,0,100x20 in #25",
@@ -8517,7 +8522,8 @@ function runTests()
              profile && [ profile.items, profile.current ], [ [ "Classic", "Aesthetics" ], 1 ] );
       check( "Profile is off while another tool will run, on for Studio Parallax, off again for None",
              profile && [ profile.onOtherTool, profile.onStudio, profile.afterNone ], [ false, true, false ] );
-      check( "and on for BlurXTerminator while Studio runs its aberration pass", profile && profile.onBxt, true );
+      check( "and off for BlurXTerminator: it has no profile, its Studio aberration pass is always Classic",
+             profile && profile.onBxt, false );
       check( "picking a profile sets it",
              profile && [ profile.picked, profile.pickedAgain ], [ "classic", "aesthetics" ] );
       var tip = profile ? String( profile.tip ) : "";

@@ -185,8 +185,8 @@ UI.label = function( parent, text, minWidth )
  */
 UI.parallaxFamilyToolTip = function()
 {
-   return "<p>Which rendering SyQon Studio's Parallax uses, for sharpening and for " +
-          "the aberration pass it runs in BlurXTerminator's place.</p>" +
+   return "<p>Which rendering SyQon Studio's Parallax uses. It applies to Studio " +
+          "Parallax as the sharpening tool only: BlurXTerminator has no profile.</p>" +
           "<p><b>Classic</b> is the established Parallax. <b>Aesthetics</b> is " +
           "SyQon's newer rendering profile, the one in Studio's own window, and the " +
           "home of Max Deblur, which Loom cannot use until SyQon adds a " +
@@ -2241,10 +2241,8 @@ UI.SelectDialog = class extends Dialog
       var on = Steps.toolChosen( this.config.sharpenTool );
       this.starReductionCombo.enabled = on;
       this.detailCombo.enabled = on;
-      // only where Studio's Parallax runs: as the tool, or as BlurXTerminator's corrector
-      this.parallaxFamilyCombo.enabled = on &&
-         Steps.aberrationCorrector( this.config.sharpenTool, !!Steps.studioAvailable() ) ==
-            Steps.SHARPEN_TOOL_STUDIO;
+      // only for Studio Parallax as the tool: BlurXTerminator has no profile
+      this.parallaxFamilyCombo.enabled = on && this.config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO;
       this.parallaxFamilyLabel.enabled = this.parallaxFamilyCombo.enabled;
    }
 
