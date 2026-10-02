@@ -71,6 +71,57 @@ Pipeline.preflight = function( config )
 };
 
 /*
+ * The narrowband channels this run supplies, as files or open views.
+ */
+Pipeline.narrowbandSupplied = function( config )
+{
+   return Util.NARROWBAND.filter( function( k )
+   {
+      return Util.channelSupplied( config.paths || {}, config.views || {}, k );
+   } );
+};
+
+/*
+ * The palettes this run can build: a palette whose channels are all
+ * supplied. The ticks for them are hidden while no narrowband is supplied,
+ * so one saved from an earlier run is invisible and cannot be unticked, and
+ * a run without narrowband must not fail on it; one that lacks a channel is
+ * skipped too, and the others are built.
+ */
+Pipeline.wantedPalettes = function( config )
+{
+   var have = Pipeline.narrowbandSupplied( config );
+   return ( config.palettes || [] ).filter( function( pal )
+   {
+      var missing = Util.paletteMissing( pal, have );
+      return missing != null && missing.length == 0;
+   } );
+};
+
+/*
+ * Says which saved palettes were left out and why: a plain note when the
+ * run has no narrowband at all (the user never saw the tick), a warning
+ * when a visible palette lacks a channel.
+ */
+Pipeline.reportSkippedPalettes = function( config )
+{
+   var have = Pipeline.narrowbandSupplied( config );
+   ( config.palettes || [] ).forEach( function( pal )
+   {
+      var missing = Util.paletteMissing( pal, have );
+      if ( missing != null && missing.length == 0 )
+         return;
+      if ( missing == null )
+         Util.warn( "palette", "the " + pal + " palette is skipped: it is not a palette Loom knows" );
+      else if ( have.length == 0 )
+         Util.log( "palette", "the " + pal + " palette is skipped: no narrowband channel in this run" );
+      else
+         Util.warn( "palette", "the " + pal + " palette is skipped: it needs " + missing.join( " and " ) +
+                               ", which " + ( missing.length == 1 ? "was" : "were" ) + " not supplied" );
+   } );
+};
+
+/*
  * MGC runs on every broadband channel, and Steps.mgc refuses to start
  * without a MARS database. Asked here the same way -- Steps.configuredMGC,
  * with the run's own folder -- so the absence costs a dialog box rather
@@ -1253,6 +1304,8 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
     */
    function keptAfter( tag, e, failed, kept )
    {
+      if ( Util.isCancel( e ) )
+         throw e;
       Util.warn( tag, label + " could not be " + failed + " (" + e + "); " +
                       ( noun ? "the " + noun : "it" ) + " is kept " + kept );
       return Pipeline.SKIP_CACHE;
@@ -1436,6 +1489,8 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
          }
          catch ( e )
          {
+            if ( Util.isCancel( e ) )
+               throw e;
             Util.warn( "spcc", pal + " could not be calibrated (" + e +
                                "); the palette is kept uncalibrated" );
             return Pipeline.SKIP_CACHE;
@@ -1452,6 +1507,8 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
          try { Steps.narrowbandNormalize( h.view, pal, pal ); }
          catch ( e )
          {
+            if ( Util.isCancel( e ) )
+               throw e;
             Util.warn( "nbnorm", pal + " could not be normalised (" + e +
                                  "); the palette is kept as it is" );
             return Pipeline.SKIP_CACHE;
@@ -2695,7 +2752,8 @@ Pipeline.run = function( config )
                                    lumInstrume, cleanFactors );
 
       var paletteWins = [];
-      var wanted = config.palettes || [];
+      Pipeline.reportSkippedPalettes( config );
+      var wanted = Pipeline.wantedPalettes( config );
       for ( var wi = 0; wi < wanted.length; ++wi )
          paletteWins.push( Pipeline.buildPalette( wanted[wi], chans, config,
                                                   reg, common ) );
@@ -3011,7 +3069,7 @@ Pipeline.checkAbort = function( stage )
       catch ( e ) {}
 
       if ( Pipeline.cancelWindow.cancelled )
-         throw new Error( "Cancelled by user" );
+         throw new Error( Util.CANCELLED );
 
       /*
        * Re-assert the console at each checkpoint. An auto-hidden dock slides

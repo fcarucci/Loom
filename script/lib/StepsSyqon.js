@@ -774,7 +774,7 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs, wait )
       if ( !Util.cancelRequested() )
          return;
       try { process.terminate(); } catch ( e ) {}
-      throw new Error( "Cancelled by user" );
+      throw new Error( Util.CANCELLED );
    }
 
    var startTime = (new Date()).getTime();

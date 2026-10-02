@@ -152,14 +152,15 @@ UI.fillToolCombo = function( combo, tools, current, pick )
 };
 
 /*
- * Fills a strength dropdown from its lower-case levels, shown capitalised,
- * selects `current` (the first level if it is not one), and hands the
- * chosen level to `pick`.
+ * Fills a strength dropdown from its lower-case levels, shown capitalised
+ * (or as `names`, one per level), selects `current` (the first level if it
+ * is not one), and hands the chosen LEVEL to `pick`.
  */
-UI.fillLevelCombo = function( combo, levels, current, pick )
+UI.fillLevelCombo = function( combo, levels, current, pick, names )
 {
+   names = names || levels;      // what is shown, when it is not the level itself
    for ( var i = 0; i < levels.length; ++i )
-      combo.addItem( levels[i].charAt( 0 ).toUpperCase() + levels[i].slice( 1 ) );
+      combo.addItem( names[i].charAt( 0 ).toUpperCase() + names[i].slice( 1 ) );
    combo.currentItem = Math.max( 0, levels.indexOf( current ) );
    combo.onItemSelected = function( n ) { pick( levels[n] ); };
 };
@@ -225,14 +226,15 @@ UI.noiseToolToolTip = function()
             ? "<b>SyQon Studio Prism 2.0</b>: twice, Advanced before the stretch, then " +
               "Ultra (Medium) or Max (High) after it. Low is Advanced only; with the " +
               "stretch off, only Advanced runs. "
-            : "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra (Medium) or Max " +
-              "(High); with the stretch off, Medium only, Ultra on the linear image. Its " +
+            : "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra or Max; " +
+              "with the stretch off, Ultra only, on the linear image. Its " +
               "Advanced pass before the stretch, and with it Low, is off until SyQon fixes " +
               "the tile seams it left in faint sky. " ) +
           "Max is very slow: about 20 minutes a " +
           "plate where Ultra took 30 seconds, on the same image.</p>" +
           "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
-          "High pushes past it (Essential\'s High is its Medium).</p>" +
+          "High pushes past it (Essential\'s High is its Medium). Prism 2.0's two " +
+          "strengths are its models, Ultra and Max.</p>" +
           "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
           "the models your strengths will use; if it cannot, Loom offers Prism Essential " +
           "(included) instead until a check succeeds.</p>";
@@ -251,9 +253,11 @@ UI.prism2LevelsToolTip = function()
    for ( var level in ladder )
    {
       var step = ladder[level];
-      var label = level.charAt( 0 ).toUpperCase() + level.slice( 1 ) + ": ";
+      var shown = Steps.noiseLevelName( Steps.NR_TOOL_STUDIO2, level );
+      var label = shown.charAt( 0 ).toUpperCase() + shown.slice( 1 ) + ": ";
       if ( !step.linear )
-         parts.push( label + name( step.stretched ) + " after the stretch" +
+         parts.push( label + ( name( step.stretched ).toLowerCase() == shown ? "" : name( step.stretched ) + " " ) +
+                     "after the stretch" +
                      ( step.unstretched ? ", or on the linear image with the stretch off."
                                         : "; not offered with the stretch off." ) );
       else
@@ -261,7 +265,8 @@ UI.prism2LevelsToolTip = function()
                      ( step.stretched ? ", then " + name( step.stretched ) + " after the stretch" : " only" ) + "." );
    }
    return "<p>SyQon Studio Prism 2.0 at each strength: " + parts.join( " " ) +
-          " High is very slow: Max takes about 40 times as long as Ultra.</p>";
+          " " + Steps.noiseLevelName( Steps.NR_TOOL_STUDIO2, "high" ).replace( /^./, function( c ) { return c.toUpperCase(); } ) +
+          " is very slow: it takes about 40 times as long as Ultra.</p>";
 };
 
 /* The Colour ("colour") and L ("L") strength tooltips. */
@@ -2218,11 +2223,12 @@ UI.SelectDialog = class extends Dialog
       if ( c.noiseLevelL )
          c.noiseLevelL = Steps.supportedNoiseLevel( c.noiseTool, c.noiseLevelL, stretch );
       this.noiseLevelCombo.clear();
+      var names = levels.map( function( l ) { return Steps.noiseLevelName( c.noiseTool, l ); } );
       UI.fillLevelCombo( this.noiseLevelCombo, levels, c.noiseLevel,
-                         function( level ) { self.config.noiseLevel = level; } );
+                         function( level ) { self.config.noiseLevel = level; }, names );
       this.noiseLevelLCombo.clear();
       UI.fillLevelCombo( this.noiseLevelLCombo, levels, c.noiseLevelL || c.noiseLevel,
-                         function( level ) { self.config.noiseLevelL = level; } );
+                         function( level ) { self.config.noiseLevelL = level; }, names );
    }
 
    /* The amount means nothing without a noise tool selected. */

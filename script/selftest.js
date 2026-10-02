@@ -963,7 +963,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 312 );
+      check( "Steps: the member count", Object.keys( have ).length, 314 );
    }
 
    /*
@@ -2829,11 +2829,15 @@ function runTests()
              [ opLine( S2, "medium", false, "linear" ), opLine( S2, "medium", true, "stretched" ),
                opLine( S2, "high", true, "stretched" ), opLine( S2, "low", false, "linear" ),
                opLine( S2, "high", false, "all" ) ],
-             [ [ "noise reduction", S2, "medium, Advanced, before stretch", "RGB" ],
-               [ "noise reduction", S2, "medium, Ultra, after stretch", "RGB" ],
-               [ "noise reduction", S2, "high, Max, after stretch", "RGB" ],
+             [ [ "noise reduction", S2, "ultra, Advanced, before stretch", "RGB" ],
+               [ "noise reduction", S2, "Ultra, after stretch", "RGB" ],
+               [ "noise reduction", S2, "Max, after stretch", "RGB" ],
                [ "noise reduction", S2, "low, Advanced, before stretch", "RGB" ],
-               [ "noise reduction", S2, "high, Advanced, no stretch", "RGB" ] ] );
+               [ "noise reduction", S2, "max, Advanced, no stretch", "RGB" ] ] );
+      check( "Prism 2.0's two strengths are named for their models, Ultra and Max; every other tool's are as they were",
+             [ Steps.noiseLevelName( S2, "medium" ), Steps.noiseLevelName( S2, "high" ), Steps.noiseLevelName( S2, "low" ),
+               Steps.noiseLevelName( Steps.NR_TOOL_NXT, "medium" ), Steps.noiseLevelName( Steps.NR_TOOL_NXT, "high" ) ],
+             [ "ultra", "max", "low", "medium", "high" ] );
       check( "every other tool's operation line shows the level alone",
              [ opLine( Steps.NR_TOOL_NXT, "high", false, "linear" ),
                opLine( Steps.NR_TOOL_STUDIO, "low", false, "linear" ) ],
@@ -5132,12 +5136,12 @@ function runTests()
     */
    var uiSrc = File.readTextFile( LOOM_DIR + "/lib/UI.js" );
    check( "the README states Prism 2.0's ladder, after the stretch, Advanced off",
-          readmeSrc.indexOf( "runs after the\nstretch (Medium: Ultra, High: Max)" ) >= 0 &&
+          readmeSrc.indexOf( "runs after the\nstretch as Ultra or Max, the two strengths it offers" ) >= 0 &&
           readmeSrc.indexOf( "Its Advanced pass on linear data, and with it Low,\nis off" ) >= 0, true );
    check( "the dialog's help states it",
-          UI.noiseToolToolTip().indexOf( "after the stretch, Ultra (Medium) or Max (High)" ) >= 0 &&
-          UI.prism2LevelsToolTip().indexOf( "Medium: Ultra after the stretch, or on the linear image " +
-                                            "with the stretch off. High: Max after the stretch" ) >= 0, true );
+          UI.noiseToolToolTip().indexOf( "after the stretch, Ultra or Max" ) >= 0 &&
+          UI.prism2LevelsToolTip().indexOf( "Ultra: after the stretch, or on the linear image " +
+                                            "with the stretch off. Max: after the stretch" ) >= 0, true );
    check( "neither still states one model per level",
           [ readmeSrc.indexOf( "Medium: Max" ), uiSrc.indexOf( "Medium is Max" ) ], [ -1, -1 ] );
 
@@ -8616,6 +8620,16 @@ function runTests()
              [ true, true, true, true, true ] );
    } )();
 
+   ( function()
+   {
+      function fakeCombo() { return { items: [], currentItem: -1, addItem: function( t ) { this.items.push( t ); } }; }
+      var c = fakeCombo(), got = [];
+      UI.fillLevelCombo( c, [ "medium", "high" ], "high", function( l ) { got.push( l ); }, [ "ultra", "max" ] );
+      c.onItemSelected( 0 ); c.onItemSelected( 1 );
+      check( "a strength dropdown shows the names it is given and still hands back the level",
+             [ c.items, c.currentItem, got ], [ [ "Ultra", "Max" ], 1, [ "medium", "high" ] ] );
+   } )();
+
    /*
     * The dropdown fillers take any object with addItem and currentItem, so
     * what they decide is checked in node too.
@@ -11417,6 +11431,74 @@ function runTests()
          check( "a Gaia that throws: no", Steps.verifierCatalogAvailable(), false );
       }
       finally { Gaia = RealGaia; Steps.resetVerifier(); }
+   } )();
+
+   // ---- cancel stops the run; a palette without data is caught before it ----
+
+   /*
+    * A cancel is an exception like any other, and the finishing stages
+    * turn a failed step into a warning and carry on ("could not be
+    * denoised; the composite is kept"). A cancel must not be one of
+    * those: it stops the run at once.
+    */
+   ( function()
+   {
+      var realDenoise = Steps.denoise, realAbort = Pipeline.checkAbort, realWarn = Util.warn;
+      var warns = [];
+      Util.warn = function( stage, m ) { warns.push( stage + ": " + m ); };
+      Pipeline.checkAbort = function() {};
+      var cfg = { noiseTool: "NoiseXTerminator", noiseLevel: "medium", stretch: true };
+      try
+      {
+         var fin = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING, cfg, null );
+         check( "Util.isCancel knows the cancel and nothing else",
+                [ Util.isCancel( new Error( Util.CANCELLED ) ), Util.isCancel( Util.CANCELLED ),
+                  Util.isCancel( new Error( "denoise failed" ) ), Util.isCancel( null ) ],
+                [ true, true, false, false ] );
+         Steps.denoise = function() { throw new Error( Util.CANCELLED ); };
+         var thrown = null;
+         try { fin.runners.denoiseRGB( { view: {} } ); } catch ( e ) { thrown = String( e ); }
+         check( "a cancel in a finishing step stops the run and logs no warning",
+                [ /Cancelled by user/.test( thrown || "" ), warns.length ], [ true, 0 ] );
+         Steps.denoise = function() { throw new Error( "denoise failed" ); };
+         var kept = fin.runners.denoiseRGB( { view: {} } );
+         check( "any other failure is still a warning and the composite is kept",
+                [ kept === Pipeline.SKIP_CACHE, warns.length ], [ true, 1 ] );
+      }
+      finally { Steps.denoise = realDenoise; Pipeline.checkAbort = realAbort; Util.warn = realWarn; }
+   } )();
+
+   ( function()
+   {
+      function cfg( palettes, paths ) { return { palettes: palettes, paths: paths || {}, views: {} }; }
+      var rgbOnly = { R: "r.xisf", G: "g.xisf", B: "b.xisf" };
+      check( "no narrowband supplied: no palette is wanted, whatever was saved, and the run does not fail",
+             Pipeline.wantedPalettes( cfg( [ "HSO", "SHO" ], rgbOnly ) ), [] );
+      check( "all channels of the palette supplied: wanted",
+             Pipeline.wantedPalettes( cfg( [ "HSO" ], { H: "h", S: "s", O: "o" } ) ), [ "HSO" ] );
+      check( "a palette missing a channel is skipped, the others are built",
+             Pipeline.wantedPalettes( cfg( [ "HSO", "HOO" ], { H: "h", O: "o" } ) ), [ "HOO" ] );
+      check( "an open view counts as supplied",
+             Pipeline.wantedPalettes( { palettes: [ "HOO" ], paths: {}, views: { H: "Hview", O: "Oview" } } ), [ "HOO" ] );
+      var real = { log: Util.log, warn: Util.warn }, logs = [], warns = [];
+      Util.log = function( st, m ) { logs.push( st + ": " + m ); };
+      Util.warn = function( st, m ) { warns.push( st + ": " + m ); };
+      try
+      {
+         Pipeline.reportSkippedPalettes( cfg( [ "HSO" ], rgbOnly ) );
+         check( "with no narrowband the skipped palette is one plain note, not a warning",
+                [ warns.length, logs.length, /HSO palette is skipped/.test( logs[0] || "" ),
+                  /no narrowband/.test( logs[0] || "" ) ], [ 0, 1, true, true ] );
+         logs = [];
+         Pipeline.reportSkippedPalettes( cfg( [ "HSO", "HOO" ], { H: "h", O: "o" } ) );
+         check( "a palette that lacks a channel while others are supplied is a warning that names it",
+                [ logs.length, warns.length, /HSO palette is skipped: it needs S, which was not supplied/.test( warns[0] || "" ) ],
+                [ 0, 1, true ] );
+         warns = []; logs = [];
+         Pipeline.reportSkippedPalettes( cfg( [ "HSO" ], { H: "h", S: "s", O: "o" } ) );
+         check( "nothing skipped, nothing said", [ logs.length, warns.length ], [ 0, 0 ] );
+      }
+      finally { Util.log = real.log; Util.warn = real.warn; }
    } )();
 
    // ---- residual measurement configuration --------------------------------
@@ -18619,20 +18701,21 @@ function runPixInsightGapTests()
           "<p><b>NoiseXTerminator</b>, <b>MLDenoise</b>: linear, before the stretch.<br/>" +
           "<b>SyQon Prism</b>: after the stretch.<br/>" +
           "<b>SyQon Studio Prism Essential</b>: linear, before the stretch.<br/>" +
-          "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra (Medium) or Max " +
-          "(High); with the stretch off, Medium only, Ultra on the linear image. Its " +
+          "<b>SyQon Studio Prism 2.0</b>: after the stretch, Ultra or Max; " +
+          "with the stretch off, Ultra only, on the linear image. Its " +
           "Advanced pass before the stretch, and with it Low, is off until SyQon fixes " +
           "the tile seams it left in faint sky. Max is very slow: about 20 minutes a " +
           "plate where Ultra took 30 seconds, on the same image.</p>" +
           "<p><b>Strength:</b> Medium is each tool\'s own default, Low backs off, " +
-          "High pushes past it (Essential\'s High is its Medium).</p>" +
+          "High pushes past it (Essential\'s High is its Medium). Prism 2.0's two " +
+          "strengths are its models, Ultra and Max.</p>" +
           "<p>Before a Prism 2.0 run, Loom checks that your SyQon account can run " +
           "the models your strengths will use; if it cannot, Loom offers Prism Essential " +
           "(included) instead until a check succeeds.</p>" );
    var PRISM2_LEVELS = "<p>SyQon Studio Prism 2.0 at each strength: " +
-                       "Medium: Ultra after the stretch, or on the linear image with the stretch off. " +
-                       "High: Max after the stretch; not offered with the stretch off. High is very " +
-                       "slow: Max takes about 40 times as long as Ultra.</p>";
+                       "Ultra: after the stretch, or on the linear image with the stretch off. " +
+                       "Max: after the stretch; not offered with the stretch off. Max is very " +
+                       "slow: it takes about 40 times as long as Ultra.</p>";
    check( "the Colour and L tooltips: what each is for, and Prism 2.0's passes per strength",
           [ UI.noiseLevelToolTip( "colour" ), UI.noiseLevelToolTip( "L" ) ],
           [ "<p>Strength for the RGB composite and the narrowband palettes.</p>" +
@@ -21306,7 +21389,7 @@ function runPipeTests()
       }
 
       check( "run: every phase in order, each handed what the one before produced",
-             runWith( { palettes: [ "SHO", "HOO" ] } ),
+             runWith( { palettes: [ "SHO", "HOO" ], paths: { H: "h.xisf", S: "s.xisf", O: "o.xisf" } } ),
              { transcript: [
                   "disableIfDirMissing config", "loadChannels reg", "inheritInstrument chans",
                   "correctBroadband", "correctNarrowband", "registerToReference",

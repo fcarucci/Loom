@@ -157,11 +157,11 @@ above 0.315 px is poor.
 | **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High. With SyQon Studio Parallax, **Profile** picks Classic (the default) or Aesthetics; BlurXTerminator has no profile, and the Studio aberration pass above stays Classic; Studio's Max Deblur belongs to Aesthetics but has no command-line option yet, so Loom cannot use it |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see [Stretch](#stretch) | on/off, method |
-| **Denoise** | on the finished L, RGB and palette (their starless plates when stars are extracted), never on the stars plate or single channels. Where it runs is set by the tool: NoiseXTerminator, MLDenoise and SyQon Studio Prism Essential on linear data, after star extraction and before the stretch; standalone SyQon Prism and SyQon Studio Prism 2.0 after the stretch | tool, and a strength (Low/Medium/High; Medium/High for Prism 2.0) for **Colour** and for **L** separately. Medium is each tool's own default |
+| **Denoise** | on the finished L, RGB and palette (their starless plates when stars are extracted), never on the stars plate or single channels. Where it runs is set by the tool: NoiseXTerminator, MLDenoise and SyQon Studio Prism Essential on linear data, after star extraction and before the stretch; standalone SyQon Prism and SyQon Studio Prism 2.0 after the stretch | tool, and a strength (Low/Medium/High; Ultra/Max for Prism 2.0) for **Colour** and for **L** separately. Medium is each tool's own default |
 
 **SyQon Studio Prism 2.0** is Studio's paid Deep Prism and runs after the
-stretch (Medium: Ultra, High: Max). With the stretch off it offers Medium only,
-Ultra on the linear image. Its Advanced pass on linear data, and with it Low,
+stretch as Ultra or Max, the two strengths it offers. With the stretch off it offers
+Ultra only, on the linear image. Its Advanced pass on linear data, and with it Low,
 is off for now: Advanced left faint tile seams that the stretch turned into
 flat bands, and it stays off until SyQon fixes it. If your SyQon account cannot
 run the models your strengths use, **SyQon Studio Prism Essential** is offered

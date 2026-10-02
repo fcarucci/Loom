@@ -1833,15 +1833,18 @@ Steps.denoiseOperationDetail = function( tool, level, alreadyStretched, pass )
    var step = ( tool == Steps.NR_TOOL_STUDIO2 ) ? Steps.NOISE_LEVELS.studio2[level] : null;
    if ( step == null )
       return level;
+   var shown = Steps.noiseLevelName( tool, level );
    function named( p, where )
    {
-      return level + ", " + Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" ) + ", " + where;
+      var model = Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" );
+      // Ultra and Max are both the strength and the model: say it once
+      return ( model.toLowerCase() == shown ? "" : shown + ", " ) + model + ", " + where;
    }
    if ( pass == "stretched" || ( alreadyStretched && step.stretched ) )
-      return step.stretched ? named( step.stretched, "after stretch" ) : level;
+      return step.stretched ? named( step.stretched, "after stretch" ) : shown;
    if ( step.linear )
       return named( step.linear, ( pass == "linear" ) ? "before stretch" : "no stretch" );
-   return ( step.unstretched && pass != "linear" ) ? named( step.unstretched, "no stretch" ) : level;
+   return ( step.unstretched && pass != "linear" ) ? named( step.unstretched, "no stretch" ) : shown;
 };
 
 // A tool's setting for `level`, refusing a level the tool has no entry for.
@@ -1915,7 +1918,7 @@ Steps.denoiseStudio = function( view, level, alreadyStretched )
 Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
 {
    var step = Steps.noiseLevelSetting( Steps.NOISE_LEVELS.studio2, level );
-   var name = view.id + ": SyQon Studio Prism 2.0 " + level;
+   var name = view.id + ": SyQon Studio Prism 2.0 " + Steps.noiseLevelName( Steps.NR_TOOL_STUDIO2, level );
    function run( p, domain )
    {
       Util.log( "denoise", name + " (" + Steps.studioModelLabel( p.model ) + ", " + domain +
@@ -2026,6 +2029,21 @@ Steps.setPrism2LinearPass = function( on )
    Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2].levels = ladder;
    Steps.NOISE_TOOLS[Steps.NR_TOOL_STUDIO2].linear = !!on;
    return was;
+};
+
+/*
+ * What a strength is called on screen. Prism 2.0 has only two, Ultra and Max
+ * (its Low went with the linear Advanced pass), so they are named for their
+ * models, Ultra and Max; the saved and cached level stays "medium" / "high", and every
+ * other tool's strengths are named as they are.
+ */
+Steps.PRISM2_LEVEL_NAMES = { medium: "ultra", high: "max" };
+
+Steps.noiseLevelName = function( tool, level )
+{
+   if ( tool == Steps.NR_TOOL_STUDIO2 && Steps.PRISM2_LEVEL_NAMES[level] != null )
+      return Steps.PRISM2_LEVEL_NAMES[level];
+   return level;
 };
 
 /*

@@ -482,6 +482,18 @@ Util.readHeader = function( path )
  * external processes and is where cancellation actually has to bite -- does
  * not have to reach across to Pipeline for it.
  */
+/*
+ * What a cancel throws, and the question every handler that turns a failed
+ * step into a warning must ask first: a cancel stops the run, it is never
+ * "the step failed, carry on".
+ */
+Util.CANCELLED = "Cancelled by user";
+
+Util.isCancel = function( e )
+{
+   return e != null && String( e && e.message !== undefined ? e.message : e ).indexOf( Util.CANCELLED ) >= 0;
+};
+
 Util.cancelRequested = function() { return false; };
 
 /*
