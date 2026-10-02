@@ -5453,6 +5453,24 @@ function runTests()
           topNames( { RGB: dsoFake } ), "RGB|" + dsoTail );
    check( "palette and broadband",
           topNames( { HSO_starless: dsoFake, RGB_starless: dsoFake } ), "HSO|RGB|" + dsoTail );
+   /*
+    * The RGB group is the broadband alternative to a palette: hidden when a
+    * palette is there to be seen, but for a run with no narrowband it IS
+    * the picture, and a hidden one opens as a black document.
+    */
+   function rgbGroup( results )
+   {
+      var doc = Steps.buildPsbDocument( results );
+      for ( var i = 0; i < doc.length; ++i )
+         if ( doc[i].name == "RGB" )
+            return [ doc[i].visible !== false, doc[i].group.map( function( l ) { return l.visible !== false; } ) ];
+      return null;
+   }
+   check( "broadband only, no palette: the RGB group and its plate are visible",
+          [ rgbGroup( { RGB: dsoFake } ), rgbGroup( { RGB_starless: dsoFake, RGB_stars: dsoFake } ) ],
+          [ [ true, [ true ] ], [ true, [ true ] ] ] );
+   check( "with a palette the RGB group stays hidden",
+          rgbGroup( { HSO_starless: dsoFake, RGB_starless: dsoFake } ), [ false, [ false ] ] );
    check( "with stars: below the Stars group and its curve, which stay on top",
           topNames( { HSO_starless: dsoFake, RGB_stars: dsoFake } ), "HSO|" + dsoTail + "|Stars|Stars Curve" );
    check( "stars alone, no DSO plate: nothing is added",

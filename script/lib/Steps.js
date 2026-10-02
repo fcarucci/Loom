@@ -3697,7 +3697,7 @@ Steps.buildPsbDocument = function( results )
    var palette = Steps.psbPaletteGroup( results );
    if ( palette != null )
       doc.push( palette );
-   var broadband = Steps.psbBroadbandGroup( results );
+   var broadband = Steps.psbBroadbandGroup( results, palette == null );
    if ( broadband != null )
       doc.push( broadband );
    if ( doc.length > 0 )
@@ -3799,19 +3799,20 @@ Steps.psbPaletteGroup = function( results )
 };
 
 /*
- * Both the group and the layer are off: the palette carries the colour,
- * and the broadband starless is here to be switched on when wanted.
- * Null without a broadband plate.
+ * With a palette, both the group and the layer are off: the palette carries
+ * the colour, and the broadband starless is here to be switched on when
+ * wanted. Without one (`shown`), the RGB plate IS the picture and both are
+ * on: a hidden one opens as a black document. Null without a broadband plate.
  */
-Steps.psbBroadbandGroup = function( results )
+Steps.psbBroadbandGroup = function( results, shown )
 {
    var plateName = ( results.RGB_starless != null ) ? "RGB_starless"
                  : ( results.RGB != null )          ? "RGB"
                  :                                     null;
    if ( plateName == null )
       return null;
-   return { name: "RGB", visible: false, group: [
-               { name: plateName, window: results[plateName], visible: false } ] };
+   return { name: "RGB", visible: !!shown, group: [
+               { name: plateName, window: results[plateName], visible: !!shown } ] };
 };
 
 /*

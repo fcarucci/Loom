@@ -5,6 +5,7 @@ section of this file.
 
 ## [Unreleased]
 
+- **Layered PSB for a run without narrowband:** the RGB group is now visible. It was always hidden, so a PSB from a broadband-only run opened as a black document. With a palette it is still hidden, under the palette.
 - **Warning when the cache drive is nearly full.** With **Use cache** on, the dialog's cache line turns red and says "LOW DISK SPACE: only 300 MB free" when the cache folder's drive has less than 20 GB free, and a run starts with one warning that says so. A full drive used to cut cache writes short ("Invalid block size" on the read-back), one red error per entry.
 - **A run without narrowband no longer fails on a saved palette.** The palette ticks are hidden when no narrowband is supplied, so an HSO saved from an earlier run could not be unticked, and the run stopped at the palette stage with "The HSO palette needs H and S and O" after hours of work. A palette whose channels are not all supplied is now skipped with a note (a warning if the other palettes are visible), and the rest of the run goes on.
 - **Cancel stops the run.** Pressing Cancel during a Parallax, stretch, denoise, calibration or normalisation step was handled as a failed step ("could not be denoised; the composite is kept as it is") and the run carried on into the next stage. A cancel now stops the run at once.
