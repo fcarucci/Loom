@@ -5,16 +5,23 @@ section of this file.
 
 ## [Unreleased]
 
-- **Layered PSB for a run without narrowband:** the RGB group is now visible. It was always hidden, so a PSB from a broadband-only run opened as a black document. With a palette it is still hidden, under the palette.
-- **Warning when the cache drive is nearly full.** With **Use cache** on, the dialog's cache line turns red and says "LOW DISK SPACE: only 300 MB free" when the cache folder's drive has less than 20 GB free, and a run starts with one warning that says so. A full drive used to cut cache writes short ("Invalid block size" on the read-back), one red error per entry.
-- **A run without narrowband no longer fails on a saved palette.** The palette ticks are hidden when no narrowband is supplied, so an HSO saved from an earlier run could not be unticked, and the run stopped at the palette stage with "The HSO palette needs H and S and O" after hours of work. A palette whose channels are not all supplied is now skipped with a note (a warning if the other palettes are visible), and the rest of the run goes on.
-- **Cancel stops the run.** Pressing Cancel during a Parallax, stretch, denoise, calibration or normalisation step was handled as a failed step ("could not be denoised; the composite is kept as it is") and the run carried on into the next stage. A cancel now stops the run at once.
-- **Prism 2.0 strengths are named Ultra and Max**, for the two models it runs after the stretch, instead of Medium and High; the tooltips, the console line and the README say the same. Saved settings and cached results are unaffected.
-- **Solution check without a full Gaia DR3:** with only the Gaia DR3/SP database set up (all SPCC needs), PixInsight's solution check failed with "the Gaia process is not working, probably because of a wrong database configuration" for every channel, which blamed a database that is fine. Loom now asks once whether the check can run, and if not skips it with one plain note. The solutions themselves are unchanged.
-- **SyQon Studio Parallax profile:** a **Profile** drop-down on its own line under the sharpening tool, Classic (as before, and the default) or Aesthetics, for Studio Parallax as the sharpening tool only (BlurXTerminator has no profile, and the Studio aberration pass it borrows stays Classic); Classic results already in the cache still hit, Aesthetics is cached separately.
-- **Masters:** a drizzled master is recognised from the integration metadata PixInsight wrote (the DrizzleIntegration scale), not its pixel-size keyword, which a plate solve rewrites, so every drizzled channel reads 2x in the Drizzle column, the status line and the selection; files without that metadata use the old rule. The Source cell shows the full file name as a tooltip.
-- **Layered PSB:** three neutral, visible adjustment layers for the nebula only, above the DSO groups and below the Stars: **Background Curve**, **Faint Nebulosity Curve** and **Color Vibrance** (a real Photoshop Vibrance layer).
-- **Frame Selector:** cancelling a scan keeps the frame fingerprints it had already taken, so the next scan doesn't read those frames again.
+## [0.3.3] — 2026-10-01
+
+### Fixes
+
+- **A run without narrowband no longer fails on a saved palette.** The palette ticks are hidden when no narrowband is supplied, so an HSO saved from an earlier run couldn't be unticked and stopped the run at the palette stage. A palette whose channels aren't all supplied is now skipped with a note, and the rest of the run goes on.
+- **Cancel stops the run.** It used to be treated as a failed step (Parallax, stretch, denoise, calibration, normalisation) and the run carried on.
+- **Drizzled masters are recognised** from the integration metadata PixInsight wrote, not the pixel-size keyword a plate solve rewrites, so every drizzled channel reads "2x". Each Source cell shows its full file name as a tooltip.
+- **Layered PSB for a run without narrowband:** the RGB group is visible; it was always hidden, so the PSB opened black.
+- **Solution check:** with only Gaia DR3/SP set up, PixInsight's check failed with "wrong database configuration" for every channel. Loom now skips it with one plain note.
+- **Frame Selector:** cancelling a scan keeps the fingerprints it had already taken.
+
+### New
+
+- **Warning when the cache drive is nearly full:** with **Use cache** on, the cache line turns red when the drive has under 20 GB free, and a run starts with one warning. A full drive used to cut cache writes short.
+- **SyQon Studio Parallax profile:** Classic (default) or Aesthetics, for Studio Parallax as the sharpening tool. BlurXTerminator has no profile.
+- **Layered PSB:** three neutral adjustment layers for the nebula only, above the DSO groups and below the stars: **Background Curve**, **Faint Nebulosity Curve** and **Color Vibrance**.
+- **Prism 2.0's two strengths are named Ultra and Max**, after the models they run. Saved settings and caches are unaffected.
 
 ## [0.3.2] — 2026-09-28
 
