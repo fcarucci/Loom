@@ -1025,7 +1025,7 @@ UI.SelectDialog = class extends Dialog
            "star reduction and detail on the composite.</p>"
          : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
 
-      this.parallaxFamilyLabel = UI.label( this.sharpenGroup, "Profile:", 50 );
+      this.parallaxFamilyLabel = UI.label( this.sharpenGroup, "Profile:", 100 );
 
       this.parallaxFamilyCombo = new ComboBox( this.sharpenGroup );
       UI.fillLevelCombo( this.parallaxFamilyCombo, Steps.STUDIO_PARALLAX_FAMILIES,
@@ -1047,10 +1047,16 @@ UI.SelectDialog = class extends Dialog
                          config.detailLevel || "none",
                          function( level ) { self.config.detailLevel = level; } );
 
-      this.sharpenGroup.sizer = UI.row( 4, [ this.sharpenToolLabel, this.sharpenToolCombo, 12,
-                                             this.parallaxFamilyLabel, this.parallaxFamilyCombo, 12,
-                                             this.starReductionLabel, this.starReductionCombo, 12,
-                                             this.detailLabel, this.detailCombo, "stretch" ] );
+      /*
+       * The Profile sits on its own line under the tool: on the same line
+       * it widened the whole dialog by 143 px.
+       */
+      this.sharpenGroup.sizer = new VerticalSizer;
+      this.sharpenGroup.sizer.spacing = 4;
+      this.sharpenGroup.sizer.add( UI.row( 4, [ this.sharpenToolLabel, this.sharpenToolCombo, 12,
+                                                this.starReductionLabel, this.starReductionCombo, 12,
+                                                this.detailLabel, this.detailCombo, "stretch" ] ) );
+      this.sharpenGroup.sizer.add( UI.row( 4, [ this.parallaxFamilyLabel, this.parallaxFamilyCombo, "stretch" ] ) );
       if ( tools.length == 0 )
       {
          this.sharpenGroup.visible = false;
