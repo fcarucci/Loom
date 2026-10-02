@@ -8314,11 +8314,11 @@ function runTests()
          "#38 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #34",
          "#39 Control enabled=true at 8,512,640x20 / 8,512,940x20 in dialog",
          "#40 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #39",
-         "#41 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#976:88691db2 at 87,0,127x20 / 87,0,127x20 in #39",
+         "#41 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#1010:476eaf4c at 87,0,127x20 / 87,0,127x20 in #39",
          "#42 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #39",
-         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#470:10ab1be7 at 274,0,79x20 / 274,0,79x20 in #39",
+         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#456:1e021027 at 274,0,79x20 / 274,0,79x20 in #39",
          "#44 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #39",
-         "#45 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#333:a1120256 at 382,0,79x20 / 382,0,79x20 in #39",
+         "#45 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#319:1d9f6d16 at 382,0,79x20 / 382,0,79x20 in #39",
          "#46 Control enabled=true at 8,538,640x20 / 8,538,940x20 in dialog",
          "#47 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #46",
          "#48 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #46",
@@ -18847,7 +18847,7 @@ function runPixInsightGapTests()
       pick( "noiseCombo", 1 );   // NoiseXTerminator
       check( "Prism 2.0's strengths follow the Stretch box, other tools keep Low, Medium and High",
              [ withStretch, high, without, items( "noiseLevelCombo" ) ],
-             [ [ [ "Medium", "High" ], [ "Medium", "High" ] ], "high", [ [ "Medium" ], "medium" ],
+             [ [ [ "Ultra", "Max" ], [ "Ultra", "Max" ] ], "high", [ [ "Ultra" ], "medium" ],
                [ "Low", "Medium", "High" ] ] );
    } )();
 
