@@ -2700,6 +2700,7 @@ Pipeline.run = function( config )
     * dialog and pressing Run.
     */
    Cache.disableIfDirMissing( config );
+   Cache.warnIfLowSpace( config );
 
    var reg = new Util.Registry;
 

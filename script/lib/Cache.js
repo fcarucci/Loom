@@ -286,6 +286,55 @@ Cache.formatBytes = function( bytes )
    return ( u == 0 ? v.toFixed( 0 ) : v.toFixed( 1 ) ) + " " + units[u];
 };
 
+/*
+ * The free space below which a run's cache is likely to fail. A plate of a
+ * modern sensor is ~380 MB as 32-bit float and a run keeps several per
+ * channel, so a run caches well over ten gigabytes; a drive without room
+ * cuts the writes short and Loom discards each broken entry.
+ */
+Cache.LOW_SPACE_BYTES = 20 * 1024 * 1024 * 1024;
+
+/*
+ * Bytes free on the drive the cache folder is (or will be) on, or null when
+ * it cannot be read. The folder may not exist yet, so the nearest folder
+ * that does is asked. Replaceable, so the suite can say how much is free.
+ */
+Cache.freeBytes = function()
+{
+   try
+   {
+      var dir = Cache.dir();
+      for ( var up = 0; up < 8 && dir.length > 1 && !File.directoryExists( dir ); ++up )
+         dir = dir.replace( /[\/\\][^\/\\]*$/, "" );
+      var free = File.getAvailableSpace( dir.length > 0 ? dir : "/" );
+      return ( typeof free == "number" && isFinite( free ) && free >= 0 ) ? free : null;
+   }
+   catch ( e ) { return null; }
+};
+
+/* The free bytes when the cache is on and the drive is short of room, else null. */
+Cache.lowSpace = function( config )
+{
+   if ( !config || !config.useCache )
+      return null;
+   var free = Cache.freeBytes();
+   return ( free != null && free < Cache.LOW_SPACE_BYTES ) ? free : null;
+};
+
+/* Warns once, before the run, that the cache's drive is short of room. True if it did. */
+Cache.warnIfLowSpace = function( config )
+{
+   var free = Cache.lowSpace( config );
+   if ( free == null )
+      return false;
+   Util.warn( "cache", "the cache folder's drive has only " + Cache.formatBytes( free ) +
+                       " free (a run needs about " + Cache.formatBytes( Cache.LOW_SPACE_BYTES ) +
+                       "). Writes will fail once it is full, and a broken entry is discarded, so " +
+                       "this run will not be cached. Free some space, clear Loom's cache, or " +
+                       "untick Use cache." );
+   return true;
+};
+
 /* Total bytes currently held in the cache directory. */
 Cache.totalBytes = function()
 {

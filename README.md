@@ -120,7 +120,9 @@ executes nothing. Do this first on a new setup or a new dataset.
 does no pixel work, and a changed setting recomputes only its stage and those
 after it. **Ignore cache for this run** recomputes without discarding; **Clear
 cache** discards. Point **Cache folder** somewhere with room rather than the
-system temp directory, which the OS may purge. Every run, failed ones included,
+system temp directory, which the OS may purge; a run caches well over 10 GB, so
+with less than 20 GB free on that drive the cache line turns red and the run
+starts with a warning. Every run, failed ones included,
 logs to `<cache>/logs/loom-run-<timestamp>.log`, which **Clear cache** keeps.
 A saved instance icon reuses a configuration (file selections only, not views).
 

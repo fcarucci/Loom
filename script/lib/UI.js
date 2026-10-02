@@ -197,6 +197,22 @@ UI.parallaxFamilyToolTip = function()
 };
 
 /*
+ * The dialog's cache line: the cache's size and entry count, and when the
+ * cache is on and its drive is short of room (`lowFree` bytes free, else
+ * null), the shortage in words.
+ */
+UI.cacheLabelText = function( bytes, entries, lowFree )
+{
+   var text = ( entries == 0 )
+      ? "Cache: empty"
+      : "Cache: " + Cache.formatBytes( bytes ) + " in " + entries +
+        " entr" + ( entries == 1 ? "y" : "ies" );
+   if ( lowFree != null )
+      text += " \u2014 LOW DISK SPACE: only " + Cache.formatBytes( lowFree ) + " free";
+   return text;
+};
+
+/*
  * What "Update Loom automatically" does, which is the checkout updater in
  * lib/Update.js and nothing else. The wait is read from the deadline the
  * check actually runs under, so the two cannot disagree.
@@ -1655,6 +1671,7 @@ UI.SelectDialog = class extends Dialog
       {
          self.config.useCache = c;
          self.ignoreCache.enabled = c;
+         self.updateClearCacheLabel();
       };
 
       this.ignoreCache = new CheckBox( this );
@@ -2272,10 +2289,9 @@ UI.SelectDialog = class extends Dialog
       var entries = 0;
       try { bytes = Cache.totalBytes(); entries = Cache.entryCount(); }
       catch ( e ) { bytes = 0; entries = 0; }
-      this.cacheInfo.text = ( entries == 0 )
-         ? "Cache: empty"
-         : "Cache: " + Cache.formatBytes( bytes ) + " in " + entries +
-           " entr" + ( entries == 1 ? "y" : "ies" );
+      var low = Cache.lowSpace( this.config );
+      this.cacheInfo.text = UI.cacheLabelText( bytes, entries, low );
+      this.cacheInfo.styleSheet = ( low != null ) ? "QLabel { color: #c0392b; }" : "";
       // The folder can change while the dialog is open, so the tooltip is
       // rebuilt here rather than fixed at construction.
       this.cacheInfo.toolTip = "Cached stage results live in " + Cache.dir();

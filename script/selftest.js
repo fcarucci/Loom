@@ -1515,6 +1515,44 @@ function runTests()
    check( "formatBytes KB", Cache.formatBytes( 2048 ), "2.0 KB" );
    check( "formatBytes GB", Cache.formatBytes( 4 * 1024*1024*1024 ), "4.0 GB" );
    check( "formatBytes zero", Cache.formatBytes( 0 ), "0 B" );
+
+   // ---- a warning when the cache's drive is nearly full ---------------------
+
+   /*
+    * A full cache drive cuts every cache write short ("Invalid block size"
+    * on the read-back), so a run that is about to cache on one is told
+    * before it starts, once, instead of hitting a red error per entry.
+    */
+   ( function()
+   {
+      var realFree = Cache.freeBytes, realWarn = Util.warn, warns = [];
+      var GB = 1024 * 1024 * 1024;
+      Util.warn = function( stage, m ) { warns.push( stage + ": " + m ); };
+      try
+      {
+         Cache.freeBytes = function() { return 300 * 1024 * 1024; };
+         check( "the cache is on and the drive has 300 MB: low, by that many bytes",
+                Cache.lowSpace( { useCache: true } ), 300 * 1024 * 1024 );
+         check( "the cache is off: nothing to warn about, whatever is free",
+                Cache.lowSpace( { useCache: false } ), null );
+         Cache.freeBytes = function() { return Cache.LOW_SPACE_BYTES; };
+         check( "exactly the threshold is enough", Cache.lowSpace( { useCache: true } ), null );
+         Cache.freeBytes = function() { return null; };
+         check( "free space that cannot be read is no warning", Cache.lowSpace( { useCache: true } ), null );
+         Cache.freeBytes = function() { return 300 * 1024 * 1024; };
+         var said = Cache.warnIfLowSpace( { useCache: true } );
+         check( "warnIfLowSpace says so once, naming the free space and the way out",
+                [ said, warns.length, /cache: .*only 300\.0 MB free/.test( warns[0] || "" ),
+                  /untick Use cache/.test( warns[0] || "" ) ], [ true, 1, true, true ] );
+         check( "and says nothing when the cache is off",
+                [ Cache.warnIfLowSpace( { useCache: false } ), warns.length ], [ false, 1 ] );
+         check( "the threshold is a figure a run's cache can plausibly need", Cache.LOW_SPACE_BYTES >= 10 * GB, true );
+         check( "the dialog's cache line adds the shortage, in words",
+                [ UI.cacheLabelText( 2 * GB, 3, null ), UI.cacheLabelText( 0, 0, 300 * 1024 * 1024 ) ],
+                [ "Cache: 2.0 GB in 3 entries", "Cache: empty \u2014 LOW DISK SPACE: only 300.0 MB free" ] );
+      }
+      finally { Cache.freeBytes = realFree; Util.warn = realWarn; }
+   } )();
    check( "formatBytes null", Cache.formatBytes( null ), "0 B" );
 
    // --- cache folder selection ---
