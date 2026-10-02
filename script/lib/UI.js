@@ -179,6 +179,23 @@ UI.label = function( parent, text, minWidth )
 };
 
 /*
+ * The Profile dropdown's tooltip: Studio Parallax's two renderings, what
+ * the Low, Medium and High strengths mean under each, and what a change
+ * costs.
+ */
+UI.parallaxFamilyToolTip = function()
+{
+   return "<p>Which rendering SyQon Studio's Parallax uses, for sharpening and for " +
+          "the aberration pass it runs in BlurXTerminator's place.</p>" +
+          "<p><b>Classic</b> is the established Parallax. <b>Aesthetics</b> is " +
+          "SyQon's newer rendering profile, the one in Studio's own window, and the " +
+          "home of Max Deblur, which Loom cannot use until SyQon adds a " +
+          "command-line option for it.</p>" +
+          "<p>Low, Medium and High are the same numbers in both; the look differs.</p>" +
+          "<p>Changing it re-runs the sharpening.</p>";
+};
+
+/*
  * What "Update Loom automatically" does, which is the checkout updater in
  * lib/Update.js and nothing else. The wait is read from the deadline the
  * check actually runs under, so the two cannot disagree.
@@ -1008,6 +1025,14 @@ UI.SelectDialog = class extends Dialog
            "star reduction and detail on the composite.</p>"
          : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
 
+      this.parallaxFamilyLabel = UI.label( this.sharpenGroup, "Profile:", 50 );
+
+      this.parallaxFamilyCombo = new ComboBox( this.sharpenGroup );
+      UI.fillLevelCombo( this.parallaxFamilyCombo, Steps.STUDIO_PARALLAX_FAMILIES,
+                         Steps.studioFamilyOf( config.parallaxFamily ),
+                         function( family ) { self.config.parallaxFamily = family; } );
+      this.parallaxFamilyCombo.toolTip = UI.parallaxFamilyToolTip();
+
       this.starReductionLabel = UI.label( this.sharpenGroup, "Star reduction:", 100 );
 
       this.starReductionCombo = new ComboBox( this.sharpenGroup );
@@ -1023,6 +1048,7 @@ UI.SelectDialog = class extends Dialog
                          function( level ) { self.config.detailLevel = level; } );
 
       this.sharpenGroup.sizer = UI.row( 4, [ this.sharpenToolLabel, this.sharpenToolCombo, 12,
+                                             this.parallaxFamilyLabel, this.parallaxFamilyCombo, 12,
                                              this.starReductionLabel, this.starReductionCombo, 12,
                                              this.detailLabel, this.detailCombo, "stretch" ] );
       if ( tools.length == 0 )
@@ -2201,7 +2227,7 @@ UI.SelectDialog = class extends Dialog
       this.smoothing.enabled = ( tool == Steps.GRADIENT_TOOL_GRAXPERT );
    }
 
-   /* The level combos mean nothing without a tool selected. */
+   /* The level combos mean nothing without a tool selected, nor the profile without Studio Parallax. */
    updateSharpenEnabled()
    {
       // !! matters: PJSR's Control.enabled rejects a non-Boolean, and
@@ -2209,6 +2235,11 @@ UI.SelectDialog = class extends Dialog
       var on = Steps.toolChosen( this.config.sharpenTool );
       this.starReductionCombo.enabled = on;
       this.detailCombo.enabled = on;
+      // only where Studio's Parallax runs: as the tool, or as BlurXTerminator's corrector
+      this.parallaxFamilyCombo.enabled = on &&
+         Steps.aberrationCorrector( this.config.sharpenTool, !!Steps.studioAvailable() ) ==
+            Steps.SHARPEN_TOOL_STUDIO;
+      this.parallaxFamilyLabel.enabled = this.parallaxFamilyCombo.enabled;
    }
 
    /* Shows the cache's current size and entry count. */

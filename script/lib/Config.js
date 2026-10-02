@@ -86,6 +86,8 @@ Config.FIELDS = {
    sharpenTool:         { type: DataType_String,  load: "text", save: { or: "none" } },
    starReduction:       { type: DataType_String,  load: "text", save: { or: "none" } },
    detailLevel:         { type: DataType_String,  load: "text", save: { or: "none" } },
+   // Studio Parallax's profile; Config.load drops a value Studio does not offer.
+   parallaxFamily:      { type: DataType_String,  load: "text", save: { or: Steps.STUDIO_PARALLAX_FAMILY } },
    useCache:            { type: DataType_Boolean, load: "set",  save: "as is" },
    autoUpdate:          { type: DataType_Boolean, load: "set",  save: "as is" },
    cacheDir:            { type: DataType_String,  load: "set",  save: { or: "" } },
@@ -147,6 +149,8 @@ Config.defaults = function()
       narrowbandNormalize: true,
       reduceHalos: false,
       sharpenTool: "none",
+      // Studio Parallax only: Classic or Aesthetics -- see Steps.STUDIO_PARALLAX_FAMILIES.
+      parallaxFamily: Steps.STUDIO_PARALLAX_FAMILY,
       stretch: false,
       // Loom's own deterministic MTF stretch; MultiscaleAdaptiveStretch
       // is the alternative -- see Steps.STRETCH_METHOD_MAS.
@@ -297,7 +301,8 @@ Config.load = function( store )
    Config.loadFields( config, store, [
       "reduceHalos", "projectName", "exportPsb", "separateLStars", "keepLinear", "exportDir",
       "stretchMethod", "stretch", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
-      "sharpenTool", "starReduction", "detailLevel" ] );
+      "sharpenTool", "starReduction", "detailLevel", "parallaxFamily" ] );
+   config.parallaxFamily = Steps.studioFamilyOf( config.parallaxFamily );
 
    Config.loadGradientSetting( config, store );
 
@@ -366,7 +371,7 @@ Config.save = function( config, store )
    Config.saveFields( config, store, [
       "keepLinear", "separateLStars", "exportPsb", "projectName", "exportDir", "stretch",
       "stretchMethod", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
-      "sharpenTool", "starReduction", "detailLevel", "useCache", "autoUpdate", "cacheDir",
+      "sharpenTool", "starReduction", "detailLevel", "parallaxFamily", "useCache", "autoUpdate", "cacheDir",
       "smoothing", "savedList" ] );
    var fk = Util.BROADBAND;
    for ( var i = 0; i < fk.length; ++i )

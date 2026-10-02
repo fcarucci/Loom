@@ -1430,6 +1430,19 @@ Steps.STUDIO_TIMEOUT_MS = 30 * 60 * 1000;
 Steps.STUDIO_PARALLAX_FAMILY = "classic";
 
 /*
+ * The profiles Studio's Parallax offers through its command line, Classic
+ * first. Aesthetics is Studio's own default and the one its UI shows; it
+ * is the user's choice (Config.parallaxFamily), never Loom's.
+ */
+Steps.STUDIO_PARALLAX_FAMILIES = [ "classic", "aesthetics" ];
+
+// A stored or passed profile as one Studio offers; anything else is Classic.
+Steps.studioFamilyOf = function( family )
+{
+   return ( Steps.STUDIO_PARALLAX_FAMILIES.indexOf( family ) >= 0 ) ? family : Steps.STUDIO_PARALLAX_FAMILY;
+};
+
+/*
  * The dropdown's label for a gradient tool. MultiscaleGradientCorrection
  * always runs, so "none" is labelled for what does: MGC alone. The stored
  * value stays "none", so saved settings and process icons still load.
@@ -1938,13 +1951,14 @@ Steps.studioModelArgs = function( opts, prism )
 
 /*
  * Parallax's stages, each switched on or off explicitly; a level or a
- * strength follows only a stage that is on.
+ * strength follows only a stage that is on. `px.family` is the profile
+ * (Config.parallaxFamily), Classic when absent.
  */
 Steps.studioParallaxArgs = function( px )
 {
    var reduction = px.reduction || 0;
    var deblur = px.deblur || 0;
-   var args = [ "--family", Steps.STUDIO_PARALLAX_FAMILY,
+   var args = [ "--family", Steps.studioFamilyOf( px.family ),
                 "--correction", px.correction ? "true" : "false",
                 "--reduction", ( reduction > 0 ) ? "true" : "false" ];
    if ( reduction > 0 )

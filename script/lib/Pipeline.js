@@ -287,18 +287,19 @@ Pipeline.compositeSharpenParams = function( config )
    var p = { tool: tool, stars: stars, detail: detail,
              starsAmount:  Steps.sharpenAmountFor( tool, "stars", stars ),
              detailAmount: Steps.sharpenAmountFor( tool, "detail", detail ) };
-   return Pipeline.withStudioFamily( p, tool );
+   return Pipeline.withStudioFamily( p, tool, config.parallaxFamily );
 };
 
 /*
- * Studio's Parallax family is a Loom constant, but one that changes the
- * pixels, so a Studio stage keys on it -- and only a Studio stage, so the
- * BXT and standalone Parallax keys stay exactly as they were.
+ * Studio's Parallax profile (Config.parallaxFamily) changes the pixels, so
+ * a Studio stage keys on it -- and only a Studio stage, so the BXT and
+ * standalone Parallax keys stay exactly as they were. Classic keys as the
+ * fixed family always did, so its cached results still hit.
  */
-Pipeline.withStudioFamily = function( params, tool )
+Pipeline.withStudioFamily = function( params, tool, family )
 {
    if ( tool == Steps.SHARPEN_TOOL_STUDIO )
-      params.family = Steps.STUDIO_PARALLAX_FAMILY;
+      params.family = Steps.studioFamilyOf( family );
    return params;
 };
 
@@ -317,10 +318,10 @@ Pipeline.aberrationParams = function( config, studioFound )
    if ( corrector != tool )
    {
       p.corrector = corrector;
-      p.family = Steps.STUDIO_PARALLAX_FAMILY;
+      p.family = Steps.studioFamilyOf( config.parallaxFamily );
       return p;
    }
-   return Pipeline.withStudioFamily( p, tool );
+   return Pipeline.withStudioFamily( p, tool, config.parallaxFamily );
 };
 
 /*
@@ -1254,7 +1255,8 @@ Pipeline.finishingStages = function( label, noun, names, config, reg )
          try
          {
             Steps.correctComposite( h.view, config.sharpenTool,
-                                    config.starReduction, config.detailLevel, label );
+                                    config.starReduction, config.detailLevel, label,
+                                    Steps.studioFamilyOf( config.parallaxFamily ) );
          }
          catch ( e ) { return keptAfter( "sharpen", e, "corrected", "as it is" ); }
       };
@@ -1772,7 +1774,8 @@ Pipeline.broadbandRunners = function( channel, config )
          // and the one that actually fixes star shape. Per channel,
          // unlinked, on native pixels.
          if ( Steps.toolChosen( config.sharpenTool ) )
-            Steps.aberration( c.view, config.sharpenTool, false, channel );
+            Steps.aberration( c.view, config.sharpenTool, false, channel,
+                             Steps.studioFamilyOf( config.parallaxFamily ) );
       }
    };
 };

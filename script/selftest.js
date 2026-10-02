@@ -963,7 +963,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 305 );
+      check( "Steps: the member count", Object.keys( have ).length, 307 );
    }
 
    /*
@@ -2566,6 +2566,21 @@ function runTests()
                                    input: "a", output: "b" } ).slice( 10, 18 ),
           [ "--family", "classic", "--correction", "true", "--reduction", "false",
             "--deblur", "false" ] );
+   check( "Parallax runs the family asked for, Aesthetics included",
+          Steps.studioBuildArgs( { model: "parallax", domain: "linear",
+                                   parallax: { deblur: 0.5, family: "aesthetics" },
+                                   input: "a", output: "b" } ).slice( 10 ),
+          [ "--family", "aesthetics", "--correction", "false", "--reduction", "false",
+            "--deblur", "true", "--deblur-strength", "0.5000",
+            "--overwrite", "a", "b" ] );
+   check( "Parallax with no family, or one Studio does not offer, runs Classic",
+          [ Steps.studioParallaxArgs( {} ).slice( 0, 2 ),
+            Steps.studioParallaxArgs( { family: "nano" } ).slice( 0, 2 ),
+            Steps.studioParallaxArgs( { family: "classic" } ).slice( 0, 2 ) ],
+          [ [ "--family", "classic" ], [ "--family", "classic" ], [ "--family", "classic" ] ] );
+   check( "the Studio Parallax profiles are Classic then Aesthetics, Classic the default",
+          [ Steps.STUDIO_PARALLAX_FAMILIES, Steps.STUDIO_PARALLAX_FAMILY ],
+          [ [ "classic", "aesthetics" ], "classic" ] );
    check( "Axiom on linear data uses Axiom's own stretch",
           Steps.studioBuildArgs( { model: "axiom", domain: "linear",
                                    input: "a", output: "b" } ),
@@ -2913,6 +2928,35 @@ function runTests()
             Steps.aberrationCorrector( Steps.SHARPEN_TOOL_STUDIO, true ),
             Steps.aberrationCorrector( "none", true ) ],
           [ Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO, "none" ] );
+   /*
+    * The profile reaches Studio's command line from every place Studio
+    * Parallax runs: the aberration pass (its own, or BXT's), star
+    * reduction and detail.
+    */
+   ( function()
+   {
+      var real = Steps.studioRun, realOp = Util.operation, realLog = Util.log, ran = [];
+      Steps.studioRun = function( view, label, opts ) { ran.push( [ label, opts.parallax ] ); };
+      Util.operation = function() {};
+      Util.log = function() {};
+      var err = "";
+      try
+      {
+         var v = { id: "v" }, S = Steps.SHARPEN_TOOL_STUDIO;
+         Steps.aberration( v, S, false, "L", "aesthetics" );
+         Steps.starReduction( v, S, "high", true, "L", "aesthetics" );
+         Steps.sharpenDetail( v, S, "medium", true, "L", "aesthetics" );
+         Steps.correctComposite( v, S, "high", "medium", "L", "aesthetics" );
+         Steps.aberration( v, S, false, "L" );
+      }
+      catch ( e ) { err = String( e ); }
+      finally { Steps.studioRun = real; Util.operation = realOp; Util.log = realLog; }
+      check( "Studio runs get the profile from aberration, star reduction, detail and the composite" +
+             ( err ? ": " + err : "" ), err, "" );
+      check( "each carries it, and Classic when none is given",
+             ran.map( function( r ) { return r[1].family; } ),
+             [ "aesthetics", "aesthetics", "aesthetics", "aesthetics", "aesthetics", undefined ] );
+   } )();
    check( "the log says which tool corrected",
           Steps.aberrationLogText( Steps.SHARPEN_TOOL_BXT, true ),
           "SyQon Studio Parallax (correction only, in place of BlurXTerminator)" );
@@ -2935,6 +2979,23 @@ function runTests()
    check( "Studio Parallax keys as it did",
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO }, true ),
           { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "classic" } );
+   check( "Aesthetics keys Studio Parallax's aberration pass apart from Classic",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
+                                       parallaxFamily: "aesthetics" }, true ),
+          { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "aesthetics" } );
+   check( "and BXT's Studio corrector too",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
+                                       parallaxFamily: "aesthetics" }, true ),
+          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1",
+            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "aesthetics" } );
+   check( "the profile is not in the key of a BXT pass Studio does not run",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
+                                       parallaxFamily: "aesthetics" }, false ),
+          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" } );
+   check( "Classic chosen explicitly keys exactly as the constant did",
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
+                                       parallaxFamily: "classic" }, true ),
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO }, true ) );
    check( "no tool keys as none",
           Pipeline.aberrationParams( {}, true ), { tool: "none", photometry: "linearfit-v1" } );
 
@@ -5533,6 +5594,25 @@ function runTests()
                                              detailLevel: "medium" } ),
           { tool: Steps.SHARPEN_TOOL_STUDIO, stars: "high", detail: "medium",
             starsAmount: 7, detailAmount: 0.5, family: "classic" } );
+   check( "Aesthetics changes the Studio sharpen key, and only for Studio",
+          [ Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
+                                               starReduction: "high", detailLevel: "medium",
+                                               parallaxFamily: "aesthetics" } ),
+            Pipeline.compositeSharpenParams( { sharpenTool: "SyQon Parallax",
+                                               starReduction: "high", detailLevel: "medium",
+                                               parallaxFamily: "aesthetics" } ),
+            Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
+                                               starReduction: "high", detailLevel: "medium",
+                                               parallaxFamily: "aesthetics" } ).family ],
+          [ { tool: Steps.SHARPEN_TOOL_STUDIO, stars: "high", detail: "medium",
+              starsAmount: 7, detailAmount: 0.5, family: "aesthetics" },
+            { tool: "SyQon Parallax", stars: "high", detail: "medium",
+              starsAmount: 5, detailAmount: 0.8 },
+            undefined ] );
+   check( "an unknown profile keys as Classic",
+          Pipeline.compositeSharpenParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
+                                             starReduction: "high",
+                                             parallaxFamily: "x-parallaxFamily" } ).family, "classic" );
    check( "Studio Prism denoise params carry its application",
           Pipeline.linearDenoiseParams( { noiseTool: Steps.NR_TOOL_STUDIO,
                                           noiseLevel: "low" }, "RGB" ),
@@ -8102,85 +8182,88 @@ function runTests()
    {
       var PINNED = [
          "#0 Label \"Project:\" align=130 enabled=true at 8,8,38x20 / 8,8,38x20 in dialog",
-         "#1 Edit \"M31\" enabled=true tip=#209:1abf416f at 52,8,596x20 / 52,8,896x20 in dialog",
-         "#2 Label #262:218c5e5d align=129 enabled=true at 8,34,640x39 / 8,34,940x39 in dialog",
-         "#3 TreeBox minWidth=640 enabled=true at 8,79,640x240 / 8,79,940x240 in dialog",
+         "#1 Edit \"M31\" enabled=true tip=#209:1abf416f at 52,8,739x20 / 52,8,1039x20 in dialog",
+         "#2 Label #262:218c5e5d align=129 enabled=true at 8,34,783x39 / 8,34,1083x39 in dialog",
+         "#3 TreeBox minWidth=640 enabled=true at 8,79,783x240 / 8,79,1083x240 in dialog",
          "#4 PushButton \"Add Files...\" minWidth=93 enabled=true at 151,325,93x21 / 151,325,93x21 in dialog",
          "#5 PushButton \"Scan Masters Folder...\" minWidth=93 enabled=true tip=#233:d9a7933 at 8,325,137x21 / 8,325,137x21 in dialog",
-         "#6 PushButton \"Remove\" minWidth=93 enabled=true at 456,325,93x21 / 756,325,93x21 in dialog",
-         "#7 PushButton \"Clear\" minWidth=93 enabled=true at 555,325,93x21 / 855,325,93x21 in dialog",
-         "#8 Label \"\" align=129 enabled=true at 8,352,640x13 / 8,352,940x13 in dialog",
-         "#9 Label \"\" align=129 enabled=true at 8,371,640x13 / 8,371,940x13 in dialog",
-         "#10 Label \"L filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,17,100x20 in #79",
-         "#11 ComboBox minWidth=260 items=[\"L curve A\",\"L curve B\"] current=0 enabled=true at 0,0,260x30 / 104,17,260x20 in #79",
-         "#12 Label \"R filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,41,100x20 in #79",
-         "#13 ComboBox minWidth=260 items=[\"R curve A\",\"R curve B\"] current=1 enabled=true at 0,0,260x30 / 104,41,260x20 in #79",
-         "#14 Label \"G filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,65,100x20 in #79",
-         "#15 ComboBox minWidth=260 items=[\"G curve A\",\"G curve B\"] current=0 enabled=true at 0,0,260x30 / 104,65,260x20 in #79",
-         "#16 Label \"B filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,89,100x20 in #79",
-         "#17 ComboBox minWidth=260 items=[\"B curve A\",\"B curve B\"] current=0 enabled=true at 0,0,260x30 / 104,89,260x20 in #79",
-         "#18 Label \"<b>Filters</b>\" align=129 enabled=true at 0,0,100x30 / 0,0,940x13 in #79",
+         "#6 PushButton \"Remove\" minWidth=93 enabled=true at 599,325,93x21 / 899,325,93x21 in dialog",
+         "#7 PushButton \"Clear\" minWidth=93 enabled=true at 698,325,93x21 / 998,325,93x21 in dialog",
+         "#8 Label \"\" align=129 enabled=true at 8,352,783x13 / 8,352,1083x13 in dialog",
+         "#9 Label \"\" align=129 enabled=true at 8,371,783x13 / 8,371,1083x13 in dialog",
+         "#10 Label \"L filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,17,100x20 in #81",
+         "#11 ComboBox minWidth=260 items=[\"L curve A\",\"L curve B\"] current=0 enabled=true at 0,0,260x30 / 104,17,260x20 in #81",
+         "#12 Label \"R filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,41,100x20 in #81",
+         "#13 ComboBox minWidth=260 items=[\"R curve A\",\"R curve B\"] current=1 enabled=true at 0,0,260x30 / 104,41,260x20 in #81",
+         "#14 Label \"G filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,65,100x20 in #81",
+         "#15 ComboBox minWidth=260 items=[\"G curve A\",\"G curve B\"] current=0 enabled=true at 0,0,260x30 / 104,65,260x20 in #81",
+         "#16 Label \"B filter:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,89,100x20 in #81",
+         "#17 ComboBox minWidth=260 items=[\"B curve A\",\"B curve B\"] current=0 enabled=true at 0,0,260x30 / 104,89,260x20 in #81",
+         "#18 Label \"<b>Filters</b>\" align=129 enabled=true at 0,0,100x30 / 0,0,1083x13 in #81",
          "#19 Label \"Gradient removal:\" align=130 enabled=true at 8,390,90x20 / 8,390,90x20 in dialog",
          "#20 ComboBox items=[\"Multi Gradient only\",\"GraXpert\",\"SyQon Studio Deep Gradient\"] current=1 enabled=true tip=#368:1a0cd010 at 104,390,182x20 / 104,390,182x20 in dialog",
-         "#21 CheckBox \"Also remove gradients from H, S and O\" checked=false enabled=true tip=#457:96d769eb at 8,416,640x14 / 8,416,940x14 in dialog",
+         "#21 CheckBox \"Also remove gradients from H, S and O\" checked=false enabled=true tip=#457:96d769eb at 8,416,783x14 / 8,416,1083x14 in dialog",
          "#22 Label \"GraXpert smoothing:\" align=130 enabled=true at 0,0,104x20 / 0,0,104x20 in #24",
          "#23 Edit \"0.50\" minWidth=37 enabled=true at 108,0,37x20 / 108,0,37x20 in #24",
-         "#24 NumericControl label=\"GraXpert smoothing:\" value=0.5 enabled=true at 8,436,640x20 / 8,436,940x20 in dialog",
-         "#25 Control enabled=true at 8,462,640x20 / 8,462,940x20 in dialog",
+         "#24 NumericControl label=\"GraXpert smoothing:\" value=0.5 enabled=true at 8,436,783x20 / 8,436,1083x20 in dialog",
+         "#25 Control enabled=true at 8,462,783x20 / 8,462,1083x20 in dialog",
          "#26 Label \"Sharpening:\" align=130 minWidth=100 enabled=true at 0,0,100x20 / 0,0,100x20 in #25",
          "#27 ComboBox items=[\"None\",\"BlurXTerminator\",\"SyQon Parallax\"] current=2 enabled=true tip=#239:ed575898 at 104,0,119x20 / 104,0,119x20 in #25",
-         "#28 Label \"Star reduction:\" align=130 minWidth=100 enabled=true at 239,0,100x20 / 239,0,100x20 in #25",
-         "#29 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 343,0,79x20 / 343,0,79x20 in #25",
-         "#30 Label \"Detail:\" align=130 minWidth=100 enabled=true at 438,0,100x20 / 438,0,100x20 in #25",
-         "#31 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 542,0,79x20 / 542,0,79x20 in #25",
-         "#32 Control enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
-         "#33 Label \"Narrowband:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,0,100x30 in #32",
-         "#34 CheckBox \"SHO\" checked=false enabled=true tip=#152:1b221c6c at 22,8,17x14 / 22,8,17x14 in #32",
-         "#35 CheckBox \"HOO\" checked=false enabled=true tip=#152:4ac4cacc at 49,8,17x14 / 49,8,17x14 in #32",
-         "#36 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #32",
-         "#37 Control enabled=true at 8,488,640x20 / 8,488,940x20 in dialog",
-         "#38 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #37",
-         "#39 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#976:88691db2 at 87,0,127x20 / 87,0,127x20 in #37",
-         "#40 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #37",
-         "#41 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#470:10ab1be7 at 274,0,79x20 / 274,0,79x20 in #37",
-         "#42 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #37",
-         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#333:a1120256 at 382,0,79x20 / 382,0,79x20 in #37",
-         "#44 Control enabled=true at 8,514,640x20 / 8,514,940x20 in dialog",
-         "#45 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #44",
-         "#46 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #44",
-         "#47 CheckBox \"Stretch the results (non-linear output)\" checked=false enabled=true tip=#509:85b48972 at 8,540,640x14 / 8,540,940x14 in dialog",
-         "#48 Label \"Method:\" align=130 enabled=false at 28,560,41x20 / 28,560,41x20 in dialog",
-         "#49 ComboBox items=[\"Histogram (deterministic MTF)\",\"MultiscaleAdaptiveStretch\"] current=0 enabled=false tip=#978:2e6a1d4e at 75,560,190x20 / 75,560,190x20 in dialog",
-         "#50 CheckBox \"Also keep the unstretched RGB and palette\" checked=false enabled=false tip=#422:bec414cd at 8,586,640x14 / 8,586,940x14 in dialog",
-         "#51 CheckBox \"Frequency-separate the L stars plate\" checked=false enabled=true tip=#865:5bf00a24 at 8,606,640x14 / 8,606,940x14 in dialog",
-         "#52 CheckBox \"Also write one layered M31.psb\" checked=false enabled=false tip=#603:aa2b6f28 at 8,626,640x14 / 8,626,940x14 in dialog",
-         "#53 Control enabled=true at 8,646,640x21 / 8,646,940x21 in dialog",
-         "#54 Label \"Export 16-bit TIFFs to:\" align=130 enabled=false at 0,0,110x21 / 0,0,110x21 in #53",
-         "#55 Edit \"\" enabled=false tip=#358:62882fc5 at 116,0,425x20 / 116,0,725x20 in #53",
-         "#56 PushButton \"Browse...\" minWidth=93 enabled=false at 547,0,93x21 / 847,0,93x21 in #53",
-         "#57 Control enabled=true at 8,673,640x21 / 8,673,940x21 in dialog",
-         "#58 Label \"MARS database folder:\" align=130 enabled=true at 0,0,113x21 / 0,0,113x21 in #57",
-         "#59 Edit \"\" enabled=true tip=#294:27522a45 at 119,0,422x20 / 119,0,722x20 in #57",
-         "#60 PushButton \"Browse...\" minWidth=93 enabled=true at 547,0,93x21 / 847,0,93x21 in #57",
-         "#61 Label \"Narrowband bandwidth (nm):\" align=130 enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
-         "#62 Label \"\" align=130 enabled=true at 0,0,31x20 / 0,0,5x20 in #64",
-         "#63 Edit \"3.00\" minWidth=37 enabled=true at 35,0,37x20 / 9,0,37x20 in #64",
-         "#64 NumericEdit label=\"\" value=3 enabled=true tip=#286:cb261bfe at 0,0,46x20 / 0,0,46x20 in dialog",
-         "#65 CheckBox \"Normalise the palette\" checked=true enabled=true tip=#220:a26d728c at 0,0,100x30 / 0,0,100x30 in dialog",
-         "#66 CheckBox \"Reduce halos (match channel PSFs)\" checked=false enabled=true tip=#304:fd83a83b at 8,700,640x14 / 8,700,940x14 in dialog",
-         "#67 CheckBox \"Validate only (check everything, run nothing)\" checked=false enabled=true at 8,720,640x14 / 8,720,940x14 in dialog",
-         "#68 CheckBox \"Use cache\" checked=true enabled=true tip=#226:ade2cbc4 at 8,743,70x14 / 8,743,70x14 in dialog",
-         "#69 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,743,141x14 / 84,743,141x14 in dialog",
-         "#70 Label align=129 enabled=true tip=#88:ee3efb92 at 579,740,69x21 / 879,740,69x21 in dialog",
-         "#71 PushButton \"Clear cache\" minWidth=93 enabled=true tip=#75:7c91fdd9 at 472,740,93x21 / 772,740,93x21 in dialog",
-         "#72 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#337:1f0ebd26 at 310,743,156x14 / 610,743,156x14 in dialog",
-         "#73 Control enabled=true at 8,767,640x21 / 8,767,940x21 in dialog",
-         "#74 Label \"Cache folder:\" align=130 enabled=true at 0,0,66x21 / 0,0,66x21 in #73",
-         "#75 Edit \"\" enabled=true tip=#325:8999df7d at 72,0,469x20 / 72,0,769x20 in #73",
-         "#76 PushButton \"Browse...\" minWidth=93 enabled=true at 547,0,93x21 / 847,0,93x21 in #73",
-         "#77 PushButton \"Run\" minWidth=93 enabled=false tip=#86:a2a3a586 at 456,909,93x21 / 756,909,93x21 in dialog",
-         "#78 PushButton \"Cancel\" minWidth=93 enabled=true at 555,909,93x21 / 855,909,93x21 in dialog",
-         "#79 Control enabled=true at 8,794,640x109 / 8,794,940x109 in dialog",
+         "#28 Label \"Profile:\" align=130 minWidth=50 enabled=false at 239,0,50x20 / 239,0,50x20 in #25",
+         "#29 ComboBox items=[\"Classic\",\"Aesthetics\"] current=0 enabled=false tip=#481:9b68dfe1 at 293,0,92x20 / 293,0,92x20 in #25",
+         "#30 Label \"Star reduction:\" align=130 minWidth=100 enabled=true at 401,0,100x20 / 401,0,100x20 in #25",
+         "#31 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 505,0,79x20 / 505,0,79x20 in #25",
+         "#32 Label \"Detail:\" align=130 minWidth=100 enabled=true at 600,0,100x20 / 600,0,100x20 in #25",
+         "#33 ComboBox items=[\"None\",\"Low\",\"Medium\",\"High\"] current=0 enabled=true at 704,0,79x20 / 704,0,79x20 in #25",
+         "#34 Control enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#35 Label \"Narrowband:\" align=130 minWidth=100 enabled=true at 0,0,100x30 / 0,0,100x30 in #34",
+         "#36 CheckBox \"SHO\" checked=false enabled=true tip=#152:1b221c6c at 22,8,17x14 / 22,8,17x14 in #34",
+         "#37 CheckBox \"HOO\" checked=false enabled=true tip=#152:4ac4cacc at 49,8,17x14 / 49,8,17x14 in #34",
+         "#38 CheckBox \"HSO\" checked=false enabled=true tip=#152:7d769acc at 76,8,17x14 / 76,8,17x14 in #34",
+         "#39 Control enabled=true at 8,488,783x20 / 8,488,1083x20 in dialog",
+         "#40 Label \"Noise reduction:\" align=130 enabled=true at 0,0,81x20 / 0,0,81x20 in #39",
+         "#41 ComboBox items=[\"None\",\"NoiseXTerminator\",\"MLDenoise\"] current=2 enabled=true tip=#976:88691db2 at 87,0,127x20 / 87,0,127x20 in #39",
+         "#42 Label \"Colour:\" align=130 enabled=true at 232,0,36x20 / 232,0,36x20 in #39",
+         "#43 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#470:10ab1be7 at 274,0,79x20 / 274,0,79x20 in #39",
+         "#44 Label \"L:\" align=130 enabled=true at 367,0,9x20 / 367,0,9x20 in #39",
+         "#45 ComboBox items=[\"Low\",\"Medium\",\"High\"] current=1 enabled=true tip=#333:a1120256 at 382,0,79x20 / 382,0,79x20 in #39",
+         "#46 Control enabled=true at 8,514,783x20 / 8,514,1083x20 in dialog",
+         "#47 Label \"Star extraction:\" align=130 enabled=true at 0,0,77x20 / 0,0,77x20 in #46",
+         "#48 ComboBox items=[\"None\",\"StarXTerminator\",\"StarNet2\"] current=0 enabled=true tip=#358:65ce842b at 83,0,120x20 / 83,0,120x20 in #46",
+         "#49 CheckBox \"Stretch the results (non-linear output)\" checked=false enabled=true tip=#509:85b48972 at 8,540,783x14 / 8,540,1083x14 in dialog",
+         "#50 Label \"Method:\" align=130 enabled=false at 28,560,41x20 / 28,560,41x20 in dialog",
+         "#51 ComboBox items=[\"Histogram (deterministic MTF)\",\"MultiscaleAdaptiveStretch\"] current=0 enabled=false tip=#978:2e6a1d4e at 75,560,190x20 / 75,560,190x20 in dialog",
+         "#52 CheckBox \"Also keep the unstretched RGB and palette\" checked=false enabled=false tip=#422:bec414cd at 8,586,783x14 / 8,586,1083x14 in dialog",
+         "#53 CheckBox \"Frequency-separate the L stars plate\" checked=false enabled=true tip=#865:5bf00a24 at 8,606,783x14 / 8,606,1083x14 in dialog",
+         "#54 CheckBox \"Also write one layered M31.psb\" checked=false enabled=false tip=#603:aa2b6f28 at 8,626,783x14 / 8,626,1083x14 in dialog",
+         "#55 Control enabled=true at 8,646,783x21 / 8,646,1083x21 in dialog",
+         "#56 Label \"Export 16-bit TIFFs to:\" align=130 enabled=false at 0,0,110x21 / 0,0,110x21 in #55",
+         "#57 Edit \"\" enabled=false tip=#358:62882fc5 at 116,0,568x20 / 116,0,868x20 in #55",
+         "#58 PushButton \"Browse...\" minWidth=93 enabled=false at 690,0,93x21 / 990,0,93x21 in #55",
+         "#59 Control enabled=true at 8,673,783x21 / 8,673,1083x21 in dialog",
+         "#60 Label \"MARS database folder:\" align=130 enabled=true at 0,0,113x21 / 0,0,113x21 in #59",
+         "#61 Edit \"\" enabled=true tip=#294:27522a45 at 119,0,565x20 / 119,0,865x20 in #59",
+         "#62 PushButton \"Browse...\" minWidth=93 enabled=true at 690,0,93x21 / 990,0,93x21 in #59",
+         "#63 Label \"Narrowband bandwidth (nm):\" align=130 enabled=true at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#64 Label \"\" align=130 enabled=true at 0,0,31x20 / 0,0,5x20 in #66",
+         "#65 Edit \"3.00\" minWidth=37 enabled=true at 35,0,37x20 / 9,0,37x20 in #66",
+         "#66 NumericEdit label=\"\" value=3 enabled=true tip=#286:cb261bfe at 0,0,46x20 / 0,0,46x20 in dialog",
+         "#67 CheckBox \"Normalise the palette\" checked=true enabled=true tip=#220:a26d728c at 0,0,100x30 / 0,0,100x30 in dialog",
+         "#68 CheckBox \"Reduce halos (match channel PSFs)\" checked=false enabled=true tip=#304:fd83a83b at 8,700,783x14 / 8,700,1083x14 in dialog",
+         "#69 CheckBox \"Validate only (check everything, run nothing)\" checked=false enabled=true at 8,720,783x14 / 8,720,1083x14 in dialog",
+         "#70 CheckBox \"Use cache\" checked=true enabled=true tip=#226:ade2cbc4 at 8,743,70x14 / 8,743,70x14 in dialog",
+         "#71 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,743,141x14 / 84,743,141x14 in dialog",
+         "#72 Label align=129 enabled=true tip=#88:ee3efb92 at 722,740,69x21 / 1022,740,69x21 in dialog",
+         "#73 PushButton \"Clear cache\" minWidth=93 enabled=true tip=#75:7c91fdd9 at 615,740,93x21 / 915,740,93x21 in dialog",
+         "#74 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#337:1f0ebd26 at 453,743,156x14 / 753,743,156x14 in dialog",
+         "#75 Control enabled=true at 8,767,783x21 / 8,767,1083x21 in dialog",
+         "#76 Label \"Cache folder:\" align=130 enabled=true at 0,0,66x21 / 0,0,66x21 in #75",
+         "#77 Edit \"\" enabled=true tip=#325:8999df7d at 72,0,612x20 / 72,0,912x20 in #75",
+         "#78 PushButton \"Browse...\" minWidth=93 enabled=true at 690,0,93x21 / 990,0,93x21 in #75",
+         "#79 PushButton \"Run\" minWidth=93 enabled=false tip=#86:a2a3a586 at 599,909,93x21 / 899,909,93x21 in dialog",
+         "#80 PushButton \"Cancel\" minWidth=93 enabled=true at 698,909,93x21 / 998,909,93x21 in dialog",
+         "#81 Control enabled=true at 8,794,783x109 / 8,794,1083x109 in dialog",
+         "HorizontalSizer spacing=4 margin=0 items=12",
          "HorizontalSizer spacing=4 margin=0 items=2",
          "HorizontalSizer spacing=4 margin=0 items=3",
          "HorizontalSizer spacing=4 margin=0 items=3",
@@ -8189,7 +8272,6 @@ function runTests()
          "HorizontalSizer spacing=4 margin=0 items=3",
          "HorizontalSizer spacing=4 margin=0 items=5",
          "HorizontalSizer spacing=4 margin=0 items=8",
-         "HorizontalSizer spacing=4 margin=0 items=9",
          "HorizontalSizer spacing=6 margin=0 items=2",
          "HorizontalSizer spacing=6 margin=0 items=3",
          "HorizontalSizer spacing=6 margin=0 items=3",
@@ -8398,6 +8480,48 @@ function runTests()
              picks.noise, [ "MLDenoise", true, "none", false, "NoiseXTerminator", true ] );
       check( "picking a star tool sets it, None included",
              picks.star, [ "StarNet2", "none", "StarXTerminator" ] );
+
+      /*
+       * The Studio Parallax profile: a Profile dropdown beside the strengths,
+       * live only while Studio Parallax is what will run.
+       */
+      var profile = null, perr2 = "";
+      try
+      {
+         SHARPEN.push( Steps.SHARPEN_TOOL_STUDIO );
+         var c2 = layoutConfig();
+         c2.parallaxFamily = "aesthetics";
+         p = build( c2 );
+         var items = [];
+         for ( var pi = 0; pi < p.parallaxFamilyCombo.numberOfItems; ++pi )
+            items.push( p.parallaxFamilyCombo.itemText( pi ) );
+         profile = { items: items, current: p.parallaxFamilyCombo.currentItem,
+                     onOtherTool: p.parallaxFamilyCombo.enabled,
+                     tip: p.parallaxFamilyCombo.toolTip };
+         profile.onStudio = ( p.sharpenToolCombo.onItemSelected( 3 ), p.parallaxFamilyCombo.enabled );
+         profile.afterNone = ( p.sharpenToolCombo.onItemSelected( 0 ), p.parallaxFamilyCombo.enabled );
+         profile.onBxt = ( p.sharpenToolCombo.onItemSelected( 1 ), p.parallaxFamilyCombo.enabled );
+         p.sharpenToolCombo.onItemSelected( 3 );
+         p.parallaxFamilyCombo.onItemSelected( 0 );
+         profile.picked = p.config.parallaxFamily;
+         p.parallaxFamilyCombo.onItemSelected( 1 );
+         profile.pickedAgain = p.config.parallaxFamily;
+      }
+      catch ( e4 ) { perr2 = String( e4 ); }
+      finally { SHARPEN.pop(); }
+      check( "the Profile dropdown can be driven" + ( perr2 ? ": " + perr2 : "" ), perr2, "" );
+      check( "Profile offers Classic and Aesthetics, on the configured one",
+             profile && [ profile.items, profile.current ], [ [ "Classic", "Aesthetics" ], 1 ] );
+      check( "Profile is off while another tool will run, on for Studio Parallax, off again for None",
+             profile && [ profile.onOtherTool, profile.onStudio, profile.afterNone ], [ false, true, false ] );
+      check( "and on for BlurXTerminator while Studio runs its aberration pass", profile && profile.onBxt, true );
+      check( "picking a profile sets it",
+             profile && [ profile.picked, profile.pickedAgain ], [ "classic", "aesthetics" ] );
+      var tip = profile ? String( profile.tip ) : "";
+      check( "Profile's tooltip says what each is, what the strengths mean, and that it re-runs sharpening",
+             [ /Classic/.test( tip ), /Aesthetics/.test( tip ), /Max Deblur/.test( tip ),
+               /Low, Medium and High/.test( tip ), /re-runs/.test( tip ) ],
+             [ true, true, true, true, true ] );
    } )();
 
    /*
@@ -19444,6 +19568,35 @@ function runSolveTests()
    } )();
 
    /*
+    * The Studio Parallax profile: Classic unless Aesthetics is chosen, saved
+    * with the other settings, and an unknown stored value is Classic.
+    */
+   ( function()
+   {
+      check( "config: the Studio Parallax profile defaults to Classic",
+             [ defaultConfig().parallaxFamily, Config.defaults().parallaxFamily ], [ "classic", "classic" ] );
+      function through( value )
+      {
+         var store = {};
+         var c = defaultConfig();
+         c.parallaxFamily = value;
+         var saved = withConfigStore( store, {}, function() { saveConfig( c ); } );
+         var loaded = withConfigStore( store, {}, function() { return loadConfig(); } );
+         return [ saved.swapped && loaded.swapped, store["Loom/parallaxFamily"],
+                  loaded.result && loaded.result.parallaxFamily ];
+      }
+      check( "config: Aesthetics is saved as Loom/parallaxFamily and loads back",
+             through( "aesthetics" ), [ true, "aesthetics", "aesthetics" ] );
+      check( "config: Classic round-trips", through( "classic" ), [ true, "classic", "classic" ] );
+      check( "config: an unknown profile loads as Classic", through( "nano" ), [ true, "nano", "classic" ] );
+      check( "config: a missing one saves as Classic", through( undefined ), [ true, "classic", "classic" ] );
+      var fresh = withConfigStore( {}, {}, function() { return loadConfig(); } );
+      check( "config: nothing stored leaves Classic", fresh.swapped && fresh.result.parallaxFamily, "classic" );
+      var empty = withConfigStore( { "Loom/parallaxFamily": "" }, {}, function() { return loadConfig(); } );
+      check( "config: an empty stored profile is Classic", empty.swapped && empty.result.parallaxFamily, "classic" );
+   } )();
+
+   /*
     * Config transcripts (see configTranscripts): defaults with their key
     * order, every loadConfig read and side effect in order with the
     * config it returns, every saveConfig write in order, and a round
@@ -19485,6 +19638,7 @@ function runSolveTests()
       var SPECIAL = {
          paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "" },
          palettes: [ "SHO" ],
+         parallaxFamily: "aesthetics",
          filters: { L: "F" }
       };
       function sentinel( k, d )
@@ -20194,7 +20348,7 @@ function runPipeTests()
                   "checkAbort [\"corrected B\"]" ] );
          check( "correctBroadband: chains, keys and runner calls",
                 Cache.hash( JSON.stringify( [ full, bare, noFiles ] ) ),
-                "f4b56451b0ec61f52c38cd09f81c6aad6f1dc55e" );
+                "d99e169487357300996916ec3f470a5535ff437e" );
       }
       finally
       {
@@ -21420,7 +21574,7 @@ function runFinishingTests()
       "RGB all succeed, keep linear, solved":
          [ [ "sharpenRGB", "undefined",
             [ "checkAbort(\"sharpening RGB\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\",\"classic\")" ],
             null, null ],
            [ "extractRGB", "undefined",
             [ "checkAbort(\"extracting stars from RGB\")",
@@ -21446,7 +21600,7 @@ function runFinishingTests()
       "RGB all succeed, keep linear, unsolved":
          [ [ "sharpenRGB", "undefined",
             [ "checkAbort(\"sharpening RGB\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\",\"classic\")" ],
             null, null ],
            [ "extractRGB", "undefined",
             [ "checkAbort(\"extracting stars from RGB\")",
@@ -21471,7 +21625,7 @@ function runFinishingTests()
       "RGB no linear copy, no stretch":
          [ [ "sharpenRGB", "undefined",
             [ "checkAbort(\"sharpening RGB\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\",\"classic\")" ],
             null, null ],
            [ "extractRGB", "undefined",
             [ "checkAbort(\"extracting stars from RGB\")",
@@ -21493,7 +21647,7 @@ function runFinishingTests()
       "RGB every step fails, no stars":
          [ [ "sharpenRGB", "loom-skip-cache",
             [ "checkAbort(\"sharpening RGB\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\",\"classic\")",
               "warn(\"sharpen\",\"RGB could not be corrected (Error: correctComposite failed); the composite is kept as it is\")" ],
             null, null ],
            [ "extractRGB", "loom-skip-cache",
@@ -21521,7 +21675,7 @@ function runFinishingTests()
       "RGB solution copy fails, extraction throws":
          [ [ "sharpenRGB", "undefined",
             [ "checkAbort(\"sharpening RGB\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"RGB\",\"classic\")" ],
             null, null ],
            [ "extractRGB", "threw extractStars failed",
             [ "checkAbort(\"extracting stars from RGB\")",
@@ -21562,7 +21716,7 @@ function runFinishingTests()
       "SHO all succeed, keep linear, solved":
          [ [ "paletteSharpen", "undefined",
             [ "checkAbort(\"sharpening SHO\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\",\"classic\")" ],
             null, null ],
            [ "paletteExtract", "undefined",
             [ "checkAbort(\"extracting stars from SHO\")",
@@ -21588,7 +21742,7 @@ function runFinishingTests()
       "SHO all succeed, keep linear, unsolved":
          [ [ "paletteSharpen", "undefined",
             [ "checkAbort(\"sharpening SHO\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\",\"classic\")" ],
             null, null ],
            [ "paletteExtract", "undefined",
             [ "checkAbort(\"extracting stars from SHO\")",
@@ -21613,7 +21767,7 @@ function runFinishingTests()
       "SHO no linear copy, no stretch":
          [ [ "paletteSharpen", "undefined",
             [ "checkAbort(\"sharpening SHO\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\",\"classic\")" ],
             null, null ],
            [ "paletteExtract", "undefined",
             [ "checkAbort(\"extracting stars from SHO\")",
@@ -21635,7 +21789,7 @@ function runFinishingTests()
       "SHO every step fails, no stars":
          [ [ "paletteSharpen", "loom-skip-cache",
             [ "checkAbort(\"sharpening SHO\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")",
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\",\"classic\")",
               "warn(\"sharpen\",\"SHO could not be corrected (Error: correctComposite failed); the palette is kept as it is\")" ],
             null, null ],
            [ "paletteExtract", "loom-skip-cache",
@@ -21663,7 +21817,7 @@ function runFinishingTests()
       "SHO solution copy fails, extraction throws":
          [ [ "paletteSharpen", "undefined",
             [ "checkAbort(\"sharpening SHO\")",
-              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\")" ],
+              "correctComposite(view,\"SyQon Studio Parallax\",\"medium\",\"medium\",\"SHO\",\"classic\")" ],
             null, null ],
            [ "paletteExtract", "threw extractStars failed",
             [ "checkAbort(\"extracting stars from SHO\")",

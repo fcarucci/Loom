@@ -151,7 +151,7 @@ above 0.315 px is poor.
 |---|---|---|
 | **Combine** | R, G, B | — |
 | **Solve, SPFC, SPCC** | calibration of the composite | filter curves |
-| **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High |
+| **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High. With SyQon Studio Parallax, **Profile** picks Classic (the default) or Aesthetics, for the sharpening and for the aberration pass above; Studio's Max Deblur belongs to Aesthetics but has no command-line option yet, so Loom cannot use it |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see [Stretch](#stretch) | on/off, method |
 | **Denoise** | on the finished L, RGB and palette (their starless plates when stars are extracted), never on the stars plate or single channels. Where it runs is set by the tool: NoiseXTerminator, MLDenoise and SyQon Studio Prism Essential on linear data, after star extraction and before the stretch; standalone SyQon Prism and SyQon Studio Prism 2.0 after the stretch | tool, and a strength (Low/Medium/High; Medium/High for Prism 2.0) for **Colour** and for **L** separately. Medium is each tool's own default |

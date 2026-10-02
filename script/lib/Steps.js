@@ -2366,7 +2366,7 @@ Steps.aberrationLogText = function( tool, studioFound )
           : corrector + " (correction only, in place of " + tool + ")";
 };
 
-Steps.aberration = function( view, tool, linked, label )
+Steps.aberration = function( view, tool, linked, label, family )
 {
    var studioFound = ( tool == Steps.SHARPEN_TOOL_BXT ) && Steps.studioAvailable();
    Util.operation( "aberration", Steps.aberrationLogText( tool, studioFound ), null,
@@ -2400,14 +2400,14 @@ Steps.aberration = function( view, tool, linked, label )
        */
       Steps.studioRun( view, "aberration correction",
                        { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
-                         parallax: { correction: true } } );
+                         parallax: { correction: true, family: family } } );
       return;
    }
    throw new Error( "Aberration correction is not implemented for " + tool );
 };
 
 /* Star reduction. Aesthetic; skipped entirely at level "none". */
-Steps.starReduction = function( view, tool, level, linked, label )
+Steps.starReduction = function( view, tool, level, linked, label, family )
 {
    if ( level == null || level == "none" )
       return;
@@ -2415,7 +2415,7 @@ Steps.starReduction = function( view, tool, level, linked, label )
    var run = Steps.sharpenRunner( tool, Steps.STAR_REDUCTION_RUNNERS );
    if ( run == null )
       throw new Error( "Star reduction is not implemented for " + tool );
-   run( view, level, linked );
+   run( view, level, linked, family );
 };
 
 /*
@@ -2462,7 +2462,7 @@ Steps.STAR_REDUCTION_RUNNERS = {
       Steps.syqonExecuteStage( view, "star reduction",
          { correctAberration: false, starReduction: syqonAmount, sharpen: 0.0 }, linked );
    },
-   studio: function( view, level )
+   studio: function( view, level, linked, family )
    {
       var studioLevel = Steps.sharpenLevelSetting( Steps.SHARPEN_LEVELS.studio.stars, level, "star reduction" );
       if ( studioLevel <= 0 )
@@ -2471,12 +2471,12 @@ Steps.STAR_REDUCTION_RUNNERS = {
       // stretch come after (Pipeline.STAGE_ORDER)
       Steps.studioRun( view, "star reduction",
                        { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
-                         parallax: { reduction: studioLevel } } );
+                         parallax: { reduction: studioLevel, family: family } } );
    }
 };
 
 /* Detail sharpening. The risky one; skipped entirely at level "none". */
-Steps.sharpenDetail = function( view, tool, level, linked, label )
+Steps.sharpenDetail = function( view, tool, level, linked, label, family )
 {
    if ( level == null || level == "none" )
       return;
@@ -2484,7 +2484,7 @@ Steps.sharpenDetail = function( view, tool, level, linked, label )
    var run = Steps.sharpenRunner( tool, Steps.DETAIL_RUNNERS );
    if ( run == null )
       throw new Error( "Detail sharpening is not implemented for " + tool );
-   run( view, level, linked );
+   run( view, level, linked, family );
 };
 
 Steps.DETAIL_RUNNERS = {
@@ -2508,7 +2508,7 @@ Steps.DETAIL_RUNNERS = {
       Steps.syqonExecuteStage( view, "detail sharpening",
          { correctAberration: false, starReduction: 0, sharpen: syqonDetail }, linked );
    },
-   studio: function( view, level )
+   studio: function( view, level, linked, family )
    {
       var studioDeblur = Steps.sharpenLevelSetting( Steps.SHARPEN_LEVELS.studio.detail, level, "detail" );
       if ( studioDeblur <= 0.0 )
@@ -2516,7 +2516,7 @@ Steps.DETAIL_RUNNERS = {
       // Studio calls its deconvolution "deblur"
       Steps.studioRun( view, "detail sharpening",
                        { model: Steps.STUDIO_MODEL_PARALLAX, domain: "linear",
-                         parallax: { deblur: studioDeblur } } );
+                         parallax: { deblur: studioDeblur, family: family } } );
    }
 };
 
@@ -2552,7 +2552,7 @@ Steps.DETAIL_RUNNERS = {
  * which is the only reason they were ever separate calls: the dialog lets
  * star reduction and detail choose different tools.
  */
-Steps.correctComposite = function( view, tool, starLevel, detailLevel, label )
+Steps.correctComposite = function( view, tool, starLevel, detailLevel, label, family )
 {
    if ( !Steps.toolChosen( tool ) )
       return false;
@@ -2567,8 +2567,8 @@ Steps.correctComposite = function( view, tool, starLevel, detailLevel, label )
       return true;
    }
 
-   Steps.starReduction( view, tool, starLevel, true, label || view.id );
-   Steps.sharpenDetail( view, tool, detailLevel, true, label || view.id );
+   Steps.starReduction( view, tool, starLevel, true, label || view.id, family );
+   Steps.sharpenDetail( view, tool, detailLevel, true, label || view.id, family );
    return true;
 };
 
