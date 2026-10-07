@@ -381,6 +381,18 @@ AsiairNames.assignBatches = function( batches, sessions )
 };
 
 /*
+ * One attribute of a flat against the light's: "same" (both stated and
+ * equal, or neither stated), "soft" (stated on one side only) or "clash"
+ * (both stated and different).
+ */
+AsiairNames.attributeFit = function( a, b )
+{
+   if ( a != null && b != null )
+      return a != b ? "clash" : "same";
+   return ( a != null || b != null ) ? "soft" : "same";
+};
+
+/*
  * Does one flat suit one light filter?
  *
  * Returns "exact", "weak", or null for no. Split out of matchFlats
@@ -403,25 +415,27 @@ AsiairNames.assignBatches = function( batches, sessions )
  */
 AsiairNames.flatSuits = function( want, flat )
 {
-   if ( want.filter == null || flat.filter == null || flat.filter != want.filter )
-      return null;
-   if ( want.binning == null || flat.binning == null || flat.binning != want.binning )
+   if ( !AsiairNames.mustMatch( want.filter, flat.filter ) ||
+        !AsiairNames.mustMatch( want.binning, flat.binning ) )
       return null;
 
    var soft = false;
    var pairs = [ [ want.camera, flat.camera ], [ want.rotation, flat.rotation ] ];
    for ( var p = 0; p < pairs.length; ++p )
    {
-      var a = pairs[p][0], b = pairs[p][1];
-      if ( a != null && b != null )
-      {
-         if ( a != b )
-            return null;
-      }
-      else if ( a != null || b != null )
+      var fit = AsiairNames.attributeFit( pairs[p][0], pairs[p][1] );
+      if ( fit == "clash" )
+         return null;
+      if ( fit == "soft" )
          soft = true;
    }
    return soft ? "weak" : "exact";
+};
+
+/* An attribute that has to be stated on both sides, and equal. */
+AsiairNames.mustMatch = function( a, b )
+{
+   return !( a == null || b == null || b != a );
 };
 
 AsiairNames.matchFlats = function( lightFilters, flatRecords )
