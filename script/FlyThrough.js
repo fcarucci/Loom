@@ -1737,12 +1737,25 @@ FlyThrough.Dialog = class extends Dialog
 
    number( edit ) { var v = parseFloat( edit.text ); return isFinite( v ) ? v : null; }
 
+   /* A two-choice combo's value: the first for item 0 (or any but the second), the second for item 1. */
+   comboValue( combo, first, second )
+   {
+      return combo.currentItem == 1 ? second : first;
+   }
+
+   /* Each preset's HDR transfer function, "pq" or "hlg". */
+   hdrTransferChoices()
+   {
+      var self = this, transfer = {};
+      FlyThrough.PRESET_ORDER.forEach( function( id ) { transfer[id] = self.comboValue( self.transferCombos[id], "hlg", "pq" ); } );
+      return transfer;
+   }
+
    /* Everything a render needs, read from the controls. */
    options()
    {
-      var self = this, transfer = {};
-      FlyThrough.PRESET_ORDER.forEach( function( id ) { transfer[id] = self.transferCombos[id].currentItem == 1 ? "pq" : "hlg"; } );
-      return { travel: this.number( this.travelEdit ), easing: this.easingCombo.currentItem == 1 ? "linear" : "smoothstep",
+      var transfer = this.hdrTransferChoices();
+      return { travel: this.number( this.travelEdit ), easing: this.comboValue( this.easingCombo, "smoothstep", "linear" ),
                growth: this.number( this.growthEdit ) || 0, brightening: this.brightCheck.checked,
                backdropMotion: this.nebulaSpin.value/100,
                twinkle: this.twinkleSpin.value/100, motionBlur: this.blurCheck.checked, bloom: this.bloomSpin.value/100,
@@ -1754,15 +1767,15 @@ FlyThrough.Dialog = class extends Dialog
                music: { path: this.musicEdit.text.trim(), fade: this.fadeCheck.checked },
                duration: this.durationSpin.value, fps: FlyThrough.FPS[this.fpsCombo.currentItem],
                presets: this.checkedPresets(), dir: this.folderEdit.text.trim(),
-               orientation: this.orientationCombo.currentItem == 1 ? "vertical" : "horizontal",
+               orientation: this.comboValue( this.orientationCombo, "horizontal", "vertical" ),
                loop: FlyThrough.LOOPS[this.loopCombo.currentItem][0],
-               dynamic: this.dynamicCombo.currentItem == 1 ? "hdr" : "sdr", peak: this.peakSpin.value, hdrTransfer: transfer,
+               dynamic: this.comboValue( this.dynamicCombo, "sdr", "hdr" ), peak: this.peakSpin.value, hdrTransfer: transfer,
                video: this.videoCheck.checked && this.ffmpeg != null, ffmpeg: this.ffmpeg,
                format: this.formatIds[this.formatCombo.currentItem] || null,
-               quality: this.qualityCombo.currentItem == 1 ? "standard" : "high",
+               quality: this.comboValue( this.qualityCombo, "high", "standard" ),
                colour: this.built ? this.built.colour : null,
                tool: this.tools[this.toolCombo.currentItem], distance: this.number( this.distanceEdit ),
-               type: this.typeCombo.currentItem == 1 ? "galaxy" : "nebula" };
+               type: this.comboValue( this.typeCombo, "nebula", "galaxy" ) };
    }
 
    /*
