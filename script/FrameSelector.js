@@ -94,6 +94,15 @@ FrameSelector.measure = function( paths, schema )
    if ( P.measurements == null )
       return out;
 
+   return FrameSelector.collectRows( P.measurements, paths, schema, out );
+};
+
+/*
+ * Split phase of measure: turn the process's rows into the path-keyed table,
+ * or null when the channel must be abandoned.
+ */
+FrameSelector.collectRows = function( measurements, paths, schema, out )
+{
    /*
     * A result path must be one we ASKED for. Checking only for duplicates
     * lets an unexpected path through, and an empty one be silently dropped
@@ -105,9 +114,9 @@ FrameSelector.measure = function( paths, schema )
       asked[paths[a]] = true;
 
    var shape = schema || {};              // disabled: optional columns unusable this run
-   for ( var r = 0; r < P.measurements.length; ++r )
+   for ( var r = 0; r < measurements.length; ++r )
    {
-      var m = Frames.metricsFromRow( P.measurements[r] );
+      var m = Frames.metricsFromRow( measurements[r] );
       /*
        * The table's shape is a property of the process, not of the frame,
        * so it is checked on the FIRST row only: a second check proves
