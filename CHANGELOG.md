@@ -5,7 +5,10 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-10-07
+
 - **A run with no narrowband (RGB or LRGB) says nothing about palettes.** A palette saved from an earlier narrowband run (SHO, HSO, HOO) is skipped without a word; it used to be named in the log as skipped. A palette with some but not all of its channels still gets a warning.
+
 ## [0.3.3] — 2026-10-01
 
 ### Fixes
