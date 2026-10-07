@@ -1126,6 +1126,13 @@ FlyThrough.Dialog = class extends Dialog
       if ( this.starsLabel ) this.starsLabel.text = "";
    }
 
+   /* The image header's number for a keyword, else the setting last used, else empty ("" when no image is open). */
+   headerOrLastUsed( keyword, setting )
+   {
+      if ( this.imageWindow == null ) return "";
+      return String( Sky.keywordNumber( this.imageWindow, keyword ) || Settings.read( setting, DataType_String ) || "" );
+   }
+
    /* The fields that come from the image: its name, focal length and pixel size, folder, and the solve hints it needs. */
    fillFromImage()
    {
@@ -1133,8 +1140,8 @@ FlyThrough.Dialog = class extends Dialog
       if ( has && this.imageList.currentView.isNull ) this.imageList.currentView = this.imageWindow.mainView;
       this.imageLabel.text = has ? "Image: " + this.imageWindow.mainView.id : "Choose an image that is open, or Open\u2026 a file.";
       // the header's focal length and pixel size, else the ones last used (a rig rarely changes)
-      this.focalEdit.text = has ? String( Sky.keywordNumber( this.imageWindow, "FOCALLEN" ) || Settings.read( FlyThrough.FOCAL_SETTING, DataType_String ) || "" ) : "";
-      this.pixelEdit.text = has ? String( Sky.keywordNumber( this.imageWindow, "XPIXSZ" ) || Settings.read( FlyThrough.PIXEL_SETTING, DataType_String ) || "" ) : "";
+      this.focalEdit.text = this.headerOrLastUsed( "FOCALLEN", FlyThrough.FOCAL_SETTING );
+      this.pixelEdit.text = this.headerOrLastUsed( "XPIXSZ", FlyThrough.PIXEL_SETTING );
       if ( path ) { this.folderEdit.text = File.extractDrive( path ) + File.extractDirectory( path ); this.refreshClearFrames(); }
       this.needsHints = has && ( Sky.projector( this.imageWindow ) == null );
       // an image's hints start empty -- never the last image's -- then come from its memory or its name
