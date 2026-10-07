@@ -1823,11 +1823,7 @@ FlyThrough.Dialog = class extends Dialog
       if ( choices.hints )
          choices.hints.pixel /= this.work.scale;         // the working copy's pixels are larger
       var id = FlyThrough.identify( this.work.window, choices, progress );
-      if ( !this.workCached && Sky.projector( this.work.window ) )
-      {
-         FlyThrough.saveWork( this.cacheDirPath, this.work );          // solved: kept for next time
-         this.workCached = true;
-      }
+      this.keepSolvedWork();
       FlyThrough.touch( this.cacheDirPath );
       FlyThrough.prune( FlyThrough.cacheRoot(), FlyThrough.CACHE_KEEP );
       this.bar.set( 1, "Analysed" );
@@ -1836,7 +1832,22 @@ FlyThrough.Dialog = class extends Dialog
       this.targetLabel.text = FlyThrough.describeTarget( id );
       var named = FlyThrough.blindObject( id, this.objectEdit.text );
       if ( named ) { this.objectEdit.text = named.object; this.objectMatch.text = named.match; this.objectMatch.toolTip = ""; }
-      // a type or distance set while it was analysed is the user's: kept
+      this.showDistance( id );
+   }
+
+   /* A solved working copy is kept for next time. */
+   keepSolvedWork()
+   {
+      if ( !this.workCached && Sky.projector( this.work.window ) )
+      {
+         FlyThrough.saveWork( this.cacheDirPath, this.work );          // solved: kept for next time
+         this.workCached = true;
+      }
+   }
+
+   /* The analysed type, distance and star count; a type or distance set while it was analysed is the user's: kept. */
+   showDistance( id )
+   {
       if ( !this.typeTouched ) this.typeCombo.currentItem = ( id.type == "galaxy" ) ? 1 : 0;
       if ( id.D != null && isFinite( id.D ) && !this.distanceTouched ) this.distanceEdit.text = String( Math.round( id.D ) );
       this.distanceNote.text = FlyThrough.describeDistance( id );
@@ -2185,19 +2196,29 @@ FlyThrough.Dialog = class extends Dialog
       if ( o.presets.length == 0 ) throw new Error( "Choose at least one preset." );
       if ( !o.dir || !File.directoryExists( o.dir ) ) throw new Error( "Choose an output folder." );
       Settings.write( "Loom/flyFolder", DataType_String, o.dir );
-      // what the scene was made from: the image (and when its file last changed), the star tool, the distance
-      var path = this.imageWindow.filePath, when = "";
-      try { if ( path && File.exists( path ) ) when = String( ( new FileInfo( path ) ).lastModified.getTime() ); } catch ( e ) {}
-      o.sceneKey = [ path || this.imageWindow.mainView.id, when, o.tool, this.built.scene.D ].join( "|" );
-      // the object the video is named after: the target found (its id and common name), else what was typed
-      var t = this.id && this.id.target;
-      o.objectName = t ? t.id + ( t.name ? " " + t.name : "" ) : this.objectEdit.text.trim();
+      o.sceneKey = this.sceneKey( o );
+      o.objectName = this.videoObjectName();
       this.saveOptions();
       // the preview shows the frames as they finish (progressFor's onImage); the draft comes back after
       var draft = { frames: this.player.frames, fps: this.player.fps, pingPong: this.player.pingPong };
       this.player.pause();
       try { this.renderJob( o ); }
       finally { if ( draft.frames.length ) this.player.setFrames( draft.frames, draft.fps, draft.pingPong ); }
+   }
+
+   /* What the scene was made from: the image (and when its file last changed), the star tool, the distance. */
+   sceneKey( o )
+   {
+      var path = this.imageWindow.filePath, when = "";
+      try { if ( path && File.exists( path ) ) when = String( ( new FileInfo( path ) ).lastModified.getTime() ); } catch ( e ) {}
+      return [ path || this.imageWindow.mainView.id, when, o.tool, this.built.scene.D ].join( "|" );
+   }
+
+   /* The object the video is named after: the target found (its id and common name), else what was typed. */
+   videoObjectName()
+   {
+      var t = this.id && this.id.target;
+      return t ? t.id + ( t.name ? " " + t.name : "" ) : this.objectEdit.text.trim();
    }
 
    renderJob( o )
