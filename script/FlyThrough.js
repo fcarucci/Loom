@@ -518,6 +518,15 @@ FlyThrough.loopImage = function( scene, i, n, F, opts, w, h, crop, cache )
    finally { if ( !still ) b.free(); }
 };
 
+/* The render options of a draft: bilinear, SDR in the chosen colour space, the frame step and the logo layer. */
+FlyThrough.draftOptions = function( opts, plan, scene )
+{
+   var o = Object.assign( {}, opts, { kernel: "bilinear", output: Fly.outputTransform( opts.colour || Fly.SRGB_COLOUR, "sdr" ) } );
+   o.frameDt = Fly.frameStep( plan.frames, false );
+   o.logo = opts.logoImage ? Render.logoLayer( opts.logoImage, plan.width, plan.height, opts.logoPlace, scene.nc, opts.logoOpacity ) : null;
+   return o;
+};
+
 /*
  * The draft: Fly.DRAFT_LONG px on the long side, under 400 MB for any duration
  * (Fly.draftPlan lowers the frame rate if needed), SDR. A ping-pong preset
@@ -529,11 +538,9 @@ FlyThrough.renderDraft = function( scene, opts, spec, progress )
    var plan = Fly.draftPlan( opts.duration, opts.fps, Fly.DRAFT_LONG, spec.w/spec.h );
    scene = FlyThrough.qualityScene( scene, opts, spec );
    var crop = Fly.presetCrop( scene.w, scene.h, scene.tp.x, scene.tp.y, spec.w, spec.h );
-   var o = Object.assign( {}, opts, { kernel: "bilinear", output: Fly.outputTransform( opts.colour || Fly.SRGB_COLOUR, "sdr" ) } );
+   var o = FlyThrough.draftOptions( opts, plan, scene );
    var bitmaps = [], still = {};   // a crossfade's pre-roll still, rendered once (FlyThrough.loopImage)
    var F = spec.crossfade ? Fly.crossfadeFrames( opts.duration, plan.fps ) : 0;
-   o.frameDt = Fly.frameStep( plan.frames, false );
-   o.logo = opts.logoImage ? Render.logoLayer( opts.logoImage, plan.width, plan.height, opts.logoPlace, scene.nc, opts.logoOpacity ) : null;
    try
    {
       for ( var i = 0; i < plan.frames; ++i )
