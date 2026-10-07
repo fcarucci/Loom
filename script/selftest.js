@@ -20897,6 +20897,36 @@ function runPipeTests()
       finally { restore(); }
    } )();
 
+   /*
+    * RGB and a palette in one run: the star plate is RGB's. Both publish
+    * steps run as the pipeline runs them (RGB first), and what ends up in
+    * the results is checked, not each step alone.
+    */
+   ( function()
+   {
+      var results = {}, closed = [];
+      var restore = stub( [
+         [ Pipeline, "windowIsUsable", function( win ) { return win.ok !== false; } ],
+         [ Pipeline, "publish", function( win, id, reg, keepIds, res, key )
+           { var w = { id: id, ok: true }; if ( key ) res[key] = w; return w; } ],
+         [ Util, "log", function() {} ] ] );
+      function win( id ) { return { id: id, ok: true, forceClose: function() { closed.push( id ); } }; }
+      try
+      {
+         var rgb = { window: win( "rgbW" ), stars: win( "rgbS" ), linear: null };
+         var kept = Pipeline.publishRGB( results, rgb, [], {} );
+         Pipeline.publishPalettes( results, [ { name: "HSO", window: win( "hsoW" ), stars: win( "hsoS" ), linear: null } ], kept, [], {} );
+         check( "RGB and HSO both present: the stars are RGB's, the palette's stars are closed and not in the results",
+                [ Object.keys( results ).sort(), closed ], [ [ "HSO_starless", "RGB_starless", "RGB_stars" ], [ "hsoS" ] ] );
+         results = {}; closed = [];
+         kept = Pipeline.publishRGB( results, { window: win( "rgbW" ), stars: null, linear: null }, [], {} );
+         Pipeline.publishPalettes( results, [ { name: "HSO", window: win( "hsoW" ), stars: win( "hsoS" ), linear: null } ], kept, [], {} );
+         check( "RGB without a stars plate: the palette's stars are the only ones, and are kept",
+                [ Object.keys( results ).sort(), closed ], [ [ "HSO_starless", "HSO_stars", "RGB" ], [] ] );
+      }
+      finally { restore(); }
+   } )();
+
    /* Pipeline.loadChannels, the parts that need no open image. */
    ( function()
    {
