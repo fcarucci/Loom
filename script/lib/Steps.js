@@ -1915,59 +1915,65 @@ Steps.denoiseStudio = function( view, level, alreadyStretched )
                       application: application } );
 };
 
+// One Prism 2.0 pass: logs what runs and hands its model and blend to Studio.
+Steps.denoiseStudio2Run = function( view, name, p, domain )
+{
+   Util.log( "denoise", name + " (" + Steps.studioModelLabel( p.model ) + ", " + domain +
+                        ", application " + p.application.toFixed( 2 ) + ")" );
+   var opts = { model: p.model, domain: domain, application: p.application };
+   if ( p.fineScale != null )
+      opts.fineScale = p.fineScale;
+   Steps.studioRun( view, "noise reduction", opts );
+};
+
+/*
+ * No stretch at all, and no linear pass: the level's unstretched model
+ * (Ultra at Medium) runs on the linear plate, or nothing if it has none.
+ */
+Steps.denoiseStudio2Unstretched = function( view, name, step, pass )
+{
+   if ( pass == "linear" )
+      return;
+   if ( step.unstretched )
+      Steps.denoiseStudio2Run( view, name, step.unstretched, "linear" );
+   else
+      Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.stretched.model ) +
+                 " runs only after the stretch and there is no stretch, so nothing runs" );
+};
+
+// Advanced: linear input only, by SyQon's contract; off, the ladder has no linear pass
+Steps.denoiseStudio2Linear = function( view, name, step, alreadyStretched )
+{
+   if ( !alreadyStretched )
+      return Steps.denoiseStudio2Run( view, name, step.linear, "linear" );
+   Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.linear.model ) +
+              " takes linear data only and this image is already stretched, so it " +
+              "is skipped" + ( step.stretched
+              ? "; only " + Steps.studioModelLabel( step.stretched.model ) + " runs"
+              : "; this level has no pass after the stretch, so nothing runs" ) );
+};
+
+// Ultra or Max: after the stretch, on the stretched plate
+Steps.denoiseStudio2Stretched = function( view, name, step, alreadyStretched )
+{
+   if ( alreadyStretched )
+      return Steps.denoiseStudio2Run( view, name, step.stretched, "nonlinear" );
+   Util.log( "denoise", name + ": the post-stretch pass (" +
+             Steps.studioModelLabel( step.stretched.model ) +
+             ") is skipped because there is no stretch" );
+};
+
 Steps.denoiseStudio2 = function( view, level, alreadyStretched, pass )
 {
    var step = Steps.noiseLevelSetting( Steps.NOISE_LEVELS.studio2, level );
    var name = view.id + ": SyQon Studio Prism 2.0 " + Steps.noiseLevelName( Steps.NR_TOOL_STUDIO2, level );
-   function run( p, domain )
-   {
-      Util.log( "denoise", name + " (" + Steps.studioModelLabel( p.model ) + ", " + domain +
-                           ", application " + p.application.toFixed( 2 ) + ")" );
-      var opts = { model: p.model, domain: domain, application: p.application };
-      if ( p.fineScale != null )
-         opts.fineScale = p.fineScale;
-      Steps.studioRun( view, "noise reduction", opts );
-   }
 
-   /*
-    * No stretch at all, and no linear pass: the level's unstretched model
-    * (Ultra at Medium) runs on the linear plate, or nothing if it has none.
-    */
    if ( !step.linear && !alreadyStretched && pass != "stretched" )
-   {
-      if ( pass == "linear" )
-         return;
-      if ( step.unstretched )
-         run( step.unstretched, "linear" );
-      else
-         Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.stretched.model ) +
-                    " runs only after the stretch and there is no stretch, so nothing runs" );
-      return;
-   }
-
-   // Advanced: linear input only, by SyQon's contract; off, the ladder has no linear pass
+      return Steps.denoiseStudio2Unstretched( view, name, step, pass );
    if ( pass != "stretched" && step.linear )
-   {
-      if ( !alreadyStretched )
-         run( step.linear, "linear" );
-      else
-         Util.warn( "denoise", name + ": " + Steps.studioModelLabel( step.linear.model ) +
-                    " takes linear data only and this image is already stretched, so it " +
-                    "is skipped" + ( step.stretched
-                    ? "; only " + Steps.studioModelLabel( step.stretched.model ) + " runs"
-                    : "; this level has no pass after the stretch, so nothing runs" ) );
-   }
-
-   // Ultra or Max: after the stretch, on the stretched plate
+      Steps.denoiseStudio2Linear( view, name, step, alreadyStretched );
    if ( pass != "linear" && step.stretched )
-   {
-      if ( alreadyStretched )
-         run( step.stretched, "nonlinear" );
-      else
-         Util.log( "denoise", name + ": the post-stretch pass (" +
-                   Steps.studioModelLabel( step.stretched.model ) +
-                   ") is skipped because there is no stretch" );
-   }
+      Steps.denoiseStudio2Stretched( view, name, step, alreadyStretched );
 };
 
 /*

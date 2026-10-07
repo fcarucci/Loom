@@ -927,6 +927,104 @@ function stepsMemberInventory()
 }
 
 /*
+ * Characterisation pins taken on the code before the complexity refactoring
+ * (see CHANGELOG): each records what a function does -- every log line,
+ * warning and call it makes, in order -- over a grid of inputs, so that
+ * extracting helpers from it cannot change one of them unseen.
+ */
+function characterize( stubs, fn )
+{
+   var saved = [], said = [];
+   for ( var i = 0; i < stubs.length; ++i )
+   {
+      var owner = stubs[i][0], key = stubs[i][1], tag = stubs[i][2];
+      saved.push( [ owner, key, owner[key] ] );
+      owner[key] = ( function( t ) { return function()
+      {
+         said.push( t + ":" + Array.prototype.slice.call( arguments ).map( function( a )
+         { return typeof a == "string" ? a : JSON.stringify( a ); } ).join( "|" ) );
+      }; } )( tag );
+   }
+   try { fn(); }
+   catch ( e ) { said.push( "THROWS:" + e.message ); }
+   finally { for ( var j = 0; j < saved.length; ++j ) saved[j][0][saved[j][1]] = saved[j][2]; }
+   return said.join( " ;; " );
+}
+
+function runLoomCharacterization()
+{
+   characterizeDenoiseStudio2();
+}
+
+function characterizeDenoiseStudio2()
+{
+   var grid = [], was = Steps.PRISM2_LINEAR_PASS, wasLevels = Steps.NOISE_LEVELS.studio2;
+   try
+   {
+      [ false, true ].forEach( function( linearPass )
+      {
+         Steps.setPrism2LinearPass( linearPass );
+         [ "low", "medium", "high" ].forEach( function( level )
+         {
+            [ false, true ].forEach( function( stretched )
+            {
+               [ undefined, "linear", "stretched" ].forEach( function( pass )
+               {
+                  grid.push( ( linearPass ? "on " : "off " ) + level + " " + stretched + " " + pass + " => " +
+                     characterize( [ [ Steps, "studioRun", "run" ], [ Util, "log", "log" ], [ Util, "warn", "warn" ] ],
+                        function() { Steps.denoiseStudio2( { id: "v" }, level, stretched, pass ); } ) );
+               } );
+            } );
+         } );
+      } );
+   }
+   finally
+   {
+      Steps.setPrism2LinearPass( was );
+      Steps.NOISE_LEVELS.studio2 = wasLevels;
+   }
+   check( "denoiseStudio2: every log, warning and run over the ladders, levels, stretch states and passes",
+          grid,
+          [
+      "off low false undefined => THROWS:Unknown noise reduction level: low",
+      "off low false linear => THROWS:Unknown noise reduction level: low",
+      "off low false stretched => THROWS:Unknown noise reduction level: low",
+      "off low true undefined => THROWS:Unknown noise reduction level: low",
+      "off low true linear => THROWS:Unknown noise reduction level: low",
+      "off low true stretched => THROWS:Unknown noise reduction level: low",
+      "off medium false undefined => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Ultra, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-ultra\",\"domain\":\"linear\",\"application\":1}",
+      "off medium false linear => ",
+      "off medium false stretched => log:denoise|v: SyQon Studio Prism 2.0 ultra: the post-stretch pass (Prism Deep Ultra) is skipped because there is no stretch",
+      "off medium true undefined => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Ultra, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-ultra\",\"domain\":\"nonlinear\",\"application\":1}",
+      "off medium true linear => ",
+      "off medium true stretched => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Ultra, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-ultra\",\"domain\":\"nonlinear\",\"application\":1}",
+      "off high false undefined => warn:denoise|v: SyQon Studio Prism 2.0 max: Prism Deep Max runs only after the stretch and there is no stretch, so nothing runs",
+      "off high false linear => ",
+      "off high false stretched => log:denoise|v: SyQon Studio Prism 2.0 max: the post-stretch pass (Prism Deep Max) is skipped because there is no stretch",
+      "off high true undefined => log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Max, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-max\",\"domain\":\"nonlinear\",\"application\":1}",
+      "off high true linear => ",
+      "off high true stretched => log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Max, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-max\",\"domain\":\"nonlinear\",\"application\":1}",
+      "on low false undefined => log:denoise|v: SyQon Studio Prism 2.0 low (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4}",
+      "on low false linear => log:denoise|v: SyQon Studio Prism 2.0 low (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4}",
+      "on low false stretched => ",
+      "on low true undefined => warn:denoise|v: SyQon Studio Prism 2.0 low: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; this level has no pass after the stretch, so nothing runs",
+      "on low true linear => warn:denoise|v: SyQon Studio Prism 2.0 low: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; this level has no pass after the stretch, so nothing runs",
+      "on low true stretched => ",
+      "on medium false undefined => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4} ;; log:denoise|v: SyQon Studio Prism 2.0 ultra: the post-stretch pass (Prism Deep Ultra) is skipped because there is no stretch",
+      "on medium false linear => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4}",
+      "on medium false stretched => log:denoise|v: SyQon Studio Prism 2.0 ultra: the post-stretch pass (Prism Deep Ultra) is skipped because there is no stretch",
+      "on medium true undefined => warn:denoise|v: SyQon Studio Prism 2.0 ultra: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; only Prism Deep Ultra runs ;; log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Ultra, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-ultra\",\"domain\":\"nonlinear\",\"application\":1}",
+      "on medium true linear => warn:denoise|v: SyQon Studio Prism 2.0 ultra: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; only Prism Deep Ultra runs",
+      "on medium true stretched => log:denoise|v: SyQon Studio Prism 2.0 ultra (Prism Deep Ultra, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-ultra\",\"domain\":\"nonlinear\",\"application\":1}",
+      "on high false undefined => log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4} ;; log:denoise|v: SyQon Studio Prism 2.0 max: the post-stretch pass (Prism Deep Max) is skipped because there is no stretch",
+      "on high false linear => log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Advanced, linear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-advanced\",\"domain\":\"linear\",\"application\":1,\"fineScale\":4}",
+      "on high false stretched => log:denoise|v: SyQon Studio Prism 2.0 max: the post-stretch pass (Prism Deep Max) is skipped because there is no stretch",
+      "on high true undefined => warn:denoise|v: SyQon Studio Prism 2.0 max: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; only Prism Deep Max runs ;; log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Max, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-max\",\"domain\":\"nonlinear\",\"application\":1}",
+      "on high true linear => warn:denoise|v: SyQon Studio Prism 2.0 max: Prism Deep Advanced takes linear data only and this image is already stretched, so it is skipped; only Prism Deep Max runs",
+      "on high true stretched => log:denoise|v: SyQon Studio Prism 2.0 max (Prism Deep Max, nonlinear, application 1.00) ;; run:{\"id\":\"v\"}|noise reduction|{\"model\":\"prism-max\",\"domain\":\"nonlinear\",\"application\":1}" ] );
+}
+
+/*
  * Steps.js is cut into Steps.js, StepsSyqon.js and StepsIcc.js, the same
  * namespace. What can go wrong is not logic -- the moves are verbatim --
  * but a member lost, an include missing, a load-time value initialised
@@ -963,7 +1061,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 314 );
+      check( "Steps: the member count", Object.keys( have ).length, 318 );
    }
 
    /*
@@ -1095,6 +1193,7 @@ function runTests()
 {
    if ( testGroup( "steps.members" ) ) {
    runStepsMemberTests();
+   runLoomCharacterization();
    } if ( testGroup( "steps.icc" ) ) {
    runStepsIccTests();
 
