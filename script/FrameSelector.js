@@ -4482,13 +4482,10 @@ FrameSelector.withProgress = function( title, work, opts )
 };
 
 /*
- * Offer a card, if one is plugged in.
- *
- * Returns a state to review, or null to fall through to the ordinary
- * folder chooser. Detection must never block startup: a card that is not
- * there costs two directory tests per mounted volume and nothing else.
+ * The card to read, or null when none is plugged in (or the search itself
+ * failed, which is the same thing to the user).
  */
-FrameSelector.offerCard = function()
+FrameSelector.detectCard = function()
 {
    /*
     * The first thing on screen: looking through every mounted volume takes
@@ -4506,12 +4503,15 @@ FrameSelector.offerCard = function()
            before: function( w ) { w.announce( "Starting up: looking for an ASIAIR\u2026" ); } } );
    }
    catch ( e ) { cards = []; }
-   if ( cards.length == 0 )
-      return null;
+   return cards.length == 0 ? null : cards[0];
+};
 
-   // no question first: a card is read straight away and every target's nights are shown (Cancel there opens the folder chooser)
-   var root = cards[0];
-
+/*
+ * Read the card, or null (after telling the user why, where there is
+ * something to tell) when there is nothing to review.
+ */
+FrameSelector.readCard = function( root )
+{
    var scan = FrameSelector.withProgress( null, function( progress )
    {
       return Asiair.scanCard( root, function( n ) {
@@ -4532,16 +4532,43 @@ FrameSelector.offerCard = function()
       FrameSelector.tell( "No readable light frames on that card.", StdIcon_Information );
       return null;
    }
+   return scan;
+};
 
-   var survey = NightDialog.surveyOf( scan, AsiairNames.GAP_HOURS );
+/* The night the user chose from the card's survey, or null when none was. */
+FrameSelector.pickNight = function( survey, root )
+{
    var picker = new NightDialog.Dialog( survey, root );
    var chose = false;
    try { chose = picker.execute(); }
    finally { try { picker.release(); } catch ( e ) {} }
    if ( !chose || picker.selectedNight == null )
       return null;
+   return picker.selectedNight;
+};
 
-   var night = picker.selectedNight;
+/*
+ * Offer a card, if one is plugged in.
+ *
+ * Returns a state to review, or null to fall through to the ordinary
+ * folder chooser. Detection must never block startup: a card that is not
+ * there costs two directory tests per mounted volume and nothing else.
+ */
+FrameSelector.offerCard = function()
+{
+   var root = FrameSelector.detectCard();
+   if ( root == null )
+      return null;
+
+   // no question first: a card is read straight away and every target's nights are shown (Cancel there opens the folder chooser)
+   var scan = FrameSelector.readCard( root );
+   if ( scan == null )
+      return null;
+
+   var survey = NightDialog.surveyOf( scan, AsiairNames.GAP_HOURS );
+   var night = FrameSelector.pickNight( survey, root );
+   if ( night == null )
+      return null;
    var paths = [];
    for ( var i = 0; i < night.frames.length; ++i )
       paths.push( night.frames[i].path );
