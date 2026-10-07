@@ -160,6 +160,19 @@ AsiairNames.parseName = function( filename )
             sequence: tail.sequence };
 };
 
+/* Is each printed component inside its calendar range (the year has none)? */
+AsiairNames.stampInRange = function( mo, d, h, mi, se )
+{
+   return !( mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 59 );
+};
+
+/* Did Date.UTC roll the printed date over into another month or day? */
+AsiairNames.stampRolled = function( ms, y, mo, d )
+{
+   var back = new Date( ms );
+   return back.getUTCFullYear() != y || back.getUTCMonth() != mo-1 || back.getUTCDate() != d;
+};
+
 /*
  * A comparison key in SECONDS, from the wall-clock components via
  * Date.UTC.
@@ -188,7 +201,7 @@ AsiairNames.stampKey = function( stamp )
    var mi = parseInt( stamp.substr( 11, 2 ), 10 );
    var se = parseInt( stamp.substr( 13, 2 ), 10 );
 
-   if ( mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 59 )
+   if ( !AsiairNames.stampInRange( mo, d, h, mi, se ) )
       return null;
 
    var ms = Date.UTC( y, mo-1, d, h, mi, se );
@@ -199,8 +212,7 @@ AsiairNames.stampKey = function( stamp )
     * not a date this accepts: filing a frame under a day it was not shot
     * is worse than reporting the name as unreadable.
     */
-   var back = new Date( ms );
-   if ( back.getUTCFullYear() != y || back.getUTCMonth() != mo-1 || back.getUTCDate() != d )
+   if ( AsiairNames.stampRolled( ms, y, mo, d ) )
       return null;
 
    return Math.floor( ms / 1000 );
