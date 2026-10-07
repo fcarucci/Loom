@@ -1173,22 +1173,28 @@ FlyThrough.Dialog = class extends Dialog
    /* An unsolved image's hints, from its header (pointing, else object name), then its memory, then its name. */
    fillHints()
    {
-      // the header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do)
-      if ( !this.raEdit.text.trim() )
-      {
-         var hc = FlyThrough.headerCentre( this.imageWindow );
-         if ( hc ) { this.raEdit.text = hc.ra.toFixed( 4 ); this.decEdit.text = hc.dec.toFixed( 4 ); this.objectMatch.text = "Centre from the image's header"; }
-      }
-      // and the header's object name (OBJECT, Observation:Object:Name)
-      if ( !this.raEdit.text.trim() )
-      {
-         var name = FlyThrough.headerObject( this.imageWindow );
-         if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
-         var oh = name ? Fly.findObject( name, this.ngcIc || [] )[0] : null;
-         if ( oh ) { this.objectEdit.text = oh.name || oh.id; this.raEdit.text = oh.ra.toFixed( 4 ); this.decEdit.text = oh.dec.toFixed( 4 ); this.objectMatch.text = oh.id + " (from the image's header)"; }
-      }
+      this.hintsFromHeaderCentre();
+      this.hintsFromHeaderObject();
       this.recallObject();
       if ( !this.objectEdit.text.trim() && !this.raEdit.text.trim() ) this.objectFromName();
+   }
+
+   /* The header's pointing, when no name gave one (ASIAIR and NINA lights and WBPP masters carry it; exports never do). */
+   hintsFromHeaderCentre()
+   {
+      if ( this.raEdit.text.trim() ) return;
+      var hc = FlyThrough.headerCentre( this.imageWindow );
+      if ( hc ) { this.raEdit.text = hc.ra.toFixed( 4 ); this.decEdit.text = hc.dec.toFixed( 4 ); this.objectMatch.text = "Centre from the image's header"; }
+   }
+
+   /* The header's object name (OBJECT, Observation:Object:Name), when there is still no pointing. */
+   hintsFromHeaderObject()
+   {
+      if ( this.raEdit.text.trim() ) return;
+      var name = FlyThrough.headerObject( this.imageWindow );
+      if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
+      var oh = name ? Fly.findObject( name, this.ngcIc || [] )[0] : null;
+      if ( oh ) { this.objectEdit.text = oh.name || oh.id; this.raEdit.text = oh.ra.toFixed( 4 ); this.decEdit.text = oh.dec.toFixed( 4 ); this.objectMatch.text = oh.id + " (from the image's header)"; }
    }
 
    /*
