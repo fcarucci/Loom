@@ -331,7 +331,7 @@ FlyThrough.headerObject = function( window )
 FlyThrough.identify = function( window, choices, progress )
 {
    choices = choices || {};
-   var stage = ( progress && progress.stage ) ? progress.stage : function() {};
+   var stage = FlyThrough.stageOf( progress );
    var solved = { blind: null, solvedPixel: undefined };
    if ( Sky.projector( window ) == null )
    {
@@ -355,6 +355,12 @@ FlyThrough.identify = function( window, choices, progress )
               blind: blind ? blind.result : null };
    FlyThrough.findDistance( id, choices, stage );
    return id;
+};
+
+/* A progress object's stage reporter, or one that does nothing. */
+FlyThrough.stageOf = function( progress )
+{
+   return ( progress && progress.stage ) ? progress.stage : function() {};
 };
 
 /* id.D and its source: a galaxy is a fixed backdrop, a typed distance is kept, else the target's cluster or star. */
@@ -384,21 +390,10 @@ FlyThrough.findDistance = function( id, choices, stage )
  */
 FlyThrough.solveUnsolved = function( window, choices, progress, stage )
 {
-   var blind = null, solvedPixel;
+   var blind = null;
    var blindProgress = { stage: stage, isCancelled: function() { return !!( progress && progress.isCancelled && progress.isCancelled() ); } };
-   var hintError = null;
-   if ( choices.hints )
-   {
-      stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
-      try { solvedPixel = Sky.solveWithHints( window, choices.hints, stage ); }
-      catch ( e )
-      {
-         // ImageSolver may have written the solution the scale check then rejected: Sky.projector would believe it next time
-         Sky.clearSolution( window );
-         if ( FlyThrough.isCancel( e ) ) throw e;
-         hintError = e;
-      }
-   }
+   var hinted = choices.hints ? FlyThrough.solveByHints( window, choices.hints, stage ) : { solvedPixel: undefined, hintError: null };
+   var solvedPixel = hinted.solvedPixel, hintError = hinted.hintError;
    if ( !choices.hints || hintError )
    {
       if ( hintError ) stage( "The hints did not solve: solving blind", 0, 0 );
@@ -410,6 +405,22 @@ FlyThrough.solveUnsolved = function( window, choices, progress, stage )
       }
    }
    return { blind: blind, solvedPixel: solvedPixel };
+};
+
+/* The solve from the typed hints: { solvedPixel, hintError }, the error kept (not thrown) unless it is a cancel. */
+FlyThrough.solveByHints = function( window, hints, stage )
+{
+   var solvedPixel, hintError = null;
+   stage( "Plate-solving: finding where in the sky the image points", 0, 0 );
+   try { solvedPixel = Sky.solveWithHints( window, hints, stage ); }
+   catch ( e )
+   {
+      // ImageSolver may have written the solution the scale check then rejected: Sky.projector would believe it next time
+      Sky.clearSolution( window );
+      if ( FlyThrough.isCancel( e ) ) throw e;
+      hintError = e;
+   }
+   return { solvedPixel: solvedPixel, hintError: hintError };
 };
 
 /* The nebula's distance from its ionising cluster when one is found, else from the bright star that lights it. */
