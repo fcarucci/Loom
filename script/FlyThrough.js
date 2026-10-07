@@ -2248,6 +2248,21 @@ FlyThrough.Dialog = class extends Dialog
       this.built = null;
    }
 
+   /* Drops every control's callback, so the dialog does not keep itself alive. */
+   releaseHandlers()
+   {
+      var self = this;
+      [ "draftButton", "renderButton", "closeButton", "logoButton", "musicButton", "playButton", "folderButton", "ffmpegButton", "openButton", "clearFramesButton" ]
+         .forEach( function( k ) { if ( self[k] ) self[k].onClick = null; } );
+      [ "typeCombo", "dynamicCombo", "fpsCombo", "orientationCombo", "loopCombo", "toolCombo", "logoPlaceCombo", "starQualityCombo" ].forEach( function( k ) { if ( self[k] ) self[k].onItemSelected = null; } );
+      [ "durationSpin" ].forEach( function( k ) { if ( self[k] ) self[k].onValueUpdated = null; } );
+      if ( this.imageList ) this.imageList.onViewSelected = null;
+      [ "logoOpacity", "saturationSlider" ].forEach( function( k ) { if ( self[k] ) self[k].onValueUpdated = null; } );
+      if ( this.autoTimer ) { this.autoTimer.stop(); this.autoTimer.onTimeout = null; this.autoTimer = null; }
+      [ "scrubber" ].forEach( function( k ) { if ( self[k] ) self[k].onValueUpdated = null; } );
+      [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit", "folderEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
+   }
+
    release()
    {
       try
@@ -2256,19 +2271,10 @@ FlyThrough.Dialog = class extends Dialog
          if ( this.bar ) this.bar.release();
          this.releaseBuilt();
          if ( this.work ) { try { this.work.window.forceClose(); } catch ( e0 ) {} this.work = null; }
-         var self = this;
-         [ "draftButton", "renderButton", "closeButton", "logoButton", "musicButton", "playButton", "folderButton", "ffmpegButton", "openButton", "clearFramesButton" ]
-            .forEach( function( k ) { if ( self[k] ) self[k].onClick = null; } );
-         [ "typeCombo", "dynamicCombo", "fpsCombo", "orientationCombo", "loopCombo", "toolCombo", "logoPlaceCombo", "starQualityCombo" ].forEach( function( k ) { if ( self[k] ) self[k].onItemSelected = null; } );
-         if ( this.durationSpin ) this.durationSpin.onValueUpdated = null;
-         if ( this.imageList ) this.imageList.onViewSelected = null;
-         if ( this.logoOpacity ) this.logoOpacity.onValueUpdated = null;
-         if ( this.saturationSlider ) this.saturationSlider.onValueUpdated = null;
-         if ( this.autoTimer ) { this.autoTimer.stop(); this.autoTimer.onTimeout = null; this.autoTimer = null; }
-         if ( this.scrubber ) this.scrubber.onValueUpdated = null;
-         [ "objectEdit", "distanceEdit", "travelEdit", "raEdit", "decEdit", "focalEdit", "pixelEdit", "folderEdit" ].forEach( function( k ) { if ( self[k] ) self[k].onEditCompleted = null; } );
+         this.releaseHandlers();
          this.onClose = null;
          this.onShow = null;
+         var self = this;
          if ( this.presetChecks )
             FlyThrough.PRESET_ORDER.forEach( function( id ) { if ( self.presetChecks[id] ) self.presetChecks[id].onCheck = null; } );
       }
