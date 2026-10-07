@@ -99,9 +99,11 @@ Pipeline.wantedPalettes = function( config )
 };
 
 /*
- * Says which saved palettes were left out and why: a plain note when the
- * run has no narrowband at all (the user never saw the tick), a warning
- * when a visible palette lacks a channel.
+ * Says which saved palettes were left out and why, but only when the user
+ * could have seen the tick: a run with no narrowband at all (RGB, LRGB)
+ * says nothing about a palette, since the ticks are hidden and a saved one
+ * is none of its business. A visible palette that lacks a channel is a
+ * warning.
  */
 Pipeline.reportSkippedPalettes = function( config )
 {
@@ -113,9 +115,7 @@ Pipeline.reportSkippedPalettes = function( config )
          return;
       if ( missing == null )
          Util.warn( "palette", "the " + pal + " palette is skipped: it is not a palette Loom knows" );
-      else if ( have.length == 0 )
-         Util.log( "palette", "the " + pal + " palette is skipped: no narrowband channel in this run" );
-      else
+      else if ( have.length > 0 )
          Util.warn( "palette", "the " + pal + " palette is skipped: it needs " + missing.join( " and " ) +
                                ", which " + ( missing.length == 1 ? "was" : "were" ) + " not supplied" );
    } );

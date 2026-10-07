@@ -11542,9 +11542,10 @@ function runTests()
       try
       {
          Pipeline.reportSkippedPalettes( cfg( [ "HSO" ], rgbOnly ) );
-         check( "with no narrowband the skipped palette is one plain note, not a warning",
-                [ warns.length, logs.length, /HSO palette is skipped/.test( logs[0] || "" ),
-                  /no narrowband/.test( logs[0] || "" ) ], [ 0, 1, true, true ] );
+         check( "with no narrowband (RGB or LRGB) a saved palette is skipped in silence: no warning, no log line, no name",
+                [ warns.length, logs.length ], [ 0, 0 ] );
+         Pipeline.reportSkippedPalettes( cfg( [ "SHO", "HOO", "HSO" ], { L: "l.xisf", R: "r.xisf", G: "g.xisf", B: "b.xisf" } ) );
+         check( "and the same for LRGB with every palette saved", [ warns.length, logs.length ], [ 0, 0 ] );
          logs = [];
          Pipeline.reportSkippedPalettes( cfg( [ "HSO", "HOO" ], { H: "h", O: "o" } ) );
          check( "a palette that lacks a channel while others are supplied is a warning that names it",
