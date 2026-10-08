@@ -938,9 +938,16 @@ Frames.notSubframe = function( name, imageType )
    if ( /^(master|integration)/i.test( n ) || /master/i.test( t ) )
       return "master";
    var subject = t.length > 0 ? t : ( /^([A-Za-z]+)[_ -]/.exec( n ) || [ "", "" ] )[1];
+   return Frames.calibrationKind( subject, t.length > 0 );
+};
+
+/* The calibration kind a subject names; a name-derived subject must be one whole word. */
+Frames.calibrationKind = function( subject, fromImageType )
+{
+   if ( !fromImageType && !/^(flat|dark|bias|darkflat|flatdark|offset)$/i.test( subject ) )
+      return null;
    for ( var i = 0; i < Frames.CALIBRATION_KINDS.length; ++i )
-      if ( Frames.CALIBRATION_KINDS[i][0].test( subject ) &&
-           ( t.length > 0 || /^(flat|dark|bias|darkflat|flatdark|offset)$/i.test( subject ) ) )
+      if ( Frames.CALIBRATION_KINDS[i][0].test( subject ) )
          return Frames.CALIBRATION_KINDS[i][1];
    return null;
 };
