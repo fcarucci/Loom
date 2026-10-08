@@ -945,14 +945,14 @@ Render.blend = function( a, b, alpha )
 Render.frame = function( sc, t, opts, outW, outH, crop )
 {
    var s = opts.travel*Fly.ease( t, opts.easing );
-   var K = Fly.backdropZoom( sc.D, s, opts.backdropMotion != null ? opts.backdropMotion : Fly.BACKDROP_MOTION_DEFAULT );
+   var K = Fly.backdropZoom( sc.D, s, Render.orDefault( opts.backdropMotion, Fly.BACKDROP_MOTION_DEFAULT ) );
    var kernel = opts.kernel || "bicubic";
    var ax = Render.axisWeights( outW, crop.x, crop.w, sc.tp.x, K, sc.w, kernel );
    var ay = Render.axisWeights( outH, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
    // the stars layer at starRes of the video (Medium: half), the nebula always at full size
    var sr = Fly.starQuality( opts.starQuality ).starRes || 1, tw = Render.starSide( outW, sr ), th = Render.starSide( outH, sr );
    var cam = { x: crop.x, y: crop.y, fx: crop.w/tw, fy: crop.h/th };
-   var tax = tw == outW ? ax : Render.axisWeights( tw, crop.x, crop.w, sc.tp.x, K, sc.w, kernel ), tay = th == outH ? ay : Render.axisWeights( th, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
+   var tax = Render.layerAxis( ax, tw, outW, crop.x, crop.w, sc.tp.x, K, sc.w, kernel ), tay = Render.layerAxis( ay, th, outH, crop.y, crop.h, sc.tp.y, K, sc.h, kernel );
    var S = [], T = [], c;
    for ( c = 0; c < sc.nc; ++c )
    {
@@ -963,20 +963,36 @@ Render.frame = function( sc, t, opts, outW, outH, crop )
    // with the camera at rest there, every such moment is frame 0 (FlyThrough.loopImage renders it once)
    var clock = Math.max( 0, t );
    var placed = Render.addSprites( sc, T, s, Object.assign( {}, opts, { t: clock, K: K, coarseMips: sr < 1 } ), tw, th, cam );
-   Render.saturateStars( T, tw*th, opts.starSaturation != null ? opts.starSaturation : 1 );
+   Render.saturateStars( T, tw*th, Render.orDefault( opts.starSaturation, 1 ) );
    // light past white blooms (none in the image itself, so frame 0 is untouched)
-   Render.bloom( T, tw, th, { amount: opts.bloom != null ? opts.bloom : 0, seconds: clock*( opts.duration || 0 ) } );
+   Render.bloom( T, tw, th, { amount: Render.orDefault( opts.bloom, 0 ), seconds: clock*( opts.duration || 0 ) } );
    // in HDR, bright stars reach into the headroom by their magnitude; the backdrop keeps its tone
    var hdrOut = opts.output && Fly.isHdr( opts.output.mode );
    // the map with the frame's backdrop zoom, so a catalogue star's bump follows the star the backdrop carries
    if ( hdrOut && opts.starHdr ) Render.starsToHeadroom( T, tw*th, Render.headroomMap( sc, placed, Object.assign( {}, opts, { K: K } ), tw, th, cam ), tw );
    // up onto the full-size frame (Catmull-Rom, pixel centres as everywhere: output u reads (u + 0.5) tw/outW - 0.5)
-   if ( tw != outW || th != outH )
-   {
-      var ux = Render.axisWeights( outW, 0, tw, 0, 1, tw, "bicubic" ), uy = Render.axisWeights( outH, 0, th, 0, 1, th, "bicubic" );
-      T = T.map( function( b ) { return Render.resample( b, tw, ux, uy ); } );
-   }
+   T = Render.upscaleStars( T, tw, th, outW, outH );
    return Render.frameImage( sc.nc, S, T, opts, outW, outH, clock );
+};
+
+/* One axis' weights for the stars layer (n samples): the video's own (full) when the layer is that size. */
+Render.layerAxis = function( full, n, outN, o, len, tp, K, srcN, kernel )
+{
+   return n == outN ? full : Render.axisWeights( n, o, len, tp, K, srcN, kernel );
+};
+
+/* The option value, or the default when it is unset (null or undefined). */
+Render.orDefault = function( value, dflt )
+{
+   return value != null ? value : dflt;
+};
+
+/* The stars layers T (tw x th) up onto the full-size frame (outW x outH), as they are when that is their size. */
+Render.upscaleStars = function( T, tw, th, outW, outH )
+{
+   if ( tw == outW && th == outH ) return T;
+   var ux = Render.axisWeights( outW, 0, tw, 0, 1, tw, "bicubic" ), uy = Render.axisWeights( outH, 0, th, 0, 1, th, "bicubic" );
+   return T.map( function( b ) { return Render.resample( b, tw, ux, uy ); } );
 };
 
 /* The stars layer's side for a video side of n at starRes sr (Medium: half, at least 1 px). */
