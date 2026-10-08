@@ -20,6 +20,37 @@ Pipeline.REQUIRED_PROCESSES = [
 ];
 
 /*
+ * A gradient tool is only required when it is the one chosen.
+ */
+Pipeline.gradientToolProblems = function( config )
+{
+   var problems = [];
+   var gradientTool = Steps.gradientToolOf( config );
+   if ( gradientTool == Steps.GRADIENT_TOOL_GRAXPERT && !Steps.moduleAvailable( "GraXpert" ) )
+      problems.push( "Process not installed: GraXpert (choose another gradient tool to proceed without)" );
+   if ( gradientTool == Steps.GRADIENT_TOOL_STUDIO && !Steps.studioAvailable() )
+      problems.push( "SyQon Studio not found: syqon-cli (choose another gradient tool to proceed without)" );
+   return problems;
+};
+
+/*
+ * The per-channel checks: an open view where one is supplied, else the file.
+ */
+Pipeline.preflightChannels = function( config )
+{
+   var problems = [];
+   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+   {
+      var key = Util.CHANNELS[j];
+      if ( config.views && config.views[key] )
+         problems = problems.concat( Pipeline.preflightView( key, config.views[key] ) );
+      else if ( config.paths[key] )
+         problems = problems.concat( Pipeline.preflightPath( key, config.paths[key] ) );
+   }
+   return problems;
+};
+
+/*
  * A wall: nothing opens or processes until every check passes, so a
  * missing FITS keyword or a missing MARS database costs a dialog box
  * rather than a half-finished run.
@@ -35,12 +66,7 @@ Pipeline.preflight = function( config )
          problems.push( "Process not installed: " + p );
    }
 
-   // A gradient tool is only required when it is the one chosen.
-   var gradientTool = Steps.gradientToolOf( config );
-   if ( gradientTool == Steps.GRADIENT_TOOL_GRAXPERT && !Steps.moduleAvailable( "GraXpert" ) )
-      problems.push( "Process not installed: GraXpert (choose another gradient tool to proceed without)" );
-   if ( gradientTool == Steps.GRADIENT_TOOL_STUDIO && !Steps.studioAvailable() )
-      problems.push( "SyQon Studio not found: syqon-cli (choose another gradient tool to proceed without)" );
+   problems = problems.concat( Pipeline.gradientToolProblems( config ) );
 
    /*
     * SyQon Studio's paid models are the account's to allow, and only a
@@ -54,14 +80,7 @@ Pipeline.preflight = function( config )
 
    problems = problems.concat( Pipeline.marsProblems( config ) );
 
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
-   {
-      var key = Util.CHANNELS[j];
-      if ( config.views && config.views[key] )
-         problems = problems.concat( Pipeline.preflightView( key, config.views[key] ) );
-      else if ( config.paths[key] )
-         problems = problems.concat( Pipeline.preflightPath( key, config.paths[key] ) );
-   }
+   problems = problems.concat( Pipeline.preflightChannels( config ) );
 
    // An empty output folder is valid and means "do not write anything":
    // results are left as open windows in the current project. Only a
