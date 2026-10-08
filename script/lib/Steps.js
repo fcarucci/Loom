@@ -470,6 +470,17 @@ Steps.marsDatabasesInDirectory = function( dir )
 };
 
 /*
+ * marsDatabaseFiles is an array of [ enabled, path ] pairs.
+ */
+Steps.enabledMarsPairs = function( paths )
+{
+   var list = [];
+   for ( var i = 0; i < paths.length; ++i )
+      list.push( [ true, paths[i] ] );
+   return list;
+};
+
+/*
  * `marsDir`, when given, is the user's explicit choice from the dialog and
  * outranks everything else -- a path the user typed is a statement of intent
  * at least as strong as a process icon, and unlike PixInsight's own settings
@@ -485,11 +496,8 @@ Steps.configuredMGC = function( marsDir )
    var fromDir = Steps.marsDatabasesInDirectory( marsDir );
    if ( fromDir.length > 0 )
    {
-      var chosen = [];
-      for ( var d = 0; d < fromDir.length; ++d )
-         chosen.push( [ true, fromDir[d] ] );
       return { iconName: null,
-               marsDatabaseFiles: chosen,
+               marsDatabaseFiles: Steps.enabledMarsPairs( fromDir ),
                useMARSDatabase: true,
                source: "configured folder " + marsDir };
    }
@@ -513,12 +521,8 @@ Steps.configuredMGC = function( marsDir )
    if ( found.length == 0 )
       return null;
 
-   // marsDatabaseFiles is an array of [ enabled, path ] pairs.
-   var list = [];
-   for ( var i = 0; i < found.length; ++i )
-      list.push( [ true, found[i] ] );
    return { iconName: null,
-            marsDatabaseFiles: list,
+            marsDatabaseFiles: Steps.enabledMarsPairs( found ),
             useMARSDatabase: true,
             source: "PixInsight settings" };
 };

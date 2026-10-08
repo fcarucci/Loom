@@ -1061,7 +1061,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 318 );
+      check( "Steps: the member count", Object.keys( have ).length, 319 );
    }
 
    /*
