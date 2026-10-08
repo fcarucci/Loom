@@ -165,6 +165,18 @@ Frames.metricInRange = function( name, value )
    return ( r != null ) && isFinite( value ) && value >= r.lo && value <= r.hi;
 };
 
+/* A finite, non-negative whole number: what a star count is. */
+Frames.isWholeCount = function( v )
+{
+   return isFinite( v ) && v >= 0 && Math.floor( v ) === v;
+};
+
+/* Not finite, or a whole number: a PSF SNR that is probably the star count. */
+Frames.looksLikeCount = function( v )
+{
+   return !isFinite( v ) || Math.floor( v ) === v;
+};
+
 /*
  * Does this row still MEAN what it is read as?
  *
@@ -193,11 +205,9 @@ Frames.meaningProblems = function( metrics )
       bad.push( "eccentricity is not a fraction in (0,1)" );
    if ( !Frames.metricInRange( "fwhm", metrics.fwhm ) )
       bad.push( "FWHM outside a plausible range" );
-   if ( !( isFinite( metrics.stars ) && metrics.stars >= 0 &&
-           Math.floor( metrics.stars ) === metrics.stars ) )
+   if ( !Frames.isWholeCount( metrics.stars ) )
       bad.push( "star count is not a whole number" );
-   if ( !isFinite( metrics.psfSNR ) ||
-        Math.floor( metrics.psfSNR ) === metrics.psfSNR )
+   if ( Frames.looksLikeCount( metrics.psfSNR ) )
       bad.push( "PSF SNR is a whole number, so it is probably the star count" );
    return bad;
 };
