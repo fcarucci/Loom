@@ -791,6 +791,86 @@ Solve.triedKey = function( fit, centre )
    return Solve.voteKey( fit, centre ) + ":" + fit.parity + ":" + ( ( Math.round( Math.atan2( fit.b, fit.a )/Fly.RAD/5 ) % 72 + 72 ) % 72 );
 };
 
+/* Every image quad's hits in the index (both parities), each a hypothesis { ref, fit, centre, key, tried } that passes the field-size and fit-error checks. */
+Solve.hypotheses = function( index, dets, W, H, tick )
+{
+   var hyps = [], quads = Solve.imageQuads( dets, Solve.IMAGE_QUAD_STARS );
+   quads.forEach( function( iq, n )
+   {
+      if ( n % 50 == 0 ) tick();
+      Solve.lookup( index.hash, index.codes, iq.code, Solve.CODE_TOL ).forEach( function( q )
+      {
+         var h = Solve.hypothesisOf( index, q, iq, W, H );
+         if ( h ) hyps.push( h );
+      } );
+   } );
+   return hyps;
+};
+
+/* The hypothesis the index quad q makes of the image quad iq, or null when its stars do not project or its fit is out of range. */
+Solve.hypothesisOf = function( index, q, iq, W, H )
+{
+   var a = index.quads[4*q], ref = { ra: index.stars[3*a], dec: index.stars[3*a + 1] }, sky = [];
+   for ( var j = 0; j < 4; ++j ) { var s = index.quads[4*q + j]; sky.push( Solve.toPlane( ref, index.stars[3*s], index.stars[3*s + 1] ) ); }
+   if ( sky.some( function( p ) { return !p; } ) ) return null;
+   var fit = Solve.fitSimilarity( iq.pts, sky, iq.parity );
+   var field = fit.scale*Math.max( W, H );
+   if ( field < Solve.FIELD_MIN || field > Solve.FIELD_MAX || fit.rms > 0.02*fit.scale*iq.diameter ) return null;
+   var c = Solve.applySimilarity( fit, W/2, H/2 ), centre = Solve.fromPlane( ref, c[0], c[1] );
+   return { ref: ref, fit: fit, centre: centre, key: Solve.voteKey( fit, centre ), tried: Solve.triedKey( fit, centre ) };
+};
+
+/* Hypothesis h checked by Solve.verify: its solution, or null when it falls short of the thresholds (limit: the chance bound). */
+Solve.verifyHypothesis = function( index, h, dets, W, H, limit )
+{
+   // the fit is about the quad's reference star; re-centre it on the image centre's tangent point
+   var img = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ], [ W/2, H/2 ] ];
+   var sky = img.map( function( p ) { var q = Solve.applySimilarity( h.fit, p[0], p[1] ), s = Solve.fromPlane( h.ref, q[0], q[1] ); return Solve.toPlane( h.centre, s.ra, s.dec ); } );
+   var v = Solve.verify( index, Solve.fitSimilarity( img, sky, h.fit.parity ), h.centre, dets, W, H );
+   if ( v.matches < Solve.MIN_MATCHES || v.spread < Solve.MIN_SPREAD || v.log10Chance > limit ) return null;
+   var c = Solve.applySimilarity( v.fit, W/2, H/2 ), centre = Solve.fromPlane( h.centre, c[0], c[1] );
+   var rotation = Math.atan2( v.fit.b, v.fit.a )/Fly.RAD;
+   // the corners pin the turn and the mirroring, which a centre and a scale leave open (Solve.sameField)
+   var corners = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ] ].map( function( p ) { var q = Solve.applySimilarity( v.fit, p[0], p[1] ); return Solve.fromPlane( h.centre, q[0], q[1] ); } );
+   return { ra: centre.ra, dec: centre.dec, scale: v.fit.scale*3600, rotation: rotation,
+            parity: v.fit.parity, corners: corners, matches: v.matches, of: v.of, spread: v.spread, log10Chance: v.log10Chance };
+};
+
+/* The hypotheses the most others agree with (same voteKey) first, in place. */
+Solve.sortByVotes = function( hyps )
+{
+   var votes = {};
+   hyps.forEach( function( h ) { votes[h.key] = ( votes[h.key] || 0 ) + 1; } );
+   hyps.sort( function( a, b ) { return votes[b.key] - votes[a.key]; } );
+};
+
+/* The chance bound of a verification, tightened by the number of hypotheses tried (at most Solve.MAX_VERIFY). */
+Solve.chanceLimit = function( count )
+{
+   var budget = Math.max( 1, Math.min( count, Solve.MAX_VERIFY ) );
+   return Solve.MAX_LOG10_CHANCE - Math.log( budget )/Math.LN10;
+};
+
+/* The hypotheses verified in order (Solve.verifyHypothesis), duplicates dropped, until max solutions or Solve.MAX_VERIFY tries. */
+Solve.verifyInOrder = function( index, hyps, dets, W, H, tick, max )
+{
+   var out = [];
+   // many hypotheses are tried: the threshold tightens with the whole verification budget (Bonferroni), fixed up front
+   var tried = {}, limit = Solve.chanceLimit( hyps.length );
+   for ( var i = 0; i < hyps.length && i < Solve.MAX_VERIFY && out.length < max; ++i )
+   {
+      if ( i % 20 == 0 ) tick();
+      var h = hyps[i];
+      if ( tried[h.tried] ) continue;
+      tried[h.tried] = true;
+      var found = Solve.verifyHypothesis( index, h, dets, W, H, limit );
+      if ( !found ) continue;
+      if ( out.some( function( o ) { return Solve.sameSolution( o, found ); } ) ) continue;
+      out.push( found );
+   }
+   return out;
+};
+
 /*
  * The blind solve: every image quad looked up in the index (both
  * parities), each hit a hypothesis -- a similarity from pixels to the sky
@@ -802,47 +882,10 @@ Solve.solve = function( index, dets, W, H, opts )
    opts = opts || {};
    var tick = opts.tick || function() {}, out = [];
    if ( dets.length < Solve.MIN_MATCHES ) return out;
-   var hyps = [], quads = Solve.imageQuads( dets, Solve.IMAGE_QUAD_STARS );
-   quads.forEach( function( iq, n )
-   {
-      if ( n % 50 == 0 ) tick();
-      Solve.lookup( index.hash, index.codes, iq.code, Solve.CODE_TOL ).forEach( function( q )
-      {
-         var a = index.quads[4*q], ref = { ra: index.stars[3*a], dec: index.stars[3*a + 1] }, sky = [];
-         for ( var j = 0; j < 4; ++j ) { var s = index.quads[4*q + j]; sky.push( Solve.toPlane( ref, index.stars[3*s], index.stars[3*s + 1] ) ); }
-         if ( sky.some( function( p ) { return !p; } ) ) return;
-         var fit = Solve.fitSimilarity( iq.pts, sky, iq.parity );
-         var field = fit.scale*Math.max( W, H );
-         if ( field < Solve.FIELD_MIN || field > Solve.FIELD_MAX || fit.rms > 0.02*fit.scale*iq.diameter ) return;
-         var c = Solve.applySimilarity( fit, W/2, H/2 ), centre = Solve.fromPlane( ref, c[0], c[1] );
-         hyps.push( { ref: ref, fit: fit, centre: centre, key: Solve.voteKey( fit, centre ), tried: Solve.triedKey( fit, centre ) } );
-      } );
-   } );
-   var votes = {};
-   hyps.forEach( function( h ) { votes[h.key] = ( votes[h.key] || 0 ) + 1; } );
-   hyps.sort( function( a, b ) { return votes[b.key] - votes[a.key]; } );
-   // many hypotheses are tried: the threshold tightens with the whole verification budget (Bonferroni), fixed up front
-   var tried = {}, budget = Math.max( 1, Math.min( hyps.length, Solve.MAX_VERIFY ) ), limit = Solve.MAX_LOG10_CHANCE - Math.log( budget )/Math.LN10;
-   for ( var i = 0; i < hyps.length && i < Solve.MAX_VERIFY && out.length < ( opts.maxResults || 3 ); ++i )
-   {
-      if ( i % 20 == 0 ) tick();
-      var h = hyps[i];
-      if ( tried[h.tried] ) continue;
-      tried[h.tried] = true;
-      // the fit is about the quad's reference star; re-centre it on the image centre's tangent point
-      var img = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ], [ W/2, H/2 ] ];
-      var sky = img.map( function( p ) { var q = Solve.applySimilarity( h.fit, p[0], p[1] ), s = Solve.fromPlane( h.ref, q[0], q[1] ); return Solve.toPlane( h.centre, s.ra, s.dec ); } );
-      var v = Solve.verify( index, Solve.fitSimilarity( img, sky, h.fit.parity ), h.centre, dets, W, H );
-      if ( v.matches < Solve.MIN_MATCHES || v.spread < Solve.MIN_SPREAD || v.log10Chance > limit ) continue;
-      var c = Solve.applySimilarity( v.fit, W/2, H/2 ), centre = Solve.fromPlane( h.centre, c[0], c[1] );
-      var rotation = Math.atan2( v.fit.b, v.fit.a )/Fly.RAD;
-      if ( out.some( function( o ) { return Solve.sameSolution( o, { ra: centre.ra, dec: centre.dec, rotation: rotation, parity: v.fit.parity } ); } ) ) continue;
-      // the corners pin the turn and the mirroring, which a centre and a scale leave open (Solve.sameField)
-      var corners = [ [ 0, 0 ], [ W, 0 ], [ 0, H ], [ W, H ] ].map( function( p ) { var q = Solve.applySimilarity( v.fit, p[0], p[1] ); return Solve.fromPlane( h.centre, q[0], q[1] ); } );
-      out.push( { ra: centre.ra, dec: centre.dec, scale: v.fit.scale*3600, rotation: rotation,
-                  parity: v.fit.parity, corners: corners, matches: v.matches, of: v.of, spread: v.spread, log10Chance: v.log10Chance } );
-   }
-   return out.sort( function( a, b ) { return a.log10Chance - b.log10Chance; } );
+   var hyps = Solve.hypotheses( index, dets, W, H, tick );
+   Solve.sortByVotes( hyps );
+   var found = Solve.verifyInOrder( index, hyps, dets, W, H, tick, opts.maxResults || 3 );
+   return found.sort( function( a, b ) { return a.log10Chance - b.log10Chance; } );
 };
 
 /*
