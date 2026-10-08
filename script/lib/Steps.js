@@ -1026,6 +1026,40 @@ Steps.solve = function( view )
     */
 };
 
+Steps.setDeviceQE = function( P, instrume )
+{
+   var qe = Steps.deviceCurveForImage( instrume );
+   if ( qe != null )
+   {
+      P.deviceQECurveName = qe.name;
+      P.deviceQECurve = qe.data;
+   }
+};
+
+/*
+ * The composite is a three-channel image: SPFC needs the red, green
+ * and blue transmission curves, not the gray one. chosenFilter is a
+ * { R, G, B } map of filter names here.
+ */
+Steps.setSpfcRgbCurves = function( P, chosenFilter )
+{
+   var rgbNames = chosenFilter || {};
+   var trio = [ [ "R", "red" ], [ "G", "green" ], [ "B", "blue" ] ];
+   for ( var t = 0; t < trio.length; ++t )
+   {
+      var ck = trio[t][0], prefix = trio[t][1];
+      var c = Steps.filterCurveByName( rgbNames[ck] );
+      if ( c == null )
+         throw new Error( "No filter curve for the " + ck + " channel. SPFC " +
+                          "cannot calibrate the RGB composite without red, " +
+                          "green and blue curves: choose filters in Loom's " +
+                          "dialog." );
+      P[prefix + "FilterName"] = c.name;
+      P[prefix + "FilterTrCurve"] = c.data;
+      Util.log( "spfc", prefix + " filter -> " + c.name );
+   }
+};
+
 /*
  * SPFC on a single mono channel. filterName is the FITS FILTER keyword
  * value for this frame. channelKey is the LHSO channel this view was
@@ -1073,35 +1107,9 @@ Steps.spfc = function( view, filterName, channelKey, instrume, chosenFilter )
    P.generateGraphs = false;
    P.generateStarMaps = false;
    P.generateTextFiles = false;
-   var qe = Steps.deviceCurveForImage( instrume );
-   if ( qe != null )
-   {
-      P.deviceQECurveName = qe.name;
-      P.deviceQECurve = qe.data;
-   }
+   Steps.setDeviceQE( P, instrume );
    if ( channelKey == "RGB" )
-   {
-      /*
-       * The composite is a three-channel image: SPFC needs the red, green
-       * and blue transmission curves, not the gray one. chosenFilter is a
-       * { R, G, B } map of filter names here.
-       */
-      var rgbNames = chosenFilter || {};
-      var trio = [ [ "R", "red" ], [ "G", "green" ], [ "B", "blue" ] ];
-      for ( var t = 0; t < trio.length; ++t )
-      {
-         var ck = trio[t][0], prefix = trio[t][1];
-         var c = Steps.filterCurveByName( rgbNames[ck] );
-         if ( c == null )
-            throw new Error( "No filter curve for the " + ck + " channel. SPFC " +
-                             "cannot calibrate the RGB composite without red, " +
-                             "green and blue curves: choose filters in Loom's " +
-                             "dialog." );
-         P[prefix + "FilterName"] = c.name;
-         P[prefix + "FilterTrCurve"] = c.data;
-         Util.log( "spfc", prefix + " filter -> " + c.name );
-      }
-   }
+      Steps.setSpfcRgbCurves( P, chosenFilter );
    else if ( curve != null )
    {
       P.grayFilterName = curve.name;
@@ -1826,6 +1834,18 @@ Steps.denoise = function( view, tool, level, label, alreadyStretched, pass )
    t.run( view, level, alreadyStretched, pass );
 };
 
+Steps.studioPassDetail = function( shown, p, where )
+{
+   var model = Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" );
+   // Ultra and Max are both the strength and the model: say it once
+   return ( model.toLowerCase() == shown ? "" : shown + ", " ) + model + ", " + where;
+};
+
+Steps.studioStretchedDetail = function( step, shown )
+{
+   return step.stretched ? Steps.studioPassDetail( shown, step.stretched, "after stretch" ) : shown;
+};
+
 /*
  * What the console's operation line says in brackets: the level, and for
  * Prism 2.0, which of its passes this call runs -- "medium, Advanced,
@@ -1838,14 +1858,9 @@ Steps.denoiseOperationDetail = function( tool, level, alreadyStretched, pass )
    if ( step == null )
       return level;
    var shown = Steps.noiseLevelName( tool, level );
-   function named( p, where )
-   {
-      var model = Steps.studioModelLabel( p.model ).replace( /^Prism Deep /, "" );
-      // Ultra and Max are both the strength and the model: say it once
-      return ( model.toLowerCase() == shown ? "" : shown + ", " ) + model + ", " + where;
-   }
+   function named( p, where ) { return Steps.studioPassDetail( shown, p, where ); }
    if ( pass == "stretched" || ( alreadyStretched && step.stretched ) )
-      return step.stretched ? named( step.stretched, "after stretch" ) : shown;
+      return Steps.studioStretchedDetail( step, shown );
    if ( step.linear )
       return named( step.linear, ( pass == "linear" ) ? "before stretch" : "no stretch" );
    return ( step.unstretched && pass != "linear" ) ? named( step.unstretched, "no stretch" ) : shown;
