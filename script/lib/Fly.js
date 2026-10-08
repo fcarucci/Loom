@@ -131,6 +131,13 @@ Fly.radialSource = function( rOut, rc, g, seen )
 Fly.discVisible = function( u, v, r, W, H )
 {
    if ( u - r >= 0 && v - r >= 0 && u + r <= W && v + r <= H ) return 1;
+   var count = Fly.discGridCount( u, v, r, W, H );
+   return count.inDisc ? count.inFrame/count.inDisc : 0;
+};
+
+/* The 24 x 24 grid over a disc (centre u, v, radius r): how many of its points lie in the disc, and of those in the W x H frame. */
+Fly.discGridCount = function( u, v, r, W, H )
+{
    var n = 24, inDisc = 0, inFrame = 0;
    for ( var j = 0; j < n; ++j )
       for ( var i = 0; i < n; ++i )
@@ -140,7 +147,7 @@ Fly.discVisible = function( u, v, r, W, H )
          ++inDisc;
          if ( u + x >= 0 && u + x < W && v + y >= 0 && v + y < H ) ++inFrame;
       }
-   return inDisc ? inFrame/inDisc : 0;
+   return { inDisc: inDisc, inFrame: inFrame };
 };
 
 /* The share of a disc of radius r1 covered by a disc of radius r2 whose centre is d away (the lens area). */
@@ -1320,14 +1327,23 @@ Fly.trcDecode = function( c, x )
 {
    x = Math.max( 0, Math.min( 1, x ) );
    if ( c.type == "gamma" ) return Math.pow( x, c.g );
-   if ( c.type == "table" )
-   {
-      var t = c.t, f = x*( t.length - 1 ), i = Math.min( t.length - 2, Math.floor( f ) );
-      return t[i] + ( f - i )*( t[i + 1] - t[i] );
-   }
+   if ( c.type == "table" ) return Fly.tableCurve( c.t, x );
    if ( c.type != "para" ) return x;
-   var p = c.p, g = p[0], a = p[1], b = p[2], cc = p[3], d = p[4], e = p[5], ff = p[6];
-   switch ( c.fn )
+   return Fly.paraCurve( c.fn, c.p, x );
+};
+
+/* A tone-curve table's value at x in [0,1], linearly interpolated. */
+Fly.tableCurve = function( t, x )
+{
+   var f = x*( t.length - 1 ), i = Math.min( t.length - 2, Math.floor( f ) );
+   return t[i] + ( f - i )*( t[i + 1] - t[i] );
+};
+
+/* A parametric tone curve (ICC types 0-4, fn; parameters p) at x in [0,1]; x itself for an unknown type. */
+Fly.paraCurve = function( fn, p, x )
+{
+   var g = p[0], a = p[1], b = p[2], cc = p[3], d = p[4], e = p[5], ff = p[6];
+   switch ( fn )
    {
    case 0: return Math.pow( x, g );
    case 1: return x >= -b/a ? Math.pow( a*x + b, g ) : 0;
