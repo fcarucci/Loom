@@ -1242,15 +1242,8 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
    // its spikes are drawn on their own, from the model, growing along their length only (Fly.spikeLength);
    // the photograph minus them is the glow -- at the start the two add up to the photograph.
    // All channels are drawn together (Render.drawSprites); each has its own twinkle.
-   var nc = T.length, tw = [], glow = [], spikes = [], parts = [], c;
-   for ( c = 0; c < nc; ++c )
-   {
-      var cc = Math.min( c, sp.pixels.length - 1 );
-      tw.push( Fly.twinkle( q.j + 1, seconds, opts.twinkle, c ) );
-      spikes.push( sp.spikeAngles && sp.modelSpikes ? sp.modelSpikes[cc] : null );
-      glow.push( spikes[c] ? Render.glowPatch( sp, cc ) : sp.pixels[cc] );
-      parts.push( ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow[c] ) : null );
-   }
+   var ch = Render.placedChannels( sp, q, opts, seconds, T.length, wc );
+   var tw = ch.tw, glow = ch.glow, spikes = ch.spikes, parts = ch.parts;
    var pick = function( key ) { return parts.map( function( p ) { return p[key]; } ); };
    var draws = [ [ glow, sp, 1 - wo ] ], glowHow = { seen: q.seen, coarse: !!opts.coarseMips, footprint: Fly.starQuality( opts.starQuality ).footprint };
    if ( parts[0] ) draws.push( [ pick( "photoCore" ), parts[0].coreSprite, wo - wc ], [ pick( "modelCore" ), parts[0].coreSprite, wc ] );
@@ -1262,11 +1255,30 @@ Render.drawPlaced = function( sc, T, q, s, opts, outW, outH, cam )
       var ks = s1.map( function( x ) { return q.kCore*x; } ), kOs = s1.map( function( x ) { return q.kOuter*x; } );
       path.forEach( function( p ) { Render.drawSprites( T, outW, outH, pw[0], pw[1], p.x, p.y, q.g, ks, cam, kOs, q.rc, glowHow ); } );
    } );
-   if ( spikes[0] )
+   if ( spikes[0] ) Render.drawPlacedSpikes( T, q, opts, outW, outH, cam, ch, path );
+};
+
+/* A placed star's per-channel twinkle (tw), glow patches, spike patches and core-split parts (when wc > 0). */
+Render.placedChannels = function( sp, q, opts, seconds, nc, wc )
+{
+   var tw = [], glow = [], spikes = [], parts = [];
+   for ( var c = 0; c < nc; ++c )
    {
-      var sk = tw.map( function( t ) { return q.alpha*t/path.length; } ), how = { seen: q.seen, coarse: !!opts.coarseMips, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
-      path.forEach( function( p ) { Render.drawSprites( T, outW, outH, spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
+      var cc = Math.min( c, sp.pixels.length - 1 );
+      tw.push( Fly.twinkle( q.j + 1, seconds, opts.twinkle, c ) );
+      spikes.push( sp.spikeAngles && sp.modelSpikes ? sp.modelSpikes[cc] : null );
+      glow.push( spikes[c] ? Render.glowPatch( sp, cc ) : sp.pixels[cc] );
+      parts.push( ( wc > 0 ) ? Render.splitPatches( sp, cc, q.rc, glow[c] ) : null );
    }
+   return { tw: tw, glow: glow, spikes: spikes, parts: parts };
+};
+
+/* A placed star's spikes, drawn on their own from its model along the shutter path (ch: Render.placedChannels). */
+Render.drawPlacedSpikes = function( T, q, opts, outW, outH, cam, ch, path )
+{
+   var sp = q.sp;
+   var sk = ch.tw.map( function( t ) { return q.alpha*t/path.length; } ), how = { seen: q.seen, coarse: !!opts.coarseMips, spike: { length: q.spikeLength, angles: sp.spikeAngles } };
+   path.forEach( function( p ) { Render.drawSprites( T, outW, outH, ch.spikes, sp, p.x, p.y, q.g, sk, cam, sk, q.rc, how ); } );
 };
 
 /* A sprite's core radius: its model's (core + one FWHM), else half its detection box. */
