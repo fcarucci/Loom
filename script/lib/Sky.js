@@ -293,18 +293,27 @@ Sky.regionCatalogue = function( c, reading )
    var memo = Sky._regions.arrays;
    if ( memo[key] ) return memo[key];
    var path = dir + "/" + key + ".f32";
-   if ( File.exists( path ) )
-   {
-      try { return ( memo[key] = Sky.readArrays( path, [ ( new FileInfo( path ) ).size/4 ] )[0] ); }
-      catch ( e ) { Util.warn( "fly", "star region " + key + ": " + e ); }   // unreadable: read it again
-   }
+   if ( File.exists( path ) && Sky.readCachedRegion( memo, key, path ) ) return memo[key];
    if ( reading ) reading();
    var s = Sky.catalogueTile( c, 1.02*( c.radius || Solve.REGION_RADIUS ), Solve.INDEX_G_MAX );
    if ( s == null ) return null;
    var keep = new Solve.Keeper( Solve.BANDS.map( function( b ) { return b.lo; } ), Solve.STARS_PER_CELL );
    s.forEach( function( t ) { keep.add( { ra: t.ra, dec: t.dec, G: t.G } ); } );
    var a = keep.toArrays();
-   // a cache that cannot be written (a full disk, a folder it may not write) costs the next solve a query, not this one its stars
+   Sky.cacheRegion( dir, path, key, a );
+   return ( memo[key] = a );
+};
+
+/* Reads a cached region file into memo[key]; false (after a warning) when it is unreadable. */
+Sky.readCachedRegion = function( memo, key, path )
+{
+   try { memo[key] = Sky.readArrays( path, [ ( new FileInfo( path ) ).size/4 ] )[0]; return true; }
+   catch ( e ) { Util.warn( "fly", "star region " + key + ": " + e ); return false; }   // unreadable: read it again
+};
+
+/* Writes a region's arrays to its cache file; a cache that cannot be written (a full disk, a folder it may not write) costs the next solve a query, not this one its stars. */
+Sky.cacheRegion = function( dir, path, key, a )
+{
    try
    {
       Util.ensureDirectory( dir );
@@ -313,7 +322,6 @@ Sky.regionCatalogue = function( c, reading )
       File.move( path + ".part", path );
    }
    catch ( e ) { Util.warn( "fly", "star region " + key + " not cached: " + e ); }
-   return ( memo[key] = a );
 };
 
 /* This user's earlier solves, most recent first ([] when none or unreadable). */
@@ -598,6 +606,18 @@ Sky.noiseSigma = function( buf )
    return Fly.mad( sample ) == 1 ? 0 : Fly.mad( sample );
 };
 
+/* Whether pixel i belongs to a star other than self (labels: each pixel's star, negative for none; null when unlabelled). */
+Sky.otherStar = function( labels, i, self )
+{
+   return !!labels && labels[i] >= 0 && labels[i] != self;
+};
+
+/* The first dx of a ring row dy away whose distance reaches the inner radius (lo = its square). */
+Sky.ringStart = function( lo, dy )
+{
+   return ( lo - dy*dy > 0 ) ? Math.ceil( Math.sqrt( lo - dy*dy ) ) : 0;
+};
+
 /*
  * Median and brightest pixel of the round ring of radius r (|d - r| < 0.5)
  * around (cx, cy), skipping pixels that belong to another detection's
@@ -612,7 +632,7 @@ Sky.ringStats = function( buf, w, h, cx, cy, r, labels, self )
    {
       if ( x < 0 || x >= w ) return;
       var i = y*w + x;
-      if ( labels && labels[i] >= 0 && labels[i] != self ) return;
+      if ( Sky.otherStar( labels, i, self ) ) return;
       v.push( buf[i] );
       if ( buf[i] > top ) top = buf[i];
    }
@@ -620,7 +640,7 @@ Sky.ringStats = function( buf, w, h, cx, cy, r, labels, self )
    {
       var y = Y + dy, outer = hi - dy*dy;
       if ( y < 0 || y >= h || outer <= 0 ) continue;
-      var a = ( lo - dy*dy > 0 ) ? Math.ceil( Math.sqrt( lo - dy*dy ) ) : 0, b = Math.ceil( Math.sqrt( outer ) ) - 1;
+      var a = Sky.ringStart( lo, dy ), b = Math.ceil( Math.sqrt( outer ) ) - 1;
       for ( var dx = a; dx <= b; ++dx )
       {
          var d2 = dx*dx + dy*dy;
@@ -861,7 +881,13 @@ Sky.spikeFalloff = function( env, dets, angles )
    var first = -1;
    for ( r = 0; r < T.length; ++r ) { if ( n[r] ) { T[r] /= n[r]; if ( first < 0 ) first = r; } }
    if ( first < 0 ) return T;
-   var W = Fly.SPIKE_WINDOW, out = [];
+   return Sky.smoothFalloff( T, first );
+};
+
+/* A spike falloff's averages T (from index first on) smoothed over Fly.SPIKE_WINDOW, never rising outward, the inside held at the first value. */
+Sky.smoothFalloff = function( T, first )
+{
+   var W = Fly.SPIKE_WINDOW, out = [], r;
    for ( r = 0; r < T.length; ++r )
    {
       if ( r < first ) { out.push( 0 ); continue; }
