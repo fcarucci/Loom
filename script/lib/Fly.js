@@ -591,6 +591,36 @@ Fly.nameScore = function( typed, words )
    return sum/typed.length - 0.05*Math.max( 0, words.length - used );
 };
 
+/* hit( e, 1, name ) for each catalogue entry of the Messier number a compact query such as "M31" or "MESSIER31" names. */
+Fly.messierHits = function( compact, entries, hit )
+{
+   var m = /^M(?:ESSIER)?(\d+)$/.exec( compact );
+   if ( m ) entries.forEach( function( e ) { if ( e.messier == "M" + m[1] ) hit( e, 1, e.name || "M" + m[1] ); } );
+};
+
+/* hit( e, score ) for each catalogue entry whose name scores at least Fly.OBJECT_MIN_SCORE against the typed words. */
+Fly.nameHits = function( typed, entries, hit )
+{
+   entries.forEach( function( e )
+   {
+      if ( !e.name ) return;
+      var s = Fly.nameScore( typed, Fly.objectWords( e.name ) );
+      if ( s >= Fly.OBJECT_MIN_SCORE ) hit( e, s );
+   } );
+};
+
+/* hit( entry, score, name ) for each Fly.OBJECT_ALIASES entry any of whose names scores at least Fly.OBJECT_MIN_SCORE (byId: the catalogue by upper-case id). */
+Fly.aliasHits = function( typed, byId, hit )
+{
+   Fly.OBJECT_ALIASES.forEach( function( a )
+   {
+      var s = Math.max.apply( null, a.names.map( function( n ) { return Fly.nameScore( typed, Fly.objectWords( n ) ); } ) );
+      if ( s < Fly.OBJECT_MIN_SCORE ) return;
+      var e = ( a.ra != null ) ? a : byId[a.id];
+      if ( e ) hit( { id: a.id, ra: e.ra, dec: e.dec, diameter: a.diameter || e.diameter }, s, a.names[0] );
+   } );
+};
+
 /*
  * What a person typed in the Object box, best first: [{id, ra, dec, name,
  * diameter, score}]. A catalogue id however it is spaced, or a Messier
@@ -608,22 +638,10 @@ Fly.findObject = function( query, entries )
    // an ASIAIR target such as "IC 1396A" names a part of a catalogued object
    var sub = /^((?:NGC|IC)\d+)[A-Z]$/.exec( compact );
    if ( !byId[compact] && sub && byId[sub[1]] ) hit( byId[sub[1]], 0.97 );
-   var m = /^M(?:ESSIER)?(\d+)$/.exec( compact );
-   if ( m ) ( entries || [] ).forEach( function( e ) { if ( e.messier == "M" + m[1] ) hit( e, 1, e.name || "M" + m[1] ); } );
+   Fly.messierHits( compact, entries || [], hit );
    var typed = Fly.objectWords( q );
-   ( entries || [] ).forEach( function( e )
-   {
-      if ( !e.name ) return;
-      var s = Fly.nameScore( typed, Fly.objectWords( e.name ) );
-      if ( s >= Fly.OBJECT_MIN_SCORE ) hit( e, s );
-   } );
-   Fly.OBJECT_ALIASES.forEach( function( a )
-   {
-      var s = Math.max.apply( null, a.names.map( function( n ) { return Fly.nameScore( typed, Fly.objectWords( n ) ); } ) );
-      if ( s < Fly.OBJECT_MIN_SCORE ) return;
-      var e = ( a.ra != null ) ? a : byId[a.id];
-      if ( e ) hit( { id: a.id, ra: e.ra, dec: e.dec, diameter: a.diameter || e.diameter }, s, a.names[0] );
-   } );
+   Fly.nameHits( typed, entries || [], hit );
+   Fly.aliasHits( typed, byId, hit );
    var seen = {};
    return out.sort( function( a, b ) { return b.score - a.score; } )
              .filter( function( r ) { if ( seen[r.id] ) return false; seen[r.id] = true; return true; } );
@@ -1210,6 +1228,18 @@ Fly.commandLine = function( program, args, platform )
    } ).join( " " );
 };
 
+/* Whether a landscape preset is turned for a vertical orientation (the social ones are made for it already). */
+Fly.presetTurns = function( p, orientation, size )
+{
+   return orientation == "vertical" && !/^social_/.test( p ) && size[0] > size[1];
+};
+
+/* Whether a preset loops: the Exhibition always does, the others by the loop choice (pingpong or crossfade). */
+Fly.presetLoops = function( p, loop )
+{
+   return ( p == "exhibition" ) || ( loop == "pingpong" || loop == "crossfade" );
+};
+
 /* A preset key (or a {id, w, h, pingPong} spec, for the suite) as a spec. */
 /*
  * A preset's frame and loop. Vertical turns the widescreen ones portrait,
@@ -1221,8 +1251,8 @@ Fly.presetSpec = function( p, orientation, loop )
    if ( typeof p != "string" )
       return p;
    // the loop is every preset's choice (none, pingpong, crossfade); the Exhibition always loops
-   var size = Fly.PRESETS[p], turn = ( orientation == "vertical" && !/^social_/.test( p ) && size[0] > size[1] );
-   var loops = ( p == "exhibition" ) || ( loop == "pingpong" || loop == "crossfade" );
+   var size = Fly.PRESETS[p], turn = Fly.presetTurns( p, orientation, size );
+   var loops = Fly.presetLoops( p, loop );
    return { id: turn ? p + "_vertical" : p, preset: p, w: size[turn ? 1 : 0], h: size[turn ? 0 : 1],
             pingPong: loops && loop != "crossfade", crossfade: loops && loop == "crossfade" };
 };
