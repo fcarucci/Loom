@@ -651,6 +651,16 @@ Steps.progressMilestoneText = function( milestone, progress )
 };
 
 /*
+ * The process's exit code, or null when it has none to give.
+ */
+Steps.processExitCode = function( process )
+{
+   var exitCode = null;
+   try { exitCode = process.exitCode; } catch ( e ) {}
+   return ( typeof exitCode == "number" ) ? exitCode : null;
+};
+
+/*
  * `wait`, optional: { text: function( elapsedMs, sawOutput ), stage } for a
  * CLI that can stop silently before its first line -- syqon-cli on a
  * Keychain prompt. text() is asked while the process runs; the first
@@ -809,11 +819,8 @@ Steps.syqonRunProcessBlocking = function( exePath, args, timeoutMs, wait )
     * WHY there is no output (4 is the account, not the image). The other
     * CLIs are still judged by their output file alone.
     */
-   var exitCode = null;
-   try { exitCode = process.exitCode; } catch ( e ) {}
-
    return { stdout: stdoutBuf, stderr: stderrBuf, sawError: sawError, errorCodes: errorCodes,
-            exitCode: ( typeof exitCode == "number" ) ? exitCode : null };
+            exitCode: Steps.processExitCode( process ) };
 };
 
 /*
@@ -1271,6 +1278,23 @@ Steps.starlessModelPath = function()
 };
 
 /*
+ * The CLI's result, or null when the run itself threw.
+ */
+Steps.syqonTryRunProcess = function( exePath, args )
+{
+   var res = null;
+   try { res = Steps.syqonRunProcessBlocking( exePath, args, Steps.SYQON_TIMEOUT_MS ); }
+   catch ( e ) { res = null; }
+   return res;
+};
+
+Steps.starlessNoOutputMessage = function( name, res )
+{
+   return "SyQon Starless produced no output for " + name +
+          ( res && res.stderr ? ( " stderr: " + res.stderr.trim() ) : "" );
+};
+
+/*
  * SyQon Starless CLI round trip. Unlike Prism and Parallax this binary
  * reads TIFF (its --help lists TIFF or PNG, not FITS) and applies its own
  * stretch internally -- the log prints the blackpoint and scale it computed
@@ -1310,13 +1334,9 @@ Steps.syqonStarlessRun = function( window, label )
       var args = [ "-i", inPath, "-o", outPath, "-c", "pixinsight",
                    "-m", model, "-d", "Auto" ];
       Util.log( "starless", exePath + " " + args.join( " " ) );
-      var res = null;
-      try { res = Steps.syqonRunProcessBlocking( exePath, args, Steps.SYQON_TIMEOUT_MS ); }
-      catch ( e ) { res = null; }
+      var res = Steps.syqonTryRunProcess( exePath, args );
       if ( !File.exists( outPath ) )
-         throw new Error( "SyQon Starless produced no output for " +
-                          ( label || window.mainView.id ) +
-                          ( res && res.stderr ? ( " stderr: " + res.stderr.trim() ) : "" ) );
+         throw new Error( Steps.starlessNoOutputMessage( label || window.mainView.id, res ) );
 
       var opened = ImageWindow.open( outPath );
       if ( !opened || opened.length < 1 )
@@ -2053,6 +2073,15 @@ Steps.studioDeclaredOutput = function( stdout )
    return null;
 };
 
+Steps.studioTargetWindow = function( view, opLabel )
+{
+   var targetWindow = view.isMainView ? view.window : view.mainView.window;
+   if ( !targetWindow || targetWindow.isNull )
+      throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id +
+                       ": no valid image window" );
+   return targetWindow;
+};
+
 /*
  * One syqon-cli run on `view`, in place: clone -> sanitise -> XISF ->
  * syqon-cli -> import. `opts` is studioBuildArgs' input without the file
@@ -2067,10 +2096,7 @@ Steps.studioRun = function( view, opLabel, opts )
       throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id +
                        ": syqon-cli not found" );
 
-   var targetWindow = view.isMainView ? view.window : view.mainView.window;
-   if ( !targetWindow || targetWindow.isNull )
-      throw new Error( "SyQon Studio " + opLabel + " failed on " + view.id +
-                       ": no valid image window" );
+   var targetWindow = Steps.studioTargetWindow( view, opLabel );
 
    var stem = Steps.studioTempStem( view.id );
    var inPath = stem + "_input.xisf";
