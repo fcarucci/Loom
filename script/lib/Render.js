@@ -213,13 +213,25 @@ Render.spriteRow = function( row, v, u0, u1 )
    }
 };
 
+/* How much of a sprite is seen (how.seen), 1 when unset. */
+Render.howSeen = function( how )
+{
+   return ( how && how.seen != null ) ? how.seen : 1;
+};
+
+/* The mip level a sprite is drawn from: 0 when how.mip is false, else by the camera's scale. */
+Render.howMipLevel = function( how, cam, gs )
+{
+   return ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs, how && how.coarse );
+};
+
 /*
  * Render.drawSprites' context: { ctx, the one each sample is read through;
  * spike, how.spike; L, the mip level drawn from }.
  */
 Render.spriteContext = function( patches, sp, cx, cy, g, ks, cam, kOuters, rc, how )
 {
-   var seen = ( how && how.seen != null ) ? how.seen : 1, spike = how && how.spike;
+   var seen = Render.howSeen( how ), spike = how && how.spike;
    var radial = !spike && ( rc > 0 && ( g != 1 || seen < 1 ) ), r = sp.rect, rw = r.x1 - r.x0, rh = r.y1 - r.y0;
    // spikes stretch along their length only (how.spike = { length, angles }): shorter for what is hidden
    var stretch = spike ? spike.length*Math.max( 0.05, seen ) : 1;
@@ -231,7 +243,7 @@ Render.spriteContext = function( patches, sp, cx, cy, g, ks, cam, kOuters, rc, h
     */
    var gs = ( radial || spike ) ? 1 : g;      // the core, and a spike's width, are sampled at their own scale
    // shrunk far down, sample a pre-shrunk copy (a mip level), not n x n points of the full one
-   var L = ( how && how.mip === false ) ? 0 : Render.mipLevel( Math.min( cam.fx, cam.fy ), gs, how && how.coarse ), f2 = 1 << L;
+   var L = Render.howMipLevel( how, cam, gs ), f2 = 1 << L;
    var ctx = { mps: patches.map( function( p ) { return L ? Render.mipOf( p, rw, rh, L ) : { d: p, w: rw, h: rh }; } ), f2: f2, ox: sp.det.x - r.x0, oy: sp.det.y - r.y0,
                cx: cx, cy: cy, g: g, rc: rc, seen: seen, radial: radial, cam: cam,
                ks: ks.map( function( k ) { return spike ? k*seen : k; } ),
