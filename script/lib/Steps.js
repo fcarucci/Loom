@@ -2617,6 +2617,11 @@ Steps.DETAIL_RUNNERS = {
    }
 };
 
+Steps.levelRequested = function( level )
+{
+   return ( level && level != "none" );
+};
+
 /*
  * Star reduction and detail sharpening on a FINISHED, CALIBRATED composite.
  *
@@ -2653,8 +2658,8 @@ Steps.correctComposite = function( view, tool, starLevel, detailLevel, label, fa
 {
    if ( !Steps.toolChosen( tool ) )
       return false;
-   var wantStars  = ( starLevel  && starLevel  != "none" );
-   var wantDetail = ( detailLevel && detailLevel != "none" );
+   var wantStars  = Steps.levelRequested( starLevel );
+   var wantDetail = Steps.levelRequested( detailLevel );
    if ( !wantStars && !wantDetail )
       return false;
 
@@ -3646,14 +3651,12 @@ Steps.frequencySeparate = function( window, label )
    var high = null;
    try
    {
-      try { if ( window.hasAstrometricSolution ) low.copyAstrometricSolution( window ); }
-      catch ( e ) {}
+      Steps.copySolutionIfAny( window, low );
       Steps.convolveBy( low.mainView, sigma );
 
       high = Steps.syqonCloneWindowForProcessing(
                 window, Util.freeWindowId( Steps.syqonSanitizeFileName( name ) + "_high" ) );
-      try { if ( window.hasAstrometricSolution ) high.copyAstrometricSolution( window ); }
-      catch ( e2 ) {}
+      Steps.copySolutionIfAny( window, high );
 
       // clipped deliberately: a 16-bit TIFF cannot store what falls outside
       // [0,1] anyway, and silently rescaling would break the recombination
@@ -3669,6 +3672,12 @@ Steps.frequencySeparate = function( window, label )
       throw e3;
    }
    return { low: low, high: high, sigma: sigma, psfSigma: psf.sigma, stars: psf.n };
+};
+
+Steps.copySolutionIfAny = function( from, to )
+{
+   try { if ( from.hasAstrometricSolution ) to.copyAstrometricSolution( from ); }
+   catch ( e ) {}
 };
 
 /*
@@ -3887,6 +3896,29 @@ Steps.psbLStarsLayer = function( results )
    return null;
 };
 
+Steps.assertPlatesShareSize = function( clones, width, height )
+{
+   for ( var k = 1; k < clones.length; ++k )
+   {
+      var im = clones[k].mainView.image;
+      if ( im.width != width || im.height != height )
+         throw new Error( "plates differ in size (" + im.width + "x" + im.height +
+                          " against " + width + "x" + height +
+                          "); they cannot share one document" );
+   }
+};
+
+Steps.psbProfileOrNull = function()
+{
+   var icc = null;
+   try { icc = Steps.psbProfileBytes(); }
+   catch ( eI )
+   {
+      Util.warn( "icc", "the PSB will be untagged (" + eI + ")" );
+   }
+   return icc;
+};
+
 /*
  * Writes the document, converting each plate to 16 bits first.
  *
@@ -3933,25 +3965,13 @@ Steps.exportPsb = function( results, dir, name )
       // every layer match it
       var first = clones[0].mainView.image;
       width = first.width; height = first.height;
-      for ( var k = 1; k < clones.length; ++k )
-      {
-         var im = clones[k].mainView.image;
-         if ( im.width != width || im.height != height )
-            throw new Error( "plates differ in size (" + im.width + "x" + im.height +
-                             " against " + width + "x" + height +
-                             "); they cannot share one document" );
-      }
+      Steps.assertPlatesShareSize( clones, width, height );
       /*
        * The document is RGB, so it carries the RGB profile regardless of
        * how many mono plates are in it: inside a PSB every layer lives in
        * the document's space.
        */
-      var icc = null;
-      try { icc = Steps.psbProfileBytes(); }
-      catch ( eI )
-      {
-         Util.warn( "icc", "the PSB will be untagged (" + eI + ")" );
-      }
+      var icc = Steps.psbProfileOrNull();
       Util.operation( "export", "PSB",
                       doc.length + " groups, " + clones.length + " layers", name );
       Psb.write( path, doc, width, height, icc );
