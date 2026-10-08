@@ -284,6 +284,19 @@ Solve.cellQuads = function( stars, band, Q, grid, cell, seen, out, sorted )
       }
 };
 
+/* The first two stars of nearAt( k ), other than a and b, inside the circle (centre mid, squared radius r2) in a's plane: [ { i, p } ]. */
+Solve.firstInside = function( stars, a, b, mid, r2, nearAt )
+{
+   var inside = [];
+   for ( var k = 0, c; inside.length < 2 && ( c = nearAt( k ) ) >= 0; ++k )
+   {
+      if ( c == a || c == b ) continue;
+      var p = Solve.toPlane( stars[a], stars[c].ra, stars[c].dec );
+      if ( p && ( p[0] - mid[0] )*( p[0] - mid[0] ) + ( p[1] - mid[1] )*( p[1] - mid[1] ) < r2 ) inside.push( { i: c, p: p } );
+   }
+   return inside;
+};
+
 /*
  * The quad of stars a and b, a pair in the band, with the first two stars
  * of nearAt( k ) inside their circle: { ids, q: its Solve.quadCode }, or
@@ -296,13 +309,7 @@ Solve.pairQuad = function( stars, band, a, b, nearAt )
    if ( dAB < band.lo || dAB >= band.hi ) return null;
    var pA = Solve.toPlane( stars[a], stars[a].ra, stars[a].dec ), pB = Solve.toPlane( stars[a], stars[b].ra, stars[b].dec );
    var mid = [ ( pA[0] + pB[0] )/2, ( pA[1] + pB[1] )/2 ], r2 = ( ( pB[0] - pA[0] )*( pB[0] - pA[0] ) + ( pB[1] - pA[1] )*( pB[1] - pA[1] ) )/4;
-   var inside = [];
-   for ( var k = 0, c; inside.length < 2 && ( c = nearAt( k ) ) >= 0; ++k )
-   {
-      if ( c == a || c == b ) continue;
-      var p = Solve.toPlane( stars[a], stars[c].ra, stars[c].dec );
-      if ( p && ( p[0] - mid[0] )*( p[0] - mid[0] ) + ( p[1] - mid[1] )*( p[1] - mid[1] ) < r2 ) inside.push( { i: c, p: p } );
-   }
+   var inside = Solve.firstInside( stars, a, b, mid, r2, nearAt );
    if ( inside.length < 2 ) return null;
    var q = Solve.quadCode( [ pA, pB, inside[0].p, inside[1].p ] );
    return q ? { ids: [ a, b, inside[0].i, inside[1].i ], q: q } : null;
