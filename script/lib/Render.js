@@ -797,6 +797,16 @@ Render.pastWhite = function( T, n )
    return any ? E : null;
 };
 
+/* Past white a core whitens (Render.whitenPastWhite): each channel L += (top - L) x 0.8 smoothstep(1.5, 4, top); image makes the scratch images. */
+Render.bloomWhiten = function( image, L, top )
+{
+   var t = image( top ); t.apply( 1.5, ImageOp_Sub ); t.apply( 2.5, ImageOp_Div ); t.truncate( 0, 1 );
+   var f = image( t ); f.apply( t, ImageOp_Mul );
+   var u = image( t ); u.apply( -2, ImageOp_Mul ); u.apply( 3, ImageOp_Add );
+   f.apply( u, ImageOp_Mul ); f.apply( 0.8, ImageOp_Mul );
+   for ( var c = 0; c < L.length; ++c ) { var d = image( top ); d.apply( L[c], ImageOp_Sub ); d.apply( f, ImageOp_Mul ); L[c].apply( d, ImageOp_Add ); }
+};
+
 /*
  * Bloom over the stars layer T (per channel, w x h): light past white (T >
  * 1) whitens (its channels drawn toward its brightest) and spreads into a
@@ -819,15 +829,7 @@ Render.bloom = function( T, w, h, opts )
       var top = image( L[0] );
       for ( c = 1; c < nc; ++c ) top.apply( L[c], ImageOp_Max );
       if ( !( top.maximum() > 1 ) ) return;                  // nothing past white: the image itself
-      if ( nc > 1 )
-      {
-         // past white a core whitens (Render.whitenPastWhite): T += (top - T) x 0.8 smoothstep(1.5, 4, top)
-         var t = image( top ); t.apply( 1.5, ImageOp_Sub ); t.apply( 2.5, ImageOp_Div ); t.truncate( 0, 1 );
-         var f = image( t ); f.apply( t, ImageOp_Mul );
-         var u = image( t ); u.apply( -2, ImageOp_Mul ); u.apply( 3, ImageOp_Add );
-         f.apply( u, ImageOp_Mul ); f.apply( 0.8, ImageOp_Mul );
-         for ( c = 0; c < nc; ++c ) { var d = image( top ); d.apply( L[c], ImageOp_Sub ); d.apply( f, ImageOp_Mul ); L[c].apply( d, ImageOp_Add ); }
-      }
+      if ( nc > 1 ) Render.bloomWhiten( image, L, top );
       // each channel's light past white, and its mean
       var E = L.map( function( l ) { var e = image( l ); e.apply( 1, ImageOp_Sub ); e.truncate( 0, Render.EXCESS_MAX ); return e; } );
       var white = image( E[0] );
