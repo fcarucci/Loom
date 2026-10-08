@@ -1242,18 +1242,31 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
                                 factors[2].toFixed( 6 ) );
 
       if ( config.useCache )
-         try { File.writeTextFile( cachePath, JSON.stringify( factors ) ); }
-         catch ( e ) { Util.warn( "cache", "could not cache white balance: " + e ); }
+         Pipeline.cacheWhiteBalanceFactors( cachePath, factors );
 
       return factors;
    }
    finally
    {
-      for ( var c = temps.length - 1; c >= 0; --c )
-      {
-         try { reg.forget( temps[c] ); } catch ( e ) {}
-         try { if ( !temps[c].isNull ) temps[c].forceClose(); } catch ( e ) {}
-      }
+      Pipeline.releaseTemps( reg, temps );
+   }
+};
+
+Pipeline.cacheWhiteBalanceFactors = function( cachePath, factors )
+{
+   try { File.writeTextFile( cachePath, JSON.stringify( factors ) ); }
+   catch ( e ) { Util.warn( "cache", "could not cache white balance: " + e ); }
+};
+
+/*
+ * Forgets and closes the temporary windows, newest first.
+ */
+Pipeline.releaseTemps = function( reg, temps )
+{
+   for ( var c = temps.length - 1; c >= 0; --c )
+   {
+      try { reg.forget( temps[c] ); } catch ( e ) {}
+      try { if ( !temps[c].isNull ) temps[c].forceClose(); } catch ( e ) {}
    }
 };
 
@@ -1977,6 +1990,34 @@ Pipeline.registrationFallbackRanking = function( present )
    return ranked.concat( extra.sort() );
 };
 
+Pipeline.usableStarMeasure = function( q )
+{
+   return q != null && isFinite( q.fwhm ) && q.fwhm > 0 &&
+          isFinite( q.stars ) && q.stars >= 1;
+};
+
+/*
+ * The ranked channel with the lowest FWHM/sqrt(stars), or null when none is measured.
+ */
+Pipeline.bestMeasuredChannel = function( ranked, quality )
+{
+   var best = null, bestScore = Infinity;
+   for ( var r = 0; r < ranked.length; ++r )
+   {
+      var q = quality[ranked[r]];
+      if ( !Pipeline.usableStarMeasure( q ) )
+         continue;
+      var score = q.fwhm / Math.sqrt( q.stars );
+      // strictly less: an exact tie keeps the earlier channel in the order
+      if ( score < bestScore )
+      {
+         best = ranked[r];
+         bestScore = score;
+      }
+   }
+   return best;
+};
+
 /*
  * The channel every other channel is registered to.
  *
@@ -2022,26 +2063,8 @@ Pipeline.registrationReference = function( present, quality )
    if ( ranked.length == 0 )
       return { key: null, reason: "no channels" };
 
-   function usable( q )
-   {
-      return q != null && isFinite( q.fwhm ) && q.fwhm > 0 &&
-             isFinite( q.stars ) && q.stars >= 1;
-   }
-
-   var best = null, bestScore = Infinity;
-   for ( var r = 0; r < ranked.length; ++r )
-   {
-      var q = quality[ranked[r]];
-      if ( !usable( q ) )
-         continue;
-      var score = q.fwhm / Math.sqrt( q.stars );
-      // strictly less: an exact tie keeps the earlier channel in the order
-      if ( score < bestScore )
-      {
-         best = ranked[r];
-         bestScore = score;
-      }
-   }
+   var usable = Pipeline.usableStarMeasure;
+   var best = Pipeline.bestMeasuredChannel( ranked, quality );
 
    if ( best == null )
       return { key: ranked[0],
@@ -2300,6 +2323,14 @@ Pipeline.matchHalos = function( chans, config )
    Pipeline.checkAbort();
 };
 
+Pipeline.narrowbandViews = function( chans )
+{
+   var nb = Util.NARROWBAND, views = [];
+   for ( var mo = 0; mo < nb.length; ++mo )
+      if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
+   return views;
+};
+
 /*
  * Linear fit the narrowband set to its lowest-median member.
  */
@@ -2331,9 +2362,7 @@ Pipeline.balanceNarrowband = function( chans, config )
        * green. SPCC in narrowband mode does the calibration properly,
        * on the composite, further down.
        */
-      var views = [];
-      for ( var mo = 0; mo < nb.length; ++mo )
-         if ( chans[nb[mo]] ) views.push( chans[nb[mo]].view );
+      var views = Pipeline.narrowbandViews( chans );
       Util.log( "background", "narrowband sky floors matched to " + refKey +
                               " by offset; line ratios preserved for SPCC" );
       Steps.matchBackgroundOffset( views, chans[refKey].view );
