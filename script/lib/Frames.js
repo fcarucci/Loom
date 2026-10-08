@@ -1341,14 +1341,19 @@ Frames.digestCacheEntry = function( stat, hex )
    return { size: stat.size, mtime: stat.mtime, created: created, digest: hex };
 };
 
+/* The manifest entry as stored, validated; null when absent, malformed or from before "created". */
+Frames.digestCacheStored = function( e )
+{
+   if ( e == null || typeof e != "object" || !( "created" in e ) )
+      return null;
+   return Frames.digestCacheEntry( e, e.digest );
+};
+
 Frames.digestCacheHit = function( table, path, stat )
 {
    if ( table == null || !Object.prototype.hasOwnProperty.call( table, path ) )
       return null;
-   var e = table[path];
-   if ( e == null || typeof e != "object" || !( "created" in e ) )
-      return null;
-   var stored = Frames.digestCacheEntry( e, e.digest );
+   var stored = Frames.digestCacheStored( table[path] );
    var now = stored && Frames.digestCacheEntry( stat, stored.digest );
    return now && now.size === stored.size && now.mtime === stored.mtime &&
           now.created === stored.created ? stored.digest : null;
