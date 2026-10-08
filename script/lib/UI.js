@@ -16,6 +16,31 @@
 var UI = {};
 
 /*
+ * The filter names a saved SPFC process icon carries, by channel; empty when there is none.
+ */
+UI.seededFilterNames = function()
+{
+   var spfcCfg = null;
+   try { spfcCfg = Steps.configuredSPFC(); } catch ( e ) { spfcCfg = null; }
+   var seeded = {};
+   if ( spfcCfg != null )
+   {
+      seeded.L = spfcCfg.grayFilterName;
+      seeded.R = spfcCfg.redFilterName;
+      seeded.G = spfcCfg.greenFilterName;
+      seeded.B = spfcCfg.blueFilterName;
+   }
+   return seeded;
+};
+
+UI.filterCurvesOf = function( key )
+{
+   var curves = [];
+   try { curves = Steps.listFilterCurves( key ); } catch ( e ) { curves = []; }
+   return curves;
+};
+
+/*
  * The owner's camera reports INSTRUME = "ZWO ASI2600MM Air", not the bare
  * model string, so this normalizes both sides and checks containment.
  */
@@ -969,16 +994,7 @@ UI.SelectDialog = class extends Dialog
       // Seed the selectors from a saved SPFC process icon, if there is one.
       // A remembered Loom choice still wins -- the user's last explicit pick
       // in this dialog beats an inferred default.
-      var spfcCfg = null;
-      try { spfcCfg = Steps.configuredSPFC(); } catch ( e ) { spfcCfg = null; }
-      var seeded = {};
-      if ( spfcCfg != null )
-      {
-         seeded.L = spfcCfg.grayFilterName;
-         seeded.R = spfcCfg.redFilterName;
-         seeded.G = spfcCfg.greenFilterName;
-         seeded.B = spfcCfg.blueFilterName;
-      }
+      var seeded = UI.seededFilterNames();
       var bb = [ "L", "R", "G", "B" ];
       for ( var fi = 0; fi < bb.length; ++fi )
       {
@@ -987,8 +1003,7 @@ UI.SelectDialog = class extends Dialog
 
          var fcombo = new ComboBox( this );
          fcombo.setScaledMinWidth( 260 );
-         var curves = [];
-         try { curves = Steps.listFilterCurves( fk ); } catch ( e ) { curves = []; }
+         var curves = UI.filterCurvesOf( fk );
          for ( var ci = 0; ci < curves.length; ++ci )
             fcombo.addItem( curves[ci].name );
          var chosen = ( config.filters && config.filters[fk] ) ? config.filters[fk]

@@ -1277,6 +1277,25 @@ Util.readImageProperty = function( f, id )
 };
 
 /*
+ * The header fields of an open file: geometry and keywords, plus PixInsight's
+ * integration metadata, read from the same open file with no pixel data. Both
+ * are absent in files from other software.
+ */
+Util.headerInfo = function( F, f, d )
+{
+   var info = {
+      keywords: F.canStoreKeywords ? f.keywords : [],
+      width: d[0].width,
+      height: d[0].height
+   };
+   var sig = Util.readImageProperty( f, "PCL:Signature:Integration" );
+   var hist = Util.readImageProperty( f, "PixInsight:ProcessingHistory" );
+   if ( sig != null ) info.signature = sig;
+   if ( hist != null ) info.history = hist;
+   return info;
+};
+
+/*
  * Reads geometry and keywords from `path`'s header alone, without decoding
  * a single pixel.
  *
@@ -1307,19 +1326,7 @@ Util.tryHeaderRead = function( path )
          return { info: null, why: "the reader returned no image description" };
       }
 
-      var info = {
-         keywords: F.canStoreKeywords ? f.keywords : [],
-         width: d[0].width,
-         height: d[0].height
-      };
-      /*
-       * PixInsight's integration metadata, read from the same open file with
-       * no pixel data. Both are absent in files from other software.
-       */
-      var sig = Util.readImageProperty( f, "PCL:Signature:Integration" );
-      var hist = Util.readImageProperty( f, "PixInsight:ProcessingHistory" );
-      if ( sig != null ) info.signature = sig;
-      if ( hist != null ) info.history = hist;
+      var info = Util.headerInfo( F, f, d );
       // The header is already in hand; a close that fails now costs
       // nothing and must not send the caller down the full-read path.
       try { f.close(); } catch ( e1 ) {}
