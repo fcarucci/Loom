@@ -657,6 +657,48 @@ Psb.PARALLEL_MIN_SAMPLES = 1024 * 1024;
  */
 Psb.parallelReady = null;      // null until tested
 
+Psb.threadsAvailable = function()
+{
+   if ( typeof Thread == "undefined" || typeof SharedArrayBuffer == "undefined" )
+      return false;
+   if ( typeof Thread.shareBuffer != "function" || typeof Thread.sharedBuffer != "function" )
+      return false;
+   return Thread.numberOfProcessors > 1;
+};
+
+/*
+ * One real swap on one real worker; true only when the bytes came back right.
+ */
+Psb.swapProbe = function()
+{
+   var ready = false;
+   var srcSab = new SharedArrayBuffer( 4 );     // two samples
+   var dstSab = new SharedArrayBuffer( 4 );
+   var sdesc = Thread.shareBuffer( srcSab );
+   var ddesc = Thread.shareBuffer( dstSab );
+   try
+   {
+      var sv = new Uint16Array( srcSab );
+      sv[0] = 0x0102; sv[1] = 0xFFEE;
+      var t = new Thread( Psb.swapThreadSource(),
+                          { src: sdesc, dst: ddesc, begin: 0, end: 2 },
+                          { pooled: true } );
+      t.start();
+      t.wait();
+      if ( t.error.length > 0 )
+         return false;
+      var dv = new Uint8Array( dstSab );
+      ready = ( dv[0] == 0x01 && dv[1] == 0x02
+             && dv[2] == 0xFF && dv[3] == 0xEE );
+   }
+   finally
+   {
+      Thread.releaseBuffer( sdesc );
+      Thread.releaseBuffer( ddesc );
+   }
+   return ready;
+};
+
 Psb.canSwapInParallel = function()
 {
    if ( Psb.parallelReady !== null )
@@ -665,37 +707,9 @@ Psb.canSwapInParallel = function()
    Psb.parallelReady = false;
    try
    {
-      if ( typeof Thread == "undefined" || typeof SharedArrayBuffer == "undefined" )
+      if ( !Psb.threadsAvailable() )
          return false;
-      if ( typeof Thread.shareBuffer != "function" || typeof Thread.sharedBuffer != "function" )
-         return false;
-      if ( !( Thread.numberOfProcessors > 1 ) )
-         return false;
-
-      var srcSab = new SharedArrayBuffer( 4 );     // two samples
-      var dstSab = new SharedArrayBuffer( 4 );
-      var sdesc = Thread.shareBuffer( srcSab );
-      var ddesc = Thread.shareBuffer( dstSab );
-      try
-      {
-         var sv = new Uint16Array( srcSab );
-         sv[0] = 0x0102; sv[1] = 0xFFEE;
-         var t = new Thread( Psb.swapThreadSource(),
-                             { src: sdesc, dst: ddesc, begin: 0, end: 2 },
-                             { pooled: true } );
-         t.start();
-         t.wait();
-         if ( t.error.length > 0 )
-            return false;
-         var dv = new Uint8Array( dstSab );
-         Psb.parallelReady = ( dv[0] == 0x01 && dv[1] == 0x02
-                            && dv[2] == 0xFF && dv[3] == 0xEE );
-      }
-      finally
-      {
-         Thread.releaseBuffer( sdesc );
-         Thread.releaseBuffer( ddesc );
-      }
+      Psb.parallelReady = Psb.swapProbe();
    }
    catch ( e )
    {
