@@ -622,6 +622,47 @@ Pipeline.publish = function( win, id, reg, keepIds, results, resultKey )
 };
 
 /*
+ * Creates the export folder when it is missing. False, after reporting, when it cannot be.
+ */
+Pipeline.ensureExportDir = function( dir )
+{
+   try
+   {
+      if ( !File.directoryExists( dir ) )
+         File.createDirectory( dir, true );
+   }
+   catch ( e )
+   {
+      Util.error( "export", "could not create " + dir + ": " + e );
+      return false;
+   }
+   return true;
+};
+
+Pipeline.exportPsbLayer = function( results, dir, config )
+{
+   try
+   {
+      Steps.exportPsb( results, dir, Pipeline.psbBaseName( config ) );
+   }
+   catch ( e )
+   {
+      Util.error( "export", "the layered PSB was not written (" + e +
+                            "); the individual TIFFs are unaffected" );
+   }
+};
+
+Pipeline.usableResultNames = function( results )
+{
+   var names = [];
+   for ( var k in results )
+      if ( results[k] && Pipeline.windowIsUsable( results[k] ) )
+         names.push( k );
+   names.sort();
+   return names;
+};
+
+/*
  * Writes every result as a 16-bit TIFF into config.exportDir, when one is set.
  *
  * Runs LAST, after the results have their final names, so the files are named
@@ -648,16 +689,8 @@ Pipeline.exportResults = function( results, config )
       return;
    }
 
-   try
-   {
-      if ( !File.directoryExists( dir ) )
-         File.createDirectory( dir, true );
-   }
-   catch ( e )
-   {
-      Util.error( "export", "could not create " + dir + ": " + e );
+   if ( !Pipeline.ensureExportDir( dir ) )
       return;
-   }
 
    /*
     * The layered PSB, when asked for. Written before the individual TIFFs
@@ -665,23 +698,9 @@ Pipeline.exportResults = function( results, config )
     * the convenience, the plates are the deliverable.
     */
    if ( config.exportPsb )
-   {
-      try
-      {
-         Steps.exportPsb( results, dir, Pipeline.psbBaseName( config ) );
-      }
-      catch ( e )
-      {
-         Util.error( "export", "the layered PSB was not written (" + e +
-                               "); the individual TIFFs are unaffected" );
-      }
-   }
+      Pipeline.exportPsbLayer( results, dir, config );
 
-   var names = [];
-   for ( var k in results )
-      if ( results[k] && Pipeline.windowIsUsable( results[k] ) )
-         names.push( k );
-   names.sort();
+   var names = Pipeline.usableResultNames( results );
 
    var written = 0;
    for ( var i = 0; i < names.length; ++i )
