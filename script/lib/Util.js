@@ -1288,8 +1288,12 @@ Util.headerInfo = function( F, f, d )
       width: d[0].width,
       height: d[0].height
    };
-   // Formats without image properties (FITS) log an error on every read.
-   var props = F.canStoreImageProperties === true;
+   /*
+    * Only XISF implements the property reader. FITS reports that it can
+    * store properties but logs "ReadImageProperty() must be reimplemented"
+    * on every read, so the capability flag is not enough.
+    */
+   var props = F.canStoreImageProperties === true && String( F.name ).toUpperCase() == "XISF";
    var sig = props ? Util.readImageProperty( f, "PCL:Signature:Integration" ) : null;
    var hist = props ? Util.readImageProperty( f, "PixInsight:ProcessingHistory" ) : null;
    if ( sig != null ) info.signature = sig;
