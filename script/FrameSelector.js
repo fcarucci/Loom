@@ -4140,6 +4140,9 @@ FrameSelector.Filmstrip = class extends Frame
    tileW() { return FrameSelector.THUMB.W + 8; }
    visibleCount() { return Math.max( 1, Math.floor( this.width/this.tileW() ) ); }
 
+   /* The tiles share the whole width, so no gap is left at the right. */
+   slotW() { return Math.max( this.tileW(), this.width/this.visibleCount() ); }
+
    setMetric( metric )
    {
       this.metric = metric;
@@ -4166,7 +4169,7 @@ FrameSelector.Filmstrip = class extends Frame
 
    indexAt( x )
    {
-      return Frames.tileAt( x, this.tileW(), this.visibleCount(), this.first, this.rows.length );
+      return Frames.tileAt( x, this.slotW(), this.visibleCount(), this.first, this.rows.length );
    }
 
    paintTile( g, i, x, y )
@@ -4221,8 +4224,9 @@ FrameSelector.Filmstrip = class extends Frame
          g = new Graphics( this );
          g.fillRect( 0, 0, this.width, this.height, new Brush( 0xff1a1a1a ) );
          var last = Math.min( this.rows.length, this.first + this.visibleCount() );
+         var slot = this.slotW();
          for ( var i = this.first; i < last; ++i )
-            this.paintTile( g, i, ( i - this.first )*this.tileW() + 4, 6 );
+            this.paintTile( g, i, Math.round( ( i - this.first )*slot + ( slot - FrameSelector.THUMB.W )/2 ), 6 );
       }
       catch ( e ) { /* a strip that cannot paint must not stop the review */ }
       finally { if ( g != null ) try { g.end(); } catch ( e2 ) {} }
