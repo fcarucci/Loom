@@ -1062,7 +1062,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 332 );
+      check( "Steps: the member count", Object.keys( have ).length, 334 );
    }
 
    /*
@@ -23445,6 +23445,10 @@ function masterFlatChecks()
           [ "F  filter=L exposure=2 bin=1 gain=100 temp=-10",
             [ "  2 x raw exposure=2 bin=1 gain=100 temp=-8..-6" ],
             [ "  L bin 1: 1 flat(s) -> SKIPPED, no matching dark for the 2 s flats" ] ] );
+   check( "Steps.graxpertProblem: a failure and an unchanged image are both named; a changed image is fine",
+          [ Steps.graxpertProblem( "L", false, "a", "a" ).indexOf( "GraXpert failed on L" ) == 0,
+            Steps.graxpertProblem( "L", true, "a", "a" ).indexOf( "GraXpert did not change L" ) == 0,
+            Steps.graxpertProblem( "L", true, "a", "b" ) ], [ true, true, null ] );
    check( "MasterFlat.darkShortfall: says no darks were found, or what the folder holds and the flats' temperature",
           [ MasterFlat.darkShortfall( f2, [] ),
             MasterFlat.darkShortfall( f2, darksFor( [ darkFrame( "/d/a.fit", "Dark Frame", 60 ), darkFrame( "/d/b.fit", "Dark Frame", 60 ),

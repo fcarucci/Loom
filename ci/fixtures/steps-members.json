@@ -1,5 +1,5 @@
 {
-  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models; filterCurveByName and deviceCurveForImage when lookupDeviceCurve was folded into filterCurveByName( name, \"Q\" ). denoise, and the new denoiseOperationDetail, when the console's operation line began naming Prism 2.0's pass. NOISE_LEVELS, NOISE_TOOLS, denoiseStudio2, denoiseOperationDetail, studioRun, studioModelsFor, studioIsPrism2 and migrateConfig, and the new keepFineScaleChange, PRISM2_LINEAR_PASS, PRISM2_LADDER_LINEAR, PRISM2_LADDER_STRETCHED, setPrism2LinearPass, noiseLevelsFor and supportedNoiseLevel, when Prism 2.0's Advanced pass was switched off (and, switched on, keeps only its fine-scale change) and its Low removed; stretchParametersForView and applyStretch changed and clipSafeBlackPoint and STRETCH_CLIP_BUDGET added for the clip-safe MTF black point and the per-channel unlinked colour stretch. STUDIO_PARALLAX_FAMILIES and studioFamilyOf added, and studioParallaxArgs, aberration, correctComposite, starReduction, sharpenDetail, STAR_REDUCTION_RUNNERS and DETAIL_RUNNERS changed, for Studio Parallax's Classic/Aesthetics profile.",
+  "about": "Every own member of Steps as loaded by the node suite (ci/run-tests.js) before Steps.js was split: typeof and sha1 of the source (functions) or canonical value (data), see stepsMemberInventory in script/selftest.js. core5 is the 1.9.5 build; core4 lists only the members that differ on the 1.9.4 build. Recorded at b4463a5. Members changed deliberately since are re-recorded in the commit that changes them: NOISE_LEVELS, denoise, denoiseStudio2, noiseAmountFor, studioIsPrism2 and studioModelsFor for Prism 2.0's two passes; studioModelsFor again when preflight began checking all three Prism 2.0 models; filterCurveByName and deviceCurveForImage when lookupDeviceCurve was folded into filterCurveByName( name, \"Q\" ). denoise, and the new denoiseOperationDetail, when the console's operation line began naming Prism 2.0's pass. NOISE_LEVELS, NOISE_TOOLS, denoiseStudio2, denoiseOperationDetail, studioRun, studioModelsFor, studioIsPrism2 and migrateConfig, and the new keepFineScaleChange, PRISM2_LINEAR_PASS, PRISM2_LADDER_LINEAR, PRISM2_LADDER_STRETCHED, setPrism2LinearPass, noiseLevelsFor and supportedNoiseLevel, when Prism 2.0's Advanced pass was switched off (and, switched on, keeps only its fine-scale change) and its Low removed; stretchParametersForView and applyStretch changed and clipSafeBlackPoint and STRETCH_CLIP_BUDGET added for the clip-safe MTF black point and the per-channel unlinked colour stretch. STUDIO_PARALLAX_FAMILIES and studioFamilyOf added, and studioParallaxArgs, aberration, correctComposite, starReduction, sharpenDetail, STAR_REDUCTION_RUNNERS and DETAIL_RUNNERS changed, for Studio Parallax's Classic/Aesthetics profile. graxpert, graxpertProblem and imageSignature re-recorded for the GraXpert failure report.",
   "core5": {
     "ASSIGN_NEW_PROFILE": "number 383fcd42bad63d548eecefb5fe3f55821e43011f",
     "CORE_SETTINGS_DIR": "string c39c0158e3907d2180b56d38378156e9fc11c734",
@@ -146,7 +146,7 @@
     "gradientStageParams": "function 0b26ea1b284ec58705a8e86acc8d10b6f16cc348",
     "gradientToolLabel": "function 75a13edfdea20c6d54d3422fc623a28d1edc1ee5",
     "gradientToolOf": "function db6172f90ee34d503551da6f44d2552ee6d34545",
-    "graxpert": "function 188a0adac9c87ef855592ebfc8631dc485d793a8",
+    "graxpert": "function ddd0aee799e55b46548d41df823a04c42bef0599",
     "hasAstrometricSolution": "function 9b238c7c23efd77e8276013c262baadb9c40ff80",
     "iccDescription": "function 29adc0c3e396dca2cb2c902d63d5e5479fd3ff0e",
     "iccProfileBytes": "function b6504cc278a6d22ea6026f4e5c6b97871cffc57a",
@@ -332,7 +332,9 @@
     "windowsOpenedSince": "function 4767fc00f7705a5e0ecde2e5890f1dc01d0ff99c",
     "withFiles": "function 13abe5441f22db94947dda0385900d923cdb770f",
     "withoutInconsistentKeywords": "function 3eac667e533ca959d8a038d6349ef730ffc20c80",
-    "psbPaletteNames": "function 530f5d97a73c02c8b434833d3ff75295b45ee4f1"
+    "psbPaletteNames": "function 530f5d97a73c02c8b434833d3ff75295b45ee4f1",
+    "graxpertProblem": "function 781d576ffd3a2092049c9ce361c60f86610af8f9",
+    "imageSignature": "function cf4af14391cc93ec812ed7d60f989448ad23d84c"
   },
   "core4": {
     "verifySolution": "function 6e0c008080efd716f72ca413ecf2f5ee118d2563"

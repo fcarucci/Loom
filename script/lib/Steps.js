@@ -1300,6 +1300,30 @@ Steps.mgc = function( view, marsDir )
       throw new Error( "MGC failed on " + view.id );
 };
 
+/*
+ * What GraXpert's background extraction left behind, or null when it did
+ * well: it must have run, and it must have changed the image. Background
+ * extraction always moves pixels, so an unchanged image means the external
+ * tool died without the process saying so. `before` and `after` are
+ * Steps.imageSignature strings; `ran` is executeOn's answer.
+ */
+Steps.graxpertProblem = function( id, ran, before, after )
+{
+   if ( !ran )
+      return "GraXpert failed on " + id + ": the process reported failure (its own output, with the reason, " +
+             "is in the console just above)";
+   if ( before == after )
+      return "GraXpert did not change " + id + ": it reported success but the image is identical to the one " +
+             "it was given, so the background was not extracted (its own output is in the console just above)";
+   return null;
+};
+
+/* A cheap fingerprint of an image: enough to tell that a process changed it. */
+Steps.imageSignature = function( image )
+{
+   return [ image.mean(), image.median(), image.maximum() ].join( "|" );
+};
+
 Steps.graxpert = function( view, smoothing )
 {
    Util.reportStage( "GraXpert background extraction \u2192 " + view.id );
@@ -1313,9 +1337,20 @@ Steps.graxpert = function( view, smoothing )
    P.denoising = false;
    P.deconvolution = false;
    P.disableGPU = false;
-   P.showLogs = false;
-   if ( !P.executeOn( view ) )
-      throw new Error( "GraXpert failed on " + view.id );
+   /*
+    * On: GraXpert's own output is where the reason for a failure is. With
+    * it off a failed run said only "failed" and nothing else.
+    */
+   P.showLogs = true;
+   var before = Steps.imageSignature( view.image );
+   var ran = P.executeOn( view );
+   var problem = Steps.graxpertProblem( view.id, ran, before, ran ? Steps.imageSignature( view.image ) : before );
+   if ( problem != null )
+   {
+      Util.error( "graxpert", problem );
+      throw new Error( problem );
+   }
+   Util.log( "graxpert", view.id + " done" );
 };
 
 /*
