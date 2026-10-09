@@ -7111,7 +7111,8 @@ function runTests()
          check( "the render is full size", [ shown.width, shown.height ], [ 800, 600 ] );
          check( "and was stored in the preview folder", Cache.previewEntries().length >= 2, true );
          // One byte a pixel: the writer's default format would be two.
-         var storedKey = Cache.previewKey( rows[1].path, "preview", FrameSelector.renderParams( "preview" ) );
+         var storedKey = Cache.previewKey( rows[1].path, "preview",
+                            FrameSelector.renderParams( "preview", dlg.channelStretch( dlg.channel() ) ) );
          var stored = Cache.previewEntries().filter( function( e ) { return e.key == storedKey; } );
          check( "as an 8-bit image", stored.length == 1 && stored[0].bytes > 800*600 &&
                 stored[0].bytes < 800*600*1.5, true );
@@ -7131,10 +7132,11 @@ function runTests()
          } );
          check( "after a relaunch, frames already seen are not read again", relaunch, NONE );
 
-         var t1 = counted( function() { FrameSelector.thumbnailOf( rows[2].path ); } );
+         var S2 = dlg2.channelStretch( dlg2.channel() );   // the filter's shared stretch is part of a render's key
+         var t1 = counted( function() { FrameSelector.thumbnailOf( rows[2].path, S2 ); } );
          check( "a first thumbnail is read once", t1.reads, 1 );
          var t2b = null;
-         var t2 = counted( function() { t2b = FrameSelector.thumbnailOf( rows[2].path ); } );
+         var t2 = counted( function() { t2b = FrameSelector.thumbnailOf( rows[2].path, S2 ); } );
          check( "the same thumbnail again reads nothing and runs nothing", t2, NONE );
          check( "and fits the tile", t2b != null && t2b.width <= FrameSelector.THUMB.W &&
                 t2b.height <= FrameSelector.THUMB.H && ( t2b.width == FrameSelector.THUMB.W ||
@@ -7157,12 +7159,12 @@ function runTests()
          synthFrame( rows[2].path, { fwhm: 3.9, background: 0.03, noise: 0.002, seed: 999,
                                      width: 820, date: "2026-01-01T03:02:00" } );
          var changed = null;
-         var t3 = counted( function() { changed = FrameSelector.thumbnailOf( rows[2].path ); } );
+         var t3 = counted( function() { changed = FrameSelector.thumbnailOf( rows[2].path, S2 ); } );
          check( "a rewritten frame is read again", t3.reads, 1 );
 
          check( "clearing empties the preview folder", Cache.clearPreviews() > 0 &&
                 Cache.previewEntries().length == 0, true );
-         var t4 = counted( function() { FrameSelector.thumbnailOf( rows[0].path ); } );
+         var t4 = counted( function() { FrameSelector.thumbnailOf( rows[0].path, S2 ); } );
          check( "and a cleared frame is read again", t4.reads, 1 );
       }
       finally
@@ -8499,7 +8501,7 @@ function runTests()
          "#68 CheckBox \"Reduce halos (match channel PSFs)\" checked=false enabled=true tip=#304:fd83a83b at 8,724,640x14 / 8,724,940x14 in dialog",
          "#69 CheckBox \"Validate only (check everything, run nothing)\" checked=false enabled=true at 8,744,640x14 / 8,744,940x14 in dialog",
          "#70 CheckBox \"Use cache\" checked=true enabled=true tip=#226:ade2cbc4 at 8,767,70x14 / 8,767,70x14 in dialog",
-         "#71 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#131:fa426b79 at 84,767,141x14 / 84,767,141x14 in dialog",
+         "#71 CheckBox \"Ignore cache for this run\" checked=false enabled=true tip=#199:d3dd6a21 at 84,767,141x14 / 84,767,141x14 in dialog",
          "#72 Label align=129 enabled=true tip=#88:ee3efb92 at 579,764,69x21 / 879,764,69x21 in dialog",
          "#73 PushButton \"Clear cache\" minWidth=93 enabled=true tip=#75:7c91fdd9 at 472,764,93x21 / 772,764,93x21 in dialog",
          "#74 CheckBox \"Update Loom automatically\" checked=true enabled=true tip=#337:1f0ebd26 at 310,767,156x14 / 610,767,156x14 in dialog",

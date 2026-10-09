@@ -302,6 +302,75 @@ FrameSelector.mtf = function( m, x )
    return ( m - 1 )*x/( ( 2*m - 1 )*x - m );
 };
 
+/* The shadows clip and midtone that stretch `img` on its own median and MAD. */
+FrameSelector.stretchParams = function( img )
+{
+   var S = FrameSelector.STRETCH;
+   var med = img.median(), mad = img.MAD()*1.4826;
+   var shadows = Math.max( 0, med - S.SHADOWS*mad );
+   return { shadows: shadows,
+            midtone: FrameSelector.mtf( S.TARGET, Math.max( 1e-8, med - shadows ) ) };
+};
+
+/*
+ * The one stretch a whole filter is shown with: the stretch of its
+ * reference frame, the one with the median background. Every frame of the
+ * filter then gets the same transfer function, so a dimmer or brighter
+ * frame looks dimmer or brighter, as it is. Null when the reference
+ * cannot be read: frames then fall back to their own stretch.
+ */
+FrameSelector.referenceStretch = function( rows )
+{
+   var withBg = rows.filter( function( r )
+      { return r.metrics != null && Frames.isNumber( r.metrics.background ); } );
+   if ( withBg.length == 0 )
+      return null;
+   withBg.sort( function( a, b ) { return a.metrics.background - b.metrics.background; } );
+   var ref = withBg[Math.floor( ( withBg.length - 1 )/2 )];
+   if ( !File.exists( ref.path ) )
+      return null;
+   // Remembered beside the previews, so a reopened review reads no frame for it.
+   var key = Cache.previewKey( ref.path, "stretch", FrameSelector.renderParams( "preview" ) );
+   var memo = ( key != null ) ? Cache.previewDir() + "/stretch-" + key + ".json" : null;
+   var kept = FrameSelector.readStretchMemo( memo );
+   if ( kept != null )
+      return kept;
+   var img = FrameSelector.readFrame( ref.path );
+   if ( img == null )
+      return null;
+   try
+   {
+      var params = FrameSelector.stretchParams( img );
+      FrameSelector.writeStretchMemo( memo, params );
+      return params;
+   }
+   finally { img.free(); }
+};
+
+FrameSelector.readStretchMemo = function( path )
+{
+   try
+   {
+      if ( path == null || !File.exists( path ) )
+         return null;
+      var p = JSON.parse( File.readTextFile( path ) );
+      return ( Frames.isNumber( p.shadows ) && Frames.isNumber( p.midtone ) ) ? p : null;
+   }
+   catch ( e ) { return null; }
+};
+
+FrameSelector.writeStretchMemo = function( path, params )
+{
+   try
+   {
+      if ( path == null )
+         return;
+      Util.ensureDirectory( Cache.previewDir() );
+      File.writeTextFile( path, JSON.stringify( params ) );
+   }
+   catch ( e ) { /* only a cache: the stretch is measured again next time */ }
+};
+
 /*
  * Stretch an image in place, as HistogramTransformation would with the
  * shadows clipped at median - STRETCH.SHADOWS MAD and the median sent to
@@ -309,12 +378,10 @@ FrameSelector.mtf = function( m, x )
  * black without this. Done on the samples, band by band, so no window and
  * no process is involved (see readFrame).
  */
-FrameSelector.stretchInPlace = function( img )
+FrameSelector.stretchInPlace = function( img, params )
 {
-   var S = FrameSelector.STRETCH;
-   var med = img.median(), mad = img.MAD()*1.4826;
-   var shadows = Math.max( 0, med - S.SHADOWS*mad );
-   var midtone = Math.mtf( S.TARGET, Math.max( 1e-8, med - shadows ) );
+   var P = params || FrameSelector.stretchParams( img );
+   var shadows = P.shadows, midtone = P.midtone;
    var span = Math.max( 1e-8, 1 - shadows );
    var band = Math.max( 1, Math.floor( 1048576/img.width ) );
    for ( var c = 0; c < img.numberOfChannels; ++c )
@@ -335,7 +402,7 @@ FrameSelector.stretchInPlace = function( img )
  * single-factor form keeps the aspect); null keeps full size. The caller
  * frees the image.
  */
-FrameSelector.stretchedImage = function( path, fit )
+FrameSelector.stretchedImage = function( path, fit, params )
 {
    var img = FrameSelector.readFrame( path );
    if ( img == null )
@@ -344,7 +411,7 @@ FrameSelector.stretchedImage = function( path, fit )
    {
       if ( fit != null )
          img.resample( Math.min( fit.W/img.width, fit.H/img.height ) );
-      FrameSelector.stretchInPlace( img );
+      FrameSelector.stretchInPlace( img, params );
       return img;
    }
    catch ( e )
@@ -367,9 +434,14 @@ FrameSelector.eightBit = function( img )
 };
 
 /* Everything that changes a render of `kind`, for its cache key. */
-FrameSelector.renderParams = function( kind )
+FrameSelector.renderParams = function( kind, stretch )
 {
    var p = { shadows: FrameSelector.STRETCH.SHADOWS, target: FrameSelector.STRETCH.TARGET };
+   if ( stretch != null )
+   {
+      p.clip = stretch.shadows.toFixed( 7 );
+      p.mid = stretch.midtone.toFixed( 7 );
+   }
    if ( kind == "thumb" )
    {
       p.w = FrameSelector.THUMB.W;
@@ -458,16 +530,16 @@ FrameSelector.storeRender = function( key, img )
  * full size, or "thumb", fitted to a filmstrip tile. Null when the frame
  * cannot be read.
  */
-FrameSelector.renderFrame = function( path, kind )
+FrameSelector.renderFrame = function( path, kind, stretch )
 {
    var img = null;
    try
    {
-      var key = Cache.previewKey( path, kind, FrameSelector.renderParams( kind ) );
+      var key = Cache.previewKey( path, kind, FrameSelector.renderParams( kind, stretch ) );
       var hit = ( key != null ) ? FrameSelector.cachedRender( key ) : null;
       if ( hit != null )
          return hit;
-      var full = FrameSelector.stretchedImage( path, kind == "thumb" ? FrameSelector.THUMB : null );
+      var full = FrameSelector.stretchedImage( path, kind == "thumb" ? FrameSelector.THUMB : null, stretch );
       if ( full == null )
          return null;
       // Shown as it will be stored, so the first view and every later one are the same picture.
@@ -490,9 +562,9 @@ FrameSelector.renderFrame = function( path, kind )
 };
 
 /* One frame's thumbnail. Null when it cannot be read. */
-FrameSelector.thumbnailOf = function( path )
+FrameSelector.thumbnailOf = function( path, stretch )
 {
-   return File.exists( path ) ? FrameSelector.renderFrame( path, "thumb" ) : null;
+   return File.exists( path ) ? FrameSelector.renderFrame( path, "thumb", stretch ) : null;
 };
 
 /*
@@ -1308,8 +1380,8 @@ FrameSelector.execute = function( manifest, onProgress )
  *
  * Image.render() does NOT apply a screen stretch -- its own documentation
  * excludes it -- so an STF on the view renders nothing different. The
- * frame's PIXELS are stretched (FrameSelector.stretchInPlace) from its own
- * median and MAD, and THAT is what is rendered, and cached.
+ * frame's PIXELS are stretched (FrameSelector.stretchInPlace) with its
+ * filter's shared stretch (referenceStretch), or its own median and MAD, and THAT is what is rendered, and cached.
  *
  * Rendered once per selected frame rather than once per paint, so panning is
  * a blit. The prototype measured 341 ms from open to a drawn bitmap on a
@@ -1776,7 +1848,7 @@ FrameSelector.PreviewControl = class extends ScrollBox
       catch ( e ) { /* releasing must never be the thing that fails */ }
    }
 
-   load( path )
+   load( path, stretch )
    {
       var self = this;
       self.dispose();
@@ -1809,7 +1881,7 @@ FrameSelector.PreviewControl = class extends ScrollBox
        * otherwise: Image.render() does NOT apply an STF, so a linear sub
        * renders as a black rectangle.
        */
-      self.bmp = FrameSelector.renderFrame( path, "preview" );
+      self.bmp = FrameSelector.renderFrame( path, "preview", stretch );
       if ( self.bmp == null )
          return false;
       self.layOutScroll();
@@ -2240,8 +2312,39 @@ FrameSelector.Dialog = class extends Dialog
    /* Load a frame into the preview; its thumbnail comes free from the render. */
    loadPreview( path )
    {
-      if ( this.preview.load( path ) && this.thumbs != null && this.thumbs[path] == null )
+      var ch = this.channel();
+      /*
+       * The channel's shared stretch costs one frame read. While the dialog
+       * is on screen that happens on the loader's timer, ahead of the
+       * thumbnails, and the preview follows it, so the window stays
+       * responsive; PJSR has no threads, so a tick is the lowest priority
+       * there is.
+       */
+      if ( ch != null && ch.stretch === undefined && this.mayLoad() )
+      {
+         this.pendingPreview = { path: path, key: ch.key };
+         this.rebuildQueue();
+         return;
+      }
+      this.pendingPreview = null;
+      this.showPreview( path );
+   }
+
+   showPreview( path )
+   {
+      var stretch = this.channelStretch( this.channel() );
+      if ( this.preview.load( path, stretch ) && this.thumbs != null && this.thumbs[path] == null )
          this.storeThumb( path, this.preview.thumbnail() );
+   }
+
+   /* The channel's shared stretch, measured once; null when it has none. */
+   channelStretch( ch )
+   {
+      if ( ch == null )
+         return null;
+      if ( ch.stretch === undefined )
+         ch.stretch = FrameSelector.referenceStretch( ch.rows );
+      return ch.stretch;
    }
 
    /* The selected frame's tags: what Run does with it, then each anomaly. */
@@ -2587,6 +2690,8 @@ FrameSelector.Dialog = class extends Dialog
    {
       if ( !this.mayLoad() || this.loadQueue.length == 0 || this.loaderTimer.isRunning )
          return;
+      var next = this.loadQueue[0];
+      this.loaderTimer.interval = ( next.background ? 0.25 : 0.05 );   // seconds
       this.loaderTimer.start();
    }
 
@@ -2613,6 +2718,8 @@ FrameSelector.Dialog = class extends Dialog
       this.loadQueue = [];
       if ( ch == null )
          return;
+      if ( ch.stretch === undefined )
+         this.loadQueue.push( { kind: "stretch", key: ch.key, generation: this.loadGeneration } );
       var order = Frames.thumbnailOrder( ch.rows.length, this.selectedRowIndex(),
                                          this.filmstrip.first, this.filmstrip.visibleCount() );
       for ( var i = 0; i < order.length; ++i )
@@ -2621,8 +2728,34 @@ FrameSelector.Dialog = class extends Dialog
          if ( this.thumbs[p] == null && !this.thumbFailed[p] )
             this.loadQueue.push( { path: p, key: ch.key, generation: this.loadGeneration } );
       }
+      this.queueOtherChannels( ch );
       this.pushThumbs();
       this.armLoader();
+   }
+
+   /*
+    * After the channel on screen, every other channel's stretch and
+    * thumbnails, marked `background` so the loader paces them slower: what
+    * is on screen is rendered first, the rest while the user reviews.
+    */
+   queueOtherChannels( shown )
+   {
+      for ( var k = 0; k < this.state.order.length; ++k )
+      {
+         var other = this.state.channels[this.state.order[k]];
+         if ( other == null || other === shown )
+            continue;
+         if ( other.stretch === undefined )
+            this.loadQueue.push( { kind: "stretch", key: other.key, background: true,
+                                   generation: this.loadGeneration } );
+         for ( var i = 0; i < other.rows.length; ++i )
+         {
+            var p = other.rows[i].path;
+            if ( this.thumbs[p] == null && !this.thumbFailed[p] )
+               this.loadQueue.push( { path: p, key: other.key, background: true,
+                                      generation: this.loadGeneration } );
+         }
+      }
    }
 
    loaderTick()
@@ -2635,7 +2768,19 @@ FrameSelector.Dialog = class extends Dialog
          var item = this.loadQueue.shift();
          if ( item == null )
             return;
-         var bmp = FrameSelector.thumbnailOf( item.path );
+         if ( item.kind == "stretch" )
+         {
+            this.channelStretch( this.state.channels[item.key] );
+            var pp = this.pendingPreview;
+            if ( pp != null && pp.key == this.current && !this.released )
+            {
+               this.pendingPreview = null;
+               this.showPreview( pp.path );
+            }
+            return;
+         }
+         var bmp = FrameSelector.thumbnailOf( item.path,
+                                                this.channelStretch( this.state.channels[item.key] ) );
          // The dialog may have been released, or moved on, while reading.
          if ( this.released || item.generation != this.loadGeneration )
             return;
