@@ -1673,7 +1673,9 @@ Frames.judgeRow = function( row, gates, meds, settings, mayReject )
  * likely cause of what the numbers show, relative to the channel, the way
  * SubframeStudio's are -- and they separate causes that look alike:
  *
- *   blur (FWHM up)     ALTITUDE if the airmass explains it, else SEEING if
+ *   blur (FWHM up)     ALTITUDE if the airmass explains it and the frames
+ *                      beside it in time are wide too (altitude moves
+ *                      slowly: one wide frame is never altitude), else SEEING if
  *                      it is one frame among sharp neighbours in time, else
  *                      FOCUS (it persists)
  *   dimming            CLOUD: star flux down beyond what extinction at that
@@ -1820,12 +1822,23 @@ Frames.blurCause = function( i, list, corr, refs, blurredCorr, order )
    if ( refs.fwhm == null || !Frames.isNumber( m.fwhm ) ||
         m.fwhm <= ( 1 + Frames.BLUR_MARGIN )*refs.fwhm )
       return null;
-   if ( corr[i].X != null && !blurredCorr[i] )
-      return "altitude";                   // the airmass explains the blur
    if ( order == null )
-      return "focus";                      // no time order: cannot tell it is isolated
+      return "focus";                      // no time order: cannot tell a run from a blip
    var at = order.indexOf( i );
    var neighbours = [ order[at - 1], order[at + 1] ].filter( function( j ) { return j != null; } );
+   var explained = corr[i].X != null && !blurredCorr[i];
+   /*
+    * Altitude changes slowly, so it can only blur a run of frames: ALTITUDE
+    * needs a time neighbour that is wide too. One wide frame among sharp
+    * ones is a blip, whatever its altitude.
+    */
+   var rawWide = function( j )
+   {
+      return list[j] != null && Frames.isNumber( list[j].fwhm ) &&
+             list[j].fwhm > ( 1 + Frames.BLUR_MARGIN )*refs.fwhm;
+   };
+   if ( explained )
+      return neighbours.some( rawWide ) ? "altitude" : "seeing";
    var isolated = neighbours.length > 0 &&
                   neighbours.every( function( j ) { return !blurredCorr[j]; } );
    return isolated ? "seeing" : "focus";
@@ -1911,6 +1924,16 @@ Frames.flagSummary = function( flagsList )
    return frames + " flagged: " + parts.join( ", " );
 };
 
+/* "\naltitude 41.2 deg, airmass 1.52, FWHM 3.81 (2.97 corrected)", or "" without an altitude. */
+Frames.airmassLine = function( m )
+{
+   var c = m ? Frames.corrected( m ) : null;
+   if ( c == null || c.X == null || c.fwhm == null )
+      return "";
+   return "\naltitude " + m.altitude.toFixed( 1 ) + " deg, airmass " + c.X.toFixed( 2 ) +
+          ", FWHM " + m.fwhm.toFixed( 2 ) + " (" + c.fwhm.toFixed( 2 ) + " corrected)";
+};
+
 /* A row's tooltip: the path, the verdict and why, then what it looks like. */
 Frames.rowTooltip = function( row, flags )
 {
@@ -1919,6 +1942,7 @@ Frames.rowTooltip = function( row, flags )
    var fl = flags || [];
    return row.path + "\n" + Frames.finalState( row.state, row.override ) + mark +
           ( row.reasons.length ? ": " + row.reasons.join( "; " ) : "" ) +
+          Frames.airmassLine( row.metrics ) +
           ( fl.length ? "\nlooks like: " + fl.map( function( f )
                { return Frames.FLAG_TAG[f].toLowerCase(); } ).join( ", " ) : "" );
 };

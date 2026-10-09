@@ -4626,15 +4626,26 @@ function runTests()
       check( "FOCUS: blur not explained by altitude, no time order",
              Frames.anomalyFlags( wide, true )[12], [ "focus" ] );
       check( "and nothing on its neighbours", none( Frames.anomalyFlags( wide, true ).slice( 0, 12 ) ), true );
-      check( "ALTITUDE: blur the airmass explains",
+      check( "not ALTITUDE without a time order: a lone frame cannot be a run",
              Frames.anomalyFlags( base.concat( [ M( { fwhm: 5.6, altitude: 30 } ) ] ), true )[12],
-             [ "altitude" ] );
+             [ "focus" ] );
       check( "not ALTITUDE when the correction still leaves it wide",
              Frames.anomalyFlags( base.concat( [ M( { fwhm: 7.5, altitude: 30 } ) ] ), true )[12],
              [ "focus" ] );
       var t13 = minutes( 13 );
       check( "SEEING: one frame blurred, its neighbours in time sharp",
              Frames.anomalyFlags( base.concat( [ M( { fwhm: 9 } ) ] ), true, t13 )[12], [ "seeing" ] );
+      check( "one frame the airmass would explain, sharp neighbours: SEEING, not ALTITUDE",
+             Frames.anomalyFlags( base.concat( [ M( { fwhm: 5.6, altitude: 30 } ) ] ), true, t13 )[12],
+             [ "seeing" ] );
+      var low = base.slice( 0, 10 ).concat( [ M( { fwhm: 5.6, altitude: 30 } ),
+                M( { fwhm: 5.6, altitude: 30 } ), M( { fwhm: 5.6, altitude: 30 } ) ] );
+      check( "ALTITUDE: a run of wide frames the airmass explains",
+             Frames.anomalyFlags( low, true, t13 ).slice( 10, 13 ),
+             [ [ "altitude" ], [ "altitude" ], [ "altitude" ] ] );
+      check( "the tooltip shows altitude, airmass and corrected FWHM",
+             Frames.airmassLine( M( { fwhm: 5.6, altitude: 30 } ) ),
+             "\naltitude 30.0 deg, airmass 2.00, FWHM 5.60 (3.69 corrected)" );
       var run = base.slice( 0, 10 ).concat( [ M( { fwhm: 9 } ), M( { fwhm: 9 } ), M( { fwhm: 3.95 } ) ] );
       check( "FOCUS: blur that persists across consecutive frames",
              Frames.anomalyFlags( run, true, t13 ).slice( 10, 12 ), [ [ "focus" ], [ "focus" ] ] );

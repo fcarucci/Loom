@@ -320,7 +320,7 @@ likely cause. Tags are advisory: they never change a verdict.
 
 | tag | letter | fires when |
 |---|---|---|
-| ALTITUDE | A | FWHM 20% above the sharpest quarter of the channel, but not once corrected for airmass |
+| ALTITUDE | A | FWHM 20% above the sharpest quarter of the channel, not once corrected for airmass, and the frames beside it in time are wide too (altitude moves slowly, so one wide frame is never ALTITUDE; it is SEEING) |
 | FOCUS | F | FWHM 20% above even after the airmass correction, across consecutive frames |
 | SEEING | S | FWHM 20% above after the correction, on one frame between sharp neighbours |
 | TRACKING | T | eccentricity more than 3σ above the channel's median |
