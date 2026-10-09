@@ -1288,8 +1288,10 @@ Util.headerInfo = function( F, f, d )
       width: d[0].width,
       height: d[0].height
    };
-   var sig = Util.readImageProperty( f, "PCL:Signature:Integration" );
-   var hist = Util.readImageProperty( f, "PixInsight:ProcessingHistory" );
+   // Formats without image properties (FITS) log an error on every read.
+   var props = F.canStoreImageProperties === true;
+   var sig = props ? Util.readImageProperty( f, "PCL:Signature:Integration" ) : null;
+   var hist = props ? Util.readImageProperty( f, "PixInsight:ProcessingHistory" ) : null;
    if ( sig != null ) info.signature = sig;
    if ( hist != null ) info.history = hist;
    return info;
