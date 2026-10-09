@@ -1017,6 +1017,7 @@ UI.SelectDialog = class extends Dialog
             {
                if ( !self.config.filters ) self.config.filters = {};
                self.config.filters[key] = combo.itemText( i );
+               Config.saveFilters( self.config, Config.pixinsightStore() );
             };
             // record the initial selection so a never-touched combo still counts
             if ( combo.numberOfItems > 0 )
@@ -1685,7 +1686,9 @@ UI.SelectDialog = class extends Dialog
       this.useCache.onCheck = function( c )
       {
          self.config.useCache = c;
-         self.ignoreCache.enabled = c;
+         if ( !c )
+            self.config.ignoreCache = false;      // nothing to ignore without a cache
+         self.syncCacheBoxes();
          self.updateClearCacheLabel();
       };
 
@@ -1693,10 +1696,28 @@ UI.SelectDialog = class extends Dialog
       this.ignoreCache.text = "Ignore cache for this run";
       this.ignoreCache.toolTip = "Recompute every stage this run instead of reusing " +
                                  "cached results, but still write fresh cache entries " +
-                                 "so later runs can reuse them.";
-      this.ignoreCache.checked = !!config.ignoreCache;
-      this.ignoreCache.enabled = config.useCache;
-      this.ignoreCache.onCheck = function( c ) { self.config.ignoreCache = c; };
+                                 "so later runs can reuse them. Use cache is shown " +
+                                 "off while this is ticked; the two are exclusive.";
+      this.ignoreCache.onCheck = function( c )
+      {
+         self.config.ignoreCache = c;
+         self.syncCacheBoxes();
+      };
+      /*
+       * Use cache and Ignore cache never show ticked together: ignoring
+       * shows the cache as off (and locked) for this run, while the saved
+       * Use cache setting is left as it is. Without a cache there is
+       * nothing to ignore.
+       */
+      this.syncCacheBoxes = function()
+      {
+         var ignore = !!self.config.useCache && !!self.config.ignoreCache;
+         self.useCache.checked = !!self.config.useCache && !ignore;
+         self.useCache.enabled = !ignore;
+         self.ignoreCache.checked = ignore;
+         self.ignoreCache.enabled = !!self.config.useCache;
+      };
+      this.syncCacheBoxes();
 
       this.cacheInfo = new Label( this );
       this.cacheInfo.textAlignment = TextAlign_Left | TextAlign_VertCenter;

@@ -18993,6 +18993,19 @@ function runPixInsightGapTests()
       check( "every control writes its own config field",
              got, rows.map( function( r ) { return r[0] + " -> " + r[3] + " = " + JSON.stringify( r[4] ); } ) );
       check( "turning the cache off greys out Ignore cache", dlg.ignoreCache.enabled, false );
+      tick( "useCache", true );
+      tick( "ignoreCache", true );
+      check( "Ignore cache shows Use cache off, locked, and leaves the saved setting",
+             [ dlg.useCache.checked, dlg.useCache.enabled, dlg.config.useCache, dlg.ignoreCache.checked ],
+             [ false, false, true, true ] );
+      tick( "ignoreCache", false );
+      check( "unticking Ignore cache gives Use cache back",
+             [ dlg.useCache.checked, dlg.useCache.enabled, dlg.ignoreCache.checked ], [ true, true, false ] );
+      tick( "ignoreCache", true );
+      dlg.useCache.enabled = true;   // a stray click cannot leave both ticked either
+      tick( "useCache", false );
+      check( "Use cache off clears Ignore cache",
+             [ dlg.config.ignoreCache, dlg.ignoreCache.checked, dlg.ignoreCache.enabled ], [ false, false, false ] );
       /*
        * The strength dropdowns offer what the tool runs with the Stretch
        * box as it is: Prism 2.0 has no Low, and no High without a stretch

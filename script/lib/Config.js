@@ -373,8 +373,18 @@ Config.save = function( config, store )
       "stretchMethod", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
       "sharpenTool", "starReduction", "detailLevel", "parallaxFamily", "useCache", "autoUpdate", "cacheDir",
       "smoothing", "savedList" ] );
+   Config.saveFilters( config, store );
+};
+
+/*
+ * The filter choices alone, to Settings: global, for every run whatever the
+ * target. Written the moment one is picked as well as on Run, so a choice
+ * survives a dialog that is cancelled or a run that stops at preflight.
+ */
+Config.saveFilters = function( config, store )
+{
    var fk = Util.BROADBAND;
    for ( var i = 0; i < fk.length; ++i )
-      store.settings.write( K + "filter_" + fk[i], DataType_String,
+      store.settings.write( Config.SETTINGS_PREFIX + "filter_" + fk[i], DataType_String,
                             ( config.filters && config.filters[fk[i]] ) ? config.filters[fk[i]] : "" );
 };
