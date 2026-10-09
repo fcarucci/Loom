@@ -28,11 +28,25 @@
 #include "lib/Cache.js"
 #include "lib/AsiairNames.js"
 #include "lib/Asiair.js"
+#include "lib/MasterFlat.js"
 #include "lib/NightDialog.js"
 #include "lib/Frames.js"
+#include "lib/Update.js"
 #endif
 
 function FrameSelector() {}
+
+/*
+ * "Loom Frame Selector 0.3.4 (a4c1f2e)": the commit the code on disk is at,
+ * so a window shows at a glance which code it was started from. Read from
+ * the checkout's .git; nothing is shown after the name where there is none.
+ */
+FrameSelector.title = function( suffix )
+{
+   var sha = Update.headCommit( Update.rootOf( File.extractDirectory( #__FILE__ ) ), Update.io );
+   return "Loom Frame Selector " + Util.LOOM_VERSION + ( sha.length > 0 ? " (" + sha + ")" : "" ) +
+          ( suffix ? " - " + suffix : "" );
+};
 
 /*
  * routine 0 measures. 1 and 2 are the preview and output routines and refuse
@@ -1234,6 +1248,34 @@ FrameSelector.logDir = function()
    return File.homeDirectory + "/PixInsight/Loom-frame-selector";
 };
 
+/*
+ * The record of an import, kept in the system temp folder (it is a
+ * diagnostic, not an archive): where it came
+ * from and went, every copy and its outcome, and for master flats what was
+ * read, what was found and why each filter was or was not made. Written
+ * after the copy and again, over the same file, after the master flats, so
+ * a crash in the second still leaves the first. Returns the path or null.
+ */
+FrameSelector.importLogPath = function( stamp )
+{
+   return File.systemTempDirectory + "/Loom-import-logs/import-" + stamp.toISOString().replace( /[:.]/g, "-" ) + ".log";
+};
+
+FrameSelector.writeImportLog = function( path, lines )
+{
+   try
+   {
+      Util.ensureDirectory( File.extractDirectory( path ) );
+      File.writeTextFile( path, lines.join( "\n" ) + "\n" );
+      return path;
+   }
+   catch ( e )
+   {
+      Util.error( "frames", "could not write the import log: " + e );
+      return null;
+   }
+};
+
 FrameSelector.writeManifestLog = function( manifest, path )
 {
    try
@@ -1914,7 +1956,11 @@ FrameSelector.emptyState = function( folder )
              * FrameSelector.prototype, so a flag hung there would be
              * permanently undefined and would guard nothing.
              */
-            cardRoot: null, candidateFlats: [] };
+            cardRoot: null, candidateFlats: [],
+            /* Import only: the darks folder and "Combine flats to masters" (see MasterFlat). */
+            darksFolder: "", onlyMasterFlats: false,
+            /* Import only: the card's darks (described), and MasterFlat.cardDarkMatch of them against the night's flats. */
+            cardDarks: [], cardDarkMatch: null };
 };
 
 /*
@@ -2014,9 +2060,10 @@ FrameSelector.REQUIRED_KEYWORDS = [ "FILTER", "EXPTIME", "DATE-OBS" ];
 /*
  * Check what was written against what it came from.
  *
- * A file that fails is DELETED before the failure is reported: the export
- * path refuses to write over an existing file unless overwrite is set, so
- * leaving a bad one would block its own replacement forever.
+ * A file that fails is DELETED before the failure is reported, so a bad
+ * copy is never left looking like a good one. (Checked in PixInsight:
+ * ImageWindow.saveAs over an existing file replaces it silently, with no
+ * dialog, so a re-import of a night rewrites the copies already there.)
  *
  * This cannot detect altered pixels. Converting to XISF re-encodes, so
  * the copy cannot be hashed against the card; geometry plus keyword
@@ -2082,6 +2129,100 @@ FrameSelector.writeManifest = function( manifest, onProgress )
       }
    }
    return { written: written, failed: failed, cancelled: cancelled };
+};
+
+/*
+ * Darks on the card, against the night's flats, into the state: cardDarks
+ * (every dark of the card, described through quiet header reads -- never an
+ * ImageWindow.open) and cardDarkMatch. `darkFrames` are scanCard's darks and
+ * `flatFrames` the night's candidate flats.
+ */
+FrameSelector.readCardDarks = function( state, darkFrames, flatFrames )
+{
+   var got = MasterFlat.readCardDarks( darkFrames, flatFrames, FrameSelector.quietHeader );
+   state.cardDarks = got.darks;
+   state.cardDarkMatch = got.match;
+};
+
+/* Do card darks stand in for a darks folder? */
+FrameSelector.cardDarksFound = function( state )
+{
+   return state.cardRoot != null && state.cardDarkMatch != null && state.cardDarkMatch.found;
+};
+
+/* Is this import going to calibrate its flats with card darks (the box ticked, the card's darks found)? */
+FrameSelector.cardDarksUsed = function( state )
+{
+   return FrameSelector.cardDarksFound( state ) && !!state.onlyMasterFlats;
+};
+
+/* Where the darks come from, for AsiairNames.darkSource. */
+FrameSelector.darkSourceOf = function( state )
+{
+   return MasterFlat.darkSourceOf( FrameSelector.cardDarksFound( state ) ? state.cardDarkMatch : null, state.darksFolder );
+};
+
+/*
+ * The master-flats step of an import, after the raw flats are in
+ * <dest>/Flat. Reads only the XISF copies there and the darks folder;
+ * nothing on the card is touched. Cancel is polled between steps (the
+ * progress window has no timer, so no ImageWindow is ever opened from one).
+ */
+FrameSelector.makeMasterFlats = function( manifest, written, dest, state, note )
+{
+   note = note || function() {};
+   var root = AsiairNames.importRoot( dest ).root;
+   var failed = {};
+   written.failed.forEach( function( f ) { failed[f.src] = true; } );
+
+   return FrameSelector.withProgress( "Loom Frame Selector - master flats", function( w )
+   {
+      w.announce( "Reading headers" );
+      var flats = [];
+      manifest.flats.forEach( function( f )
+      {
+         if ( failed[f.src] )
+            return;
+         var h = FrameSelector.quietHeader( f.dst );
+         if ( h.info != null )
+            flats.push( MasterFlat.describe( f.dst, h.keyword ) );
+      } );
+      var fromCard = FrameSelector.cardDarksUsed( state );
+      var darks;
+      if ( fromCard )
+         // Read again now: a card pulled out since the dialog opened leaves no headers, so no darks, so no master.
+         darks = MasterFlat.cardDarks( state.cardDarks, FrameSelector.quietHeader );
+      else
+         darks = MasterFlat.darksOf( MasterFlat.scanFolder( state.darksFolder, FrameSelector.quietHeader ) );
+      note( "flats read: " + flats.length );
+      flats.forEach( function( f ) { note( "  " + MasterFlat.frameLine( f ) ); } );
+      if ( fromCard )
+         note( "darks source: " + AsiairNames.darkSource( FrameSelector.darkSourceOf( state ) ) + " (read-only; subfolders not searched)" );
+      else
+         note( "darks folder: " + state.darksFolder + " (subfolders to " + MasterFlat.SCAN_DEPTH + " levels, names containing \"dark\")" );
+      note( "darks found: " + darks.length + ( fromCard ? " on the card" : "" ) );
+      MasterFlat.darkSummaryLines( darks ).forEach( note );
+
+      var jobs = MasterFlat.buildPlan( flats, darks, root + "/Flat", fromCard ? "on the ASIAIR card" : null );
+      AsiairNames.skipFiltersWithFailedCopies( manifest.flats, written.failed.map( function( f ) { return f.src; } ), jobs );
+      note( "plan:" );
+      MasterFlat.planLines( jobs ).forEach( note );
+      var engine = MasterFlat.engine( FrameSelector.quietHeader, Cache.dir() );
+      try
+      {
+         return MasterFlat.execute( jobs, engine, {
+            destFlatDir: root + "/Flat", cardRoot: state.cardRoot,
+            shouldStop: function() { CoreApplication.processEvents(); return w.cancelled; },
+            onProgress: function( done, total, text )
+               { w.report( "Master flats", done, total, text.length > 0 ? text + " (Cancel keeps the raw flats not yet done)" : text ); } } );
+      }
+      finally { try { File.removeDirectory( Cache.dir() + "/master-flat-work" ); } catch ( e ) {} }
+   }, { cancellable: true, before: function( w )
+   {
+      w.cancelButton.toolTip = "<p>Stop making master flats. A filter already finished keeps its master " +
+         "and has had its raw flat copies deleted; the others keep their raw flats. " +
+         "Nothing on the card is touched.</p>";
+   } } );
 };
 
 /*
@@ -2175,7 +2316,7 @@ FrameSelector.Dialog = class extends Dialog
       this.state = state;
       this.current = state.order.length ? state.order[0] : null;
 
-      this.windowTitle = "Loom Frame Selector";
+      this.windowTitle = FrameSelector.title();
 
       this.buildChannelTree();
       this.buildFrameTable();
@@ -2882,6 +3023,8 @@ FrameSelector.Dialog = class extends Dialog
       this.destLabel.useRichText = true;
       this.destLabel.text = "";
 
+      this.buildMasterFlatControls();
+
       this.applyButton = new PushButton( this );
       /*
        * "Run", not a name for whichever action is armed. The label beside
@@ -3184,6 +3327,7 @@ FrameSelector.Dialog = class extends Dialog
                    : t.condemned > 0 );
       this.destButton.enabled = this.editable();
       this.destLabel.text = this.destinationText( t );
+      this.syncMasterFlatControls();
    }
 
    /*
@@ -3358,6 +3502,106 @@ FrameSelector.Dialog = class extends Dialog
       return result;
    }
 
+   /*
+    * Import only: where the darks are, and whether the night's flats become
+    * one master per filter. Both are remembered. Built only for an import,
+    * which is what state.cardRoot says.
+    */
+   buildMasterFlatControls()
+   {
+      var self = this;
+      if ( !this.importing() )
+         return;
+
+      this.darksPrefix = new Label( this );
+      this.darksPrefix.text = "darks:";
+
+      this.darksButton = new PushButton( this );
+      this.darksButton.text = "Folder...";
+      this.darksButton.toolTip =
+         "<p>The folder your darks are in, master or raw. Used to calibrate the flats " +
+         "(matched by exposure, binning, gain and temperature) when \"Import only master " +
+         "flats\" is ticked. Raw darks are integrated into a master dark first, " +
+         "which is cached. May be empty.</p>";
+      this.darksButton.onClick = function()
+      {
+         if ( !self.editable() )
+            return;
+         var gd = new GetDirectoryDialog;
+         gd.caption = "Folder of darks";
+         if ( gd.execute() )
+            self.setMasterFlatSettings( gd.directoryPath, self.state.onlyMasterFlats );
+         self.refresh();
+      };
+
+      this.darksClear = new PushButton( this );
+      this.darksClear.text = "Clear";
+      this.darksClear.toolTip = "<p>Forget the darks folder.</p>";
+      this.darksClear.onClick = function()
+      {
+         if ( self.editable() )
+            self.setMasterFlatSettings( "", self.state.onlyMasterFlats );
+         self.refresh();
+      };
+
+      this.darksLabel = new Label( this );
+      this.darksLabel.useRichText = true;
+      this.darksLabel.text = "";
+
+      this.masterOnlyBox = new CheckBox( this );
+      this.masterOnlyBox.text = "Combine flats to masters";
+      this.masterOnlyBox.toolTip =
+         "<p>Instead of copying the night's flats, calibrate them with the matching dark, " +
+         "integrate each filter into one master flat (masterFlat_&lt;filter&gt;.xisf in the " +
+         "Flat folder) and delete the raw flat copies once the master is written and " +
+         "checked. A filter with no matching dark, or whose master fails, keeps its raw " +
+         "flats. Nothing on the ASIAIR is touched. Needs a darks folder, unless the ASIAIR " +
+         "card holds darks that suit the flats.</p>";
+      this.masterOnlyBox.onCheck = function( checked )
+      {
+         if ( self.editable() )
+            self.setMasterFlatSettings( self.state.darksFolder, checked );
+         self.refresh();
+      };
+   }
+
+   /* Remember the choice, in the state Run reads and in the settings. */
+   setMasterFlatSettings( folder, only )
+   {
+      this.state.darksFolder = folder || "";
+      this.state.onlyMasterFlats = !!only;
+      MasterFlat.saveSettings( MasterFlat.settingsStore(), this.state.darksFolder,
+                               this.state.onlyMasterFlats );
+   }
+
+   /* Is Run going to make master flats? */
+   masterFlatsMode()
+   {
+      return this.importing() &&
+             MasterFlat.active( this.state.darksFolder, this.state.onlyMasterFlats,
+                                FrameSelector.cardDarksFound( this.state ) );
+   }
+
+   syncMasterFlatControls()
+   {
+      if ( this.darksButton == null )
+         return;
+      var folder = this.state.darksFolder || "";
+      var ui = MasterFlat.cardDarksUi( FrameSelector.cardDarksFound( this.state ), folder,
+                                       this.state.onlyMasterFlats, this.editable() );
+      // visible, not just enabled: with card darks there is no folder to choose. The saved folder is left as it is.
+      this.darksButton.visible = ui.darksVisible;
+      this.darksClear.visible = ui.darksVisible;
+      this.darksLabel.visible = ui.darksVisible;
+      this.darksPrefix.text = ui.found ? "darks: on the ASIAIR card" : "darks:";
+      this.darksButton.enabled = ui.folderEnabled;
+      this.darksClear.enabled = ui.clearEnabled;
+      this.masterOnlyBox.enabled = ui.optionAvailable;
+      this.masterOnlyBox.checked = ui.optionChecked;
+      this.darksLabel.text = folder.length > 0 ? "<i>" + Util.elideHead( folder, 40 ) + "</i>"
+                                               : "<i>no folder chosen</i>";
+   }
+
    /* The frames came off a card, so nothing may be written back to it. */
    importing()
    {
@@ -3410,11 +3654,27 @@ FrameSelector.Dialog = class extends Dialog
          return null;
       }
 
-      var summary = AsiairNames.importSummary( manifest, dest );
+      var master = self.masterFlatsMode();
+      var fromCard = master && FrameSelector.cardDarksFound( self.state );
+      var problem = master ? AsiairNames.masterFlatsProblem( self.state.darksFolder, self.state.onlyMasterFlats,
+         fromCard ? self.state.cardDarkMatch.used.map( function( d ) { return d.path; } ) : null ) : null;
+      if ( problem != null )
+      {
+         FrameSelector.tell( problem, StdIcon_Warning );
+         return null;
+      }
+      var summary = AsiairNames.importSummary( manifest, dest,
+                                               master ? FrameSelector.darkSourceOf( self.state ) : null );
       if ( !FrameSelector.ask( summary, StdIcon_Question ) )
          return null;
 
       self.state.locked = true;
+      var stamp = new Date(), logPath = FrameSelector.importLogPath( stamp ), log = [];
+      function note( line ) { log.push( line ); }
+      note( "# Loom Frame Selector import, " + stamp.toISOString() );
+      note( "destination: " + dest );
+      note( "lights: " + manifest.lights.length + ", flats: " + manifest.flats.length );
+      note( "master flats: " + ( master ? "on, darks from " + AsiairNames.darkSource( FrameSelector.darkSourceOf( self.state ) ) : "off" ) );
       var result = FrameSelector.withProgress( null, function( w )
       {
          return FrameSelector.writeManifest( manifest, function( done, total ) {
@@ -3423,7 +3683,36 @@ FrameSelector.Dialog = class extends Dialog
       }, { cancellable: true } );
 
       var outcome = FrameSelector.importOutcome( result );
-      FrameSelector.tell( outcome.text, outcome.icon );
+      note( "copied: " + result.written + ", failed: " + result.failed.length + ( result.cancelled ? ", CANCELLED" : "" ) );
+      result.failed.forEach( function( f ) { note( "  FAILED " + f.src + ": " + f.reason ); } );
+      note( "result: " + outcome.text.replace( /\n+/g, " | " ) );
+      FrameSelector.writeImportLog( logPath, log );
+      var masterText = "";
+      if ( master && !result.cancelled )
+      {
+         note( "master flats:" );
+         var made = null;
+         try { made = FrameSelector.makeMasterFlats( manifest, result, dest, self.state, note ); }
+         catch ( e )
+         {
+            note( "EXCEPTION: " + e );
+            FrameSelector.writeImportLog( logPath, log );
+            throw e;
+         }
+         masterText = "\n\n" + MasterFlat.report( made );
+         note( "outcome:" );
+         MasterFlat.report( made ).split( "\n" ).forEach( function( l ) { note( "  " + l ); } );
+         if ( made.kept.length > 0 || made.cancelled || made.notes.length > 0 )
+            outcome.icon = StdIcon_Warning;
+      }
+      else if ( master )
+      {
+         masterText = "\n\nCancelled before the master flats: the raw flats were kept.";
+         note( "master flats: cancelled before they started; the raw flats were kept" );
+      }
+      if ( FrameSelector.writeImportLog( logPath, log ) != null )
+         masterText += "\n\nLog: " + logPath;
+      FrameSelector.tell( outcome.text + masterText, outcome.icon );
 
       self.refresh();
       return result;
@@ -3597,6 +3886,20 @@ FrameSelector.Dialog = class extends Dialog
       dest.add( this.destLabel );
       dest.addStretch();
 
+      var darks = null;
+      if ( this.darksButton != null )
+      {
+         darks = new HorizontalSizer;
+         darks.spacing = 6;
+         darks.add( this.darksPrefix );
+         darks.add( this.darksButton );
+         darks.add( this.darksClear );
+         darks.add( this.darksLabel );
+         darks.addSpacing( 12 );
+         darks.add( this.masterOnlyBox );
+         darks.addStretch();
+      }
+
       var buttons = new HorizontalSizer;
       buttons.spacing = 6;
       buttons.addStretch();
@@ -3623,6 +3926,8 @@ FrameSelector.Dialog = class extends Dialog
       this.sizer.add( this.problemsLabel );
       this.sizer.add( this.summaryLabel );
       this.sizer.add( dest );
+      if ( darks != null )
+         this.sizer.add( darks );
       this.sizer.add( buttons );
 
       this.refresh();
@@ -4414,7 +4719,7 @@ FrameSelector.ScanWindow = class extends Dialog
       this.pulseStart = null;
       this.pulseElapsed = 0;
 
-      this.windowTitle = "Loom Frame Selector - scanning";
+      this.windowTitle = FrameSelector.title( "scanning" );
 
       this.stageLabel = new Label( this );
       this.stageLabel.useRichText = true;
@@ -4738,6 +5043,14 @@ FrameSelector.offerCard = function()
     */
    state.cardRoot = root;
    state.candidateFlats = NightDialog.flatsForNight( survey, night );
+   FrameSelector.withProgress( null, function( w )
+   {
+      w.announce( "Looking for darks on the card" );
+      FrameSelector.readCardDarks( state, scan.darks || [], state.candidateFlats );
+   } );
+   var remembered = MasterFlat.loadSettings( MasterFlat.settingsStore() );
+   state.darksFolder = remembered.darksFolder;
+   state.onlyMasterFlats = remembered.onlyMasterFlats;
    return state;
 };
 

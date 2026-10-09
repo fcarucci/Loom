@@ -9,4 +9,4 @@
 #include "check.js"
 
 entryAloneCheck( "FrameSelector.js", null,
-                 [ "Util", "Cache", "AsiairNames", "Asiair", "NightDialog", "Frames", "FrameSelector" ] );
+                 [ "Util", "Cache", "AsiairNames", "Asiair", "MasterFlat", "NightDialog", "Frames", "FrameSelector" ] );

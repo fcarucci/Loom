@@ -506,21 +506,105 @@ AsiairNames.importRoot = function( chosen )
    return { root: path, chosen: null };
 };
 
+/* "15 s", "15 s and 30 s", "1.5 s, 15 s and 30 s". */
+AsiairNames.exposureList = function( exposures )
+{
+   var t = exposures.map( function( e ) { return String( Math.round( e * 1000 ) / 1000 ) + " s"; } );
+   return t.length < 2 ? t.join( "" ) : t.slice( 0, -1 ).join( ", " ) + " and " + t[t.length - 1];
+};
+
+/*
+ * Where the flat-darks come from, as a phrase for the summary and the log.
+ * `source` is { card: true, count, exposures } (the darks on the card that
+ * suit the night's flats) or { darksFolder }.
+ */
+AsiairNames.darkSource = function( source )
+{
+   if ( source.card )
+      return "the " + source.count + " dark(s) on the ASIAIR card (" +
+             ( source.exposures.length > 0 ? AsiairNames.exposureList( source.exposures ) : "no exposure stated" ) + ")";
+   return "the darks in " + source.darksFolder;
+};
+
+/*
+ * Is the master-flats set-up usable, before anything is written? The problem
+ * as a sentence, or null. A darks folder that is gone would only show up
+ * afterwards as "no matching dark" for every filter; better to say so while
+ * nothing has been written. Off (no box, or no folder) is never a problem.
+ * With darks from the card (`cardDarkPaths`, the files to be used) the folder
+ * does not matter, but a dark that has gone from the card does.
+ */
+AsiairNames.masterFlatsProblem = function( darksFolder, onlyMasterFlats, cardDarkPaths )
+{
+   if ( !onlyMasterFlats )
+      return null;
+   if ( cardDarkPaths != null )
+   {
+      for ( var i = 0; i < cardDarkPaths.length; ++i )
+         if ( !File.exists( cardDarkPaths[i] ) )
+            return "A dark on the ASIAIR card cannot be found any more:\n\n" + cardDarkPaths[i] +
+                   "\n\nIs the card still in? Nothing has been written.";
+      return null;
+   }
+   if ( darksFolder == null || String( darksFolder ).length == 0 )
+      return null;
+   if ( !File.directoryExists( darksFolder ) )
+      return "The darks folder cannot be found:\n\n" + darksFolder +
+             "\n\nChoose it again, or untick \"Combine flats to masters\". Nothing has been written.";
+   return null;
+};
+
 /*
  * The import's confirmation: the two folders frames will actually land
  * in, each with its count, and the parent note when the chosen folder was
- * a Light or Flat folder itself.
+ * a Light or Flat folder itself. `masterFlats` is a darkSource() argument.
  */
-AsiairNames.importSummary = function( manifest, chosen )
+AsiairNames.importSummary = function( manifest, chosen, masterFlats )
 {
    var r = AsiairNames.importRoot( chosen );
    var lines = [];
    if ( r.chosen != null )
       lines.push( "Using " + r.root + " (the folder you chose is its " + r.chosen + " folder)", "" );
    lines.push( "Written as XISF copies:",
-               "Lights (" + manifest.lights.length + ") \u2192 " + r.root + "/Light",
-               "Flats (" + manifest.flats.length + ") \u2192 " + r.root + "/Flat" );
+               "Lights (" + manifest.lights.length + ") \u2192 " + r.root + "/Light" );
+   if ( masterFlats )
+      lines.push( "Flats (" + manifest.flats.length + ") \u2192 one master flat per filter in " + r.root + "/Flat,",
+                  "calibrated with " + AsiairNames.darkSource( masterFlats ) + ";",
+                  "the raw flat copies are deleted once each master is written and checked.",
+                  "A filter with no matching dark, or whose master fails, keeps its raw flats.",
+                  "Nothing on the card is changed." );
+   else
+      lines.push( "Flats (" + manifest.flats.length + ") \u2192 " + r.root + "/Flat" );
    return lines.join( "\n" );
+};
+
+/*
+ * A master must be built from ALL of a filter's flats. When any copy of a
+ * filter's flats failed to write, that filter is skipped, its raw copies
+ * kept and the reason given: a master of 9 of 12 flats would pass for a
+ * normal one, and the raw copies would then be deleted. `manifestFlats` are
+ * the manifest's { src, filter }, `failedSrcs` the sources that failed, `jobs`
+ * from MasterFlat.buildPlan (changed in place). A failed flat with no filter
+ * recorded cannot be placed, so it skips every filter.
+ */
+AsiairNames.skipFiltersWithFailedCopies = function( manifestFlats, failedSrcs, jobs )
+{
+   var failed = Object.create( null ), lost = Object.create( null ), all = 0;
+   failedSrcs.forEach( function( s ) { failed[s] = true; } );
+   manifestFlats.forEach( function( f )
+   {
+      if ( !( f.src in failed ) )
+         return;
+      if ( f.filter == null ) ++all;
+      else lost[String( f.filter )] = ( lost[String( f.filter )] || 0 ) + 1;
+   } );
+   jobs.forEach( function( j )
+   {
+      var n = all + ( lost[String( j.filter )] || 0 );
+      if ( n > 0 && j.skip == null )
+         j.skip = n + " flat copy(ies) failed to write; a master from the rest would be incomplete";
+   } );
+   return jobs;
 };
 
 /*
@@ -558,7 +642,7 @@ AsiairNames.manifest = function( approvedLights, flatMatches, destination )
       for ( var f = 0; f < flatMatches[m].flats.length; ++f )
       {
          var src = flatMatches[m].flats[f].path;
-         flats.push( { src: src, dst: destination + "/Flat/" + xisf( src ) } );
+         flats.push( { src: src, dst: destination + "/Flat/" + xisf( src ), filter: flatMatches[m].filter } );
       }
    }
 

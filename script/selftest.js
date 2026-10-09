@@ -40,6 +40,7 @@
  */
 #include "lib/AsiairNames.js"
 #include "lib/Asiair.js"
+#include "lib/MasterFlat.js"
 #include "lib/NightDialog.js"
 /*
  * UI.js is included so the dialogs can actually be CONSTRUCTED below.
@@ -2531,7 +2532,7 @@ function runTests()
                      "StepsSyqon.js", "StepsIcc.js", "Config.js",
                      "Pipeline.js", "Update.js", "UI.js",
                      "Fly.js", "Sky.js", "Render.js",
-                     "Frames.js", "Solve.js", "AsiairNames.js", "Asiair.js", "NightDialog.js", "Hasher.js" ];
+                     "Frames.js", "Solve.js", "AsiairNames.js", "Asiair.js", "MasterFlat.js", "NightDialog.js", "Hasher.js" ];
    var hardcoded = [];
    for ( var lf = 0; lf < LIB_FILES.length; ++lf )
    {
@@ -14091,6 +14092,9 @@ function runTests()
       check( "BF-1 a callback that says nothing does not stop it",
              [ whole.written, whole.cancelled ], [ 1, false ] );
 
+      check( "FrameSelector.title: the name, the version and, from a checkout, the commit; a suffix after a dash",
+             [ /^Loom Frame Selector \d+\.\d+\.\d+( \([0-9a-f]{7}\))?$/.test( FrameSelector.title() ),
+               /^Loom Frame Selector \d+\.\d+\.\d+.* - scanning$/.test( FrameSelector.title( "scanning" ) ) ], [ true, true ] );
       // a missing helper fails these three checks rather than stopping the suite
       var importOutcome = FrameSelector.importOutcome || function() { return "no importOutcome"; };
       check( "BF-1 the import report, finished", importOutcome( { written: 3, failed: [], cancelled: false } ),
@@ -18768,6 +18772,7 @@ function runFlyTestsClean()
    runFinishingTests();
    runFailurePathTests();
    runHasherTests();
+   runMasterFlatTests();
 }
 
 /*
@@ -23270,6 +23275,964 @@ function runFailurePathTests()
    }
    finally { Cache.setDir( savedDir ); }
    }
+}
+
+/*
+ * Master flats, lib/MasterFlat.js: the pure layer (describing, darks,
+ * matching, the plan, names, rejection, verification) and MasterFlat.execute
+ * run against a FAKE engine over an in-memory file system, so the rule that
+ * decides what is deleted is exercised without PixInsight: raw flat copies
+ * go only after the master is written and verified, nothing else ever goes,
+ * and a failed, cancelled or skipped filter keeps every raw flat and every
+ * master that was already there. Synthetic names only; no dialogs.
+ *
+ * The engine contract tested: integrate( paths, spec, outPath, job ) writes
+ * outPath (a temporary name), verify( outPath, job ) answers null or a
+ * problem, publish( tmp, final ) moves it into place and answers true.
+ */
+function runMasterFlatTests()
+{
+   if ( testGroup( "masterflat" ) ) {
+   masterFlatChecks();
+   }
+}
+
+function masterFlatChecks()
+{
+   function kw( o ) { return function( n ) { return n in o ? o[n] : null; }; }
+   function flatFrame( path, filter, exposure, extra )
+   {
+      var h = { IMAGETYP: "'Flat Frame'", FILTER: filter, EXPTIME: String( exposure ),
+                XBINNING: "1", GAIN: "100", "CCD-TEMP": "-10" };
+      for ( var k in extra || {} ) h[k] = extra[k];
+      return MasterFlat.describe( path, kw( h ) );
+   }
+   function darkFrame( path, imagetyp, exposure, extra )
+   {
+      var h = { IMAGETYP: imagetyp, EXPTIME: String( exposure ), XBINNING: "1", GAIN: "100", "CCD-TEMP": "-10" };
+      for ( var k in extra || {} ) h[k] = extra[k];
+      return MasterFlat.describe( path, kw( h ) );
+   }
+
+   /* ---- describing ---- */
+   check( "MasterFlat.number: plain, quoted, decorated, missing, rubbish",
+          [ MasterFlat.number( "1.5" ), MasterFlat.number( "'60.0'" ), MasterFlat.number( "-10.2 C" ),
+            MasterFlat.number( null ), MasterFlat.number( "abc" ) ],
+          [ 1.5, 60, -10.2, null, null ] );
+   var d1 = MasterFlat.describe( "/x/Flat/a.xisf", kw( { EXPOSURE: "2", "SET-TEMP": "-5", XBINNING: "2" } ) );
+   check( "MasterFlat.describe: EXPOSURE and SET-TEMP stand in; a missing keyword is null",
+          [ d1.name, d1.exposure, d1.temp, d1.binning, d1.gain, d1.filter, d1.imagetyp ],
+          [ "a.xisf", 2, -5, 2, null, null, null ] );
+   var d2 = MasterFlat.describe( "/x/a.xisf", kw( { EXPTIME: "3", EXPOSURE: "9", "CCD-TEMP": "-10", "SET-TEMP": "-5" } ) );
+   check( "MasterFlat.describe: EXPTIME and CCD-TEMP win over EXPOSURE and SET-TEMP", [ d2.exposure, d2.temp ], [ 3, -10 ] );
+
+   /* ---- darks ---- */
+   check( "MasterFlat.darkKind: IMAGETYP decides, the name is the fallback",
+          [ MasterFlat.darkKind( "x.xisf", "'Master Dark'" ), MasterFlat.darkKind( "x.fit", "Dark Frame" ),
+            MasterFlat.darkKind( "masterDark.xisf", "Dark" ), MasterFlat.darkKind( "Dark_60s_001.fit", null ),
+            MasterFlat.darkKind( "masterDark_BIN-1.xisf", null ), MasterFlat.darkKind( "Flat_001.fit", "'Flat Frame'" ),
+            MasterFlat.darkKind( "Light_001.fit", "Light Frame" ), MasterFlat.darkKind( "Bias_001.fit", "Bias Frame" ),
+            MasterFlat.darkKind( "dark_flat_001.fit", null ), MasterFlat.darkKind( "IMG_0001.fit", null ),
+            MasterFlat.darkKind( "IMG_0001.fit", "Snapshot" ) ],
+          [ "master", "raw", "master", "raw", "master", null, null, null, null, null, null ] );
+   var darkSet = MasterFlat.darksOf( [ darkFrame( "/d/a.fit", "Dark Frame", 2 ), darkFrame( "/d/b.xisf", "'Master Dark'", 2 ),
+                                       flatFrame( "/d/f.fit", "L", 2 ) ] );
+   check( "MasterFlat.darksOf: darks gain a kind, a flat in the folder is dropped",
+          darkSet.map( function( d ) { return d.name + ":" + d.kind; } ), [ "a.fit:raw", "b.xisf:master" ] );
+
+   /* ---- matching ---- */
+   check( "MasterFlat.sameExposure: 1% or a millisecond, nothing when unstated",
+          [ MasterFlat.sameExposure( 2, 2 ), MasterFlat.sameExposure( 100, 100.9 ), MasterFlat.sameExposure( 100, 102 ),
+            MasterFlat.sameExposure( 0.001, 0.0015 ), MasterFlat.sameExposure( null, 2 ), MasterFlat.sameExposure( 2, null ) ],
+          [ true, true, false, true, false, false ] );
+   var f2 = flatFrame( "/o/Flat/a.xisf", "L", 2 );
+   check( "MasterFlat.darkSuits: exposure, binning, gain (0.5) and temperature (3 C) must agree; temperature must be stated on both",
+          [ MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2 ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 3 ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2, { XBINNING: "2" } ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2, { GAIN: "101" } ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2, { GAIN: "100.4" } ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2, { "CCD-TEMP": "-5" } ) ),
+            MasterFlat.darkSuits( f2, darkFrame( "/d/a", "Dark", 2, { "CCD-TEMP": "-8" } ) ),
+            MasterFlat.darkSuits( f2, MasterFlat.describe( "/d/a", kw( { EXPTIME: "2", "CCD-TEMP": "-10" } ) ) ),
+            MasterFlat.darkSuits( f2, MasterFlat.describe( "/d/a", kw( { XBINNING: "1" } ) ) ),
+            MasterFlat.darkSuits( f2, MasterFlat.describe( "/d/a", kw( { EXPTIME: "2" } ) ) ),
+            MasterFlat.darkSuits( flatFrame( "/o/Flat/b.xisf", "L", 2, { "CCD-TEMP": null } ), darkFrame( "/d/a", "Dark", 2 ) ) ],
+          [ true, false, false, false, true, false, true, true, false, false, false ] );
+
+   function darksFor( list ) { return MasterFlat.darksOf( list ); }
+   var chosen = MasterFlat.chooseDark( f2, darksFor( [
+      darkFrame( "/d/r1.fit", "Dark Frame", 2 ), darkFrame( "/d/r2.fit", "Dark Frame", 2 ),
+      darkFrame( "/d/masterDark_2.xisf", "'Master Dark'", 2 ) ] ) );
+   check( "MasterFlat.chooseDark: a master dark wins over raw darks", [ chosen.kind, chosen.path ], [ "master", "/d/masterDark_2.xisf" ] );
+   chosen = MasterFlat.chooseDark( f2, darksFor( [
+      darkFrame( "/d/m_far.xisf", "'Master Dark'", 2.01 ), darkFrame( "/d/m_near.xisf", "'Master Dark'", 2 ) ] ) );
+   check( "MasterFlat.chooseDark: of two masters, the closest exposure", chosen.path, "/d/m_near.xisf" );
+   chosen = MasterFlat.chooseDark( f2, darksFor( [
+      darkFrame( "/d/a.fit", "Dark Frame", 2, { "CCD-TEMP": "-10" } ), darkFrame( "/d/b.fit", "Dark Frame", 2, { "CCD-TEMP": "-10" } ),
+      darkFrame( "/d/c.fit", "Dark Frame", 2, { "CCD-TEMP": "-12" } ), darkFrame( "/d/d.fit", "Dark Frame", 2, { "CCD-TEMP": "-12" } ),
+      darkFrame( "/d/e.fit", "Dark Frame", 2, { "CCD-TEMP": "-12" } ),
+      darkFrame( "/d/f.fit", "Dark Frame", 2, { "CCD-TEMP": "-20" } ), darkFrame( "/d/g.fit", "Dark Frame", 2, { "CCD-TEMP": "-20" } ) ] ) );
+   check( "MasterFlat.chooseDark: raw darks within the temperature tolerance make one group; a far-off temperature is left out",
+          [ chosen.kind, chosen.paths, Math.round( chosen.temp * 10 ) / 10 ],
+          [ "raw", [ "/d/a.fit", "/d/b.fit", "/d/c.fit", "/d/d.fit", "/d/e.fit" ], -11.2 ] );
+   chosen = MasterFlat.chooseDark( f2, darksFor( [ darkFrame( "/d/a.fit", "Dark Frame", 2 ) ] ) );
+   check( "MasterFlat.chooseDark: one raw dark is too few", chosen, null );
+   check( "MasterFlat.chooseDark: darks of another exposure or binning do not suit; no darks is null",
+          [ MasterFlat.chooseDark( f2, darksFor( [ darkFrame( "/d/m.xisf", "'Master Dark'", 60 ) ] ) ),
+            MasterFlat.chooseDark( f2, darksFor( [ darkFrame( "/d/m.xisf", "'Master Dark'", 2, { XBINNING: "2" } ) ] ) ),
+            MasterFlat.chooseDark( f2, [] ) ], [ null, null, null ] );
+   check( "MasterFlat.rawGroupKey: exposure in ms, binning, gain, never temperature; unstated is -",
+          [ MasterFlat.rawGroupKey( { exposure: 2, binning: 1, gain: 100, temp: -10.2 } ),
+            MasterFlat.rawGroupKey( { exposure: null, binning: null, gain: null, temp: null } ) ],
+          [ "e2000b1g100", "e-b-g-" ] );
+
+   /* ---- names and rejection ---- */
+   check( "MasterFlat.safeName and fileName: a filter name becomes a file name",
+          [ MasterFlat.safeName( "Ha 7nm" ), MasterFlat.safeName( "../x" ), MasterFlat.safeName( "" ), MasterFlat.safeName( null ),
+            MasterFlat.fileName( "L", null ), MasterFlat.fileName( "O-III", 2 ) ],
+          [ "Ha_7nm", "x", "unknown", "unknown", "masterFlat_L.xisf", "masterFlat_O-III_bin2.xisf" ] );
+   check( "MasterFlat.rejectionFor: none for 2, percentile for 3-7, winsorized from 8",
+          [ MasterFlat.rejectionFor( 2 ).method, MasterFlat.rejectionFor( 3 ).method, MasterFlat.rejectionFor( 7 ).method,
+            MasterFlat.rejectionFor( 8 ).method, MasterFlat.rejectionFor( 40 ).method ],
+          [ "none", "percentile", "percentile", "winsorized", "winsorized" ] );
+   var fspec = MasterFlat.flatIntegrationSpec( 10 ), dspec = MasterFlat.darkIntegrationSpec( 10 );
+   check( "MasterFlat integration specs: flats multiplicative and equalised, darks unnormalised, both averaged",
+          [ fspec.combination, fspec.normalization, fspec.rejectionNormalization, dspec.combination, dspec.normalization ],
+          [ "average", "multiplicative", "equalizeFluxes", "average", "none" ] );
+
+   /* ---- the plan ---- */
+   var dFor2 = darksFor( [ darkFrame( "/d/masterDark_2.xisf", "'Master Dark'", 2 ) ] );
+   function flatsOf( filter, n, exposure, extra )
+   {
+      var out = [];
+      for ( var i = 0; i < n; ++i )
+         out.push( flatFrame( "/o/Flat/" + filter + "_" + ( i < 9 ? "0" : "" ) + ( i + 1 ) + ".xisf", filter, exposure, extra ) );
+      return out;
+   }
+   var plan = MasterFlat.buildPlan( flatsOf( "R", 3, 2 ).concat( flatsOf( "L", 3, 2 ) ), dFor2, "/o/Flat" );
+   check( "MasterFlat.buildPlan: one job per filter, sorted, each named and placed in the Flat folder",
+          plan.map( function( j ) { return [ j.filter, j.name, j.master, j.flats.length, j.skip ]; } ),
+          [ [ "L", "masterFlat_L.xisf", "/o/Flat/masterFlat_L.xisf", 3, null ],
+            [ "R", "masterFlat_R.xisf", "/o/Flat/masterFlat_R.xisf", 3, null ] ] );
+   check( "MasterFlat.buildPlan: the part carries the chosen master dark", plan[0].parts[0].dark, { kind: "master", path: "/d/masterDark_2.xisf" } );
+
+   var twoBin = MasterFlat.buildPlan( flatsOf( "L", 2, 2 ).concat( flatsOf( "L", 2, 2, { XBINNING: "2" } ).map( function( f ) { f.path = f.path.replace( "/L_", "/L2_" ); return f; } ) ),
+                                      darksFor( [ darkFrame( "/d/m1.xisf", "'Master Dark'", 2 ),
+                                                  darkFrame( "/d/m2.xisf", "'Master Dark'", 2, { XBINNING: "2" } ) ] ), "/o/Flat" );
+   check( "MasterFlat.buildPlan: one filter at two binnings gets the binning in each name, each its own dark",
+          twoBin.map( function( j ) { return [ j.name, j.parts[0].dark.path, j.skip ]; } ),
+          [ [ "masterFlat_L_bin1.xisf", "/d/m1.xisf", null ], [ "masterFlat_L_bin2.xisf", "/d/m2.xisf", null ] ] );
+
+   var multi = MasterFlat.buildPlan( flatsOf( "L", 2, 2 ).concat( flatsOf( "L", 2, 5 ).map( function( f, i )
+                  { f.path = "/o/Flat/L5_" + i + ".xisf"; return f; } ) ),
+               darksFor( [ darkFrame( "/d/m2.xisf", "'Master Dark'", 2 ), darkFrame( "/d/m5.xisf", "'Master Dark'", 5 ) ] ), "/o/Flat" );
+   check( "MasterFlat.buildPlan: flats of two exposures form two parts, each with the dark of its exposure",
+          [ multi.length, multi[0].parts.length, multi[0].parts.map( function( p ) { return p.dark.path; } ).sort(), multi[0].skip ],
+          [ 1, 2, [ "/d/m2.xisf", "/d/m5.xisf" ], null ] );
+   var halfDark = MasterFlat.buildPlan( flatsOf( "L", 2, 2 ).concat( flatsOf( "L", 2, 5 ).map( function( f, i )
+                  { f.path = "/o/Flat/L5_" + i + ".xisf"; return f; } ) ), dFor2, "/o/Flat" );
+   check( "MasterFlat.buildPlan: one exposure without a dark skips the whole filter", /no matching dark for the 5 s flats/.test( halfDark[0].skip ), true );
+   var lone = MasterFlat.buildPlan( flatsOf( "L", 1, 2 ), dFor2, "/o/Flat" );
+   check( "MasterFlat.buildPlan: a single flat is skipped, not integrated", /only 1 flat/.test( lone[0].skip ), true );
+   var noDark = MasterFlat.buildPlan( flatsOf( "L", 3, 2 ), [], "/o/Flat" );
+   check( "MasterFlat.buildPlan: no darks skips with a reason", /no matching dark/.test( noDark[0].skip ), true );
+   check( "MasterFlat.frameLine / darkSummaryLines / planLines: what the matching saw, what was found, what was planned",
+          [ MasterFlat.frameLine( f2 ).replace( /^\S+/, "F" ),
+            MasterFlat.darkSummaryLines( darksFor( [ darkFrame( "/d/a.fit", "Dark Frame", 2, { "CCD-TEMP": "-6" } ),
+                                                     darkFrame( "/d/b.fit", "Dark Frame", 2, { "CCD-TEMP": "-8" } ) ] ) ),
+            MasterFlat.planLines( [ { filter: "L", binning: 1, flats: [ f2 ], skip: "no matching dark for the 2 s flats", parts: [] } ] ) ],
+          [ "F  filter=L exposure=2 bin=1 gain=100 temp=-10",
+            [ "  2 x raw exposure=2 bin=1 gain=100 temp=-8..-6" ],
+            [ "  L bin 1: 1 flat(s) -> SKIPPED, no matching dark for the 2 s flats" ] ] );
+   check( "MasterFlat.darkShortfall: says no darks were found, or what the folder holds and the flats' temperature",
+          [ MasterFlat.darkShortfall( f2, [] ),
+            MasterFlat.darkShortfall( f2, darksFor( [ darkFrame( "/d/a.fit", "Dark Frame", 60 ), darkFrame( "/d/b.fit", "Dark Frame", 60 ),
+                                                      darkFrame( "/d/c.fit", "Dark Frame", 0.133 ) ] ) ) ],
+          [ " (no darks found in the darks folder or below it)", " (flats at -10.0 C; darks found: 60 s, 0.133 s)" ] );
+   var dup = flatsOf( "L", 3, 2 );
+   var dupPlan = MasterFlat.buildPlan( dup.concat( [ dup[0], dup[1] ] ), dFor2, "/o/Flat" );
+   check( "MasterFlat.buildPlan: the same copy listed twice is one flat", [ dupPlan[0].flats.length, dupPlan[0].parts[0].flats.length ], [ 3, 3 ] );
+   var shortPlan = MasterFlat.buildPlan( flatsOf( "L", 3, 2 ).concat( flatsOf( "R", 3, 2 ) ), dFor2, "/o/Flat" );
+   var failedCopies = [ "/card/Flat/L_2.fit" ];
+   var manifestFlats = [ { src: "/card/Flat/L_1.fit", filter: "L" }, { src: "/card/Flat/L_2.fit", filter: "L" }, { src: "/card/Flat/R_1.fit", filter: "R" } ];
+   AsiairNames.skipFiltersWithFailedCopies( manifestFlats, failedCopies, shortPlan );
+   check( "skipFiltersWithFailedCopies: only the filter that lost a copy is skipped, with a reason",
+          shortPlan.map( function( j ) { return [ j.filter, j.skip == null ? null : /1 flat copy.*failed to write/.test( j.skip ) ]; } ), [ [ "L", true ], [ "R", null ] ] );
+   var unfiltered = MasterFlat.buildPlan( flatsOf( "L", 3, 2 ).concat( flatsOf( "R", 3, 2 ) ), dFor2, "/o/Flat" );
+   AsiairNames.skipFiltersWithFailedCopies( [ { src: "/c/x.fit" } ], [ "/c/x.fit" ], unfiltered );
+   check( "skipFiltersWithFailedCopies: a failed copy with no filter recorded skips every filter", unfiltered.map( function( j ) { return j.skip != null; } ), [ true, true ] );
+   var untouchedPlan = MasterFlat.buildPlan( flatsOf( "L", 3, 2 ), dFor2, "/o/Flat" );
+   AsiairNames.skipFiltersWithFailedCopies( manifestFlats, [], untouchedPlan );
+   check( "skipFiltersWithFailedCopies: no failure, no change", untouchedPlan[0].skip, null );
+   var clash = MasterFlat.buildPlan( flatsOf( "L a", 2, 2 ).concat( flatsOf( "L-a", 2, 2 ).map( function( f, i )
+                  { f.path = "/o/Flat/b" + i + ".xisf"; return f; } ) ), dFor2, "/o/Flat" );
+   check( "MasterFlat.buildPlan: two filters that spell one file name get different names",
+          clash.map( function( j ) { return j.name; } ).sort(), [ "masterFlat_L-a.xisf", "masterFlat_L_a.xisf" ] );
+
+   /* ---- verification ---- */
+   var want = { width: 8, height: 6 };
+   function got( w, h, k, mean ) { return { width: w, height: h, keyword: kw( k ), mean: mean === undefined ? 0.5 : mean }; }
+   check( "MasterFlat.verifyMaster: right geometry, FILTER and a flat IMAGETYP is fine",
+          MasterFlat.verifyMaster( got( 8, 6, { FILTER: "L", IMAGETYP: "'Master Flat'" } ), want, "L" ), null );
+   check( "MasterFlat.verifyMaster: unreadable, wrong size, wrong or missing FILTER, not a flat",
+          [ MasterFlat.verifyMaster( null, want, "L" ), MasterFlat.verifyMaster( got( 9, 6, { FILTER: "L", IMAGETYP: "Master Flat" } ), want, "L" ),
+            MasterFlat.verifyMaster( got( 8, 6, { FILTER: "R", IMAGETYP: "Master Flat" } ), want, "L" ),
+            MasterFlat.verifyMaster( got( 8, 6, { IMAGETYP: "Master Flat" } ), want, "L" ),
+            MasterFlat.verifyMaster( got( 8, 6, { FILTER: "L", IMAGETYP: "Light Frame" } ), want, "L" ),
+            MasterFlat.verifyMaster( got( 8, 6, { FILTER: "L" } ), want, "L" ) ].map( function( s ) { return s != null; } ),
+          [ true, true, true, true, true, true ] );
+   var flatKw = { FILTER: "L", IMAGETYP: "Master Flat" };
+   check( "MasterFlat.verifyMaster: an empty, zero, negative, NaN, infinite or unmeasured image is not a master",
+          [ 0, -1, NaN, Infinity, null, undefined ].map( function( m ) { return MasterFlat.verifyMaster( got( 8, 6, flatKw, m ), want, "L" ); } )
+             .map( function( s ) { return /empty or not finite/.test( s ); } ),
+          [ true, true, true, true, true, false ] );
+   var noMean = got( 8, 6, flatKw ); delete noMean.mean;
+   check( "MasterFlat.verifyMaster: no mean at all is refused", /empty or not finite/.test( MasterFlat.verifyMaster( noMean, want, "L" ) ), true );
+
+   /* ---- the deletion rule ---- */
+   var DEST = "/Astro/N1/Flat", MASTER = DEST + "/masterFlat_L.xisf", CARD = "/Volumes/ASIAIR";
+   function may( p, dest, master, card ) { return MasterFlat.mayDelete( p, dest || DEST, master === undefined ? MASTER : master, card === undefined ? CARD : card ); }
+   check( "mayDelete: a raw copy directly inside the destination Flat folder", may( DEST + "/Flat_001.xisf" ), true );
+   check( "mayDelete: never the master, in any case", [ may( MASTER ), may( DEST + "/MASTERFLAT_L.XISF" ) ], [ false, false ] );
+   check( "mayDelete: never any master flat, not even another filter's from an earlier import",
+          [ may( DEST + "/masterFlat_R.xisf" ), may( DEST + "/masterFlat_L_bin2.xisf" ), may( DEST + "/masterflat_Ha.xisf" ) ], [ false, false, false ] );
+   check( "mayDelete: nothing nested below the Flat folder",
+          [ may( DEST + "/sub/a.xisf" ), may( DEST + "/a/b/c.xisf" ) ], [ false, false ] );
+   check( "mayDelete: not the folder itself, with or without a trailing slash, nor an empty name",
+          [ may( DEST ), may( DEST + "/" ), may( DEST + "//" ) ], [ false, false, false ] );
+   check( "mayDelete: a sibling that shares the prefix is not inside",
+          [ may( "/Astro/N1/Flat2/a.xisf" ), may( "/Astro/N1/Flat_old/a.xisf" ), may( "/Astro/N1/Light/a.xisf" ), may( "/Astro/N1/a.xisf" ) ],
+          [ false, false, false, false ] );
+   check( "mayDelete: a file beside the Flat folder whose name merely starts with it is not inside",
+          [ may( "/Astro/N1/Flatx.xisf" ), may( "/Astro/N1/Flat.xisf" ), may( "/Astro/N1/Flat_001.xisf" ) ], [ false, false, false ] );
+   check( "mayDelete: no parent traversal, however it is spelled",
+          [ may( DEST + "/../Light/a.xisf" ), may( DEST + "/.." ), may( DEST + "/a/../b.xisf" ), may( "/Astro/N1/Flat/../Flat/a.xisf" ) ],
+          [ false, false, false, false ] );
+   check( "mayDelete: a relative, empty or absent path is refused",
+          [ may( "Flat/a.xisf" ), may( "" ), may( null ), may( undefined ), may( "a.xisf" ) ], [ false, false, false, false, false ] );
+   check( "mayDelete: nothing on the card, whatever the card root looks like",
+          [ may( CARD + "/Flat/a.xisf", CARD + "/Flat", null ), may( CARD + "/Flat/a.xisf", CARD + "/Flat", null, CARD + "/" ),
+            may( CARD + "/Flat/a.xisf", CARD + "/Flat", null, CARD + "//" ), may( CARD + "/Flat/a.xisf", CARD + "/Flat", null, CARD + "/Flat" ),
+            may( CARD + "/Flat/a.xisf", CARD + "/Flat", null, "/Volumes" ), may( CARD + "/Flat/a.xisf", CARD + "/Flat", null, "/" ) ],
+          [ false, false, false, false, false, false ] );
+   check( "mayDelete: a destination beside the card, not below it, is deletable; a card root that merely shares a prefix is not the card",
+          [ may( "/Volumes/ASIAIR2/Flat/a.xisf", "/Volumes/ASIAIR2/Flat", null, CARD ), may( DEST + "/a.xisf", DEST, null, "/Astro/N" ) ], [ true, true ] );
+   check( "mayDelete: no card root given (the plan always passes one) still holds the destination rule",
+          [ may( DEST + "/a.xisf", DEST, MASTER, null ), may( DEST + "/a.xisf", DEST, MASTER, "" ), may( "/other/a.xisf", DEST, MASTER, null ) ],
+          [ true, true, false ] );
+   check( "mayDelete: the card root is compared without regard to case (the volume is case-insensitive)",
+          may( "/volumes/asiair/Flat/a.xisf", "/volumes/asiair/Flat", null, CARD ), false );
+
+   function realOf( links ) { return function( p ) { for ( var k in links ) if ( p == k || p.indexOf( k + "/" ) == 0 ) return links[k] + p.substring( k.length ); return p; }; }
+   function mayR( p, links, card ) { return MasterFlat.mayDelete( p, DEST, MASTER, card === undefined ? CARD : card, realOf( links || {} ) ); }
+   check( "mayDelete with resolve: a plain file passes",  mayR( DEST + "/a.xisf", {} ), true );
+   check( "mayDelete with resolve: a flat that is a symlink to a file on the card, in the folder, or elsewhere is refused",
+          [ mayR( DEST + "/a.xisf", { [DEST + "/a.xisf"]: CARD + "/Flat/x.fit" } ), mayR( DEST + "/a.xisf", { [DEST + "/a.xisf"]: DEST + "/b.xisf" } ),
+            mayR( DEST + "/a.xisf", { [DEST + "/a.xisf"]: "/etc/hosts" } ), mayR( DEST + "/a.xisf", { [DEST + "/a.xisf"]: "/Astro/N2/Flat/a.xisf" } ) ],
+          [ false, false, false, false ] );
+   check( "mayDelete with resolve: a Flat folder that is itself a link onto the card is refused",
+          [ mayR( DEST + "/a.xisf", { [DEST]: CARD + "/Flat" } ), mayR( DEST + "/a.xisf", { [DEST]: "/Astro/Elsewhere" } ) ], [ false, true ] );
+   check( "mayDelete with resolve: the card reached through a link is still the card",
+          mayR( DEST + "/a.xisf", { [DEST]: "/Users/me/linkToCard/Flat", "/Volumes/ASIAIR": "/Users/me/linkToCard" } ), false );
+   check( "mayDelete with resolve: a resolver that throws or answers nothing refuses",
+          [ MasterFlat.mayDelete( DEST + "/a.xisf", DEST, MASTER, CARD, function() { throw new Error( "x" ); } ),
+            MasterFlat.mayDelete( DEST + "/a.xisf", DEST, MASTER, CARD, function() { return null; } ) ], [ false, false ] );
+
+   masterFlatExecuteChecks();
+   masterFlatReportChecks();
+   masterFlatImportChecks();
+   masterFlatCardDarkChecks();
+   masterFlatDialogChecks();
+}
+
+/* ------------------------------------------------------------------------
+ * The import's wording and set-up check
+ * ---------------------------------------------------------------------- */
+function masterFlatImportChecks()
+{
+   var man = { lights: [ 1, 2, 3 ], flats: [ 1, 2, 3, 4 ], collisions: [] };
+   var plain = AsiairNames.importSummary( man, "/Astro/Day 12" );
+   check( "importSummary without master flats is the plain copy summary, as before",
+          plain.split( "\n" ), [ "Written as XISF copies:", "Lights (3) \u2192 /Astro/Day 12/Light", "Flats (4) \u2192 /Astro/Day 12/Flat" ] );
+   check( "importSummary with null master flats is the same as none", AsiairNames.importSummary( man, "/Astro/Day 12", null ), plain );
+   var master = AsiairNames.importSummary( man, "/Astro/Day 12", { darksFolder: "/Astro/Darks" } );
+   check( "importSummary with master flats: where they go, which darks, when raw flats go, when they stay, the card untouched",
+          master.split( "\n" ),
+          [ "Written as XISF copies:", "Lights (3) \u2192 /Astro/Day 12/Light",
+            "Flats (4) \u2192 one master flat per filter in /Astro/Day 12/Flat,",
+            "calibrated with the darks in /Astro/Darks;",
+            "the raw flat copies are deleted once each master is written and checked.",
+            "A filter with no matching dark, or whose master fails, keeps its raw flats.",
+            "Nothing on the card is changed." ] );
+   check( "importSummary with master flats names the real root when a Light or Flat folder was chosen",
+          AsiairNames.importSummary( man, "/Astro/Day 12/Flat", { darksFolder: "/d" } ).indexOf( "Using /Astro/Day 12 (the folder you chose is its Flat folder)" ), 0 );
+
+   var here = IN_PIXINSIGHT ? synthDir( "masterflat-darks" ) : "/nonexistent-loom-darks-folder";
+   check( "masterFlatsProblem: nothing wrong when the mode is off, however the folder looks",
+          [ AsiairNames.masterFlatsProblem( "/nonexistent-loom-darks-folder", false ),
+            AsiairNames.masterFlatsProblem( "", true ) ], [ null, null ] );
+   var gone = AsiairNames.masterFlatsProblem( "/nonexistent-loom-darks-folder", true );
+   check( "masterFlatsProblem: a darks folder that is gone is named, before anything is written",
+          [ /cannot be found/.test( gone ), gone.indexOf( "/nonexistent-loom-darks-folder" ) > 0, /Nothing has been written/.test( gone ) ], [ true, true, true ] );
+   if ( IN_PIXINSIGHT )
+      check( "masterFlatsProblem: an existing folder is fine", AsiairNames.masterFlatsProblem( here, true ), null );
+}
+
+/* ------------------------------------------------------------------------
+ * Darks found on the ASIAIR card: the scan, the matching, what the dialog
+ * shows, the plan, and the words. The card is a fixture in the scratch
+ * folder, never the real one; headers are stood in; no dialog is shown.
+ * ---------------------------------------------------------------------- */
+function masterFlatCardDarkChecks()
+{
+   function kw( o ) { return function( n ) { return n in o ? o[n] : null; }; }
+   var DARK = "Dark_%EXP%_Bin1_2600MM_gain100_20260808-06000%N%_180deg_-9.5C_000%N%.fit";
+   function darkName( exp, n ) { return DARK.replace( "%EXP%", exp ).replace( /%N%/g, n ); }
+
+   /* ---- scanCard: {Plan,Autorun}/Dark, flat-like, one level ---- */
+   var card = TEST_SCRATCH + "/asiair/card-darks";
+   [ "/Plan/Light/M42", "/Plan/Dark", "/Autorun/Dark", "/Autorun/Dark/deeper", "/Autorun/Flat" ].forEach( function( d ) { ensureDir( card + d ); } );
+   File.writeTextFile( card + "/Plan/Light/M42/Light_M42_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit", "x" );
+   File.writeTextFile( card + "/Autorun/Dark/" + darkName( "15.0s", 1 ), "x" );
+   File.writeTextFile( card + "/Autorun/Dark/" + darkName( "15.0s", 2 ), "x" );
+   File.writeTextFile( card + "/Plan/Dark/" + darkName( "30.0s", 1 ), "x" );
+   File.writeTextFile( card + "/Autorun/Dark/notes.txt", "x" );
+   File.writeTextFile( card + "/Autorun/Dark/deeper/" + darkName( "60.0s", 1 ), "x" );
+   var scan = Asiair.scanCard( card );
+   check( "scanCard: darks come from Plan/Dark and Autorun/Dark, not from below them",
+          scan.darks.map( function( f ) { return f.source + ":" + f.path.split( "/" ).pop(); } ).sort(),
+          [ "Autorun:" + darkName( "15.0s", 1 ), "Autorun:" + darkName( "15.0s", 2 ), "Plan:" + darkName( "30.0s", 1 ) ] );
+   check( "scanCard: a dark is a frame like a flat (path, key, no target); a foreign file in Dark is reported",
+          [ scan.darks[0].key != null, !scan.darks[0].target, scan.unparseable.length ], [ true, true, 1 ] );
+   check( "scanCard: lights and flats are unchanged by the darks", [ scan.lights.length, scan.flats.length, scan.removed ], [ 1, 0, false ] );
+   var noDarks = TEST_SCRATCH + "/asiair/card-no-darks";
+   ensureDir( noDarks + "/Plan/Light/M42" );
+   check( "scanCard: a card without a Dark folder has no darks", Asiair.scanCard( noDarks ).darks, [] );
+   var yankedDarks = Asiair.scanCard( card, function() {}, function() { return true; } );
+   check( "scanCard: cancelling stops the dark walk too", [ yankedDarks.cancelled, yankedDarks.darks.length ], [ true, 0 ] );
+   var darkRemoved = Asiair.scanCard( TEST_SCRATCH + "/asiair/no-card-darks" );
+   check( "scanCard: a card that is not there has no darks and reads as removed", [ darkRemoved.removed, darkRemoved.darks.length ], [ true, 0 ] );
+
+   /* ---- describing and matching ---- */
+   var headers = {};
+   function put( frame, exp, temp, extra )
+   {
+      var h = { IMAGETYP: "Dark", EXPTIME: String( exp ), XBINNING: "1", GAIN: "100" };
+      if ( temp != null ) h["CCD-TEMP"] = String( temp );
+      for ( var k in extra || {} ) h[k] = extra[k];
+      headers[frame.path] = h;
+      return frame;
+   }
+   var frames = [ put( { path: "/c/Autorun/Dark/a1.fit" }, 15, -9.5 ), put( { path: "/c/Autorun/Dark/a2.fit" }, 15, -9 ),
+                  put( { path: "/c/Plan/Dark/b1.fit" }, 30, -9 ), put( { path: "/c/Plan/Dark/b2.fit" }, 30, -9 ),
+                  put( { path: "/c/Plan/Dark/f1.fit" }, 15, -9.5, { IMAGETYP: "Flat Frame" } ) ];
+   function reader( path ) { return path in headers ? { info: {}, keyword: kw( headers[path] ) } : { info: null, keyword: kw( {} ) }; }
+   var cardDarks = MasterFlat.cardDarks( frames, reader );
+   check( "cardDarks: described darks, source card; a flat in the Dark folder is not one",
+          cardDarks.map( function( d ) { return d.name + ":" + d.kind + ":" + d.source; } ),
+          [ "a1.fit:raw:card", "a2.fit:raw:card", "b1.fit:raw:card", "b2.fit:raw:card" ] );
+   check( "cardDarks: a dark whose header cannot be read (card pulled out) is left out",
+          MasterFlat.cardDarks( frames, function() { return { info: null, keyword: kw( {} ) }; } ), [] );
+
+   function flat( filter, exp, temp ) { return MasterFlat.describe( "/o/Flat/" + filter + exp + ".xisf",
+      kw( { IMAGETYP: "Flat Frame", FILTER: filter, EXPTIME: String( exp ), XBINNING: "1", GAIN: "100", "CCD-TEMP": String( temp ) } ) ); }
+   var m = MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ), flat( "R", 15, -10 ) ], cardDarks );
+   check( "cardDarkMatch: darks that suit a flat are found; which, and their exposures",
+          [ m.found, m.used.map( function( d ) { return d.name; } ), m.exposures ], [ true, [ "a1.fit", "a2.fit" ], [ 15 ] ] );
+   var m2 = MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ), flat( "R", 30, -10 ) ], cardDarks );
+   check( "cardDarkMatch: two exposures, both listed", [ m2.found, m2.used.length, m2.exposures ], [ true, 4, [ 15, 30 ] ] );
+   check( "cardDarkMatch: found when one flat group has a dark and another has none",
+          MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ), flat( "R", 2, -10 ) ], cardDarks ).found, true );
+   check( "cardDarkMatch: no suiting exposure, temperature too far, or no darks at all is not found",
+          [ MasterFlat.cardDarkMatch( [ flat( "L", 2, -10 ) ], cardDarks ).found,
+            MasterFlat.cardDarkMatch( [ flat( "L", 15, 5 ) ], cardDarks ).found,
+            MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ) ], [] ).found,
+            MasterFlat.cardDarkMatch( [], cardDarks ).found ], [ false, false, false, false ] );
+   var noTemp = [ put( { path: "/c/n1.fit" }, 15, null ), put( { path: "/c/n2.fit" }, 15, null ) ];
+   check( "cardDarkMatch: the temperature must still be stated on both sides (the rule is unchanged)",
+          MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ) ], MasterFlat.cardDarks( noTemp, reader ) ).found, false );
+   check( "cardDarkMatch: a single raw dark is not enough, as in a folder",
+          MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ) ], MasterFlat.cardDarks( [ frames[0] ], reader ) ).found, false );
+   var masterOnCard = MasterFlat.cardDarks( [ put( { path: "/c/Autorun/Dark/masterDark_15.xisf" }, 15, -10, { IMAGETYP: "Master Dark" } ) ], reader );
+   check( "cardDarkMatch: a master dark on the card suits too", MasterFlat.cardDarkMatch( [ flat( "L", 15, -10 ) ], masterOnCard ).found, true );
+
+   /* ---- the dialog's state, as data ---- */
+   check( "cardDarksUi: card darks found hide the folder controls and make the option available without a folder",
+          MasterFlat.cardDarksUi( true, "", false, true ),
+          { found: true, darksVisible: false, folderEnabled: true, clearEnabled: false, optionAvailable: true, optionChecked: false } );
+   check( "cardDarksUi: a ticked option stays ticked with card darks; the saved folder changes nothing and is not needed",
+          [ MasterFlat.cardDarksUi( true, "", true, true ).optionChecked, MasterFlat.cardDarksUi( true, "/Astro/Darks", true, true ).darksVisible ], [ true, false ] );
+   check( "cardDarksUi: no card darks is the old behaviour (buttons shown, option needs a folder)",
+          [ MasterFlat.cardDarksUi( false, "", true, true ), MasterFlat.cardDarksUi( false, "/d", true, true ) ],
+          [ { found: false, darksVisible: true, folderEnabled: true, clearEnabled: false, optionAvailable: false, optionChecked: false },
+            { found: false, darksVisible: true, folderEnabled: true, clearEnabled: true, optionAvailable: true, optionChecked: true } ] );
+   check( "cardDarksUi: while the review is locked nothing can be changed",
+          [ MasterFlat.cardDarksUi( true, "", true, false ).optionAvailable, MasterFlat.cardDarksUi( false, "/d", true, false ).clearEnabled ], [ false, false ] );
+   check( "MasterFlat.active: card darks make the box enough; the two-argument form is as before",
+          [ MasterFlat.active( "", true, true ), MasterFlat.active( "", true, false ), MasterFlat.active( "", true ),
+            MasterFlat.active( "/d", true ), MasterFlat.active( "", false, true ) ], [ true, false, false, true, false ] );
+
+   /* ---- the card's darks against the night's flats, and where they come from ---- */
+   headers["/c/Autorun/Flat/f.fit"] = { IMAGETYP: "Flat Frame", FILTER: "L", EXPTIME: "15", XBINNING: "1", GAIN: "100", "CCD-TEMP": "-10" };
+   var got = MasterFlat.readCardDarks( frames, [ { path: "/c/Autorun/Flat/f.fit" } ], reader );
+   check( "readCardDarks: every dark of the card, and what suits the night's flats",
+          [ got.darks.length, got.match.found, got.match.used.length ], [ 4, true, 2 ] );
+   check( "darkSourceOf: the card, with the count and exposures; the saved folder is not used",
+          MasterFlat.darkSourceOf( got.match, "/saved/folder" ), { card: true, count: 2, exposures: [ 15 ] } );
+   var none = MasterFlat.readCardDarks( frames, [ { path: "/c/Autorun/Flat/f.fit" }, { path: "/c/Autorun/Flat/missing.fit" } ], function( p ) { return p == "/c/Autorun/Flat/f.fit" ? { info: {}, keyword: kw( { EXPTIME: "2", XBINNING: "1", "CCD-TEMP": "-10" } ) } : { info: null, keyword: kw( {} ) }; } );
+   check( "darkSourceOf: nothing suiting on the card is the folder, as before",
+          [ none.match.found, MasterFlat.darkSourceOf( none.match, "/saved/folder" ), MasterFlat.darkSourceOf( null, "" ) ],
+          [ false, { darksFolder: "/saved/folder" }, { darksFolder: "" } ] );
+
+   /* ---- the plan ---- */
+   function night( filter, exp, n ) { var o = []; for ( var i = 1; i <= n; ++i ) o.push( MasterFlat.describe( "/o/Flat/" + filter + "_" + i + ".xisf",
+      kw( { IMAGETYP: "Flat Frame", FILTER: filter, EXPTIME: String( exp ), XBINNING: "1", GAIN: "100", "CCD-TEMP": "-10" } ) ) ); return o; }
+   var plan = MasterFlat.buildPlan( night( "L", 15, 3 ).concat( night( "R", 2, 3 ) ), cardDarks, "/o/Flat", "on the ASIAIR card" );
+   check( "plan: the filter with a suiting card dark integrates the raw card darks; the other keeps its raw flats and says what was found",
+          [ plan[0].skip, plan[0].parts[0].dark.kind, plan[0].parts[0].dark.paths, /^no matching dark for the 2 s flats \(flats at -10\.0 C; darks found: 15 s, 30 s\)$/.test( plan[1].skip ) ],
+          [ null, "raw", [ "/c/Autorun/Dark/a1.fit", "/c/Autorun/Dark/a2.fit" ], true ] );
+   var gonePlan = MasterFlat.buildPlan( night( "L", 15, 3 ), MasterFlat.cardDarks( frames, function() { return { info: null, keyword: kw( {} ) }; } ), "/o/Flat", "on the ASIAIR card" );
+   check( "plan: a card that is gone has no darks, and the reason says so",
+          gonePlan[0].skip, "no matching dark for the 15 s flats (no darks found on the ASIAIR card)" );
+   check( "plan: without the where-argument the folder wording is as before",
+          MasterFlat.buildPlan( night( "L", 15, 3 ), [], "/o/Flat" )[0].skip, "no matching dark for the 15 s flats (no darks found in the darks folder or below it)" );
+
+   /* ---- running it: the card is only read; a dark that vanishes keeps the raw flats ---- */
+   var seen = { masterDark: 0, removed: [], calibrated: 0 };
+   function engine( darkOk )
+   {
+      var fs = {};
+      night( "L", 15, 3 ).forEach( function( f ) { fs[f.path] = "raw"; } );
+      return { exists: function( p ) { return p in fs; }, remove: function( p ) { seen.removed.push( p ); delete fs[p]; return true; },
+               removeDir: function() { return true; }, tempDir: function() { return "/tmp/w"; }, resolve: function( p ) { return p; },
+               masterDark: function( g ) { ++seen.masterDark; return darkOk ? { ok: true, path: "/cache/md.xisf" }
+                                                                            : { ok: false, reason: "a dark is no longer there: " + g.paths[0] }; },
+               calibrate: function( paths ) { ++seen.calibrated; return { ok: true, paths: paths.map( function( p ) { return p + "_c"; } ) }; },
+               integrate: function() { return { ok: true }; }, verify: function() { return null; },
+               publish: function() { return true; } };
+   }
+   var lost = MasterFlat.execute( MasterFlat.buildPlan( night( "L", 15, 3 ), cardDarks, "/o/Flat", "on the ASIAIR card" ), engine( false ),
+                                  { destFlatDir: "/o/Flat", cardRoot: "/c" } );
+   check( "execute: a card dark that has vanished keeps every raw flat, deletes nothing, and says why",
+          [ lost.made.length, lost.kept.length, /master dark failed: a dark is no longer there: \/c\/Autorun\/Dark\/a1\.fit/.test( lost.kept[0].reason ),
+            seen.removed, seen.calibrated ], [ 0, 1, true, [], 0 ] );
+   var fine = MasterFlat.execute( MasterFlat.buildPlan( night( "L", 15, 3 ), cardDarks, "/o/Flat", "on the ASIAIR card" ), engine( true ),
+                                  { destFlatDir: "/o/Flat", cardRoot: "/c" } );
+   check( "execute: with card darks, only the raw flat copies in the destination are removed (nothing on the card)",
+          [ fine.made.length, seen.removed.every( function( p ) { return p.indexOf( "/o/Flat/" ) == 0; } ), seen.removed.length ], [ 1, true, 3 ] );
+   var real = MasterFlat.engine( reader, TEST_SCRATCH + "/card-darks-cache" );
+   var vanished = real.masterDark( { key: "e15000b1g100", paths: [ TEST_SCRATCH + "/asiair/no-card-darks/Autorun/Dark/gone.fit" ] } );
+   check( "engine.masterDark: a dark file that is gone fails the group (no integration is attempted)",
+          [ vanished.ok, /no longer there/.test( vanished.reason ) ], [ false, true ] );
+
+   /* ---- the words ---- */
+   var man = { lights: [ 1, 2, 3 ], flats: [ 1, 2, 3, 4 ], collisions: [] };
+   var fromCard = AsiairNames.importSummary( man, "/Astro/Day 12", { card: true, count: 24, exposures: [ 15, 30 ] } );
+   check( "importSummary: says the darks came from the card, how many, which exposures",
+          fromCard.split( "\n" )[3], "calibrated with the 24 dark(s) on the ASIAIR card (15 s and 30 s);" );
+   check( "importSummary: the folder wording is unchanged",
+          AsiairNames.importSummary( man, "/Astro/Day 12", { darksFolder: "/Astro/Darks" } ).split( "\n" )[3], "calibrated with the darks in /Astro/Darks;" );
+   check( "darkSource: one exposure, three exposures, none stated",
+          [ AsiairNames.darkSource( { card: true, count: 9, exposures: [ 15 ] } ),
+            AsiairNames.darkSource( { card: true, count: 9, exposures: [ 1.5, 15, 30 ] } ),
+            AsiairNames.darkSource( { card: true, count: 2, exposures: [] } ) ],
+          [ "the 9 dark(s) on the ASIAIR card (15 s)", "the 9 dark(s) on the ASIAIR card (1.5 s, 15 s and 30 s)",
+            "the 2 dark(s) on the ASIAIR card (no exposure stated)" ] );
+   check( "masterFlatsProblem: with card darks the folder is not looked at; a dark gone from the card is a problem before anything is written",
+          [ AsiairNames.masterFlatsProblem( "/nonexistent-loom-darks-folder", true, [] ),
+            AsiairNames.masterFlatsProblem( "", false, [ "/gone.fit" ] ),
+            /dark on the ASIAIR card cannot be found.*\/gone\.fit.*Nothing has been written/.test( AsiairNames.masterFlatsProblem( "", true, [ card + "/Autorun/Dark/" + darkName( "15.0s", 1 ), "/gone.fit" ] ).replace( /\n/g, " " ) ) ],
+          [ null, null, true ] );
+}
+
+/* ------------------------------------------------------------------------
+ * The Frame Selector's master-flats controls and Run, constructed for real
+ * (PixInsight only; the node suite cannot build a Dialog). No dialog is
+ * ever shown: the folder chooser, the messages and the writing are stood in.
+ * ---------------------------------------------------------------------- */
+function masterFlatDialogChecks()
+{
+   if ( !IN_PIXINSIGHT )
+      return;
+
+   var mem = {};
+   var realStore = MasterFlat.settingsStore, realGdd = null, realTell = FrameSelector.tell, realAsk = FrameSelector.ask,
+       realMake = FrameSelector.makeMasterFlats, realWrite = FrameSelector.writeManifest, realManifest = AsiairNames.manifest,
+       realSafe = FrameSelector.outputsAreSafe;
+   var told = [], asked = [], made = 0, chooser = { path: "/Astro/Darks", accept: true };
+   MasterFlat.settingsStore = function()
+   {
+      return { read: function( k ) { return k in mem ? mem[k] : null; }, write: function( k, t, v ) { mem[k] = v; } };
+   };
+   FrameSelector.tell = function( text, icon ) { told.push( [ text, icon ] ); };
+   FrameSelector.ask = function( text, icon ) { asked.push( text ); return true; };
+   try { realGdd = GetDirectoryDialog; GetDirectoryDialog = function() { this.execute = function() { return chooser.accept; }; this.directoryPath = chooser.path; }; } catch ( e ) {}
+   try
+   {
+      var entries = [], metrics = {};
+      for ( var i = 0; i < 6; ++i )
+      {
+         var p = "/nowhere/mf_" + i + "_c.xisf";
+         entries.push( { path: p, identity: { digest: "m" + i, size: 1, mtime: 1 } } );
+         metrics[p] = { psfSNR: 13 + ( i % 3 ), fwhm: 3.8 + ( i % 5 )*0.3, eccentricity: 0.6, stars: 8900 - i*40 };
+      }
+      function review( cardRoot, folder, only )
+      {
+         var s = FrameSelector.emptyState( "/nowhere" );
+         s.channels.H = Frames.recompute( Frames.newChannel( "H", entries, metrics, [] ) );
+         s.order.push( "H" );
+         s.cardRoot = cardRoot;
+         s.destination = "/elsewhere";
+         s.darksFolder = folder;
+         s.onlyMasterFlats = only;
+         var d = tracked( new FrameSelector.Dialog( s ) );
+         d.matchedFlats = function() { return []; };
+         return d;
+      }
+
+      /* ---- no card: no master-flats controls at all ---- */
+      var own = review( null, "", false );
+      check( "the master-flats controls exist only for an import", [ own.darksButton, own.masterOnlyBox, own.masterFlatsMode() ], [ null, null, false ] );
+      own.cancel();
+
+      /* ---- an import with no folder ---- */
+      var d = review( "/nowhere-card", "", false );
+      check( "an import builds the darks folder chooser and the checkbox",
+             [ d.darksButton != null, d.darksClear != null, d.masterOnlyBox != null, d.masterOnlyBox.text ], [ true, true, true, "Combine flats to masters" ] );
+      check( "both explain themselves in a tooltip",
+             [ d.darksButton.toolTip.length > 40, d.masterOnlyBox.toolTip.length > 40, /raw flats/.test( d.masterOnlyBox.toolTip ),
+               /dark/.test( d.darksButton.toolTip ), /empty/.test( d.darksButton.toolTip ) ], [ true, true, true, true, true ] );
+      check( "with no folder: the checkbox is greyed out, Clear is greyed out, the chooser is available, the label says so",
+             [ d.masterOnlyBox.enabled, d.darksClear.enabled, d.darksButton.enabled, /no folder/.test( d.darksLabel.text ), d.masterFlatsMode() ],
+             [ false, false, true, true, false ] );
+
+      /* ---- choosing a folder ---- */
+      d.darksButton.onClick();
+      check( "choosing a folder remembers it in the state and the settings, enables the checkbox, shows the folder",
+             [ d.state.darksFolder, mem[MasterFlat.SETTINGS_DARKS], d.masterOnlyBox.enabled, d.darksClear.enabled, /Astro\/Darks/.test( d.darksLabel.text ) ],
+             [ "/Astro/Darks", "/Astro/Darks", true, true, true ] );
+      check( "a folder alone is not the mode", d.masterFlatsMode(), false );
+      d.masterOnlyBox.onCheck( true );
+      check( "ticking the box remembers it and turns the mode on", [ d.state.onlyMasterFlats, mem[MasterFlat.SETTINGS_ONLY], d.masterFlatsMode() ], [ true, true, true ] );
+      chooser.accept = false; chooser.path = "/ignored";
+      d.darksButton.onClick();
+      check( "cancelling the chooser changes nothing", [ d.state.darksFolder, mem[MasterFlat.SETTINGS_DARKS] ], [ "/Astro/Darks", "/Astro/Darks" ] );
+      d.darksClear.onClick();
+      check( "Clear forgets the folder, greys the checkbox out again and, with no folder, the ticked box is not the mode",
+             [ d.state.darksFolder, mem[MasterFlat.SETTINGS_DARKS], d.masterOnlyBox.enabled, d.masterFlatsMode() ], [ "", "", false, false ] );
+      check( "and the greyed-out box is shown unticked, not on", d.masterOnlyBox.checked, false );
+
+      /* ---- locked while a run is under way ---- */
+      d.state.darksFolder = "/Astro/Darks"; d.state.locked = true; d.refresh();
+      check( "while a run is under way nothing can be changed",
+             [ d.darksButton.enabled, d.darksClear.enabled, d.masterOnlyBox.enabled ], [ false, false, false ] );
+      d.state.locked = false;
+      d.cancel();
+
+      /* ---- remembered from the last time ---- */
+      mem[MasterFlat.SETTINGS_DARKS] = "/Astro/Remembered"; mem[MasterFlat.SETTINGS_ONLY] = true;
+      var back = MasterFlat.loadSettings( MasterFlat.settingsStore() );
+      var d2 = review( "/nowhere-card", back.darksFolder, back.onlyMasterFlats );
+      check( "a remembered folder and ticked box come back as they were",
+             [ d2.masterOnlyBox.checked, d2.masterOnlyBox.enabled, /Remembered/.test( d2.darksLabel.text ) ], [ true, true, true ] );
+      d2.cancel();
+
+      /* ---- Run ---- */
+      AsiairNames.manifest = function() { return { lights: [ { src: "/nowhere/mf_0_c.xisf", dst: "/elsewhere/Light/a.xisf" } ], flats: [], collisions: [] }; };
+      FrameSelector.outputsAreSafe = function() { return true; };
+      var wrote = 0, outcome = { made: [], kept: [], cancelled: false, notes: [] }, importResult = { written: 1, failed: [], cancelled: false };
+      FrameSelector.writeManifest = function() { ++wrote; return importResult; };
+      FrameSelector.makeMasterFlats = function() { ++made; return outcome; };
+      function go( folder, only )
+      {
+         told = []; asked = []; made = 0; wrote = 0;
+         var dd = review( "/nowhere-card", folder, only );
+         var res = dd.commitImport();
+         dd.cancel();
+         return res;
+      }
+      go( "/nonexistent-loom-darks-folder", true );
+      check( "Run with a darks folder that is gone says so and writes nothing", [ wrote, made, asked.length, told.length, /cannot be found/.test( told[0] && told[0][0] ) ], [ 0, 0, 0, 1, true ] );
+
+      var here = synthDir( "masterflat-darks-run" );
+      outcome = { made: [ { name: "masterFlat_L.xisf", filter: "L", flats: 3, removed: 3 } ], kept: [], cancelled: false, notes: [] };
+      go( here, true );
+      check( "Run in master-flats mode asks with the master-flats summary, imports, makes the masters and reports them",
+             [ asked.length, /one master flat per filter/.test( asked[0] ), wrote, made, /Master flat masterFlat_L.xisf from 3 flat/.test( told[0][1] === undefined ? "" : told[0][0] ), told[0][1] ],
+             [ 1, true, 1, 1, true, StdIcon_Information ] );
+      outcome = { made: [], kept: [ { filter: "Ha", binning: null, flats: 3, reason: "no matching dark for the 2 s flats" } ], cancelled: false, notes: [] };
+      go( here, true );
+      check( "a filter that kept its raw flats turns the closing message into a warning that says why",
+             [ made, /Raw flats kept for Ha/.test( told[0][0] ), /no matching dark/.test( told[0][0] ), told[0][1] ], [ 1, true, true, StdIcon_Warning ] );
+      go( here, false );
+      check( "Run with the box unticked is the plain import: no master step, the plain summary",
+             [ made, wrote, /one master flat/.test( asked[0] ), told[0][0].indexOf( "Master flat" ) ], [ 0, 1, false, -1 ] );
+      go( "", true );
+      check( "a ticked box with no folder is the plain import", [ made, wrote ], [ 0, 1 ] );
+      importResult = { written: 0, failed: [], cancelled: true };
+      go( here, true );
+      check( "an import cancelled before the masters keeps the raw flats and says so; the master step never runs",
+             [ made, /raw flats were kept/.test( told[0][0] ) ], [ 0, true ] );
+   }
+   finally
+   {
+      MasterFlat.settingsStore = realStore;
+      FrameSelector.tell = realTell; FrameSelector.ask = realAsk; FrameSelector.makeMasterFlats = realMake;
+      FrameSelector.writeManifest = realWrite; AsiairNames.manifest = realManifest; FrameSelector.outputsAreSafe = realSafe;
+      try { if ( realGdd != null ) GetDirectoryDialog = realGdd; } catch ( e ) {}
+   }
+}
+
+/* ------------------------------------------------------------------------
+ * execute, against a fake engine over an in-memory file system
+ * ---------------------------------------------------------------------- */
+function masterFlatExecuteChecks()
+{
+   var DEST = "/Astro/N1/Flat", CARD = "/Volumes/ASIAIR", CACHE = "/cache", DARKS = "/darks";
+
+   function kw( o ) { return function( n ) { return n in o ? o[n] : null; }; }
+   function flats( filter, n )
+   {
+      var out = [];
+      for ( var i = 1; i <= n; ++i )
+         out.push( MasterFlat.describe( DEST + "/" + filter + "_" + i + ".xisf",
+                   kw( { IMAGETYP: "'Flat Frame'", FILTER: filter, EXPTIME: "2", XBINNING: "1", "CCD-TEMP": "-10" } ) ) );
+      return out;
+   }
+   function masterDark()
+   {
+      return MasterFlat.darksOf( [ MasterFlat.describe( DARKS + "/masterDark_2.xisf",
+             kw( { IMAGETYP: "'Master Dark'", EXPTIME: "2", XBINNING: "1", "CCD-TEMP": "-10" } ) ) ] );
+   }
+   function rawDarks()
+   {
+      return MasterFlat.darksOf( [ 1, 2, 3 ].map( function( i ) { return MasterFlat.describe( DARKS + "/dark_" + i + ".fit",
+             kw( { IMAGETYP: "Dark Frame", EXPTIME: "2", XBINNING: "1", "CCD-TEMP": "-10" } ) ); } ) );
+   }
+
+   /*
+    * A world: files with contents. `fail` names the step that fails and
+    * `cancelIn` the step that raises the cancellation. Every call is logged.
+    */
+   function world( jobFlats, darks, fail, extraFiles, links )
+   {
+      var fs = {}, log = [], removes = [], writes = [];
+      jobFlats.forEach( function( f ) { fs[f.path] = "raw " + f.path; } );
+      fs[CARD + "/Flat/card_flat_1.fit"] = "card";
+      fs[CARD + "/Light/card_light_1.fit"] = "card";
+      fs[DARKS + "/masterDark_2.xisf"] = "dark";
+      for ( var k in extraFiles || {} ) fs[k] = extraFiles[k];
+      var initial = JSON.parse( JSON.stringify( fs ) ), verified = [];
+      fail = fail || {};
+
+      function step( name )
+      {
+         log.push( name );
+         if ( fail.cancelIn == name )
+            throw new Error( Util.CANCELLED );
+         if ( fail.throwIn == name )
+            throw new Error( "boom in " + name );
+      }
+      function pathOf( a ) { return typeof a == "string" ? a : a.master; }
+
+      var engine = {
+         exists: function( p ) { return p in fs; },
+         remove: function( p )
+         {
+            log.push( "remove" ); removes.push( p );
+            if ( fail.keep && fail.keep.indexOf( p ) >= 0 ) return false;
+            var had = p in fs; delete fs[p]; return had;
+         },
+         removeDir: function( d )
+         {
+            log.push( "removeDir" );
+            Object.keys( fs ).forEach( function( p ) { if ( p.indexOf( d + "/" ) == 0 ) delete fs[p]; } );
+            return true;
+         },
+         tempDir: function( job ) { step( "tempDir" ); return CACHE + "/work/" + job.name; },
+         masterDark: function( group )
+         {
+            step( "masterDark" );
+            if ( fail.masterDark ) return { ok: false, reason: "no memory" };
+            var p = CACHE + "/master-darks/" + group.key + ".xisf"; fs[p] = "cached dark"; writes.push( p );
+            return { ok: true, path: p, reason: "" };
+         },
+         calibrate: function( paths, darkPath, outDir )
+         {
+            step( "calibrate" );
+            if ( fail.calibrate ) return { ok: false, reason: "ImageCalibration did not run" };
+            var made = paths.map( function( p ) { return outDir + "/" + p.split( "/" ).pop().replace( /\.[^.]*$/, "" ) + "_c.xisf"; } );
+            made.forEach( function( p ) { fs[p] = "calibrated"; writes.push( p ); } );
+            return { ok: true, paths: made, reason: "" };
+         },
+         integrate: function( paths, spec, outPath, job )
+         {
+            step( "integrate" );
+            if ( fail.integrate ) return { ok: false, reason: "ImageIntegration did not run" };
+            fs[outPath] = "NEW master " + job.filter; writes.push( outPath );
+            return { ok: true, reason: "" };
+         },
+         verify: function( path, job )
+         {
+            step( "verify" );
+            verified.push( path );
+            return fail.verify ? "FILTER is missing, expected L" : null;
+         },
+         publish: function( tmp, final )
+         {
+            step( "publish" );
+            if ( fail.publish || final in fs || !( tmp in fs ) ) return false;
+            fs[final] = fs[tmp]; delete fs[tmp]; writes.push( final );
+            return true;
+         },
+         resolve: function( p )
+         {
+            for ( var k in links || {} )
+               if ( p == k || p.indexOf( k + "/" ) == 0 ) return links[k] + p.substring( k.length );
+            return p;
+         }
+      };
+      var jobs = MasterFlat.buildPlan( jobFlats, darks, DEST );
+      return { fs: fs, log: log, removes: removes, writes: writes, verified: verified, initial: initial, engine: engine, jobs: jobs };
+   }
+
+   function run( w, opts )
+   {
+      opts = opts || {};
+      return MasterFlat.execute( w.jobs, w.engine, { destFlatDir: DEST, cardRoot: CARD,
+                                                     shouldStop: opts.shouldStop || function() { return false; } } );
+   }
+   function rawLeft( w, list ) { return list.filter( function( f ) { return f.path in w.fs; } ).length; }
+   function untouched( w, paths ) { return paths.every( function( p ) { return w.fs[p] === w.initial[p]; } ); }
+   /* The card, the darks and every file that is not a job's raw flat copy: unchanged. */
+   function bystanders( w, rawPaths )
+   {
+      return Object.keys( w.initial ).filter( function( p ) { return rawPaths.indexOf( p ) < 0 && w.fs[p] !== w.initial[p]; } );
+   }
+   function nothingTouchedOnCard( w )
+   {
+      return w.removes.concat( w.writes ).filter( function( p ) { return p.indexOf( CARD ) == 0 || p.indexOf( DARKS ) == 0; } );
+   }
+
+   /* ---- success ---- */
+   var L = flats( "L", 3 ), R = flats( "R", 3 ), all = L.concat( R );
+   var rawPaths = all.map( function( f ) { return f.path; } );
+   var w = world( all, masterDark() );
+   var r = run( w );
+   check( "execute: two filters both made, nothing kept, raw copies gone, masters in place",
+          [ r.made.map( function( m ) { return m.name + ":" + m.flats + ":" + m.removed; } ), r.kept.length, r.cancelled, r.notes,
+            rawLeft( w, all ), w.fs[DEST + "/masterFlat_L.xisf"], w.fs[DEST + "/masterFlat_R.xisf"] ],
+          [ [ "masterFlat_L.xisf:3:3", "masterFlat_R.xisf:3:3" ], 0, false, [], 0, "NEW master L", "NEW master R" ] );
+   check( "execute: only the raw flat copies were removed, and nothing was written or removed on the card or in the darks folder",
+          [ w.removes.slice().sort().filter( function( p ) { return p.indexOf( "/Astro/" ) == 0; } ), nothingTouchedOnCard( w ) ],
+          [ rawPaths.slice().sort(), [] ] );
+   check( "execute: the card, the darks and every non-flat file are byte-for-byte as they were", bystanders( w, rawPaths ).filter( function( p ) { return p.indexOf( "/Astro/" ) != 0; } ), [] );
+   var firstFlatRemove = -1, verifyAt = -1, lastVerify = -1;
+   w.log.forEach( function( s, i ) { if ( s == "verify" ) { if ( verifyAt < 0 ) verifyAt = i; lastVerify = i; } } );
+   var removesInOrder = true, seenVerify = 0, flatRemoves = 0;
+   w.log.forEach( function( s, i ) { if ( s == "verify" ) ++seenVerify; if ( s == "remove" && seenVerify == 0 ) removesInOrder = false; } );
+   check( "execute: no remove of any kind happens before the first master is verified (the work folder is cleared after)", removesInOrder, true );
+
+   /* ---- the verify-then-delete order, per filter ---- */
+   var order = world( all, masterDark() ), seen = [];
+   var realRemove = order.engine.remove, realVerify = order.engine.verify;
+   order.engine.verify = function( a ) { seen.push( "verify" ); return realVerify.apply( this, arguments ); };
+   order.engine.remove = function( p ) { if ( /Astro/.test( p ) && !/master/.test( p ) ) seen.push( "rm " + p.split( "/" ).pop() ); return realRemove.apply( this, arguments ); };
+   run( order );
+   check( "execute: per filter, verify then that filter's raw copies, then the next filter's verify",
+          seen, [ "verify", "rm L_1.xisf", "rm L_2.xisf", "rm L_3.xisf", "verify", "rm R_1.xisf", "rm R_2.xisf", "rm R_3.xisf" ] );
+
+   /* ---- failures keep the raw flats and any master already there ---- */
+   var OLD = DEST + "/masterFlat_L.xisf";
+   function failing( label, fail, reasonRe )
+   {
+      var ww = world( L, masterDark(), fail, { [OLD]: "OLD master from an earlier import" } );
+      var rr = run( ww );
+      check( "execute (" + label + "): the filter is kept with a reason, no master made", [ rr.made.length, rr.kept.length, reasonRe.test( rr.kept[0].reason ) ], [ 0, 1, true ] );
+      check( "execute (" + label + "): every raw flat is still there", rawLeft( ww, L ), 3 );
+      check( "execute (" + label + "): the master from an earlier import is untouched, not deleted, not replaced", ww.fs[OLD], "OLD master from an earlier import" );
+      check( "execute (" + label + "): every file that existed before is as it was (no stray temp master, no calibrated flats left)",
+             [ Object.keys( ww.fs ).filter( function( p ) { return !( p in ww.initial ) && p.indexOf( CACHE + "/master-darks/" ) != 0; } ),
+               bystanders( ww, [] ) ], [ [], [] ] );
+      check( "execute (" + label + "): nothing on the card or in the darks folder was touched", nothingTouchedOnCard( ww ), [] );
+      return ww;
+   }
+   failing( "integration fails", { integrate: true }, /integration failed/ );
+   failing( "verification fails", { verify: true }, /verification/ );
+   failing( "calibration fails", { calibrate: true }, /calibration failed/ );
+   failing( "publishing fails", { publish: true }, /./ );
+   var thrown = failing( "an exception in integration", { throwIn: "integrate" }, /error: boom in integrate/ );
+   check( "execute: an exception is not mistaken for a cancel", run( world( L, masterDark(), { throwIn: "calibrate" } ) ).cancelled, false );
+
+   /* the same without a pre-existing master: no master is left behind either */
+   var noOld = world( L, masterDark(), { verify: true } );
+   run( noOld );
+   check( "execute: a failed verification leaves no master at the final name and no raw flat missing",
+          [ DEST + "/masterFlat_L.xisf" in noOld.fs, rawLeft( noOld, L ) ], [ false, 3 ] );
+
+   /* a master dark made from raw darks goes through masterDark; its failure keeps the flats */
+   var wr = world( L, rawDarks(), { masterDark: true }, { [OLD]: "OLD" } );
+   var rr = run( wr );
+   check( "execute: a raw-darks master that cannot be made keeps the raw flats and the old master",
+          [ rr.kept.length, /master dark failed: no memory/.test( rr.kept[0].reason ), rawLeft( wr, L ), wr.fs[OLD] ], [ 1, true, 3, "OLD" ] );
+   wr = world( L, rawDarks() );
+   rr = run( wr );
+   check( "execute: a raw-darks master is built once through masterDark and the cache file stays",
+          [ rr.made.length, wr.log.filter( function( s ) { return s == "masterDark"; } ).length, rawLeft( wr, L ),
+            Object.keys( wr.fs ).filter( function( p ) { return p.indexOf( CACHE + "/master-darks/" ) == 0; } ).length ], [ 1, 1, 0, 1 ] );
+
+   /* ---- a short calibration is never a master ---- */
+   var wsh = world( L, masterDark(), null, { [OLD]: "OLD" } );
+   var realCal = wsh.engine.calibrate;
+   wsh.engine.calibrate = function( paths, d, out ) { var r0 = realCal.call( this, paths, d, out ); r0.paths = r0.paths.slice( 1 ); return r0; };
+   rr = run( wsh );
+   check( "execute: calibrate answering ok with fewer outputs than flats keeps every raw flat, makes nothing, spares the old master",
+          [ rr.made.length, rr.kept.length, /calibration produced 2 of 3/.test( rr.kept[0].reason ), rawLeft( wsh, L ), wsh.fs[OLD], wsh.log.indexOf( "integrate" ) ],
+          [ 0, 1, true, 3, "OLD", -1 ] );
+   var wsk = world( L, masterDark() );
+   wsk.jobs[0].skip = "3 flat copy(ies) failed to write; a master from the rest would be incomplete";
+   rr = run( wsk );
+   check( "execute: a filter skipped for a failed copy keeps all its raw flats and calls nothing", [ rr.made.length, rr.kept.length, rawLeft( wsk, L ), wsk.log.length ], [ 0, 1, 3, 0 ] );
+
+   /* ---- an engine that cannot resolve paths deletes nothing ---- */
+   var wnr = world( L, masterDark() );
+   delete wnr.engine.resolve;
+   rr = run( wnr );
+   check( "execute: an engine without resolve keeps every filter and calls nothing",
+          [ rr.made.length, rr.kept.length, /cannot resolve/.test( rr.kept[0].reason ), rawLeft( wnr, L ), wnr.removes.length ], [ 0, 1, true, 3, 0 ] );
+
+   /* ---- a stop request just before the master is verified or published keeps the raw flats ---- */
+   [ "verify", "publish" ].forEach( function( at )
+   {
+      var wz = world( L, masterDark(), null, { [OLD]: "OLD" } );
+      var before = wz.engine[at];
+      wz.engine[at] = function() { return before.apply( this, arguments ); };
+      rr = run( wz, { shouldStop: function() { return wz.log.indexOf( at == "verify" ? "integrate" : "verify" ) >= 0 && wz.log.indexOf( at ) < 0; } } );
+      check( "execute: a stop before " + at + " keeps every raw flat, makes no master, spares the old one",
+             [ rr.cancelled, rr.made.length, rawLeft( wz, L ), wz.fs[OLD], DEST + "/masterFlat_L_2.xisf" in wz.fs ], [ true, 0, 3, "OLD", false ] );
+   } );
+
+   /* ---- stale temporaries of a run that died are cleared; nothing else ---- */
+   var wsp = world( L, masterDark(), null, { [DEST + "/.partial_masterFlat_L.xisf"]: "stale" } );
+   var swept = [];
+   wsp.engine.removePartials = function( dir ) { swept.push( dir ); };
+   run( wsp );
+   check( "execute: asks the engine to clear stale temporaries in the Flat folder, once", swept, [ DEST ] );
+
+   /* ---- skipped filters ---- */
+   var ws = world( L.concat( flats( "Ha", 3 ).map( function( f ) { return f; } ) ), masterDark() );
+   ws.jobs.forEach( function( j ) { if ( j.filter == "Ha" ) { j.skip = "no matching dark for the 2 s flats"; } } );
+   rr = run( ws );
+   check( "execute: a skipped filter keeps its raw flats and says why; the other filter is still made",
+          [ rr.made.map( function( m ) { return m.filter; } ), rr.kept.map( function( k ) { return k.filter + ": " + k.reason; } ),
+            rawLeft( ws, flats( "Ha", 3 ) ), rawLeft( ws, L ) ],
+          [ [ "L" ], [ "Ha: no matching dark for the 2 s flats" ], 3, 0 ] );
+   var wn = world( L.concat( flats( "Ha", 3 ) ), [] );
+   rr = run( wn );
+   check( "execute: with no darks at all nothing is made, nothing is deleted, nothing is called on the engine but the plan's skip",
+          [ rr.made.length, rr.kept.length, rawLeft( wn, L.concat( flats( "Ha", 3 ) ) ), wn.removes.length, wn.log.length ], [ 0, 2, 6, 0, 0 ] );
+
+   /* ---- cancel ---- */
+   var wc = world( all, masterDark(), { cancelIn: "calibrate" }, { [OLD]: "OLD" } );
+   rr = run( wc );
+   check( "execute: a cancel raised mid-run is reported, the raw flats and the old master stay",
+          [ rr.cancelled, rr.made.length, rawLeft( wc, all ), wc.fs[OLD] ], [ true, 0, 6, "OLD" ] );
+   var wp = world( all, masterDark() );
+   rr = run( wp, { shouldStop: function() { return wp.log.indexOf( "publish" ) >= 0; } } );
+   check( "execute: stopping between filters keeps the next filter's raw flats, and the finished one stays finished",
+          [ rr.cancelled, rr.made.map( function( m ) { return m.filter; } ), rr.kept.map( function( k ) { return k.filter + ":" + k.reason; } ),
+            rawLeft( wp, L ), rawLeft( wp, R ) ], [ true, [ "L" ], [ "R:cancelled" ], 0, 3 ] );
+   var wq = world( all, masterDark() );
+   rr = run( wq, { shouldStop: function() { return true; } } );
+   check( "execute: cancelled before the first filter touches nothing at all",
+          [ rr.cancelled, rr.made.length, rr.kept.length, wq.removes.length, wq.writes.length, bystanders( wq, [] ) ], [ true, 0, 2, 0, 0, [] ] );
+   var wm = world( L, masterDark() );
+   rr = run( wm, { shouldStop: function() { return wm.log.indexOf( "calibrate" ) >= 0; } } );
+   check( "execute: a stop request between calibration and integration keeps the raw flats", [ rr.made.length, rawLeft( wm, L ) ], [ 0, 3 ] );
+
+   /* ---- the delete list comes only from the job's own flats ---- */
+   var stray = { [DEST + "/L_0.xisf"]: "an earlier import's flat, same filter, not in this manifest",
+                 [DEST + "/notes.txt"]: "mine", [DEST + "/masterFlat_R.xisf"]: "OLD R master", [DEST + "/sub/x.xisf"]: "nested" };
+   var wl = world( L, masterDark(), null, stray );
+   rr = run( wl );
+   check( "execute: flats from an earlier import, other files, another filter's master and nested files survive a successful run",
+          [ rr.made.length, rawLeft( wl, L ), untouched( wl, Object.keys( stray ) ) ], [ 1, 0, true ] );
+
+   /* ---- a job flat outside the destination is never deleted (defence in depth) ---- */
+   var outside = L.slice(); var evil = MasterFlat.describe( CARD + "/Flat/card_flat_1.fit", kw( { IMAGETYP: "Flat Frame", FILTER: "L", EXPTIME: "2", XBINNING: "1" } ) );
+   var wo = world( L.concat( [ evil ] ), masterDark() );
+   rr = run( wo );
+   check( "execute: a flat that is not inside the destination Flat folder is not deleted, and is named in the notes",
+          [ CARD + "/Flat/card_flat_1.fit" in wo.fs, wo.removes.indexOf( CARD + "/Flat/card_flat_1.fit" ) < 0, rr.notes.length, rr.made[0].removed ], [ true, true, 1, 3 ] );
+   var wd = world( L.concat( [ MasterFlat.describe( DEST + "/sub/x.xisf", kw( { IMAGETYP: "Flat Frame", FILTER: "L", EXPTIME: "2", XBINNING: "1" } ) ) ] ),
+                   masterDark(), null, { [DEST + "/sub/x.xisf"]: "nested" } );
+   rr = run( wd );
+   check( "execute: a nested path in the job is refused the same way", [ wd.fs[DEST + "/sub/x.xisf"], rr.notes.length ], [ "nested", 1 ] );
+
+   /* ---- a delete that fails is reported, not hidden ---- */
+   var wk = world( L, masterDark(), { keep: [ L[1].path ] } );
+   rr = run( wk );
+   check( "execute: a raw copy that cannot be deleted is named, and the count is honest",
+          [ rr.made[0].removed, rr.notes.length, /could not delete/.test( rr.notes[0] ), L[1].path in wk.fs ], [ 2, 1, true, true ] );
+
+   /* ---- a pre-existing master is replaced only by a verified new one ---- */
+   var wg = world( L, masterDark(), null, { [OLD]: "OLD master" } );
+   rr = run( wg );
+   check( "execute: an old master of the same name is never replaced, moved or deleted; the new one takes a free name and the report says so",
+          [ wg.fs[OLD], wg.removes.indexOf( OLD ), wg.fs[DEST + "/masterFlat_L_2.xisf"], rr.made.map( function( m ) { return m.name; } ),
+            rr.notes.length, /already exists and is kept/.test( rr.notes[0] ), rawLeft( wg, L ) ],
+          [ "OLD master", -1, "NEW master L", [ "masterFlat_L_2.xisf" ], 1, true, 0 ] );
+   var wg2 = world( L, masterDark(), null, { [OLD]: "OLD master", [DEST + "/masterFlat_L_2.xisf"]: "OLD 2" } );
+   rr = run( wg2 );
+   check( "execute: with _2 taken as well the new master is _3, and both old ones are untouched",
+          [ wg2.fs[OLD], wg2.fs[DEST + "/masterFlat_L_2.xisf"], wg2.fs[DEST + "/masterFlat_L_3.xisf"] ], [ "OLD master", "OLD 2", "NEW master L" ] );
+   var wgf = world( L, masterDark(), { verify: true }, { [OLD]: "OLD master" } );
+   rr = run( wgf );
+   check( "execute: a master that fails its check beside an old master leaves no _2 and keeps every raw flat",
+          [ wgf.fs[OLD], DEST + "/masterFlat_L_2.xisf" in wgf.fs, rawLeft( wgf, L ) ], [ "OLD master", false, 3 ] );
+
+   /* ---- the master is written under a hidden temporary name, verified there, then moved ---- */
+   var wt = world( L, masterDark() );
+   run( wt );
+   check( "execute: integration writes, and verify reads, the hidden temporary beside the destination; the final name is only ever published into",
+          [ wt.verified, wt.writes.filter( function( p ) { return p.indexOf( DEST ) == 0; } ), Object.keys( wt.fs ).filter( function( p ) { return /partial/.test( p ); } ) ],
+          [ [ DEST + "/.partial_masterFlat_L.xisf" ], [ DEST + "/.partial_masterFlat_L.xisf", DEST + "/masterFlat_L.xisf" ], [] ] );
+
+   /* ---- symlinks are never followed ---- */
+   var ln = world( L, masterDark(), null, null, { [L[1].path]: CARD + "/Flat/card_flat_1.fit" } );
+   rr = run( ln );
+   check( "execute: a flat that is a symlink onto the card is not deleted, the file it points at survives, and it is named",
+          [ rr.made[0].removed, rr.notes.length, ln.removes.indexOf( L[1].path ), CARD + "/Flat/card_flat_1.fit" in ln.fs ], [ 2, 1, -1, true ] );
+   var lf = world( L, masterDark(), null, null, { [DEST]: CARD + "/Flat" } );
+   rr = run( lf );
+   check( "execute: a Flat folder that is a link onto the card loses nothing",
+          [ rr.made.length ? rr.made[0].removed : 0, rr.notes.length, lf.removes.filter( function( p ) { return p.indexOf( "/Astro/" ) == 0 && !/partial|_c\.xisf/.test( p ); } ), rawLeft( lf, L ) ],
+          [ 0, 3, [], 3 ] );
+}
+
+function masterFlatReportChecks()
+{
+   var text = MasterFlat.report( { made: [ { name: "masterFlat_L.xisf", filter: "L", flats: 3, removed: 3 } ],
+                                   kept: [ { filter: "Ha", binning: 2, flats: 4, reason: "no matching dark for the 2 s flats" } ],
+                                   notes: [ "could not delete /x/a.xisf" ], cancelled: true } );
+   check( "MasterFlat.report: made, kept with binning and reason, notes, and the cancel line",
+          text.split( "\n" ),
+          [ "Master flat masterFlat_L.xisf from 3 flat(s); 3 raw flat(s) deleted.",
+            "Raw flats kept for Ha (bin 2) (4): no matching dark for the 2 s flats.",
+            "could not delete /x/a.xisf",
+            "Cancelled; the remaining filters keep their raw flats." ] );
+   check( "MasterFlat.active: needs both the box and a folder; loadSettings/saveSettings round-trip through a store and survive a broken one",
+          [ MasterFlat.active( "/d", true ), MasterFlat.active( "", true ), MasterFlat.active( null, true ), MasterFlat.active( "/d", false ) ],
+          [ true, false, false, false ] );
+   var mem = {};
+   var store = { read: function( k ) { return k in mem ? mem[k] : null; }, write: function( k, t, v ) { mem[k] = v; } };
+   MasterFlat.saveSettings( store, "/Astro/darks", true );
+   var back = MasterFlat.loadSettings( store );
+   check( "MasterFlat.loadSettings: the saved folder and checkbox come back", [ back.darksFolder, back.onlyMasterFlats ], [ "/Astro/darks", true ] );
+   var broken = { read: function() { throw new Error( "no settings" ); }, write: function() { throw new Error( "no settings" ); } };
+   MasterFlat.saveSettings( broken, "/x", true );
+   check( "MasterFlat.loadSettings: a failing store gives the defaults, never an exception", MasterFlat.loadSettings( broken ), { darksFolder: "", onlyMasterFlats: false } );
 }
 
 /*

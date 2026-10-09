@@ -68,7 +68,7 @@ function load( file )
 const LIBS = [ "lib/Util.js", "lib/Hasher.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
                "lib/StepsSyqon.js", "lib/StepsIcc.js",
                "lib/Config.js",
-               "lib/AsiairNames.js", "lib/Asiair.js", "lib/NightDialog.js",
+               "lib/AsiairNames.js", "lib/Asiair.js", "lib/MasterFlat.js", "lib/NightDialog.js",
                "lib/Frames.js", "lib/Fly.js", "lib/Solve.js", "lib/Sky.js",
                "lib/Render.js", "lib/Pipeline.js", "lib/Update.js", "lib/UI.js" ];
 

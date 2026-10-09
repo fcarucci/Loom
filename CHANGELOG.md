@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- **Master flats at ASIAIR import.** With a darks folder set and **Import only master flats** ticked, each filter's flats are calibrated with a matching dark (a master dark, or raw darks integrated and cached), integrated into `masterFlat_<filter>.xisf`, checked, and only then are the raw flat copies in the destination deleted. A filter with no matching dark or a failed master keeps its raw flats and says why; a master from an earlier import is never replaced or deleted; nothing on the ASIAIR is touched.
+
 ## [0.3.4] — 2026-10-07
 
 - **A run with no narrowband (RGB or LRGB) says nothing about palettes.** A palette saved from an earlier narrowband run (SHO, HSO, HOO) is skipped without a word; it used to be named in the log as skipped. A palette with some but not all of its channels still gets a warning.

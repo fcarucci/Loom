@@ -375,7 +375,44 @@ Review the night as usual, then Run:
   `DATE-OBS`); one that fails is deleted and reported.
 - The review is then locked, so the night cannot be imported twice.
 
-Darks and bias frames are not imported.
+Darks and bias frames are not imported (a darks folder, or the card's darks, below, are only read).
+
+#### Master flats instead of raw flats
+
+Set a **darks folder** and tick **Combine flats to masters** (both are
+remembered) and the night's flats are turned into one master per filter
+instead of being kept. If the ASIAIR card itself holds darks that suit the
+night's flats (in `Plan/Dark` or `Autorun/Dark`, read quietly when the night
+is chosen), no darks folder is needed: the **darks Folder... / Clear** buttons
+are hidden, the option is available at once, and the card's darks are used. The
+saved darks folder is left untouched, and ignored while card darks are found.
+A filter with no suiting card dark keeps its raw flats. The card is only read.
+The closing confirmation and the import log say where the darks came from (the
+card, with how many and which exposures, or the folder):
+
+- Each flat is calibrated with a matching dark: same exposure (within 1 %),
+  sensor temperature (within 3 °C; a frame with no temperature never matches),
+  and binning and gain where both state them. A master
+  dark in the folder is preferred; otherwise raw darks (at least two) are
+  integrated into one, which is cached. Flats of two exposures each get their
+  own dark. The same rules apply to darks on the card, which are looked for in the
+  card's `Dark` folders only (no subfolders). Darks in a folder are looked for in the chosen folder and its subfolders (four levels), among files with "dark" in the name. Raw darks of one exposure, binning and gain are integrated together, whatever their temperature within the 3 °C allowed.
+- The calibrated flats are averaged with multiplicative normalisation and
+  rejection suited to the count, and written to
+  `<destination>/Flat/masterFlat_<filter>.xisf` (`_bin1` and `_bin2` are added to the
+  names when a filter was shot at two binnings).
+- The master is checked (geometry, `FILTER`, flat `IMAGETYP`, a real image)
+  before the raw flat copies in `<destination>/Flat` are deleted. Only those
+  copies are deleted (plus Loom's own temporary files): never anything on the ASIAIR, never a symlink or
+  anything outside that folder, and never a master from an earlier import
+  (the new one takes `_2`).
+- A filter with no matching dark, fewer than two flats, or a failed master
+  keeps its raw flats, and the closing message says which and why. If a flat
+  failed to copy, that filter keeps its raw flats rather than get a master
+  from the rest. Cancel is checked between steps (not inside one
+  calibration or integration); what is not yet done keeps its raw flats. A raw-dark master is cached under the Loom
+  cache's `master-darks`.
+- Every import writes `import-<time>.log` in the system temp folder (`Loom-import-logs`): the copies and any failures, and for master flats the flats read (exposure, temperature, gain), the darks found, the plan for each filter and why a filter was skipped. Its path is shown in the final dialog.
 
 ## Fly-Through
 

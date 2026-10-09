@@ -106,13 +106,13 @@ Asiair.frameFrom = function( dir, name, target, source )
  * Walk a card.
  *
  * Depth-limited to the layout that actually exists --
- * {Plan,Autorun}/Light/<target> and {Plan,Autorun}/Flat -- and never
+ * {Plan,Autorun}/Light/<target> and {Plan,Autorun}/{Flat,Dark} -- and never
  * recursive, so a symlink cycle on the card is unreachable rather than
  * merely unlikely.
  */
 Asiair.scanCard = function( root, onProgress, shouldStop )
 {
-   var out = { lights: [], flats: [], unparseable: [],
+   var out = { lights: [], flats: [], darks: [], unparseable: [],
                cancelled: false, removed: false };
 
    if ( !Asiair.looksLikeCard( root ) )
@@ -171,6 +171,12 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
       var flatDir = root + "/" + src + "/Flat";
       if ( File.directoryExists( flatDir ) )
          if ( !take( flatDir, null, src, out.flats ) )
+            return out;
+
+      // Darks sit in one folder, like flats: the master-flats step may use them in place of a darks folder.
+      var darkDir = root + "/" + src + "/Dark";
+      if ( File.directoryExists( darkDir ) )
+         if ( !take( darkDir, null, src, out.darks ) )
             return out;
    }
 
