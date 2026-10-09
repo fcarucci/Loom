@@ -5,7 +5,16 @@ section of this file.
 
 ## [Unreleased]
 
-- **Master flats at ASIAIR import.** With a darks folder set and **Import only master flats** ticked, each filter's flats are calibrated with a matching dark (a master dark, or raw darks integrated and cached), integrated into `masterFlat_<filter>.xisf`, checked, and only then are the raw flat copies in the destination deleted. A filter with no matching dark or a failed master keeps its raw flats and says why; a master from an earlier import is never replaced or deleted; nothing on the ASIAIR is touched.
+## [0.4.0] — 2026-10-09
+
+- **Master flats at ASIAIR import.** Tick **Combine flats to masters** and each filter's flats are calibrated with a matching dark, integrated into `masterFlat_<filter>.xisf`, checked, and only then are the raw flat copies in the destination deleted. A filter with no matching dark, or whose master fails, keeps its raw flats and says why, including what the darks folder or card held. A master from an earlier import is never replaced or deleted; nothing on the ASIAIR is written or deleted.
+  - Darks come from a **darks folder** (searched with its subfolders, four levels deep, among files with "dark" in the name) or, when the card has them in `Plan/Dark` or `Autorun/Dark`, from the card; the darks folder buttons are hidden then.
+  - A dark matches on exposure (within 1 %), binning, gain where both state it, and sensor temperature within 3 °C; a missing temperature on either side is not a match. A master dark is preferred; raw darks of one exposure, binning and gain are integrated into one, cached.
+- **Every import writes a log** (`Loom-import-logs/import-<time>.log` in the system temp folder): the copies, the flats read, the darks found, the plan for each filter and the outcome.
+- **The Frame Selector window title shows the version and commit** of the code it was started from.
+- **ALTITUDE is no longer given to one frame.** It needs a run of frames that are wide, in time order, once airmass explains them; otherwise the cause is SEEING. The row tooltip shows altitude, airmass and the corrected FWHM.
+- **One stretch per filter.** Every frame of a filter is shown with the same stretch, measured on the loader timer and remembered, and the other frames and filters are rendered in the background so the window stays responsive.
+- **Fixes.** FITS frames no longer flood the console with "ReadImageProperty() must be reimplemented" (properties are read from XISF only); the filmstrip tiles use the full width, with no gap at the right; **Use cache** and **Ignore cache** are never shown ticked together; the filter choices are saved when picked, so they apply to every run whatever the target; the PSB gets one group per palette that was built (SHO and HSO, the first visible).
 
 ## [0.3.4] — 2026-10-07
 
