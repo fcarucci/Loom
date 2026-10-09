@@ -100,7 +100,7 @@
     "availableNoiseTools": "function fbc3cf0e47154aac58d45404ca89047511b5b798",
     "availableSharpenTools": "function 2468a17872cea74bf30d70ab8ec7a673b381a55b",
     "availableStarTools": "function 84a886126a645b37f815ec1b0b0792e19e21170b",
-    "buildPsbDocument": "function e6d936f413b9ec6a01785da7bd5d045f49bd2ec6",
+    "buildPsbDocument": "function cba4fb0f3fb6d6b35764a66494cda3a82996900f",
     "bxtStarsAndDetail": "function cd82a846a0d7c535fb4118b5177f96ef7b804727",
     "clipSafeBlackPoint": "function dee1815d45e41969b4d991f8dfa3eec75f9b754a",
     "combineRGB": "function 50e8aef954e2255cffbfee723e85c77927291717",
@@ -212,8 +212,8 @@
     "psbBroadbandGroup": "function a163caa9fe718fc26f1804d6866297e6caf49391",
     "psbDsoAdjustments": "function cba7f0452e4736d7955251ef6b8a806d9a1ae8e1",
     "psbLStarsLayer": "function 908f8b8fb61f68fe98d243b129de8b044fafeea7",
-    "psbPaletteGroup": "function 6978c251e885c384e689bddbc2c6a3cdd57547f5",
-    "psbPaletteName": "function 93150bee9e28fdfc37c5a9f971f7f0413301ae89",
+    "psbPaletteGroup": "function e05ce37189bf9475bbe889de23f7ee776e22dec2",
+    "psbPaletteName": "function ac5687a80743a6f2e3858ecc529f64690e650f53",
     "psbProfileBytes": "function e1f66e92bc38044ef40d80ca0dc4c5759d56f45f",
     "psbProfileOrNull": "function b7f3c557adc0a385c0d20336c5a7d32a68884492",
     "psbStarLayers": "function 50d31e9ea96749106719e5463f72a93bedbadc4c",
@@ -331,7 +331,8 @@
     "verifySolution": "function 57c7497785951abf25fa375e182a05611cdc3c82",
     "windowsOpenedSince": "function 4767fc00f7705a5e0ecde2e5890f1dc01d0ff99c",
     "withFiles": "function 13abe5441f22db94947dda0385900d923cdb770f",
-    "withoutInconsistentKeywords": "function 3eac667e533ca959d8a038d6349ef730ffc20c80"
+    "withoutInconsistentKeywords": "function 3eac667e533ca959d8a038d6349ef730ffc20c80",
+    "psbPaletteNames": "function 530f5d97a73c02c8b434833d3ff75295b45ee4f1"
   },
   "core4": {
     "verifySolution": "function 6e0c008080efd716f72ca413ecf2f5ee118d2563"

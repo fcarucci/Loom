@@ -229,7 +229,7 @@ into the export folder, bottom to top:
 
 | layer | |
 |---|---|
-| **HSO** group | the palette starless plate, with **Ha**, **SII** and **OIII** Curves layers set to the channel each line was mapped to |
+| **SHO**, **HSO**, **HOO** groups | one per palette you asked for: its starless plate, with **Ha**, **SII** and **OIII** Curves layers set to the channel each line was mapped to. The first is visible and the others are hidden, so switching palette is one click |
 | **RGB** group | the broadband starless plate: hidden when there is a palette above it, visible when the run has no narrowband |
 | **Background Curve**, **Faint Nebulosity Curve**, **Color Vibrance** | ready-made and neutral (identity RGB Curves twice, and a Vibrance layer at 0 / 0), visible and not clipped, above the DSO groups and below the Stars, so they adjust the nebula only; the picture is unchanged until you edit them |
 | **Stars** group, *Screen* | RGB stars, and the L stars plate in *Luminosity*; with frequency separation on, an **L Stars** group holding the low layer and the high layer |

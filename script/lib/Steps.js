@@ -3728,10 +3728,17 @@ Steps.curveLayerName = function( label, channelIds )
 Steps.buildPsbDocument = function( results )
 {
    var doc = [];
-   var palette = Steps.psbPaletteGroup( results );
-   if ( palette != null )
+   var palettes = Steps.psbPaletteNames( results );
+   // Every palette that was built gets its own group; the first is on and
+   // the rest are off, so switching between them is one click each.
+   for ( var pi = 0; pi < palettes.length; ++pi )
+   {
+      var palette = Steps.psbPaletteGroup( results, palettes[pi] );
+      if ( pi > 0 )
+         palette.visible = false;
       doc.push( palette );
-   var broadband = Steps.psbBroadbandGroup( results, palette == null );
+   }
+   var broadband = Steps.psbBroadbandGroup( results, palettes.length == 0 );
    if ( broadband != null )
       doc.push( broadband );
    if ( doc.length > 0 )
@@ -3774,10 +3781,17 @@ Steps.psbDsoAdjustments = function()
  */
 Steps.psbPaletteName = function( results )
 {
+   return Steps.psbPaletteNames( results )[0] || null;
+};
+
+/* Every palette with a plate in `results`, in Util.PALETTES' order. */
+Steps.psbPaletteNames = function( results )
+{
+   var names = [];
    for ( var pk in Util.PALETTES )
       if ( results[pk + "_starless"] != null || results[pk] != null )
-         return pk;
-   return null;
+         names.push( pk );
+   return names;
 };
 
 /*
@@ -3804,9 +3818,9 @@ Steps.paletteChannelsOf = function( map, key )
  *
  * Bottom to top: the plate, SII, OIII, Ha. Null without a palette plate.
  */
-Steps.psbPaletteGroup = function( results )
+Steps.psbPaletteGroup = function( results, name )
 {
-   var palName = Steps.psbPaletteName( results );
+   var palName = name || Steps.psbPaletteName( results );
    if ( palName == null )
       return null;
 

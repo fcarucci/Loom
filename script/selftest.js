@@ -1061,7 +1061,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 331 );
+      check( "Steps: the member count", Object.keys( have ).length, 332 );
    }
 
    /*
@@ -2066,6 +2066,17 @@ function runTests()
    }
    check( "bottom to top the curves are OIII, SII, Ha, each naming its channel",
           curveOrder( { HSO_starless: fake } ), "OIII[B],SII[G],Ha[R]" );
+   ( function()
+   {
+      var both = Steps.buildPsbDocument( { SHO_starless: fake, HSO_starless: fake } );
+      var groups = both.filter( function( e ) { return e.group != null && e.name.length == 3; } );
+      check( "every palette that was built gets a group in the PSB",
+             groups.map( function( g ) { return g.name; } ), [ "SHO", "HSO" ] );
+      check( "the first palette is on and the others off",
+             groups.map( function( g ) { return g.visible !== false; } ), [ true, false ] );
+      check( "with palettes the broadband group is off",
+             both.filter( function( e ) { return e.name == "RGB"; } ).length, 0 );
+   } )();
    check( "SHO names the channels it actually moved them to",
           curveOrder( { SHO_starless: fake } ), "OIII[B],SII[R],Ha[G]" );
    check( "HOO names both of OIII's channels",
