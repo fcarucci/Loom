@@ -714,6 +714,48 @@ function masterFlatVerifyAndPublish( job, engine, partialPath, masterPath, calib
 }
 
 /*
+ * Execute a single job's processing: handle try/catch/finally for temp
+ * directory and partial file cleanup.  Modifies out in place.
+ */
+function masterFlatExecuteOneJob( job, engine, opts, out, stopped )
+{
+   var nameInfo = masterFlatFindAvailableName( job, engine );
+   var master = nameInfo.master, name = nameInfo.name;
+   if ( nameInfo.note != null ) out.notes.push( nameInfo.note );
+   var dir = master.substring( 0, master.lastIndexOf( "/" ) );
+   var partial = dir + "/.partial_" + name;
+
+   var tmp = null;
+   try
+   {
+      tmp = engine.tempDir( job );
+      var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
+      if ( result.failure == null )
+      {
+         var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
+         out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
+      }
+      else
+         out.kept.push( { filter: job.filter, binning: job.binning, reason: result.failure, flats: job.flats.length } );
+   }
+   catch ( e )
+   {
+      if ( Util.isCancel( e ) )
+      {
+         out.cancelled = true;
+         out.kept.push( { filter: job.filter, binning: job.binning, reason: "cancelled", flats: job.flats.length } );
+      }
+      else
+         out.kept.push( { filter: job.filter, binning: job.binning, reason: "error: " + ( e && e.message !== undefined ? e.message : e ), flats: job.flats.length } );
+   }
+   finally
+   {
+      try { if ( partial != master && engine.exists( partial ) ) engine.remove( partial ); } catch ( e6 ) {}
+      if ( tmp != null ) try { engine.removeDir( tmp ); } catch ( e4 ) {}
+   }
+}
+
+/*
  * Process all jobs in sequence. For each: check skip, find names, process,
  * and record results. Modifies out in place.
  */
@@ -732,40 +774,7 @@ function masterFlatProcessAllJobs( jobs, engine, opts, out, stopped )
          continue;
       }
 
-      var nameInfo = masterFlatFindAvailableName( job, engine );
-      var master = nameInfo.master, name = nameInfo.name;
-      if ( nameInfo.note != null ) out.notes.push( nameInfo.note );
-      var dir = master.substring( 0, master.lastIndexOf( "/" ) );
-      var partial = dir + "/.partial_" + name;
-
-      var tmp = null;
-      try
-      {
-         tmp = engine.tempDir( job );
-         var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
-         if ( result.failure == null )
-         {
-            var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
-            out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
-         }
-         else
-            out.kept.push( { filter: job.filter, binning: job.binning, reason: result.failure, flats: job.flats.length } );
-      }
-      catch ( e )
-      {
-         if ( Util.isCancel( e ) )
-         {
-            out.cancelled = true;
-            out.kept.push( { filter: job.filter, binning: job.binning, reason: "cancelled", flats: job.flats.length } );
-         }
-         else
-            out.kept.push( { filter: job.filter, binning: job.binning, reason: "error: " + ( e && e.message !== undefined ? e.message : e ), flats: job.flats.length } );
-      }
-      finally
-      {
-         try { if ( partial != master && engine.exists( partial ) ) engine.remove( partial ); } catch ( e6 ) {}
-         if ( tmp != null ) try { engine.removeDir( tmp ); } catch ( e4 ) {}
-      }
+      masterFlatExecuteOneJob( job, engine, opts, out, stopped );
    }
 }
 
