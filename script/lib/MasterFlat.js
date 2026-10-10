@@ -950,6 +950,27 @@ MasterFlat.planLines = function( jobs )
  * ImageWindow.open: a missing or unreadable file raises a modal box).
  */
 MasterFlat.SCAN_DEPTH = 4;
+/* Process an entry from scanFolder: recurse on directory or add frame description. */
+function _scanFolderProcessEntry( e, base, readHeader, depth, out )
+{
+   var path = base + "/" + e.name;
+   if ( e.isDirectory )
+   {
+      if ( !e.isSymbolicLink && ( depth || 0 ) < MasterFlat.SCAN_DEPTH )
+         out.push.apply( out, MasterFlat.scanFolder( path, readHeader, ( depth || 0 ) + 1 ) );
+      return;
+   }
+   if ( !MasterFlat.IMAGE_EXTENSION.test( e.name ) || !/dark/i.test( e.name ) )
+      return;
+   var h = readHeader( path );
+   if ( h == null || h.info == null )
+      return;
+   var d = MasterFlat.describe( path, h.keyword );
+   d.size = e.size;
+   d.modified = ( new FileInfo( path ) ).lastModified.toISOString();
+   out.push( d );
+}
+
 MasterFlat.scanFolder = function( dir, readHeader, depth )
 {
    var out = [];
@@ -958,24 +979,7 @@ MasterFlat.scanFolder = function( dir, readHeader, depth )
    var base = dir.replace( /\/+$/, "" );
    var entries = Util.findEntries( base + "/*" );
    for ( var i = 0; i < entries.length; ++i )
-   {
-      var e = entries[i], path = base + "/" + e.name;
-      if ( e.isDirectory )
-      {
-         if ( !e.isSymbolicLink && ( depth || 0 ) < MasterFlat.SCAN_DEPTH )
-            out = out.concat( MasterFlat.scanFolder( path, readHeader, ( depth || 0 ) + 1 ) );
-         continue;
-      }
-      if ( !MasterFlat.IMAGE_EXTENSION.test( e.name ) || !/dark/i.test( e.name ) )
-         continue;
-      var h = readHeader( path );
-      if ( h == null || h.info == null )
-         continue;
-      var d = MasterFlat.describe( path, h.keyword );
-      d.size = e.size;
-      d.modified = ( new FileInfo( path ) ).lastModified.toISOString();
-      out.push( d );
-   }
+      _scanFolderProcessEntry( entries[i], base, readHeader, depth, out );
    return out;
 };
 
