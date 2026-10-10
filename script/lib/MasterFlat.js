@@ -1008,53 +1008,71 @@ MasterFlat.engine = function( readHeader, cacheDir )
             try { w.forceClose(); } catch ( e ) {}
       } );
    }
+   /* Set up ImageIntegration process parameters from a spec. */
+   function _integrationSetupParams( P, paths, spec )
+   {
+      P.images = paths.map( function( p ) { return [ true, p, "", "" ]; } );
+      P.inputHints = ""; P.weightMode = ImageIntegration.DontCare;
+      P.combination = ImageIntegration.Average;
+      P.normalization = spec.normalization == "multiplicative"
+         ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
+      P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
+         ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
+      var r = spec.rejection;
+      P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
+                  : r.method == "percentile" ? ImageIntegration.PercentileClip
+                  : ImageIntegration.NoRejection;
+      if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
+      if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
+      P.generateRejectionMaps = false;
+      P.generateIntegratedImage = true;
+      P.generateDrizzleData = false;
+      P.evaluateSNR = false;
+      P.noGUIMessages = true;
+      P.useCache = false;
+      P.closePreviousImages = false;
+   }
+
+   /* Find the newly created integrated image window. */
+   function _integrationFindWindow( before )
+   {
+      var win = null;
+      ImageWindow.windows.forEach( function( w )
+      {
+         if ( !( w.mainView.id in before ) && win == null && !/^rejection|^slope/i.test( w.mainView.id ) )
+            win = w;
+      } );
+      return win;
+   }
+
+   /* Apply header keywords to the integrated image (remove reserved, add custom). */
+   function _integrationApplyHeader( win, header )
+   {
+      if ( header == null )
+         return;
+      var kept = win.keywords.filter( function( k )
+         { return [ "FILTER", "IMAGETYP", "XBINNING", "YBINNING", "EXPTIME", "GAIN", "CCD-TEMP", "DATE-OBS" ].indexOf( k.name ) < 0; } );
+      var add = [];
+      Object.keys( header ).forEach( function( n )
+         { if ( header[n] != null ) add.push( new FITSKeyword( n, String( header[n] ), "" ) ); } );
+      win.keywords = kept.concat( add );
+   }
+
    function integration( paths, spec, outPath, header )
    {
       var before = ids();
       try
       {
          var P = new ImageIntegration;
-         P.images = paths.map( function( p ) { return [ true, p, "", "" ]; } );
-         P.inputHints = ""; P.weightMode = ImageIntegration.DontCare;
-         P.combination = ImageIntegration.Average;
-         P.normalization = spec.normalization == "multiplicative"
-            ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
-         P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
-            ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
-         var r = spec.rejection;
-         P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
-                     : r.method == "percentile" ? ImageIntegration.PercentileClip
-                     : ImageIntegration.NoRejection;
-         if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
-         if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
-         P.generateRejectionMaps = false;
-         P.generateIntegratedImage = true;
-         P.generateDrizzleData = false;
-         P.evaluateSNR = false;
-         P.noGUIMessages = true;
-         P.useCache = false;
-         P.closePreviousImages = false;
+         _integrationSetupParams( P, paths, spec );
          if ( !P.executeGlobal() )
             return { ok: false, reason: "ImageIntegration did not run" };
 
-         var win = null;
-         ImageWindow.windows.forEach( function( w )
-         {
-            if ( !( w.mainView.id in before ) && win == null && !/^rejection|^slope/i.test( w.mainView.id ) )
-               win = w;
-         } );
+         var win = _integrationFindWindow( before );
          if ( win == null )
             return { ok: false, reason: "no integrated image" };
 
-         if ( header != null )
-         {
-            var kept = win.keywords.filter( function( k )
-               { return [ "FILTER", "IMAGETYP", "XBINNING", "YBINNING", "EXPTIME", "GAIN", "CCD-TEMP", "DATE-OBS" ].indexOf( k.name ) < 0; } );
-            var add = [];
-            Object.keys( header ).forEach( function( n )
-               { if ( header[n] != null ) add.push( new FITSKeyword( n, String( header[n] ), "" ) ); } );
-            win.keywords = kept.concat( add );
-         }
+         _integrationApplyHeader( win, header );
          Util.ensureDirectory( outPath.substring( 0, outPath.lastIndexOf( "/" ) ) );
          // outPath is always a temporary (a ".partial_" name or a cache file), never a user's master.
          if ( File.exists( outPath ) )
