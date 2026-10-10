@@ -600,6 +600,16 @@ function masterFlatValidatePathStructure( p, dir )
    return base;
 }
 
+/* Check if path is excluded by master or card boundaries. */
+function masterFlatIsExcludedPath( p, masterPath, card )
+{
+   if ( masterPath != null && p.toLowerCase() == MasterFlat.cleanPath( masterPath ).toLowerCase() )
+      return true;
+   if ( card != null && masterFlatPathInside( p, card ) )
+      return true;
+   return false;
+}
+
 /* Verify resolved paths match expected structure and are not inside card. */
 function masterFlatVerifyResolvedPaths( p, dir, base, card, resolve )
 {
@@ -640,9 +650,7 @@ MasterFlat.mayDelete = function( path, destFlatDir, masterPath, cardRoot, resolv
    var base = masterFlatValidatePathStructure( p, dir );
    if ( base == null )
       return false;
-   if ( masterPath != null && p.toLowerCase() == MasterFlat.cleanPath( masterPath ).toLowerCase() )
-      return false;
-   if ( card != null && masterFlatPathInside( p, card ) )
+   if ( masterFlatIsExcludedPath( p, masterPath, card ) )
       return false;
 
    if ( typeof resolve == "function" && !masterFlatVerifyResolvedPaths( p, dir, base, card, resolve ) )
