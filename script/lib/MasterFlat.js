@@ -587,6 +587,19 @@ function masterFlatPathInside( x, root )
    return x == root || root == "/" || x.substring( 0, root.length + 1 ) == root + "/";
 }
 
+/* Validate path structure: inside dir, no parent refs, valid basename. */
+function masterFlatValidatePathStructure( p, dir )
+{
+   if ( /(^|\/)\.\.(\/|$)/.test( p ) )
+      return null;
+   if ( p.substring( 0, dir.length + 1 ) != dir + "/" || p.indexOf( "/", dir.length + 1 ) >= 0 )
+      return null;
+   var base = p.substring( dir.length + 1 );
+   if ( base.length == 0 || /^masterFlat_/i.test( base ) )
+      return null;
+   return base;
+}
+
 /* Verify resolved paths match expected structure and are not inside card. */
 function masterFlatVerifyResolvedPaths( p, dir, base, card, resolve )
 {
@@ -624,12 +637,8 @@ MasterFlat.mayDelete = function( path, destFlatDir, masterPath, cardRoot, resolv
    var p = MasterFlat.cleanPath( path ), dir = MasterFlat.cleanPath( destFlatDir );
    var card = ( cardRoot != null && String( cardRoot ).length > 0 ) ? MasterFlat.cleanPath( cardRoot ) : null;
 
-   if ( /(^|\/)\.\.(\/|$)/.test( p ) )
-      return false;
-   if ( p.substring( 0, dir.length + 1 ) != dir + "/" || p.indexOf( "/", dir.length + 1 ) >= 0 )
-      return false;
-   var base = p.substring( dir.length + 1 );
-   if ( base.length == 0 || /^masterFlat_/i.test( base ) )
+   var base = masterFlatValidatePathStructure( p, dir );
+   if ( base == null )
       return false;
    if ( masterPath != null && p.toLowerCase() == MasterFlat.cleanPath( masterPath ).toLowerCase() )
       return false;
