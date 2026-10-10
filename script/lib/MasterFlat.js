@@ -664,11 +664,10 @@ function masterFlatCheckJobSkip( job, stopped, engine )
 }
 
 /*
- * Process job parts: calibrate, integrate, verify, publish. Called within
- * a try-catch that manages tmp. Returns failure reason or null on success.
- * Modifies calibrated array in place; sets partial on success.
+ * Process parts: get dark paths, calibrate flats. Returns { calibrated, failure }
+ * where failure is null on success, or an error reason string.
  */
-function masterFlatProcessJobParts( job, engine, partial, stopped )
+function masterFlatProcessParts( job, engine, tmpDir, stopped )
 {
    var calibrated = [], failure = null;
    for ( var p = 0; p < job.parts.length && failure == null; ++p )
@@ -683,10 +682,23 @@ function masterFlatProcessJobParts( job, engine, partial, stopped )
          if ( !md.ok ) { failure = "master dark failed: " + md.reason; break; }
          darkPath = md.path;
       }
-      var cal = engine.calibrate( part.flats.map( function( f ) { return f.path; } ), darkPath, partial.tmp );
+      var cal = engine.calibrate( part.flats.map( function( f ) { return f.path; } ), darkPath, tmpDir );
       if ( !cal.ok ) { failure = "calibration failed: " + cal.reason; break; }
       calibrated = calibrated.concat( cal.paths );
    }
+   return { calibrated: calibrated, failure: failure };
+}
+
+/*
+ * Process job parts: calibrate, integrate, verify, publish. Called within
+ * a try-catch that manages tmp. Returns failure reason or null on success.
+ * Modifies calibrated array in place; sets partial on success.
+ */
+function masterFlatProcessJobParts( job, engine, partial, stopped )
+{
+   var parts = masterFlatProcessParts( job, engine, partial.tmp, stopped );
+   var calibrated = parts.calibrated, failure = parts.failure;
+
    if ( failure == null && stopped() ) failure = "cancelled";
    if ( failure == null && calibrated.length != job.flats.length )
       failure = "calibration produced " + calibrated.length + " of " + job.flats.length + " flat(s)";
