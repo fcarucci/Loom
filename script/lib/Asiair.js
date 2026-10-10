@@ -135,6 +135,15 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
       return true;
    }
 
+   function processFrame( dir, name, target, source, into )
+   {
+      var f = Asiair.frameFrom( dir, name, target, source );
+      if ( f == null )
+         out.unparseable.push( dir + "/" + name );
+      else
+         into.push( f );
+   }
+
    function take( dir, target, source, into )
    {
       if ( !alive() )
@@ -143,11 +152,7 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
       var names = Asiair.entriesIn( dir, false );
       for ( var i = 0; i < names.length; ++i )
       {
-         var f = Asiair.frameFrom( dir, names[i], target, source );
-         if ( f == null )
-            out.unparseable.push( dir + "/" + names[i] );
-         else
-            into.push( f );
+         processFrame( dir, names[i], target, source, into );
 
          if ( onProgress )
             onProgress( out.lights.length + out.flats.length );
