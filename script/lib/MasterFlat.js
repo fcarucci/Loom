@@ -126,18 +126,30 @@ MasterFlat.describe = function( path, keyword )
  * the name is the fallback ("masterDark...", "Dark_..."). Flats, lights and
  * bias in the folder are not darks. Returns "master", "raw" or null.
  */
-MasterFlat.darkKind = function( name, imagetyp )
+/* Determine dark kind from IMAGETYP header when present. Returns "master", "raw" or null. */
+function _darkKindFromImagetyp( imagetyp, name )
 {
-   var n = String( name || "" ), t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
-   if ( t.length > 0 )
-   {
-      if ( /flat|light|bias|offset|zero/i.test( t ) || !/dark/i.test( t ) )
-         return null;
-      return ( /master/i.test( t ) || /^master/i.test( n ) ) ? "master" : "raw";
-   }
+   var t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
+   if ( t.length == 0 )
+      return null;
+   if ( /flat|light|bias|offset|zero/i.test( t ) || !/dark/i.test( t ) )
+      return null;
+   return ( /master/i.test( t ) || /^master/i.test( String( name || "" ) ) ) ? "master" : "raw";
+}
+
+/* Determine dark kind from filename when IMAGETYP is absent. Returns "master", "raw" or null. */
+function _darkKindFromName( name )
+{
+   var n = String( name || "" );
    if ( /flat|light|bias|offset/i.test( n ) || !/dark/i.test( n ) )
       return null;
    return /^master/i.test( n ) ? "master" : "raw";
+}
+
+MasterFlat.darkKind = function( name, imagetyp )
+{
+   var kind = _darkKindFromImagetyp( imagetyp, name );
+   return kind != null ? kind : _darkKindFromName( name );
 };
 
 MasterFlat.IMAGE_EXTENSION = /\.(xisf|fits?|fts)$/i;
