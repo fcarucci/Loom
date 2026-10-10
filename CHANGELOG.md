@@ -5,6 +5,11 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-09
+
+- **A GraXpert failure is reported.** When GraXpert fails to run, or runs and leaves the image unchanged, the step now raises an error naming the reason and its output is shown in the console and the log; before, the run carried on as if it had worked.
+- **Master flats code simplified** with no change in behaviour: the master-flat planner and executor, the ASIAIR card scan and their helpers were split into smaller functions, and tests were added for the two edge cases the work touched (a cancel inside a job, and how a dark is recognised from IMAGETYP and file name).
+
 ## [0.4.0] — 2026-10-09
 
 - **Master flats at ASIAIR import.** Tick **Combine flats to masters** and each filter's flats are calibrated with a matching dark, integrated into `masterFlat_<filter>.xisf`, checked, and only then are the raw flat copies in the destination deleted. A filter with no matching dark, or whose master fails, keeps its raw flats and says why, including what the darks folder or card held. A master from an earlier import is never replaced or deleted; nothing on the ASIAIR is written or deleted.
