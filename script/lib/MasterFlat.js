@@ -1176,17 +1176,56 @@ MasterFlat.engine = function( readHeader, cacheDir )
          }
          finally { closeNew( before ); }
       },
+      /* Check if all dark files still exist (fail closed: card pulled out mid-run). */
+      _masterDarkCheckExists: function( group )
+      {
+         for ( var g = 0; g < group.paths.length; ++g )
+            if ( !File.exists( group.paths[g] ) )
+               return "a dark is no longer there: " + group.paths[g];
+         return null;
+      },
+
+      /* Gather file info (size, timestamp) from all dark files. */
+      _masterDarkGatherSources: function( group )
+      {
+         return group.paths.map( function( p )
+            { return { path: p, size: ( new FileInfo( p ) ).size, modified: ( new FileInfo( p ) ).lastModified.toISOString() }; } );
+      },
+
+      /* Validate master dark after integration: must match source dimensions and have valid mean. */
+      _masterDarkValidate: function( group, partial )
+      {
+         var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
+         if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
+              mean == null || !isFinite( mean ) )
+            return "the master dark does not match its darks";
+         return null;
+      },
+
+      /* Move partial master dark to cache, cleaning up on failure. */
+      _masterDarkStore: function( partial, path )
+      {
+         if ( File.exists( path ) )
+            try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
+         if ( !move( partial, path ) )
+         {
+            try { File.remove( partial ); } catch ( e3 ) {}
+            return { ok: false, reason: "could not store the master dark in the cache" };
+         }
+         return { ok: true, path: path, reason: "" };
+      },
+
       masterDark: function( group )
       {
          // A dark that has gone (a card pulled out mid-run) fails the filter, which keeps its raw flats.
-         for ( var g = 0; g < group.paths.length; ++g )
-            if ( !File.exists( group.paths[g] ) )
-               return { ok: false, reason: "a dark is no longer there: " + group.paths[g] };
-         var sources = group.paths.map( function( p )
-            { return { path: p, size: ( new FileInfo( p ) ).size, modified: ( new FileInfo( p ) ).lastModified.toISOString() }; } );
+         var missing = this._masterDarkCheckExists( group );
+         if ( missing ) return { ok: false, reason: missing };
+
+         var sources = this._masterDarkGatherSources( group );
          var path = MasterFlat.darkCachePath( group, sources, cacheDir );
          if ( File.exists( path ) && sizeOf( path ) != null )
             return { ok: true, path: path, reason: "cached" };
+
          // Built under a temporary name and moved into the cache only when sound,
          // so a cache hit is always a complete master dark.
          var partial = path.substring( 0, path.lastIndexOf( "/" ) ) + "/.partial_" + path.substring( path.lastIndexOf( "/" ) + 1 );
@@ -1197,21 +1236,15 @@ MasterFlat.engine = function( readHeader, cacheDir )
             try { File.remove( partial ); } catch ( e0 ) {}
             return made;
          }
-         var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
-         if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
-              mean == null || !isFinite( mean ) )
+
+         var validation = this._masterDarkValidate( group, partial );
+         if ( validation )
          {
             try { File.remove( partial ); } catch ( e ) {}
-            return { ok: false, reason: "the master dark does not match its darks" };
+            return { ok: false, reason: validation };
          }
-         if ( File.exists( path ) )
-            try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
-         if ( !move( partial, path ) )
-         {
-            try { File.remove( partial ); } catch ( e3 ) {}
-            return { ok: false, reason: "could not store the master dark in the cache" };
-         }
-         return { ok: true, path: path, reason: "" };
+
+         return this._masterDarkStore( partial, path );
       },
       integrate: function( paths, spec, outPath, job )
       {
