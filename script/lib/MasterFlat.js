@@ -1008,6 +1008,17 @@ MasterFlat.engine = function( readHeader, cacheDir )
             try { w.forceClose(); } catch ( e ) {}
       } );
    }
+   /* Apply rejection method and parameters to ImageIntegration. */
+   function _integrationApplyRejection( P, spec )
+   {
+      var r = spec.rejection;
+      P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
+                  : r.method == "percentile" ? ImageIntegration.PercentileClip
+                  : ImageIntegration.NoRejection;
+      if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
+      if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
+   }
+
    /* Set up ImageIntegration process parameters from a spec. */
    function _integrationSetupParams( P, paths, spec )
    {
@@ -1018,12 +1029,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
          ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
       P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
          ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
-      var r = spec.rejection;
-      P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
-                  : r.method == "percentile" ? ImageIntegration.PercentileClip
-                  : ImageIntegration.NoRejection;
-      if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
-      if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
+      _integrationApplyRejection( P, spec );
       P.generateRejectionMaps = false;
       P.generateIntegratedImage = true;
       P.generateDrizzleData = false;
