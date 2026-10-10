@@ -714,6 +714,62 @@ function masterFlatVerifyAndPublish( job, engine, partialPath, masterPath, calib
 }
 
 /*
+ * Process all jobs in sequence. For each: check skip, find names, process,
+ * and record results. Modifies out in place.
+ */
+function masterFlatProcessAllJobs( jobs, engine, opts, out, stopped )
+{
+   for ( var j = 0; j < jobs.length; ++j )
+   {
+      var job = jobs[j];
+      if ( opts.onProgress ) opts.onProgress( j, jobs.length,
+         job.filter + ( job.binning != null ? " (bin " + job.binning + ")" : "" ) );
+
+      var skipReason = masterFlatCheckJobSkip( job, stopped, engine );
+      if ( skipReason != null )
+      {
+         out.kept.push( { filter: job.filter, binning: job.binning, reason: skipReason, flats: job.flats.length } );
+         continue;
+      }
+
+      var nameInfo = masterFlatFindAvailableName( job, engine );
+      var master = nameInfo.master, name = nameInfo.name;
+      if ( nameInfo.note != null ) out.notes.push( nameInfo.note );
+      var dir = master.substring( 0, master.lastIndexOf( "/" ) );
+      var partial = dir + "/.partial_" + name;
+
+      var tmp = null;
+      try
+      {
+         tmp = engine.tempDir( job );
+         var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
+         if ( result.failure == null )
+         {
+            var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
+            out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
+         }
+         else
+            out.kept.push( { filter: job.filter, binning: job.binning, reason: result.failure, flats: job.flats.length } );
+      }
+      catch ( e )
+      {
+         if ( Util.isCancel( e ) )
+         {
+            out.cancelled = true;
+            out.kept.push( { filter: job.filter, binning: job.binning, reason: "cancelled", flats: job.flats.length } );
+         }
+         else
+            out.kept.push( { filter: job.filter, binning: job.binning, reason: "error: " + ( e && e.message !== undefined ? e.message : e ), flats: job.flats.length } );
+      }
+      finally
+      {
+         try { if ( partial != master && engine.exists( partial ) ) engine.remove( partial ); } catch ( e6 ) {}
+         if ( tmp != null ) try { engine.removeDir( tmp ); } catch ( e4 ) {}
+      }
+   }
+}
+
+/*
  * Process job parts: calibrate, integrate, verify, publish. Called within
  * a try-catch that manages tmp. Returns failure reason or null on success.
  * Modifies calibrated array in place; sets partial on success.
@@ -823,70 +879,8 @@ MasterFlat.execute = function( jobs, engine, opts )
    if ( typeof engine.removePartials == "function" && opts.destFlatDir != null )
       try { engine.removePartials( opts.destFlatDir ); } catch ( e7 ) {}
 
-   for ( var j = 0; j < jobs.length; ++j )
-   {
-      var job = jobs[j];
-      var label = job.filter + ( job.binning != null ? " (bin " + job.binning + ")" : "" );
-      if ( opts.onProgress ) opts.onProgress( j, jobs.length, label );
+   masterFlatProcessAllJobs( jobs, engine, opts, out, stopped );
 
-      function keep( reason )
-      {
-         out.kept.push( { filter: job.filter, binning: job.binning, reason: reason, flats: job.flats.length } );
-      }
-
-      var skipReason = masterFlatCheckJobSkip( job, stopped, engine );
-      if ( skipReason != null )
-      {
-         keep( skipReason );
-         continue;
-      }
-
-      // A master from an earlier import is never replaced or removed: this
-      // run writes beside it under a free name.
-      var nameInfo = masterFlatFindAvailableName( job, engine );
-      var master = nameInfo.master, name = nameInfo.name;
-      if ( nameInfo.note != null )
-         out.notes.push( nameInfo.note );
-      // Written under a hidden temporary name beside its destination (same
-      // volume, so the final rename is atomic), verified there, then moved.
-      var dir = master.substring( 0, master.lastIndexOf( "/" ) );
-      var partial = dir + "/.partial_" + name;
-
-      var tmp = null;
-      try
-      {
-         tmp = engine.tempDir( job );
-         var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
-         if ( result.failure != null )
-         {
-            keep( result.failure );
-            continue;
-         }
-
-         // Master in place and verified: only now do the raw copies go.
-         var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
-         out.made.push( { name: name, filter: job.filter, binning: job.binning,
-                          flats: job.flats.length, removed: removed } );
-      }
-      catch ( e )
-      {
-         if ( Util.isCancel( e ) )
-         {
-            out.cancelled = true;
-            keep( "cancelled" );
-         }
-         else
-            keep( "error: " + ( e && e.message !== undefined ? e.message : e ) );
-      }
-      finally
-      {
-         // The half-written temporary and the intermediate calibrated flats
-         // always go, success or not. Neither is ever the master.
-         try { if ( partial != master && engine.exists( partial ) ) engine.remove( partial ); } catch ( e6 ) {}
-         if ( tmp != null )
-            try { engine.removeDir( tmp ); } catch ( e4 ) {}
-      }
-   }
    if ( opts.onProgress ) opts.onProgress( jobs.length, jobs.length, "" );
    return out;
 };
