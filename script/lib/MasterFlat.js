@@ -610,6 +610,56 @@ function masterFlatIsExcludedPath( p, masterPath, card )
    return false;
 }
 
+/*
+ * Process job parts: calibrate, integrate, verify, publish. Called within
+ * a try-catch that manages tmp. Returns failure reason or null on success.
+ * Modifies calibrated array in place; sets partial on success.
+ */
+function masterFlatProcessJobParts( job, engine, partial, stopped )
+{
+   var calibrated = [], failure = null;
+   for ( var p = 0; p < job.parts.length && failure == null; ++p )
+   {
+      if ( stopped() ) { failure = "cancelled"; break; }
+      var part = job.parts[p], darkPath;
+      if ( part.dark.kind == "master" )
+         darkPath = part.dark.path;
+      else
+      {
+         var md = engine.masterDark( part.dark );
+         if ( !md.ok ) { failure = "master dark failed: " + md.reason; break; }
+         darkPath = md.path;
+      }
+      var cal = engine.calibrate( part.flats.map( function( f ) { return f.path; } ), darkPath, partial.tmp );
+      if ( !cal.ok ) { failure = "calibration failed: " + cal.reason; break; }
+      calibrated = calibrated.concat( cal.paths );
+   }
+   if ( failure == null && stopped() ) failure = "cancelled";
+   if ( failure == null && calibrated.length != job.flats.length )
+      failure = "calibration produced " + calibrated.length + " of " + job.flats.length + " flat(s)";
+   if ( failure == null )
+   {
+      var res = engine.integrate( calibrated, MasterFlat.flatIntegrationSpec( calibrated.length ), partial.path, job );
+      if ( !res.ok ) failure = "integration failed: " + res.reason;
+   }
+   if ( failure == null && stopped() ) failure = "cancelled";
+   if ( failure == null )
+   {
+      var bad = engine.verify( partial.path, job );
+      if ( bad != null )
+         failure = "master failed verification: " + bad;
+   }
+   if ( failure == null && stopped() ) failure = "cancelled";
+   if ( failure == null )
+   {
+      var published = false;
+      try { published = engine.publish( partial.path, partial.master ) === true; } catch ( e5 ) {}
+      if ( !published )
+         failure = "could not move the master into place";
+   }
+   return { failure: failure, calibrated: calibrated };
+}
+
 /* Verify resolved paths match expected structure and are not inside card. */
 function masterFlatVerifyResolvedPaths( p, dir, base, card, resolve )
 {
@@ -748,51 +798,10 @@ MasterFlat.execute = function( jobs, engine, opts )
       try
       {
          tmp = engine.tempDir( job );
-         var calibrated = [], failure = null;
-         for ( var p = 0; p < job.parts.length && failure == null; ++p )
+         var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
+         if ( result.failure != null )
          {
-            if ( stopped() ) { failure = "cancelled"; break; }
-            var part = job.parts[p], darkPath;
-            if ( part.dark.kind == "master" )
-               darkPath = part.dark.path;
-            else
-            {
-               var md = engine.masterDark( part.dark );
-               if ( !md.ok ) { failure = "master dark failed: " + md.reason; break; }
-               darkPath = md.path;
-            }
-            var cal = engine.calibrate( part.flats.map( function( f ) { return f.path; } ), darkPath, tmp );
-            if ( !cal.ok ) { failure = "calibration failed: " + cal.reason; break; }
-            calibrated = calibrated.concat( cal.paths );
-         }
-         if ( failure == null && stopped() ) failure = "cancelled";
-         // ALL of them: a master from some of the flats must not stand in for, and delete, all.
-         if ( failure == null && calibrated.length != job.flats.length )
-            failure = "calibration produced " + calibrated.length + " of " + job.flats.length + " flat(s)";
-         if ( failure == null )
-         {
-            var res = engine.integrate( calibrated, MasterFlat.flatIntegrationSpec( calibrated.length ), partial, job );
-            if ( !res.ok ) failure = "integration failed: " + res.reason;
-         }
-         if ( failure == null && stopped() ) failure = "cancelled";
-         if ( failure == null )
-         {
-            var bad = engine.verify( partial, job );
-            if ( bad != null )
-               failure = "master failed verification: " + bad;
-         }
-         if ( failure == null && stopped() ) failure = "cancelled";
-         if ( failure == null )
-         {
-            var published = false;
-            try { published = engine.publish( partial, master ) === true; } catch ( e5 ) {}
-            if ( !published )
-               failure = "could not move the master into place";
-         }
-
-         if ( failure != null )
-         {
-            keep( failure );
+            keep( result.failure );
             continue;
          }
 
