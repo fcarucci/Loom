@@ -1197,11 +1197,18 @@ MasterFlat.engine = function( readHeader, cacheDir )
          return null;
       },
 
+      /* Get source file information (size and timestamp). */
+      _masterDarkGetFileInfo: function( path )
+      {
+         var info = new FileInfo( path );
+         return { path: path, size: info.size, modified: info.lastModified.toISOString() };
+      },
+
       /* Gather file info (size, timestamp) from all dark files. */
       _masterDarkGatherSources: function( group )
       {
-         return group.paths.map( function( p )
-            { return { path: p, size: ( new FileInfo( p ) ).size, modified: ( new FileInfo( p ) ).lastModified.toISOString() }; } );
+         var self = this;
+         return group.paths.map( function( p ) { return self._masterDarkGetFileInfo( p ); } );
       },
 
       /* Validate master dark after integration: must match source dimensions and have valid mean. */
