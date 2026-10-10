@@ -126,18 +126,36 @@ MasterFlat.describe = function( path, keyword )
  * the name is the fallback ("masterDark...", "Dark_..."). Flats, lights and
  * bias in the folder are not darks. Returns "master", "raw" or null.
  */
-MasterFlat.darkKind = function( name, imagetyp )
+/* Check if a string is not a dark (is flat/light/bias/etc or lacks 'dark'). */
+function _isNotDark( text )
 {
-   var n = String( name || "" ), t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
-   if ( t.length > 0 )
-   {
-      if ( /flat|light|bias|offset|zero/i.test( t ) || !/dark/i.test( t ) )
-         return null;
-      return ( /master/i.test( t ) || /^master/i.test( n ) ) ? "master" : "raw";
-   }
-   if ( /flat|light|bias|offset/i.test( n ) || !/dark/i.test( n ) )
+   return /flat|light|bias|offset|zero/i.test( text ) || !/dark/i.test( text );
+}
+
+/* Determine dark kind from IMAGETYP header when present. Returns "master", "raw" or null. */
+function _darkKindFromImagetyp( imagetyp, name )
+{
+   var t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
+   if ( t.length == 0 )
+      return null;
+   if ( _isNotDark( t ) )
+      return null;
+   return ( /master/i.test( t ) || /^master/i.test( String( name || "" ) ) ) ? "master" : "raw";
+}
+
+/* Determine dark kind from filename when IMAGETYP is absent. Returns "master", "raw" or null. */
+function _darkKindFromName( name )
+{
+   var n = String( name || "" );
+   if ( _isNotDark( n ) )
       return null;
    return /^master/i.test( n ) ? "master" : "raw";
+}
+
+MasterFlat.darkKind = function( name, imagetyp )
+{
+   var kind = _darkKindFromImagetyp( imagetyp, name );
+   return kind != null ? kind : _darkKindFromName( name );
 };
 
 MasterFlat.IMAGE_EXTENSION = /\.(xisf|fits?|fts)$/i;
@@ -556,21 +574,54 @@ MasterFlat.darkShortfall = function( flat, darks, where )
  * say flat; and the image must be real: a finite, positive mean (an empty
  * or NaN integration is not a master).
  */
-MasterFlat.verifyMaster = function( got, want, filter )
+/* Check if master image can be read and has geometry. */
+function _verifyMasterGeometry( got, want )
 {
    if ( got == null || got.width == null )
       return "the master could not be read";
    if ( got.width != want.width || got.height != want.height )
       return "geometry changed";
+   return null;
+}
+
+/* Check if FILTER header matches expected filter. */
+function _verifyMasterFilter( got, filter )
+{
+   if ( filter == null )
+      return null;
    var f = got.keyword( "FILTER" );
-   if ( filter != null && f != filter )
+   if ( f != filter )
       return "FILTER is " + ( f == null ? "missing" : f ) + ", expected " + filter;
+   return null;
+}
+
+/* Check if IMAGETYP header indicates a master flat. */
+function _verifyMasterImagetyp( got )
+{
    var t = got.keyword( "IMAGETYP" );
    if ( t == null || !/flat/i.test( t ) )
       return "IMAGETYP is " + ( t == null ? "missing" : t ) + ", expected a master flat";
+   return null;
+}
+
+/* Check if mean value is valid (positive and finite). */
+function _verifyMasterMean( got )
+{
    if ( typeof got.mean != "number" || !isFinite( got.mean ) || got.mean <= 0 )
       return "the master is empty or not finite";
    return null;
+}
+
+MasterFlat.verifyMaster = function( got, want, filter )
+{
+   var reason = _verifyMasterGeometry( got, want );
+   if ( reason ) return reason;
+   reason = _verifyMasterFilter( got, filter );
+   if ( reason ) return reason;
+   reason = _verifyMasterImagetyp( got );
+   if ( reason ) return reason;
+   reason = _verifyMasterMean( got );
+   return reason;
 };
 
 /* A path with repeated and trailing slashes folded away. */
@@ -993,6 +1044,27 @@ MasterFlat.planLines = function( jobs )
  * ImageWindow.open: a missing or unreadable file raises a modal box).
  */
 MasterFlat.SCAN_DEPTH = 4;
+/* Process an entry from scanFolder: recurse on directory or add frame description. */
+function _scanFolderProcessEntry( e, base, readHeader, depth, out )
+{
+   var path = base + "/" + e.name;
+   if ( e.isDirectory )
+   {
+      if ( !e.isSymbolicLink && ( depth || 0 ) < MasterFlat.SCAN_DEPTH )
+         out.push.apply( out, MasterFlat.scanFolder( path, readHeader, ( depth || 0 ) + 1 ) );
+      return;
+   }
+   if ( !MasterFlat.IMAGE_EXTENSION.test( e.name ) || !/dark/i.test( e.name ) )
+      return;
+   var h = readHeader( path );
+   if ( h == null || h.info == null )
+      return;
+   var d = MasterFlat.describe( path, h.keyword );
+   d.size = e.size;
+   d.modified = ( new FileInfo( path ) ).lastModified.toISOString();
+   out.push( d );
+}
+
 MasterFlat.scanFolder = function( dir, readHeader, depth )
 {
    var out = [];
@@ -1001,24 +1073,7 @@ MasterFlat.scanFolder = function( dir, readHeader, depth )
    var base = dir.replace( /\/+$/, "" );
    var entries = Util.findEntries( base + "/*" );
    for ( var i = 0; i < entries.length; ++i )
-   {
-      var e = entries[i], path = base + "/" + e.name;
-      if ( e.isDirectory )
-      {
-         if ( !e.isSymbolicLink && ( depth || 0 ) < MasterFlat.SCAN_DEPTH )
-            out = out.concat( MasterFlat.scanFolder( path, readHeader, ( depth || 0 ) + 1 ) );
-         continue;
-      }
-      if ( !MasterFlat.IMAGE_EXTENSION.test( e.name ) || !/dark/i.test( e.name ) )
-         continue;
-      var h = readHeader( path );
-      if ( h == null || h.info == null )
-         continue;
-      var d = MasterFlat.describe( path, h.keyword );
-      d.size = e.size;
-      d.modified = ( new FileInfo( path ) ).lastModified.toISOString();
-      out.push( d );
-   }
+      _scanFolderProcessEntry( entries[i], base, readHeader, depth, out );
    return out;
 };
 
@@ -1047,53 +1102,77 @@ MasterFlat.engine = function( readHeader, cacheDir )
             try { w.forceClose(); } catch ( e ) {}
       } );
    }
+   /* Apply rejection method and parameters to ImageIntegration. */
+   function _integrationApplyRejection( P, spec )
+   {
+      var r = spec.rejection;
+      P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
+                  : r.method == "percentile" ? ImageIntegration.PercentileClip
+                  : ImageIntegration.NoRejection;
+      if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
+      if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
+   }
+
+   /* Set up ImageIntegration process parameters from a spec. */
+   function _integrationSetupParams( P, paths, spec )
+   {
+      P.images = paths.map( function( p ) { return [ true, p, "", "" ]; } );
+      P.inputHints = ""; P.weightMode = ImageIntegration.DontCare;
+      P.combination = ImageIntegration.Average;
+      P.normalization = spec.normalization == "multiplicative"
+         ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
+      P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
+         ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
+      _integrationApplyRejection( P, spec );
+      P.generateRejectionMaps = false;
+      P.generateIntegratedImage = true;
+      P.generateDrizzleData = false;
+      P.evaluateSNR = false;
+      P.noGUIMessages = true;
+      P.useCache = false;
+      P.closePreviousImages = false;
+   }
+
+   /* Find the newly created integrated image window. */
+   function _integrationFindWindow( before )
+   {
+      var win = null;
+      ImageWindow.windows.forEach( function( w )
+      {
+         if ( !( w.mainView.id in before ) && win == null && !/^rejection|^slope/i.test( w.mainView.id ) )
+            win = w;
+      } );
+      return win;
+   }
+
+   /* Apply header keywords to the integrated image (remove reserved, add custom). */
+   function _integrationApplyHeader( win, header )
+   {
+      if ( header == null )
+         return;
+      var kept = win.keywords.filter( function( k )
+         { return [ "FILTER", "IMAGETYP", "XBINNING", "YBINNING", "EXPTIME", "GAIN", "CCD-TEMP", "DATE-OBS" ].indexOf( k.name ) < 0; } );
+      var add = [];
+      Object.keys( header ).forEach( function( n )
+         { if ( header[n] != null ) add.push( new FITSKeyword( n, String( header[n] ), "" ) ); } );
+      win.keywords = kept.concat( add );
+   }
+
    function integration( paths, spec, outPath, header )
    {
       var before = ids();
       try
       {
          var P = new ImageIntegration;
-         P.images = paths.map( function( p ) { return [ true, p, "", "" ]; } );
-         P.inputHints = ""; P.weightMode = ImageIntegration.DontCare;
-         P.combination = ImageIntegration.Average;
-         P.normalization = spec.normalization == "multiplicative"
-            ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
-         P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
-            ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
-         var r = spec.rejection;
-         P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
-                     : r.method == "percentile" ? ImageIntegration.PercentileClip
-                     : ImageIntegration.NoRejection;
-         if ( r.method == "winsorized" ) { P.sigmaLow = r.sigmaLow; P.sigmaHigh = r.sigmaHigh; }
-         if ( r.method == "percentile" ) { P.pcClipLow = r.pcLow; P.pcClipHigh = r.pcHigh; }
-         P.generateRejectionMaps = false;
-         P.generateIntegratedImage = true;
-         P.generateDrizzleData = false;
-         P.evaluateSNR = false;
-         P.noGUIMessages = true;
-         P.useCache = false;
-         P.closePreviousImages = false;
+         _integrationSetupParams( P, paths, spec );
          if ( !P.executeGlobal() )
             return { ok: false, reason: "ImageIntegration did not run" };
 
-         var win = null;
-         ImageWindow.windows.forEach( function( w )
-         {
-            if ( !( w.mainView.id in before ) && win == null && !/^rejection|^slope/i.test( w.mainView.id ) )
-               win = w;
-         } );
+         var win = _integrationFindWindow( before );
          if ( win == null )
             return { ok: false, reason: "no integrated image" };
 
-         if ( header != null )
-         {
-            var kept = win.keywords.filter( function( k )
-               { return [ "FILTER", "IMAGETYP", "XBINNING", "YBINNING", "EXPTIME", "GAIN", "CCD-TEMP", "DATE-OBS" ].indexOf( k.name ) < 0; } );
-            var add = [];
-            Object.keys( header ).forEach( function( n )
-               { if ( header[n] != null ) add.push( new FITSKeyword( n, String( header[n] ), "" ) ); } );
-            win.keywords = kept.concat( add );
-         }
+         _integrationApplyHeader( win, header );
          Util.ensureDirectory( outPath.substring( 0, outPath.lastIndexOf( "/" ) ) );
          // outPath is always a temporary (a ".partial_" name or a cache file), never a user's master.
          if ( File.exists( outPath ) )
@@ -1197,17 +1276,63 @@ MasterFlat.engine = function( readHeader, cacheDir )
          }
          finally { closeNew( before ); }
       },
+      /* Check if all dark files still exist (fail closed: card pulled out mid-run). */
+      _masterDarkCheckExists: function( group )
+      {
+         for ( var g = 0; g < group.paths.length; ++g )
+            if ( !File.exists( group.paths[g] ) )
+               return "a dark is no longer there: " + group.paths[g];
+         return null;
+      },
+
+      /* Get source file information (size and timestamp). */
+      _masterDarkGetFileInfo: function( path )
+      {
+         var info = new FileInfo( path );
+         return { path: path, size: info.size, modified: info.lastModified.toISOString() };
+      },
+
+      /* Gather file info (size, timestamp) from all dark files. */
+      _masterDarkGatherSources: function( group )
+      {
+         var self = this;
+         return group.paths.map( function( p ) { return self._masterDarkGetFileInfo( p ); } );
+      },
+
+      /* Validate master dark after integration: must match source dimensions and have valid mean. */
+      _masterDarkValidate: function( group, partial )
+      {
+         var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
+         if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
+              mean == null || !isFinite( mean ) )
+            return "the master dark does not match its darks";
+         return null;
+      },
+
+      /* Move partial master dark to cache, cleaning up on failure. */
+      _masterDarkStore: function( partial, path )
+      {
+         if ( File.exists( path ) )
+            try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
+         if ( !move( partial, path ) )
+         {
+            try { File.remove( partial ); } catch ( e3 ) {}
+            return { ok: false, reason: "could not store the master dark in the cache" };
+         }
+         return { ok: true, path: path, reason: "" };
+      },
+
       masterDark: function( group )
       {
          // A dark that has gone (a card pulled out mid-run) fails the filter, which keeps its raw flats.
-         for ( var g = 0; g < group.paths.length; ++g )
-            if ( !File.exists( group.paths[g] ) )
-               return { ok: false, reason: "a dark is no longer there: " + group.paths[g] };
-         var sources = group.paths.map( function( p )
-            { return { path: p, size: ( new FileInfo( p ) ).size, modified: ( new FileInfo( p ) ).lastModified.toISOString() }; } );
+         var missing = this._masterDarkCheckExists( group );
+         if ( missing ) return { ok: false, reason: missing };
+
+         var sources = this._masterDarkGatherSources( group );
          var path = MasterFlat.darkCachePath( group, sources, cacheDir );
          if ( File.exists( path ) && sizeOf( path ) != null )
             return { ok: true, path: path, reason: "cached" };
+
          // Built under a temporary name and moved into the cache only when sound,
          // so a cache hit is always a complete master dark.
          var partial = path.substring( 0, path.lastIndexOf( "/" ) ) + "/.partial_" + path.substring( path.lastIndexOf( "/" ) + 1 );
@@ -1218,21 +1343,15 @@ MasterFlat.engine = function( readHeader, cacheDir )
             try { File.remove( partial ); } catch ( e0 ) {}
             return made;
          }
-         var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
-         if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
-              mean == null || !isFinite( mean ) )
+
+         var validation = this._masterDarkValidate( group, partial );
+         if ( validation )
          {
             try { File.remove( partial ); } catch ( e ) {}
-            return { ok: false, reason: "the master dark does not match its darks" };
+            return { ok: false, reason: validation };
          }
-         if ( File.exists( path ) )
-            try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
-         if ( !move( partial, path ) )
-         {
-            try { File.remove( partial ); } catch ( e3 ) {}
-            return { ok: false, reason: "could not store the master dark in the cache" };
-         }
-         return { ok: true, path: path, reason: "" };
+
+         return this._masterDarkStore( partial, path );
       },
       integrate: function( paths, spec, outPath, job )
       {
