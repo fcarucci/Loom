@@ -126,36 +126,22 @@ MasterFlat.describe = function( path, keyword )
  * the name is the fallback ("masterDark...", "Dark_..."). Flats, lights and
  * bias in the folder are not darks. Returns "master", "raw" or null.
  */
-/* Check if a string is not a dark (is flat/light/bias/etc or lacks 'dark'). */
-function _isNotDark( text )
+/* The kind a non-empty IMAGETYP `t` decides; the name `n` only says master. */
+function masterFlatDarkKindFromImagetyp( t, n )
 {
-   return /flat|light|bias|offset|zero/i.test( text ) || !/dark/i.test( text );
-}
-
-/* Determine dark kind from IMAGETYP header when present. Returns "master", "raw" or null. */
-function _darkKindFromImagetyp( imagetyp, name )
-{
-   var t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
-   if ( t.length == 0 )
+   if ( /flat|light|bias|offset|zero/i.test( t ) || !/dark/i.test( t ) )
       return null;
-   if ( _isNotDark( t ) )
-      return null;
-   return ( /master/i.test( t ) || /^master/i.test( String( name || "" ) ) ) ? "master" : "raw";
-}
-
-/* Determine dark kind from filename when IMAGETYP is absent. Returns "master", "raw" or null. */
-function _darkKindFromName( name )
-{
-   var n = String( name || "" );
-   if ( _isNotDark( n ) )
-      return null;
-   return /^master/i.test( n ) ? "master" : "raw";
+   return ( /master/i.test( t ) || /^master/i.test( n ) ) ? "master" : "raw";
 }
 
 MasterFlat.darkKind = function( name, imagetyp )
 {
-   var kind = _darkKindFromImagetyp( imagetyp, name );
-   return kind != null ? kind : _darkKindFromName( name );
+   var n = String( name || "" ), t = String( imagetyp || "" ).replace( /'/g, "" ).trim();
+   if ( t.length > 0 )
+      return masterFlatDarkKindFromImagetyp( t, n );
+   if ( /flat|light|bias|offset/i.test( n ) || !/dark/i.test( n ) )
+      return null;
+   return /^master/i.test( n ) ? "master" : "raw";
 };
 
 MasterFlat.IMAGE_EXTENSION = /\.(xisf|fits?|fts)$/i;
@@ -575,7 +561,7 @@ MasterFlat.darkShortfall = function( flat, darks, where )
  * or NaN integration is not a master).
  */
 /* Check if master image can be read and has geometry. */
-function _verifyMasterGeometry( got, want )
+function masterFlatVerifyGeometry( got, want )
 {
    if ( got == null || got.width == null )
       return "the master could not be read";
@@ -585,18 +571,16 @@ function _verifyMasterGeometry( got, want )
 }
 
 /* Check if FILTER header matches expected filter. */
-function _verifyMasterFilter( got, filter )
+function masterFlatVerifyFilter( got, filter )
 {
-   if ( filter == null )
-      return null;
    var f = got.keyword( "FILTER" );
-   if ( f != filter )
+   if ( filter != null && f != filter )
       return "FILTER is " + ( f == null ? "missing" : f ) + ", expected " + filter;
    return null;
 }
 
 /* Check if IMAGETYP header indicates a master flat. */
-function _verifyMasterImagetyp( got )
+function masterFlatVerifyImagetyp( got )
 {
    var t = got.keyword( "IMAGETYP" );
    if ( t == null || !/flat/i.test( t ) )
@@ -605,7 +589,7 @@ function _verifyMasterImagetyp( got )
 }
 
 /* Check if mean value is valid (positive and finite). */
-function _verifyMasterMean( got )
+function masterFlatVerifyMean( got )
 {
    if ( typeof got.mean != "number" || !isFinite( got.mean ) || got.mean <= 0 )
       return "the master is empty or not finite";
@@ -614,13 +598,13 @@ function _verifyMasterMean( got )
 
 MasterFlat.verifyMaster = function( got, want, filter )
 {
-   var reason = _verifyMasterGeometry( got, want );
+   var reason = masterFlatVerifyGeometry( got, want );
    if ( reason ) return reason;
-   reason = _verifyMasterFilter( got, filter );
+   reason = masterFlatVerifyFilter( got, filter );
    if ( reason ) return reason;
-   reason = _verifyMasterImagetyp( got );
+   reason = masterFlatVerifyImagetyp( got );
    if ( reason ) return reason;
-   reason = _verifyMasterMean( got );
+   reason = masterFlatVerifyMean( got );
    return reason;
 };
 
@@ -709,6 +693,7 @@ function masterFlatCheckJobSkip( job, stopped, engine )
       return "cancelled";
    if ( job.skip != null )
       return job.skip;
+   // Without a real-path resolver the symlink and card-through-link rules cannot be applied: delete nothing.
    if ( typeof engine.resolve != "function" )
       return "the engine cannot resolve paths, so nothing is deleted";
    return null;
@@ -765,51 +750,69 @@ function masterFlatVerifyAndPublish( job, engine, partialPath, masterPath, calib
 }
 
 /*
- * Record job outcome: success (made) or failure (kept).
+ * Record a job's outcome. `failure` is null only when the master is in
+ * place and verified: only then do the raw copies go, and the job is in
+ * `made`. Any failure keeps the raw flats and names the reason in `kept`.
  */
-function masterFlatRecordJobResult( job, out, opts, engine, master, failed, reason )
+function masterFlatRecordJobResult( job, out, opts, engine, master, name, failure )
 {
-   if ( failed )
+   if ( failure != null )
    {
-      out.kept.push( { filter: job.filter, binning: job.binning, reason: reason, flats: job.flats.length } );
+      out.kept.push( { filter: job.filter, binning: job.binning, reason: failure, flats: job.flats.length } );
       return;
    }
+   // Master in place and verified: only now do the raw copies go.
    var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
-   var name = master.substring( master.lastIndexOf( "/" ) + 1 );
    out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
 }
 
 /*
- * Execute a single job's processing: handle try/catch/finally for temp
- * directory and partial file cleanup.  Modifies out in place.
+ * The kept-reason for an exception thrown while a job ran. A cancel marks
+ * the whole run cancelled; anything else is reported as an error.
+ */
+function masterFlatFailureOf( e, out )
+{
+   if ( Util.isCancel( e ) )
+   {
+      out.cancelled = true;
+      return "cancelled";
+   }
+   return "error: " + ( e && e.message !== undefined ? e.message : e );
+}
+
+/*
+ * Run one job: pick the master's name, build it, record the outcome, and
+ * always clean up the temporaries. Modifies out in place.
  */
 function masterFlatExecuteOneJob( job, engine, opts, out, stopped )
 {
+   // A master from an earlier import is never replaced or removed: this
+   // run writes beside it under a free name.
    var nameInfo = masterFlatFindAvailableName( job, engine );
    var master = nameInfo.master, name = nameInfo.name;
    if ( nameInfo.note != null ) out.notes.push( nameInfo.note );
-   var dir = master.substring( 0, master.lastIndexOf( "/" ) );
-   var partial = dir + "/.partial_" + name;
+   // Written under a hidden temporary name beside its destination (same
+   // volume, so the final rename is atomic), verified there, then moved.
+   var partial = master.substring( 0, master.lastIndexOf( "/" ) ) + "/.partial_" + name;
 
    var tmp = null;
    try
    {
       tmp = engine.tempDir( job );
       var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
-      masterFlatRecordJobResult( job, out, opts, engine, master, result.failure != null, result.failure );
+      masterFlatRecordJobResult( job, out, opts, engine, master, name, result.failure );
    }
    catch ( e )
    {
-      if ( Util.isCancel( e ) )
-         out.cancelled = true;
-      else
-         e = "error: " + ( e && e.message !== undefined ? e.message : e );
-      masterFlatRecordJobResult( job, out, opts, engine, master, true, e === true ? "cancelled" : e );
+      masterFlatRecordJobResult( job, out, opts, engine, master, name, masterFlatFailureOf( e, out ) );
    }
    finally
    {
+      // The half-written temporary and the intermediate calibrated flats
+      // always go, success or not. Neither is ever the master.
       try { if ( partial != master && engine.exists( partial ) ) engine.remove( partial ); } catch ( e6 ) {}
-      if ( tmp != null ) try { engine.removeDir( tmp ); } catch ( e4 ) {}
+      if ( tmp != null )
+         try { engine.removeDir( tmp ); } catch ( e4 ) {}
    }
 }
 
@@ -837,9 +840,9 @@ function masterFlatProcessAllJobs( jobs, engine, opts, out, stopped )
 }
 
 /*
- * Process job parts: calibrate, integrate, verify, publish. Called within
- * a try-catch that manages tmp. Returns failure reason or null on success.
- * Modifies calibrated array in place; sets partial on success.
+ * Build one job's master: calibrate every part, integrate, verify, publish.
+ * `partial` is { path, master, tmp }. Called within the try that manages
+ * tmp. Returns { failure, calibrated }, failure null on success.
  */
 function masterFlatProcessJobParts( job, engine, partial, stopped )
 {
@@ -847,6 +850,7 @@ function masterFlatProcessJobParts( job, engine, partial, stopped )
    var calibrated = parts.calibrated, failure = parts.failure;
 
    if ( failure == null && stopped() ) failure = "cancelled";
+   // ALL of them: a master from some of the flats must not stand in for, and delete, all.
    if ( failure == null && calibrated.length != job.flats.length )
       failure = "calibration produced " + calibrated.length + " of " + job.flats.length + " flat(s)";
    if ( failure == null )
@@ -1045,7 +1049,7 @@ MasterFlat.planLines = function( jobs )
  */
 MasterFlat.SCAN_DEPTH = 4;
 /* Process an entry from scanFolder: recurse on directory or add frame description. */
-function _scanFolderProcessEntry( e, base, readHeader, depth, out )
+function masterFlatScanFolderEntry( e, base, readHeader, depth, out )
 {
    var path = base + "/" + e.name;
    if ( e.isDirectory )
@@ -1073,7 +1077,7 @@ MasterFlat.scanFolder = function( dir, readHeader, depth )
    var base = dir.replace( /\/+$/, "" );
    var entries = Util.findEntries( base + "/*" );
    for ( var i = 0; i < entries.length; ++i )
-      _scanFolderProcessEntry( entries[i], base, readHeader, depth, out );
+      masterFlatScanFolderEntry( entries[i], base, readHeader, depth, out );
    return out;
 };
 
@@ -1103,7 +1107,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
       } );
    }
    /* Apply rejection method and parameters to ImageIntegration. */
-   function _integrationApplyRejection( P, spec )
+   function integrationApplyRejection( P, spec )
    {
       var r = spec.rejection;
       P.rejection = r.method == "winsorized" ? ImageIntegration.WinsorizedSigmaClip
@@ -1114,7 +1118,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
    }
 
    /* Set up ImageIntegration process parameters from a spec. */
-   function _integrationSetupParams( P, paths, spec )
+   function integrationSetupParams( P, paths, spec )
    {
       P.images = paths.map( function( p ) { return [ true, p, "", "" ]; } );
       P.inputHints = ""; P.weightMode = ImageIntegration.DontCare;
@@ -1123,7 +1127,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
          ? ImageIntegration.Multiplicative : ImageIntegration.NoNormalization;
       P.rejectionNormalization = spec.rejectionNormalization == "equalizeFluxes"
          ? ImageIntegration.EqualizeFluxes : ImageIntegration.Scale;
-      _integrationApplyRejection( P, spec );
+      integrationApplyRejection( P, spec );
       P.generateRejectionMaps = false;
       P.generateIntegratedImage = true;
       P.generateDrizzleData = false;
@@ -1134,7 +1138,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
    }
 
    /* Find the newly created integrated image window. */
-   function _integrationFindWindow( before )
+   function integrationFindWindow( before )
    {
       var win = null;
       ImageWindow.windows.forEach( function( w )
@@ -1146,7 +1150,7 @@ MasterFlat.engine = function( readHeader, cacheDir )
    }
 
    /* Apply header keywords to the integrated image (remove reserved, add custom). */
-   function _integrationApplyHeader( win, header )
+   function integrationApplyHeader( win, header )
    {
       if ( header == null )
          return;
@@ -1164,15 +1168,15 @@ MasterFlat.engine = function( readHeader, cacheDir )
       try
       {
          var P = new ImageIntegration;
-         _integrationSetupParams( P, paths, spec );
+         integrationSetupParams( P, paths, spec );
          if ( !P.executeGlobal() )
             return { ok: false, reason: "ImageIntegration did not run" };
 
-         var win = _integrationFindWindow( before );
+         var win = integrationFindWindow( before );
          if ( win == null )
             return { ok: false, reason: "no integrated image" };
 
-         _integrationApplyHeader( win, header );
+         integrationApplyHeader( win, header );
          Util.ensureDirectory( outPath.substring( 0, outPath.lastIndexOf( "/" ) ) );
          // outPath is always a temporary (a ".partial_" name or a cache file), never a user's master.
          if ( File.exists( outPath ) )
@@ -1214,6 +1218,45 @@ MasterFlat.engine = function( readHeader, cacheDir )
          return false;
       try { File.move( from, to ); } catch ( e ) { return false; }
       return File.exists( to ) && !File.exists( from );
+   }
+
+   /* The first dark of the group that is no longer there, as a reason; null when all are. */
+   function masterDarkMissing( group )
+   {
+      for ( var g = 0; g < group.paths.length; ++g )
+         if ( !File.exists( group.paths[g] ) )
+            return "a dark is no longer there: " + group.paths[g];
+      return null;
+   }
+
+   /* The group's darks as { path, size, modified }: what the cache key is made of. */
+   function masterDarkSources( group )
+   {
+      return group.paths.map( function( p )
+         { return { path: p, size: ( new FileInfo( p ) ).size, modified: ( new FileInfo( p ) ).lastModified.toISOString() }; } );
+   }
+
+   /* What is wrong with a freshly integrated master dark, or null: it must match its darks' geometry and have a finite mean. */
+   function masterDarkProblem( group, partial )
+   {
+      var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
+      if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
+           mean == null || !isFinite( mean ) )
+         return "the master dark does not match its darks";
+      return null;
+   }
+
+   /* Move the sound partial into the cache under its final name; the partial never survives a failure. */
+   function masterDarkStore( partial, path )
+   {
+      if ( File.exists( path ) )
+         try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
+      if ( !move( partial, path ) )
+      {
+         try { File.remove( partial ); } catch ( e3 ) {}
+         return { ok: false, reason: "could not store the master dark in the cache" };
+      }
+      return { ok: true, path: path, reason: "" };
    }
 
    return {
@@ -1276,60 +1319,14 @@ MasterFlat.engine = function( readHeader, cacheDir )
          }
          finally { closeNew( before ); }
       },
-      /* Check if all dark files still exist (fail closed: card pulled out mid-run). */
-      _masterDarkCheckExists: function( group )
-      {
-         for ( var g = 0; g < group.paths.length; ++g )
-            if ( !File.exists( group.paths[g] ) )
-               return "a dark is no longer there: " + group.paths[g];
-         return null;
-      },
-
-      /* Get source file information (size and timestamp). */
-      _masterDarkGetFileInfo: function( path )
-      {
-         var info = new FileInfo( path );
-         return { path: path, size: info.size, modified: info.lastModified.toISOString() };
-      },
-
-      /* Gather file info (size, timestamp) from all dark files. */
-      _masterDarkGatherSources: function( group )
-      {
-         var self = this;
-         return group.paths.map( function( p ) { return self._masterDarkGetFileInfo( p ); } );
-      },
-
-      /* Validate master dark after integration: must match source dimensions and have valid mean. */
-      _masterDarkValidate: function( group, partial )
-      {
-         var first = sizeOf( group.paths[0] ), got = sizeOf( partial ), mean = meanOf( partial );
-         if ( got == null || first == null || got.info.width != first.info.width || got.info.height != first.info.height ||
-              mean == null || !isFinite( mean ) )
-            return "the master dark does not match its darks";
-         return null;
-      },
-
-      /* Move partial master dark to cache, cleaning up on failure. */
-      _masterDarkStore: function( partial, path )
-      {
-         if ( File.exists( path ) )
-            try { File.remove( path ); } catch ( e2 ) {}     // a cache file that failed its read above
-         if ( !move( partial, path ) )
-         {
-            try { File.remove( partial ); } catch ( e3 ) {}
-            return { ok: false, reason: "could not store the master dark in the cache" };
-         }
-         return { ok: true, path: path, reason: "" };
-      },
-
       masterDark: function( group )
       {
          // A dark that has gone (a card pulled out mid-run) fails the filter, which keeps its raw flats.
-         var missing = this._masterDarkCheckExists( group );
-         if ( missing ) return { ok: false, reason: missing };
+         var missing = masterDarkMissing( group );
+         if ( missing != null )
+            return { ok: false, reason: missing };
 
-         var sources = this._masterDarkGatherSources( group );
-         var path = MasterFlat.darkCachePath( group, sources, cacheDir );
+         var path = MasterFlat.darkCachePath( group, masterDarkSources( group ), cacheDir );
          if ( File.exists( path ) && sizeOf( path ) != null )
             return { ok: true, path: path, reason: "cached" };
 
@@ -1344,14 +1341,13 @@ MasterFlat.engine = function( readHeader, cacheDir )
             return made;
          }
 
-         var validation = this._masterDarkValidate( group, partial );
-         if ( validation )
+         var problem = masterDarkProblem( group, partial );
+         if ( problem != null )
          {
             try { File.remove( partial ); } catch ( e ) {}
-            return { ok: false, reason: validation };
+            return { ok: false, reason: problem };
          }
-
-         return this._masterDarkStore( partial, path );
+         return masterDarkStore( partial, path );
       },
       integrate: function( paths, spec, outPath, job )
       {
