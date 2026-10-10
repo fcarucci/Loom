@@ -611,6 +611,22 @@ function masterFlatIsExcludedPath( p, masterPath, card )
 }
 
 /*
+ * Find an available master file name when collisions exist. Updates
+ * master, name if necessary, and returns a note if renamed.
+ */
+function masterFlatFindAvailableName( job, engine )
+{
+   var master = job.master, name = job.name, dir = master.substring( 0, master.lastIndexOf( "/" ) );
+   for ( var n = 2; engine.exists( master ); ++n )
+   {
+      name = job.name.replace( /\.xisf$/, "" ) + "_" + n + ".xisf";
+      master = dir + "/" + name;
+   }
+   var note = master != job.master ? job.name + " already exists and is kept; the new master is " + name : null;
+   return { master: master, name: name, note: note };
+}
+
+/*
  * Process job parts: calibrate, integrate, verify, publish. Called within
  * a try-catch that manages tmp. Returns failure reason or null on success.
  * Modifies calibrated array in place; sets partial on success.
@@ -782,16 +798,13 @@ MasterFlat.execute = function( jobs, engine, opts )
 
       // A master from an earlier import is never replaced or removed: this
       // run writes beside it under a free name.
-      var master = job.master, name = job.name, dir = master.substring( 0, master.lastIndexOf( "/" ) );
-      for ( var n = 2; engine.exists( master ); ++n )
-      {
-         name = job.name.replace( /\.xisf$/, "" ) + "_" + n + ".xisf";
-         master = dir + "/" + name;
-      }
-      if ( master != job.master )
-         out.notes.push( job.name + " already exists and is kept; the new master is " + name );
+      var nameInfo = masterFlatFindAvailableName( job, engine );
+      var master = nameInfo.master, name = nameInfo.name;
+      if ( nameInfo.note != null )
+         out.notes.push( nameInfo.note );
       // Written under a hidden temporary name beside its destination (same
       // volume, so the final rename is atomic), verified there, then moved.
+      var dir = master.substring( 0, master.lastIndexOf( "/" ) );
       var partial = dir + "/.partial_" + name;
 
       var tmp = null;
