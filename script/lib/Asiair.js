@@ -157,27 +157,45 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
       return true;
    }
 
-   for ( var s = 0; s < Asiair.SOURCES.length; ++s )
+   function scanLights( src )
    {
-      var src = Asiair.SOURCES[s];
       var lightDir = root + "/" + src + "/Light";
-
       var targets = File.directoryExists( lightDir )
                   ? Asiair.entriesIn( lightDir, true ) : [];
       for ( var t = 0; t < targets.length; ++t )
          if ( !take( lightDir + "/" + targets[t], targets[t], src, out.lights ) )
-            return out;
+            return false;
+      return true;
+   }
 
+   function scanFlats( src )
+   {
       var flatDir = root + "/" + src + "/Flat";
       if ( File.directoryExists( flatDir ) )
          if ( !take( flatDir, null, src, out.flats ) )
-            return out;
+            return false;
+      return true;
+   }
 
+   function scanDarks( src )
+   {
       // Darks sit in one folder, like flats: the master-flats step may use them in place of a darks folder.
       var darkDir = root + "/" + src + "/Dark";
       if ( File.directoryExists( darkDir ) )
          if ( !take( darkDir, null, src, out.darks ) )
-            return out;
+            return false;
+      return true;
+   }
+
+   for ( var s = 0; s < Asiair.SOURCES.length; ++s )
+   {
+      var src = Asiair.SOURCES[s];
+      if ( !scanLights( src ) )
+         return out;
+      if ( !scanFlats( src ) )
+         return out;
+      if ( !scanDarks( src ) )
+         return out;
    }
 
    /*
