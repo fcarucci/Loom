@@ -580,6 +580,31 @@ MasterFlat.cleanPath = function( path )
    return p.length > 1 ? p.replace( /\/+$/, "" ) : p;
 };
 
+/* Check if x is inside root directory (case-insensitive). */
+function masterFlatPathInside( x, root )
+{
+   x = x.toLowerCase(); root = root.toLowerCase();
+   return x == root || root == "/" || x.substring( 0, root.length + 1 ) == root + "/";
+}
+
+/* Verify resolved paths match expected structure and are not inside card. */
+function masterFlatVerifyResolvedPaths( p, dir, base, card, resolve )
+{
+   var real = null, realDir = null, realCard = null;
+   try
+   {
+      real = MasterFlat.cleanPath( resolve( p ) );
+      realDir = MasterFlat.cleanPath( resolve( dir ) );
+      if ( card != null ) realCard = MasterFlat.cleanPath( resolve( card ) );
+   }
+   catch ( e ) { return false; }
+   if ( real == null || realDir == null || real != realDir + "/" + base )
+      return false;
+   if ( realCard != null && ( masterFlatPathInside( real, realCard ) || masterFlatPathInside( realDir, realCard ) ) )
+      return false;
+   return true;
+}
+
 /*
  * May this path be deleted as a raw flat? Only a file directly inside the
  * destination's Flat folder, never a master (the job's, or any masterFlat_*
@@ -599,12 +624,6 @@ MasterFlat.mayDelete = function( path, destFlatDir, masterPath, cardRoot, resolv
    var p = MasterFlat.cleanPath( path ), dir = MasterFlat.cleanPath( destFlatDir );
    var card = ( cardRoot != null && String( cardRoot ).length > 0 ) ? MasterFlat.cleanPath( cardRoot ) : null;
 
-   function inside( x, root )
-   {
-      x = x.toLowerCase(); root = root.toLowerCase();
-      return x == root || root == "/" || x.substring( 0, root.length + 1 ) == root + "/";
-   }
-
    if ( /(^|\/)\.\.(\/|$)/.test( p ) )
       return false;
    if ( p.substring( 0, dir.length + 1 ) != dir + "/" || p.indexOf( "/", dir.length + 1 ) >= 0 )
@@ -614,24 +633,11 @@ MasterFlat.mayDelete = function( path, destFlatDir, masterPath, cardRoot, resolv
       return false;
    if ( masterPath != null && p.toLowerCase() == MasterFlat.cleanPath( masterPath ).toLowerCase() )
       return false;
-   if ( card != null && inside( p, card ) )
+   if ( card != null && masterFlatPathInside( p, card ) )
       return false;
 
-   if ( typeof resolve == "function" )
-   {
-      var real = null, realDir = null, realCard = null;
-      try
-      {
-         real = MasterFlat.cleanPath( resolve( p ) );
-         realDir = MasterFlat.cleanPath( resolve( dir ) );
-         if ( card != null ) realCard = MasterFlat.cleanPath( resolve( card ) );
-      }
-      catch ( e ) { return false; }
-      if ( real == null || realDir == null || real != realDir + "/" + base )
-         return false;
-      if ( realCard != null && ( inside( real, realCard ) || inside( realDir, realCard ) ) )
-         return false;
-   }
+   if ( typeof resolve == "function" && !masterFlatVerifyResolvedPaths( p, dir, base, card, resolve ) )
+      return false;
    return true;
 };
 
