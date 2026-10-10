@@ -23335,6 +23335,9 @@ function masterFlatChecks()
             MasterFlat.darkKind( "dark_flat_001.fit", null ), MasterFlat.darkKind( "IMG_0001.fit", null ),
             MasterFlat.darkKind( "IMG_0001.fit", "Snapshot" ) ],
           [ "master", "raw", "master", "raw", "master", null, null, null, null, null, null ] );
+   check( "MasterFlat.darkKind: a stated IMAGETYP that is not a dark rules the name out; the name rule has no 'zero'",
+          [ MasterFlat.darkKind( "Dark_001.fit", "Flat Frame" ), MasterFlat.darkKind( "Dark_001.fit", "Light Frame" ),
+            MasterFlat.darkKind( "zero_dark_001.fit", null ) ], [ null, null, "raw" ] );
    var darkSet = MasterFlat.darksOf( [ darkFrame( "/d/a.fit", "Dark Frame", 2 ), darkFrame( "/d/b.xisf", "'Master Dark'", 2 ),
                                        flatFrame( "/d/f.fit", "L", 2 ) ] );
    check( "MasterFlat.darksOf: darks gain a kind, a flat in the folder is dropped",
@@ -24142,6 +24145,9 @@ function masterFlatExecuteChecks()
    rr = run( wc );
    check( "execute: a cancel raised mid-run is reported, the raw flats and the old master stay",
           [ rr.cancelled, rr.made.length, rawLeft( wc, all ), wc.fs[OLD] ], [ true, 0, 6, "OLD" ] );
+   check( "execute: a cancel raised inside a job is kept with the plain reason 'cancelled', not the exception object",
+          rr.kept.map( function( k ) { return typeof k.reason + ":" + k.reason; } ).filter( function( r ) { return r.indexOf( "cancelled" ) < 0; } ), [] );
+   check( "execute: the cancelled job is among the kept ones", rr.kept.some( function( k ) { return k.reason === "cancelled"; } ), true );
    var wp = world( all, masterDark() );
    rr = run( wp, { shouldStop: function() { return wp.log.indexOf( "publish" ) >= 0; } } );
    check( "execute: stopping between filters keeps the next filter's raw flats, and the finished one stays finished",
