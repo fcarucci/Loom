@@ -568,21 +568,54 @@ MasterFlat.darkShortfall = function( flat, darks, where )
  * say flat; and the image must be real: a finite, positive mean (an empty
  * or NaN integration is not a master).
  */
-MasterFlat.verifyMaster = function( got, want, filter )
+/* Check if master image can be read and has geometry. */
+function _verifyMasterGeometry( got, want )
 {
    if ( got == null || got.width == null )
       return "the master could not be read";
    if ( got.width != want.width || got.height != want.height )
       return "geometry changed";
+   return null;
+}
+
+/* Check if FILTER header matches expected filter. */
+function _verifyMasterFilter( got, filter )
+{
+   if ( filter == null )
+      return null;
    var f = got.keyword( "FILTER" );
-   if ( filter != null && f != filter )
+   if ( f != filter )
       return "FILTER is " + ( f == null ? "missing" : f ) + ", expected " + filter;
+   return null;
+}
+
+/* Check if IMAGETYP header indicates a master flat. */
+function _verifyMasterImagetyp( got )
+{
    var t = got.keyword( "IMAGETYP" );
    if ( t == null || !/flat/i.test( t ) )
       return "IMAGETYP is " + ( t == null ? "missing" : t ) + ", expected a master flat";
+   return null;
+}
+
+/* Check if mean value is valid (positive and finite). */
+function _verifyMasterMean( got )
+{
    if ( typeof got.mean != "number" || !isFinite( got.mean ) || got.mean <= 0 )
       return "the master is empty or not finite";
    return null;
+}
+
+MasterFlat.verifyMaster = function( got, want, filter )
+{
+   var reason = _verifyMasterGeometry( got, want );
+   if ( reason ) return reason;
+   reason = _verifyMasterFilter( got, filter );
+   if ( reason ) return reason;
+   reason = _verifyMasterImagetyp( got );
+   if ( reason ) return reason;
+   reason = _verifyMasterMean( got );
+   return reason;
 };
 
 /* A path with repeated and trailing slashes folded away. */
