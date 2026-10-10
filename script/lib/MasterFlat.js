@@ -714,6 +714,21 @@ function masterFlatVerifyAndPublish( job, engine, partialPath, masterPath, calib
 }
 
 /*
+ * Record job outcome: success (made) or failure (kept).
+ */
+function masterFlatRecordJobResult( job, out, opts, engine, master, failed, reason )
+{
+   if ( failed )
+   {
+      out.kept.push( { filter: job.filter, binning: job.binning, reason: reason, flats: job.flats.length } );
+      return;
+   }
+   var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
+   var name = master.substring( master.lastIndexOf( "/" ) + 1 );
+   out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
+}
+
+/*
  * Execute a single job's processing: handle try/catch/finally for temp
  * directory and partial file cleanup.  Modifies out in place.
  */
@@ -730,23 +745,15 @@ function masterFlatExecuteOneJob( job, engine, opts, out, stopped )
    {
       tmp = engine.tempDir( job );
       var result = masterFlatProcessJobParts( job, engine, { path: partial, master: master, tmp: tmp }, stopped );
-      if ( result.failure == null )
-      {
-         var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
-         out.made.push( { name: name, filter: job.filter, binning: job.binning, flats: job.flats.length, removed: removed } );
-      }
-      else
-         out.kept.push( { filter: job.filter, binning: job.binning, reason: result.failure, flats: job.flats.length } );
+      masterFlatRecordJobResult( job, out, opts, engine, master, result.failure != null, result.failure );
    }
    catch ( e )
    {
       if ( Util.isCancel( e ) )
-      {
          out.cancelled = true;
-         out.kept.push( { filter: job.filter, binning: job.binning, reason: "cancelled", flats: job.flats.length } );
-      }
       else
-         out.kept.push( { filter: job.filter, binning: job.binning, reason: "error: " + ( e && e.message !== undefined ? e.message : e ), flats: job.flats.length } );
+         e = "error: " + ( e && e.message !== undefined ? e.message : e );
+      masterFlatRecordJobResult( job, out, opts, engine, master, true, e === true ? "cancelled" : e );
    }
    finally
    {
