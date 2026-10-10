@@ -690,6 +690,30 @@ function masterFlatProcessParts( job, engine, tmpDir, stopped )
 }
 
 /*
+ * Verify and publish master: integrate calibrated flats, verify result,
+ * and move into place. Returns failure reason or null on success.
+ */
+function masterFlatVerifyAndPublish( job, engine, partialPath, masterPath, calibrated, stopped )
+{
+   var failure = null;
+   var res = engine.integrate( calibrated, MasterFlat.flatIntegrationSpec( calibrated.length ), partialPath, job );
+   if ( !res.ok ) return "integration failed: " + res.reason;
+
+   if ( stopped() ) return "cancelled";
+
+   var bad = engine.verify( partialPath, job );
+   if ( bad != null ) return "master failed verification: " + bad;
+
+   if ( stopped() ) return "cancelled";
+
+   var published = false;
+   try { published = engine.publish( partialPath, masterPath ) === true; } catch ( e5 ) {}
+   if ( !published ) return "could not move the master into place";
+
+   return null;
+}
+
+/*
  * Process job parts: calibrate, integrate, verify, publish. Called within
  * a try-catch that manages tmp. Returns failure reason or null on success.
  * Modifies calibrated array in place; sets partial on success.
@@ -703,25 +727,7 @@ function masterFlatProcessJobParts( job, engine, partial, stopped )
    if ( failure == null && calibrated.length != job.flats.length )
       failure = "calibration produced " + calibrated.length + " of " + job.flats.length + " flat(s)";
    if ( failure == null )
-   {
-      var res = engine.integrate( calibrated, MasterFlat.flatIntegrationSpec( calibrated.length ), partial.path, job );
-      if ( !res.ok ) failure = "integration failed: " + res.reason;
-   }
-   if ( failure == null && stopped() ) failure = "cancelled";
-   if ( failure == null )
-   {
-      var bad = engine.verify( partial.path, job );
-      if ( bad != null )
-         failure = "master failed verification: " + bad;
-   }
-   if ( failure == null && stopped() ) failure = "cancelled";
-   if ( failure == null )
-   {
-      var published = false;
-      try { published = engine.publish( partial.path, partial.master ) === true; } catch ( e5 ) {}
-      if ( !published )
-         failure = "could not move the master into place";
-   }
+      failure = masterFlatVerifyAndPublish( job, engine, partial.path, partial.master, calibrated, stopped );
    return { failure: failure, calibrated: calibrated };
 }
 
