@@ -144,6 +144,12 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
          into.push( f );
    }
 
+   function reportProgress()
+   {
+      if ( onProgress )
+         onProgress( out.lights.length + out.flats.length );
+   }
+
    function take( dir, target, source, into )
    {
       if ( !alive() )
@@ -153,9 +159,8 @@ Asiair.scanCard = function( root, onProgress, shouldStop )
       for ( var i = 0; i < names.length; ++i )
       {
          processFrame( dir, names[i], target, source, into );
+         reportProgress();
 
-         if ( onProgress )
-            onProgress( out.lights.length + out.flats.length );
          if ( !alive() )
             return false;
       }
