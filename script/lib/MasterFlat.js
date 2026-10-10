@@ -627,6 +627,43 @@ function masterFlatFindAvailableName( job, engine )
 }
 
 /*
+ * Delete raw flats after master verification. Returns count removed.
+ * Logs undeletable flats to notes.
+ */
+function masterFlatDeleteRawFlats( job, opts, engine, master, notes )
+{
+   var removed = 0;
+   job.flats.forEach( function( f )
+   {
+      if ( !MasterFlat.mayDelete( f.path, opts.destFlatDir, master, opts.cardRoot, engine.resolve ) )
+      {
+         notes.push( "not deleted (not a plain file in the destination Flat folder): " + f.path );
+         return;
+      }
+      var gone = false;
+      try { gone = engine.remove( f.path ); } catch ( e2 ) {}
+      if ( gone || !engine.exists( f.path ) ) ++removed;
+      else notes.push( "could not delete " + f.path );
+   } );
+   return removed;
+}
+
+/*
+ * Check if a job should be skipped before processing. Returns a reason
+ * if it should be skipped (stopped, has skip, or no resolve), else null.
+ */
+function masterFlatCheckJobSkip( job, stopped, engine )
+{
+   if ( stopped() )
+      return "cancelled";
+   if ( job.skip != null )
+      return job.skip;
+   if ( typeof engine.resolve != "function" )
+      return "the engine cannot resolve paths, so nothing is deleted";
+   return null;
+}
+
+/*
  * Process job parts: calibrate, integrate, verify, publish. Called within
  * a try-catch that manages tmp. Returns failure reason or null on success.
  * Modifies calibrated array in place; sets partial on success.
@@ -779,20 +816,10 @@ MasterFlat.execute = function( jobs, engine, opts )
          out.kept.push( { filter: job.filter, binning: job.binning, reason: reason, flats: job.flats.length } );
       }
 
-      if ( stopped() )
+      var skipReason = masterFlatCheckJobSkip( job, stopped, engine );
+      if ( skipReason != null )
       {
-         keep( "cancelled" );
-         continue;
-      }
-      if ( job.skip != null )
-      {
-         keep( job.skip );
-         continue;
-      }
-      // Without a real-path resolver the symlink and card-through-link rules cannot be applied: delete nothing.
-      if ( typeof engine.resolve != "function" )
-      {
-         keep( "the engine cannot resolve paths, so nothing is deleted" );
+         keep( skipReason );
          continue;
       }
 
@@ -819,19 +846,7 @@ MasterFlat.execute = function( jobs, engine, opts )
          }
 
          // Master in place and verified: only now do the raw copies go.
-         var removed = 0;
-         job.flats.forEach( function( f )
-         {
-            if ( !MasterFlat.mayDelete( f.path, opts.destFlatDir, master, opts.cardRoot, engine.resolve ) )
-            {
-               out.notes.push( "not deleted (not a plain file in the destination Flat folder): " + f.path );
-               return;
-            }
-            var gone = false;
-            try { gone = engine.remove( f.path ); } catch ( e2 ) {}
-            if ( gone || !engine.exists( f.path ) ) ++removed;
-            else out.notes.push( "could not delete " + f.path );
-         } );
+         var removed = masterFlatDeleteRawFlats( job, opts, engine, master, out.notes );
          out.made.push( { name: name, filter: job.filter, binning: job.binning,
                           flats: job.flats.length, removed: removed } );
       }
