@@ -3088,6 +3088,71 @@ Pipeline.mayCloseWindow = function( id, preexisting, keep )
    return !( preexisting[id] || keep[id] );
 };
 
+/*
+ * Does this keyword list mark a Loom output? `keywords` is a window's
+ * FITSKeyword array (anything with a .name will do).
+ */
+Pipeline.carriesLoomMarker = function( keywords )
+{
+   for ( var i = 0; keywords && i < keywords.length; ++i )
+      if ( keywords[i] && keywords[i].name == Steps.LOOM_OUTPUT_KEYWORD )
+         return true;
+   return false;
+};
+
+/*
+ * The open windows Loom made: those carrying the LOOMOUT keyword, as
+ * { window, id, saved } (saved: the window has a file on disk).
+ *
+ * This is for the user's explicit "Close Loom windows" and for nothing
+ * else. A run never closes an earlier run's results on its own, because
+ * one that is still open may have been kept on purpose (see Pipeline.run);
+ * here the user is asking for exactly that.
+ */
+Pipeline.loomWindows = function()
+{
+   var found = [], wins = ImageWindow.windows;
+   for ( var i = 0; i < wins.length; ++i )
+   {
+      var w = wins[i], id = null, kws = null, path = "";
+      try { id = w.mainView.id; kws = w.keywords; path = w.filePath || ""; }
+      catch ( e ) { continue; }
+      if ( id != null && Pipeline.carriesLoomMarker( kws ) )
+         found.push( { window: w, id: id, saved: path.length > 0 } );
+   }
+   return found;
+};
+
+/* Closes the given Loom windows (from loomWindows); the ids that were closed. */
+Pipeline.closeLoomWindows = function( found )
+{
+   var closed = [];
+   for ( var i = 0; i < found.length; ++i )
+   {
+      try { found[i].window.forceClose(); closed.push( found[i].id ); }
+      catch ( e ) { Util.warn( "cleanup", "could not close " + found[i].id + ": " + e ); }
+   }
+   if ( closed.length )
+      Util.log( "cleanup", "closed " + closed.length + " Loom window(s) on request: " + closed.join( ", " ) );
+   return closed;
+};
+
+/*
+ * The confirmation text for closing `found`: the ids (a dozen at most), and a
+ * warning when some have no file on disk, because forceClose does not offer
+ * to save.
+ */
+Pipeline.closeLoomWindowsPrompt = function( found )
+{
+   var ids = found.slice( 0, 12 ).map( function( f ) { return f.id; } ).join( ", " );
+   if ( found.length > 12 )
+      ids += " and " + ( found.length - 12 ) + " more";
+   var unsaved = found.filter( function( f ) { return !f.saved; } ).length;
+   return "Close " + found.length + " Loom window" + ( found.length == 1 ? "" : "s" ) + "?\n\n" + ids +
+          ( unsaved > 0 ? "\n\n" + unsaved + " of them " + ( unsaved == 1 ? "has" : "have" ) +
+                          " not been saved to a file. Closing discards them." : "" );
+};
+
 Pipeline.sweepNewWindows = function( preexisting, keepIds )
 {
    var keep = {};

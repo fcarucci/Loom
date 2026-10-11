@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- **Close Loom windows.** A new button next to **Clear cache** closes every open image window Loom made (the ones carrying the LOOMOUT keyword) after listing them and asking; it warns about any that have not been saved to a file. A run still never closes an earlier run's results by itself.
+
 ## [0.4.1] — 2026-10-09
 
 - **A GraXpert failure is reported.** When GraXpert fails to run, or runs and leaves the image unchanged, the step now raises an error naming the reason and its output is shown in the console and the log; before, the run carried on as if it had worked.

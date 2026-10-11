@@ -3947,6 +3947,40 @@ function runTests()
              Pipeline.mayCloseWindow( null, pre, keep ), false );
    } )();
 
+   /*
+    * "Close Loom windows": only the windows carrying LOOMOUT, only on the
+    * user's request, and the confirmation says what is about to go.
+    */
+   ( function()
+   {
+      var marked = [ { name: "OBJECT" }, { name: "LOOMOUT" } ];
+      check( "a window with the LOOMOUT keyword is a Loom window",
+             Pipeline.carriesLoomMarker( marked ), true );
+      check( "one without it is not", Pipeline.carriesLoomMarker( [ { name: "OBJECT" } ] ), false );
+      check( "and neither is one with no keywords", Pipeline.carriesLoomMarker( [] ), false );
+      check( "or one whose keywords could not be read", Pipeline.carriesLoomMarker( null ), false );
+
+      var shut = [];
+      function fake( id, saved, fails )
+      {
+         return { window: { forceClose: function() { if ( fails ) throw new Error( "busy" ); shut.push( id ); } },
+                  id: id, saved: saved };
+      }
+      var closed = Pipeline.closeLoomWindows( [ fake( "HSO", true ), fake( "L", false, true ), fake( "RGB", false ) ] );
+      check( "every window that can be closed is", shut, [ "HSO", "RGB" ] );
+      check( "and one that cannot is skipped, not reported closed", closed, [ "HSO", "RGB" ] );
+
+      var one = Pipeline.closeLoomWindowsPrompt( [ { id: "HSO", saved: true } ] );
+      check( "the prompt names the window", one.indexOf( "Close 1 Loom window?" ) == 0 && one.indexOf( "HSO" ) > 0, true );
+      check( "and says nothing about saving when it is saved", one.indexOf( "not been saved" ), -1 );
+      var many = [];
+      for ( var i = 0; i < 15; ++i )
+         many.push( { id: "W" + i, saved: i > 0 } );
+      var text = Pipeline.closeLoomWindowsPrompt( many );
+      check( "a long list is cut to a dozen with a count", text.indexOf( "and 3 more" ) > 0 && text.indexOf( "W12" ) < 0, true );
+      check( "and warns once about the unsaved window", text.indexOf( "1 of them has not been saved" ) > 0, true );
+   } )();
+
    } if ( testGroup( "frames" ) ) {
    /*
     * Frame Selector. The decision logic is pure so that what chooses which

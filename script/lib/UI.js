@@ -1728,6 +1728,11 @@ UI.SelectDialog = class extends Dialog
       this.clearCacheButton.onClick = function() { self.clearCache(); };
       this.updateClearCacheLabel();
 
+      this.closeWindowsButton = new PushButton( this );
+      this.closeWindowsButton.text = "Close Loom windows";
+      this.closeWindowsButton.toolTip = "Close every open image window Loom made (the ones marked with the LOOMOUT keyword), after asking. A run never does this by itself.";
+      this.closeWindowsButton.onClick = function() { self.closeLoomWindows(); };
+
       /*
        * Updating is opt-out, and offered only in a git checkout: that is
        * the only install Loom updates itself. A release install is kept
@@ -1749,7 +1754,7 @@ UI.SelectDialog = class extends Dialog
          items.push( this.autoUpdate );
       }
 
-      return UI.row( 6, items.concat( [ this.clearCacheButton, 8, this.cacheInfo ] ) );
+      return UI.row( 6, items.concat( [ this.clearCacheButton, this.closeWindowsButton, 8, this.cacheInfo ] ) );
    }
 
    /* The cache folder row. */
@@ -2341,6 +2346,21 @@ UI.SelectDialog = class extends Dialog
     * shows the size, and it drops to "empty" the moment this returns --
     * which says everything a dialog would have, without a click.
     */
+   /* Closes every open Loom window, after the user confirms the list. */
+   closeLoomWindows()
+   {
+      var found = Pipeline.loomWindows();
+      if ( found.length == 0 )
+      {
+         ( new MessageBox( "No Loom windows are open.", "Loom", StdIcon_Information, StdButton_Ok ) ).execute();
+         return;
+      }
+      var answer = ( new MessageBox( Pipeline.closeLoomWindowsPrompt( found ), "Loom",
+                                     StdIcon_Question, StdButton_No, StdButton_Yes ) ).execute();
+      if ( answer == StdButton_Yes )
+         Pipeline.closeLoomWindows( found );
+   }
+
    clearCache()
    {
       try { Cache.clear(); } catch ( e ) {}
