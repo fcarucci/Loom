@@ -325,7 +325,9 @@ FlyThrough.headerObject = function( window )
  * Phase one, fast: where the image points, what it shows, how far away.
  * choices = { hints: {ra, dec, focal, pixel} for an unsolved image,
  * target (an NGC/IC entry, overriding the automatic pick), type ("nebula" |
- * "galaxy", overriding), distance (pc, typed) }. D is null when a nebula's
+ * "galaxy", overriding), distance (pc, typed), imagePath (the user's
+ * image's file or view name, which names the target: window is only its
+ * working copy) }. D is null when a nebula's
  * distance is still needed.
  */
 FlyThrough.identify = function( window, choices, progress )
@@ -343,7 +345,7 @@ FlyThrough.identify = function( window, choices, progress )
    stage( "Finding what the image shows (NGC/IC catalogue)", 1, 4 );
    var proj = Sky.projector( window ), field = Sky.field( window );
    var ngc = Sky.readNgcIc(), pick = ngc ? Fly.pickTarget( ngc, field.centre, field.radiusDeg ) : { best: null, runnerUp: null };
-   var target = choices.target || pick.best;
+   var target = choices.target || pick.best || Sky.namedInField( choices.imagePath || window.filePath || window.mainView.id, field, ngc );
    var type = choices.type || Fly.targetType( target );
    // the camera flies into the middle of the picture, the photographer's
    // composition; the target sets the distance, not the direction (IC 1396's
@@ -1047,6 +1049,9 @@ FlyThrough.Dialog = class extends Dialog
       if ( opened.length == 0 )
          throw new Error( "PixInsight could not open " + d.fileName + "." );
       opened[0].show();
+      var id = Fly.viewIdFromPath( d.fileName );   // PixInsight names some files Image<number>: name the view after the file
+      if ( id && /^Image\d+$/.test( opened[0].mainView.id ) )
+         try { opened[0].mainView.id = id; } catch ( e ) { Util.warn( "fly", "could not rename the view to " + id + ": " + e ); }
       this.imageList.getMainViews();
       this.imageList.currentView = opened[0].mainView;
       this.chooseImage( opened[0] );
@@ -1156,7 +1161,7 @@ FlyThrough.Dialog = class extends Dialog
    {
       var has = ( this.imageWindow != null ), path = has ? this.imageWindow.filePath : "";
       if ( has && this.imageList.currentView.isNull ) this.imageList.currentView = this.imageWindow.mainView;
-      this.imageLabel.text = has ? "Image: " + this.imageWindow.mainView.id : "Choose an image that is open, or Open\u2026 a file.";
+      this.imageLabel.text = has ? "Image: " + Fly.imageTitle( this.imageWindow.filePath, this.imageWindow.mainView.id ) : "Choose an image that is open, or Open\u2026 a file.";
       // the header's focal length and pixel size, else the ones last used (a rig rarely changes)
       this.focalEdit.text = this.headerOrLastUsed( "FOCALLEN", FlyThrough.FOCAL_SETTING );
       this.pixelEdit.text = this.headerOrLastUsed( "XPIXSZ", FlyThrough.PIXEL_SETTING );
@@ -1221,6 +1226,11 @@ FlyThrough.Dialog = class extends Dialog
    {
       if ( this.ngcIc === undefined ) this.ngcIc = Sky.readNgcIc();
       var found = Fly.findObject( this.objectEdit.text, this.ngcIc || [] );
+      if ( !found.length )
+      {
+         var online = Sky.resolveName( this.objectEdit.text );   // not in the catalogue: ask the name resolver
+         if ( online ) found = [ online ];
+      }
       if ( !found.length )
       {
          this.objectMatch.text = this.objectEdit.text.trim() ? "not found" : "";
@@ -1785,7 +1795,7 @@ FlyThrough.Dialog = class extends Dialog
     */
    choices()
    {
-      var c = {};
+      var c = { imagePath: this.imageWindow ? ( this.imageWindow.filePath || this.imageWindow.mainView.id ) : "" };   // the user's image: identify sees only its working copy
       if ( this.typeTouched ) c.type = this.typeCombo.currentItem == 1 ? "galaxy" : "nebula";
       if ( this.distanceTouched && this.number( this.distanceEdit ) > 0 ) c.distance = this.number( this.distanceEdit );
       if ( this.needsHints )
@@ -1823,7 +1833,7 @@ FlyThrough.Dialog = class extends Dialog
          this.work = Sky.workingCopy( this.imageWindow );
       }
       var wi = this.work.window.mainView.image;
-      this.imageLabel.text = "Image: " + this.imageWindow.mainView.id + " \u2014 working at " + wi.width + "\u00d7" + wi.height +
+      this.imageLabel.text = "Image: " + Fly.imageTitle( this.imageWindow.filePath, this.imageWindow.mainView.id ) + " \u2014 working at " + wi.width + "\u00d7" + wi.height +
                              ( this.workCached ? " (solved before)" : "" );
    }
 

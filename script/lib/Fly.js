@@ -1137,6 +1137,55 @@ Fly.objectFromPath = function( path, entries )
    return null;
 };
 
+/* CDS Sesame: resolves any name or catalogue id SIMBAD, NED or VizieR know (Sh2-132, LBN 473, vdB 152...) to a J2000 position. */
+Fly.NAME_RESOLVER_URL = "https://cds.unistra.fr/cgi-bin/nph-sesame/-oI/SNV?";
+Fly.NAME_QUERY_MAX = 6;   // names tried online for one image
+
+/* Sesame's answer as { id, ra, dec } (degrees), or null when it found nothing. */
+Fly.parseSesame = function( text )
+{
+   var t = String( text || "" ), p = /^%J\s+(-?[\d.]+)\s+([+-]?[\d.]+)/m.exec( t ), n = /^#\s*([^\t\r\n]+)/m.exec( t );
+   if ( !p || !n ) return null;
+   var ra = parseFloat( p[1] ), dec = parseFloat( p[2] );
+   return ( isFinite( ra ) && isFinite( dec ) ) ? { id: n[1].trim(), ra: ra, dec: dec } : null;
+};
+
+/*
+ * What a path's names might be called, to ask a name resolver, best first:
+ * catalogue-looking words (Sh2-132, LBN473) of the file and then each
+ * folder, then runs of two words and single words; at most Fly.NAME_QUERY_MAX.
+ */
+Fly.nameQueries = function( path )
+{
+   var parts = String( path || "" ).split( /[\/\\]/ ).filter( function( p ) { return p.length; } ).slice( -4 ).reverse();
+   var ids = [], runs = [], singles = [];
+   parts.forEach( function( part, i )
+   {
+      var base = ( i == 0 ) ? part.replace( /\.[^.]*$/, "" ) : part;
+      base.split( /[\s_]+/ ).forEach( function( w ) { if ( /^[A-Za-z]{1,5}-?\d{1,5}(?:-\d{1,5})?[A-Za-z]?$/.test( w ) ) ids.push( w ); } );
+      var words = base.split( /[^A-Za-z0-9']+/ ).filter( function( w ) { return w.length > 0; } );
+      for ( var k = 0; k + 2 <= words.length; ++k ) runs.push( words[k] + " " + words[k + 1] );
+      words.forEach( function( w ) { if ( w.length >= 4 && !/^\d+$/.test( w ) ) singles.push( w ); } );
+   } );
+   var seen = {};
+   return ids.concat( runs, singles ).filter( function( q ) { var k = q.toLowerCase(); if ( seen[k] ) return false; seen[k] = true; return true; } )
+             .slice( 0, Fly.NAME_QUERY_MAX );
+};
+
+/* A view id from an image file's name (letters, digits and underscores; never starting with a digit), or "" when it has none. */
+Fly.viewIdFromPath = function( path )
+{
+   var id = String( path || "" ).replace( /^.*[\/\\]/, "" ).replace( /\.[^.]*$/, "" ).replace( /[^A-Za-z0-9_]+/g, "_" ).replace( /^_+|_+$/g, "" );
+   return id && /^\d/.test( id ) ? "_" + id : id;
+};
+
+/* How a window is called to the user: its file's name when it has one and its view is only PixInsight's Image<number>, else its view id. */
+Fly.imageTitle = function( filePath, viewId )
+{
+   var file = String( filePath || "" ).replace( /^.*[\/\\]/, "" );
+   return ( file && /^Image\d+$/.test( viewId ) ) ? file : viewId;
+};
+
 Fly.CACHE_FORMAT = 3;   // bump when what the cache holds changes shape
 
 /* An 8-hex-digit FNV-1a hash of a string: a folder-safe name. */

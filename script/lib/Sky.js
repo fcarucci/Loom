@@ -183,8 +183,9 @@ Sky.transferWatch = function( clock )
 };
 
 /* The body of a GET, or null on any failure. Replaceable, so the suite never touches the network. */
-Sky.fetchText = function( url )
+Sky.fetchText = function( url, what )
 {
+   what = what || "Gaia online";
    try
    {
       var t = new NetworkTransfer, buf = new ByteArray, alive = Sky.transferWatch();
@@ -194,12 +195,47 @@ Sky.fetchText = function( url )
       t.onTransferProgress = function( dlTotal, dlCurrent ) { return alive( dlCurrent ); };
       if ( !t.download() || t.responseCode != 200 )
       {
-         Util.warn( "fly", "Gaia online: " + ( t.errorInformation || "HTTP " + t.responseCode ) );
+         Util.warn( "fly", what + ": " + ( t.errorInformation || "HTTP " + t.responseCode ) );
          return null;
       }
       return buf.toString();
    }
-   catch ( e ) { Util.warn( "fly", "Gaia online: " + e ); return null; }
+   catch ( e ) { Util.warn( "fly", what + ": " + e ); return null; }
+};
+
+/* Names already asked of the resolver this session (a miss is kept too), by lower-case query. */
+Sky.resolvedNames = {};
+
+/* An object by name from CDS Sesame, { id, ra, dec, diameter: 0, name: "" } -- or null (unknown, or offline). */
+Sky.resolveName = function( query )
+{
+   var q = String( query || "" ).trim(), key = q.toLowerCase();
+   if ( !q ) return null;
+   if ( !Sky.resolvedNames.hasOwnProperty( key ) )
+   {
+      var r = Fly.parseSesame( Sky.fetchText( Fly.NAME_RESOLVER_URL + encodeURIComponent( q ), "Name lookup" ) );
+      Sky.resolvedNames[key] = r ? { id: r.id, ra: r.ra, dec: r.dec, diameter: 0, name: "" } : null;
+   }
+   return Sky.resolvedNames[key];
+};
+
+/*
+ * The object an image's file or folder names (path) when the solved field
+ * holds it: the NGC/IC catalogue's (ngc, optional), else the first an
+ * online name resolver knows -- the target for a nebula outside NGC/IC
+ * (Sh2-132, the Lion). Null when nothing is named or it lies elsewhere.
+ */
+Sky.namedInField = function( path, field, ngc )
+{
+   var local = Fly.objectFromPath( path, ngc || [] );
+   if ( local && Fly.separation( local, field.centre ) <= field.radiusDeg ) return local;
+   var qs = Fly.nameQueries( path );
+   for ( var i = 0; i < qs.length; ++i )
+   {
+      var hit = Sky.resolveName( qs[i] );
+      if ( hit && Fly.separation( hit, field.centre ) <= field.radiusDeg ) return hit;
+   }
+   return null;
 };
 
 Sky.requireSources = function( centre, radiusDeg )

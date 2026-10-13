@@ -5,6 +5,11 @@ section of this file.
 
 ## [Unreleased]
 
+### Fly-Through
+- An object outside NGC/IC (Sh2-132, the Lion Nebula) is now found by its file or folder name: the names are asked of CDS Sesame online, and the one that lies in the solved field becomes the target. The Object box asks it too when the catalogue doesn't know a name.
+- A file PixInsight opens as `Image<number>` is shown by its file name, and a file opened with Open… gives its view that name.
+
+
 - **Close Loom windows.** A new button next to **Clear cache** closes every open image window Loom made (the ones carrying the LOOMOUT keyword) after listing them and asking; it warns about any that have not been saved to a file. A run still never closes an earlier run's results by itself.
 
 ## [0.4.1] — 2026-10-09

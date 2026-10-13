@@ -17485,6 +17485,36 @@ function runFlyTestsClean()
       check( "nothing when nothing matches", [ from( "Image13093" ), from( "masterLight_BIN-2_4144x2822_EXPOSURE-180.00s_FILTER-L_mono.xisf" ) ], [ null, null ] );
    } )();
 
+   /* Objects outside NGC/IC (Sh2-132, the Lion): the file's names asked of CDS Sesame, only the one inside the field accepted; a view named after its file. */
+   ( function()
+   {
+      var sesame = "# Sh2-132\t#Q10269584\n#=Sc=Simbad (CDS, via client/server):    1   105ms\n%C.0 HII\n%J 334.78749815 +56.07912137 = 22 19 09.0    +56 04 45\n%I.0 LBN 102.79-00.92\n";
+      var r = Fly.parseSesame( sesame );
+      check( "parseSesame: id and position", [ r.id, r.ra.toFixed( 3 ), r.dec.toFixed( 3 ) ], [ "Sh2-132", "334.787", "56.079" ] );
+      check( "parseSesame: an unknown name", [ Fly.parseSesame( "# Nothing\n#! no object\n" ), Fly.parseSesame( "" ), Fly.parseSesame( null ) ], [ null, null, null ] );
+      var q = Fly.nameQueries( "/Users/x/Downloads/Sh2-132 - Lion_Nebula Day 4_fullres.tif" );
+      check( "nameQueries: the catalogue-like word first", q[0], "Sh2-132" );
+      check( "nameQueries: the name's words follow", q.indexOf( "Lion Nebula" ) > 0, true );
+      check( "nameQueries: at most the limit, no repeats", [ q.length <= Fly.NAME_QUERY_MAX, q.length == new Set( q.map( function( x ) { return x.toLowerCase(); } ) ).size ], [ true, true ] );
+      check( "nameQueries: nothing for nothing", Fly.nameQueries( "" ), [] );
+      check( "viewIdFromPath", [ Fly.viewIdFromPath( "/d/Sh2-132 - Lion_Nebula Day 4_fullres.tif" ), Fly.viewIdFromPath( "/d/4k.tif" ), Fly.viewIdFromPath( "/d/---.tif" ) ], [ "Sh2_132_Lion_Nebula_Day_4_fullres", "_4k", "" ] );
+      check( "imageTitle: the file's name for PixInsight's Image<number>, else the view id", [ Fly.imageTitle( "/d/Lion.tif", "Image6559" ), Fly.imageTitle( "/d/Lion.tif", "Lion" ), Fly.imageTitle( "", "Image6559" ) ], [ "Lion.tif", "Lion", "Image6559" ] );
+      var fetch = Sky.fetchText, asked = [], saved = Sky.resolvedNames;
+      Sky.resolvedNames = {};
+      Sky.fetchText = function( url ) { asked.push( decodeURIComponent( url.split( "?" )[1] ) ); return /Sh2-132/i.test( url ) ? sesame : null; };
+      try
+      {
+         var field = { centre: { ra: 334.7, dec: 56.1 }, radiusDeg: 1.5 }, far = { centre: { ra: 10, dec: 10 }, radiusDeg: 1.5 };
+         var hit = Sky.namedInField( "/d/Sh2-132 - Lion_Nebula.tif", field );
+         check( "namedInField: the resolved object in the field", hit && hit.id, "Sh2-132" );
+         check( "namedInField: one that lies outside the field is not the target", Sky.namedInField( "/d/Sh2-132.tif", far ), null );
+         check( "resolveName: a name is asked once, the answer kept", asked.filter( function( a ) { return a == "Sh2-132"; } ).length, 1 );
+         check( "namedInField: names the target from the user's image path, not the working copy's", [ ( Sky.namedInField( "/d/Sh2-132 - Lion_Nebula.tif", field, [] ) || {} ).id, Sky.namedInField( "/cache/ab12cd34/work.xisf", field, [] ) ], [ "Sh2-132", null ] );
+         check( "resolveName: offline is null", Sky.resolveName( "Nothing Here" ), null );
+      }
+      finally { Sky.fetchText = fetch; Sky.resolvedNames = saved; }
+   } )();
+
    /* Solve hints from the file: the header's centre (RA/DEC, OBJCTRA/OBJCTDEC, CRVAL on an RA axis), and an object named by a folder up to 3 levels up. */
    ( function()
    {
