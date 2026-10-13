@@ -6,7 +6,7 @@
 # Usage: ci/release.sh <version> ( --key-dir <folder> | --keys <file.xssk> --password-file <file> ) [--slot N] [--push]
 #
 # --key-dir is a folder with one <name>.xssk and its password in <name>.password
-# (or password); see ci/sign.sh.
+# (or password, password.txt); see ci/sign.sh.
 #
 # Before running: the work for the release is merged on main, and the
 # CHANGELOG's [Unreleased] section describes it. This script then:

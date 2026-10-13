@@ -8,7 +8,7 @@ A release is signed on the maintainer's Mac and published by CI when the tag is 
 ci/release.sh <version> --key-dir <folder> [--push]
 ```
 
-- `--key-dir`: a folder holding the Certified PixInsight Developer signing keys and their password: exactly one `<name>.xssk`, and its password in `<name>.password` (or in a file called `password`). The script picks the right files and passes them to `ci/sign.sh`. Use `--keys` and `--password-file` instead to name the files directly (they win over what the folder gives).
+- `--key-dir`: a folder holding the Certified PixInsight Developer signing keys and their password: exactly one `<name>.xssk`, and its password in `<name>.password` (or in a file called `password` or `password.txt`). The script picks the right files and passes them to `ci/sign.sh`. Use `--keys` and `--password-file` instead to name the files directly (they win over what the folder gives).
 - The password file is read by PixInsight itself and never copied. Keep it outside the repository and `chmod 600` it.
 - `--push`: also push `main` and the tag to `origin` and `github`. Without it, nothing leaves the machine and the push command is printed.
 

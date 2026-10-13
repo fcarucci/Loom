@@ -14,7 +14,7 @@
 #
 #   --key-dir        a folder holding the keys and their password: exactly one
 #                    <name>.xssk, and its password in <name>.password (or, when
-#                    that is missing, in a file called password). Explicit
+#                    that is missing, in a file called password or password.txt). Explicit
 #                    --keys / --password-file win over what the folder gives.
 #   --keys           the secure signing keys file (.xssk)
 #   --password-file  a file holding that file's password; it is read by
@@ -53,10 +53,10 @@ if [ -n "$key_dir" ]; then
       keys="${found[0]}"
    fi
    if [ -z "$password_file" ]; then
-      for c in "${keys%.xssk}.password" "$key_dir/password"; do
+      for c in "${keys%.xssk}.password" "$key_dir/password" "$key_dir/password.txt"; do
          [ -f "$c" ] && { password_file="$c"; break; }
       done
-      [ -n "$password_file" ] || { echo "sign: no password file in $key_dir (expected $( basename "${keys%.xssk}" ).password or password)" >&2; exit 1; }
+      [ -n "$password_file" ] || { echo "sign: no password file in $key_dir (expected $( basename "${keys%.xssk}" ).password, password or password.txt)" >&2; exit 1; }
    fi
 fi
 [ -n "$keys" ] && [ -n "$password_file" ] || { echo "sign: give --key-dir, or --keys and --password-file" >&2; usage; }
