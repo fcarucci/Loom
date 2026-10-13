@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-10-13
+
 - **Signed scripts.** Loom, Frame Selector and Fly-Through now ship with PixInsight code signatures (`.xsgn` files) made with the Certified PixInsight Developer identity "Francesco Carucci", so PixInsight can verify that the scripts come from their author and have not been altered. A script whose signature no longer matches is refused by PixInsight, so every release is signed after its final change.
 
 ## [0.4.2] — 2026-10-13
