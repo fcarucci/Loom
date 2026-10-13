@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-10-13
+
 - **Signed update repository.** The update repository's manifest (`updates.xri`) is now signed with the same developer identity as the scripts, so PixInsight can verify that the repository comes from its author and has not been altered. The package it serves holds the signed scripts.
 
 ## [0.4.3] — 2026-10-13

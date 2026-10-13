@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0">
+   <description>
+      <p>
+         Loom — the mechanical first steps, from integrated masters to
+         plates ready for creative work.
+      </p>
+      <p>
+         Copyright © 2026 Francesco Carucci. Released under the terms in
+         the LICENSE file accompanying the package.
+      </p>
+   </description>
+   <platform os="all" arch="noarch" version="1.9.4:1.9.99">
+      <package fileName="20261013-loom-0.4.4.zip" sha1="120f8f2f7f7371dc1f485b05cefc93ccb0c9f0d4" type="script" releaseDate="20261013" remove="src/scripts/Loom" title="Loom 0.4.4">
+         <description>
+            <p>
+               Solve, flux-calibrate, remove gradients, correct aberration,
+               register, crop, combine and colour-calibrate RGB and narrowband
+               palettes. Includes the Frame Selector, which measures a folder
+               of subframes or imports a night from an ASIAIR card.
+            </p>
+         </description>
+      </package>
+   </platform>
+</xri>
+<Signature developerId="Francesco Carucci" timestamp="2026-10-13T18:33:37.767Z" encoding="Base64">Y0qw+l1QBxEMlOaBKvWuZpgtbz8vFIU81qRQyswBcz6owF0XWiOThXueEgcPgNUiVYUG8yJzw1j08oteA6W/CQ==</Signature>
