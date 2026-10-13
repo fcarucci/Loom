@@ -62,6 +62,11 @@ fi
 [ -n "$keys" ] && [ -n "$password_file" ] || { echo "sign: give --key-dir, or --keys and --password-file" >&2; usage; }
 [ -f "$keys" ]          || { echo "sign: keys file not found: $keys" >&2; exit 1; }
 [ -s "$password_file" ] || { echo "sign: password file missing or empty: $password_file" >&2; exit 1; }
+# A password is one line. A file with more is a note, a copy of a message or
+# the wrong file, and PixInsight would take all of it as the password and
+# report only "wrong password".
+[ "$( LC_ALL=C awk 'NF { n++ } END { print n + 0 }' "$password_file" )" -le 1 ] \
+   || { echo "sign: $password_file has more than one line; it must hold only the password" >&2; exit 1; }
 case "$slot" in ''|*[!0-9]*) echo "sign: --slot must be a number" >&2; exit 2 ;; esac
 
 if [ "$dry_run" = 1 ]; then
