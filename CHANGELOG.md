@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- **Signed scripts.** Loom, Frame Selector and Fly-Through now ship with PixInsight code signatures (`.xsgn` files) made with the Certified PixInsight Developer identity "Francesco Carucci", so PixInsight can verify that the scripts come from their author and have not been altered. A script whose signature no longer matches is refused by PixInsight, so every release is signed after its final change.
+
 ## [0.4.2] — 2026-10-13
 
 - **Close Loom windows.** A new button next to **Clear cache** closes every open image window Loom made (the ones carrying the LOOMOUT keyword) after listing them and asking; it warns about any that have not been saved to a file. A run still never closes an earlier run's results by itself.

@@ -53,7 +53,8 @@ const { preprocess, defines } = require( "./preprocess.js" ).createPreprocessor(
    const gatePassed = require( "./check-refs.js" ).main( root ) === 0;
    const gateTestsPassed = require( "./check-refs.test.js" ).run( { quiet: true, inSuite: true } );
    const groupArgsPassed = require( "./test-groups.test.js" ).run( { quiet: true } );
-   if ( !gatePassed || !gateTestsPassed || !groupArgsPassed )
+   const signaturesPassed = require( "./check-signatures.test.js" ).run( { quiet: true } );
+   if ( !gatePassed || !gateTestsPassed || !groupArgsPassed || !signaturesPassed )
       process.exit( 1 );
 }
 

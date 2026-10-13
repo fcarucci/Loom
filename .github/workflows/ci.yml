@@ -80,6 +80,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Packaging Loom $version"
 
+      # A tag is a release, and a release's scripts must be signed and the
+      # sources the signed ones (signing needs PixInsight and the keys, so it
+      # is done by ci/release.sh on the maintainer's Mac; CI only checks).
+      - name: Check the scripts are signed and current
+        if: github.ref_type == 'tag'
+        run: node ci/check-signatures.js
+
       - name: Build the zip
         run: ci/package.sh "${{ steps.version.outputs.version }}"
 

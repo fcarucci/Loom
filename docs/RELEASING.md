@@ -1,0 +1,34 @@
+# Releasing Loom
+
+A release is signed on the maintainer's Mac and published by CI when the tag is pushed.
+
+## One command
+
+```
+ci/release.sh <version> --key-dir <folder> [--push]
+```
+
+- `--key-dir`: a folder holding the Certified PixInsight Developer signing keys and their password: exactly one `<name>.xssk`, and its password in `<name>.password` (or in a file called `password`). The script picks the right files and passes them to `ci/sign.sh`. Use `--keys` and `--password-file` instead to name the files directly (they win over what the folder gives).
+- The password file is read by PixInsight itself and never copied. Keep it outside the repository and `chmod 600` it.
+- `--push`: also push `main` and the tag to `origin` and `github`. Without it, nothing leaves the machine and the push command is printed.
+
+Before running it, merge the work to `main` and describe it under `## [Unreleased]` in `CHANGELOG.md`.
+
+It then:
+
+1. checks it is on a clean `main` and the tag is new;
+2. turns `[Unreleased]` into the dated `[<version>]` section and sets `Util.LOOM_VERSION`;
+3. runs the test suite as 1.9.5 and as 1.9.4;
+4. signs `Loom.js`, `FrameSelector.js` and `FlyThrough.js` (`ci/sign.sh`), writing the `.xsgn` files and `ci/signed-tree.sha256`;
+5. commits `Loom <version>` and creates the annotated tag `v<version>`;
+6. with `--push`, pushes. CI then checks the signatures are current, builds the zip and the update repository, and publishes the release.
+
+## Why signing is local
+
+A script signature covers the script and every file it includes, so any change to `script/` after signing (the version bump included) invalidates it, and PixInsight refuses a script whose signature is invalid. Signing needs PixInsight's `Security` object and the private keys, so it cannot run in CI. CI only checks (`ci/check-signatures.js`, on tags): the signature files exist and the sources match the hash recorded when they were signed.
+
+`ci/sign.sh` can also be run alone, with the same `--keys` and `--password-file`. It signs in a separate PixInsight instance (slot 9, `--slot N` to change), never in the one in use for work.
+
+## Not covered yet
+
+`updates.xri` (the update repository manifest) is built by CI after the tag and is not signed. Signing it needs the keys too (`PixInsight --sign-xml-file`), and the manifest holds the checksum of the package CI builds, so it has to be signed after that build.

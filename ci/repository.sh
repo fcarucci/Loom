@@ -67,6 +67,11 @@ mkdir -p "$stage/src/scripts/Loom"
 # "LoomSelfTest" in the Script menu of everyone who subscribes.
 cp -R script/lib "$stage/src/scripts/Loom/lib"
 cp script/Loom.js script/FrameSelector.js script/FlyThrough.js "$stage/src/scripts/Loom/"
+# Their signatures, when the release has them (ci/sign.sh): a signature is
+# useless apart from the script it signs, so they travel together.
+for sig in script/Loom.xsgn script/FrameSelector.xsgn script/FlyThrough.xsgn; do
+   [ -f "$sig" ] && cp "$sig" "$stage/src/scripts/Loom/"
+done
 cp README.md LICENSE "$stage/src/scripts/Loom/"
 printf '%s\n' "$version" > "$stage/src/scripts/Loom/RELEASE"
 
