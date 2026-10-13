@@ -31,6 +31,63 @@ function makeTree( signed )
    return root;
 }
 
+/* A tree with a committed update repository: a package zip holding the sources, and a manifest that names it. */
+function makeRepo( options )
+{
+   options = options || {};
+   const root = makeTree( true );
+   fs.writeFileSync( path.join( root, "script", "lib", "Util.js" ), "var Util = {};\nUtil.LOOM_VERSION = \"1.2.3\";\n" );
+   quiet( () => gate.main( root, [ "--write" ] ) );
+   const stage = path.join( root, "stage", "src", "scripts", "Loom" );
+   fs.mkdirSync( path.join( stage, "lib" ), { recursive: true } );
+   for ( const f of gate.ENTRY_SCRIPTS )
+   {
+      fs.copyFileSync( path.join( root, "script", f ), path.join( stage, f ) );
+      fs.copyFileSync( path.join( root, "script", f.replace( /\.js$/, ".xsgn" ) ), path.join( stage, f.replace( /\.js$/, ".xsgn" ) ) );
+   }
+   for ( const f of [ "Util.js", "Fly.js" ] )
+      fs.copyFileSync( path.join( root, "script", "lib", f ), path.join( stage, "lib", f ) );
+   fs.writeFileSync( path.join( stage, "RELEASE" ), "1.2.3\n" );
+   if ( options.staleScript ) fs.appendFileSync( path.join( stage, "Loom.js" ), "// edited after packaging\n" );
+   fs.mkdirSync( path.join( root, "repo" ) );
+   const zip = path.join( root, "repo", "20261013-loom-1.2.3.zip" );
+   require( "child_process" ).execFileSync( "zip", [ "-q", "-r", "-X", zip, "src" ], { cwd: path.join( root, "stage" ) } );
+   const sha1 = require( "crypto" ).createHash( "sha1" ).update( fs.readFileSync( zip ) ).digest( "hex" );
+   const signature = options.unsigned ? "" : "<Signature developerId=\"Francesco Carucci\" timestamp=\"2026-10-13T17:00:00.000Z\" encoding=\"Base64\">\n   AAAA\n</Signature>\n";
+   fs.writeFileSync( path.join( root, "repo", "updates.xri" ),
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<xri version=\"1.0\">\n<platform os=\"all\" arch=\"noarch\" version=\"1.9.5:1.9.99\">\n" +
+      "<package fileName=\"20261013-loom-1.2.3.zip\" sha1=\"" + ( options.badSha ? "0".repeat( 40 ) : sha1 ) + "\" type=\"script\" releaseDate=\"20261013\" remove=\"src/scripts/Loom\" title=\"Loom " + ( options.title || "1.2.3" ) + "\"/>\n</platform>\n</xri>\n" + signature );
+   return root;
+}
+
+test( "repository: passes when signed, matching the sources and its own checksum", () =>
+{
+   const p = gate.repoProblems( makeRepo() );
+   return p.length == 0 ? null : "expected no problems, got " + p.join( "; " );
+} );
+
+test( "repository: names an unsigned manifest, a wrong checksum and a wrong version", () =>
+{
+   const a = gate.repoProblems( makeRepo( { unsigned: true } ) ), b = gate.repoProblems( makeRepo( { badSha: true } ) ), c = gate.repoProblems( makeRepo( { title: "1.2.2" } ) );
+   if ( !( a.length == 1 && /not signed/.test( a[0] ) ) ) return "unsigned: " + JSON.stringify( a );
+   if ( !( b.length == 1 && /sha1/.test( b[0] ) ) ) return "checksum: " + JSON.stringify( b );
+   return ( c.length == 1 && /not Loom 1\.2\.3/.test( c[0] ) ) ? null : "version: " + JSON.stringify( c );
+} );
+
+test( "repository: names a package that is not the committed sources", () =>
+{
+   const p = gate.repoProblems( makeRepo( { staleScript: true } ) );
+   return ( p.length == 1 && /Loom\.js is not the committed one/.test( p[0] ) ) ? null : "got " + JSON.stringify( p );
+} );
+
+test( "repository: names a missing manifest, and --repo makes main check it", () =>
+{
+   const none = makeTree( true );
+   if ( !/updates\.xri is missing/.test( gate.repoProblems( none )[0] || "" ) ) return "a missing manifest was not named";
+   const a = quiet( () => gate.main( none, [ "--repo" ] ) ), b = quiet( () => gate.main( makeRepo(), [ "--repo" ] ) );
+   return ( a === 1 && b === 0 ) ? null : "exit codes were " + a + " and " + b;
+} );
+
 function quiet( fn )
 {
    const log = console.log, err = console.error;

@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- **Signed update repository.** The update repository's manifest (`updates.xri`) is now signed with the same developer identity as the scripts, so PixInsight can verify that the repository comes from its author and has not been altered. The package it serves holds the signed scripts.
+
 ## [0.4.3] — 2026-10-13
 
 - **Signed scripts.** Loom, Frame Selector and Fly-Through now ship with PixInsight code signatures (`.xsgn` files) made with the Certified PixInsight Developer identity "Francesco Carucci", so PixInsight can verify that the scripts come from their author and have not been altered. A script whose signature no longer matches is refused by PixInsight, so every release is signed after its final change.

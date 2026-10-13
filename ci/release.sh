@@ -15,9 +15,14 @@
 #   3. runs the suite as 1.9.5 and as 1.9.4
 #   4. signs the entry scripts (ci/sign.sh) -- after step 2, because the version
 #      lives in a file the signature covers
-#   5. commits "Loom <version>" with the signatures and the signed-tree hash, and tags v<version>
-#   6. with --push, pushes main and the tag to origin and github; CI then builds
-#      and publishes the release and checks the signatures are current
+#   5. builds the update repository (ci/repository.sh), signs its updates.xri and
+#      puts the result in repo/ -- after step 4, because the package holds the
+#      signed scripts and the manifest holds the package's checksum
+#   6. commits "Loom <version>" with the signatures, the signed-tree hash and repo/,
+#      and tags v<version>
+#   7. with --push, pushes main and the tag to origin and github; CI then checks
+#      the signatures, builds the release zip and PUBLISHES repo/ as the update
+#      repository -- it does not build or sign the repository itself
 
 set -euo pipefail
 
@@ -69,7 +74,14 @@ LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js | tail -1
 ci/sign.sh "${sign_args[@]}"
 node ci/check-signatures.js
 
-git add CHANGELOG.md script ci/signed-tree.sha256
+ci/repository.sh "$version" >/dev/null
+ci/sign.sh "${sign_args[@]}" --xml dist/repo/updates.xri
+rm -rf repo
+mkdir repo
+cp dist/repo/updates.xri dist/repo/LICENSE dist/repo/*.zip repo/
+node ci/check-signatures.js --repo
+
+git add CHANGELOG.md script ci/signed-tree.sha256 repo
 git commit -q -m "Loom $version"
 git tag -a "v$version" -m "Loom $version"
 echo "release: committed and tagged v$version"

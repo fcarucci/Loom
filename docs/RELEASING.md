@@ -20,8 +20,9 @@ It then:
 2. turns `[Unreleased]` into the dated `[<version>]` section and sets `Util.LOOM_VERSION`;
 3. runs the test suite as 1.9.5 and as 1.9.4;
 4. signs `Loom.js`, `FrameSelector.js` and `FlyThrough.js` (`ci/sign.sh`), writing the `.xsgn` files and `ci/signed-tree.sha256`;
-5. commits `Loom <version>` and creates the annotated tag `v<version>`;
-6. with `--push`, pushes. CI then checks the signatures are current, builds the zip and the update repository, and publishes the release.
+5. builds the update repository (`ci/repository.sh`), signs its `updates.xri` (`ci/sign.sh --xml`) and puts the result in `repo/`;
+6. commits `Loom <version>` (scripts, signatures, `repo/`) and creates the annotated tag `v<version>`;
+7. with `--push`, pushes. CI then checks the signatures and that `repo/` is signed and holds exactly the tagged sources, builds the release zip, and publishes `repo/` as the update repository. CI does not build or sign the repository.
 
 ## Why signing is local
 
@@ -29,6 +30,6 @@ A script signature covers the script and every file it includes, so any change t
 
 `ci/sign.sh` can also be run alone, with the same `--keys` and `--password-file`. It signs in a separate PixInsight instance (slot 9, `--slot N` to change), never in the one in use for work. If the script started that instance, it closes it when signing is done; an instance that was already running is left alone.
 
-## Not covered yet
+## The update repository
 
-`updates.xri` (the update repository manifest) is built by CI after the tag and is not signed. Signing it needs the keys too (`PixInsight --sign-xml-file`), and the manifest holds the checksum of the package CI builds, so it has to be signed after that build.
+`updates.xri` is the manifest PixInsight reads from `https://fcarucci.github.io/Loom/`. Its signature is embedded in the file and covers all of it, and the manifest holds the checksum of the package, which holds the signed scripts, so the order is fixed: sign the scripts, build the package and manifest, sign the manifest. `ci/release.sh` does that and commits the result in `repo/` (the manifest, the package zip and the licence); only the current release is kept there. Other pushes to `main` still build an unsigned repository in CI, just to test the layout.

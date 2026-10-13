@@ -10,7 +10,7 @@
 # SEPARATE PixInsight instance (slot 9), never in the one in use for work.
 # The instance is started if need be and closed again when signing is done.
 #
-# Usage: ci/sign.sh ( --key-dir <folder> | --keys <file.xssk> --password-file <file> ) [--slot N] [--dry-run]
+# Usage: ci/sign.sh ( --key-dir <folder> | --keys <file.xssk> --password-file <file> ) [--xml <file.xri>] [--slot N] [--dry-run]
 #
 #   --key-dir        a folder holding the keys and their password: exactly one
 #                    <name>.xssk, and its password in <name>.password (or, when
@@ -20,6 +20,9 @@
 #   --password-file  a file holding that file's password; it is read by
 #                    PixInsight itself and never copied. Keep it out of the
 #                    repository and chmod 600 it.
+#   --xml            sign this XML document (the update repository's updates.xri)
+#                    INSTEAD of the scripts: its signature is embedded, so it must
+#                    be final, and it is rewritten in place
 #   --slot           PixInsight instance number to use (default 9)
 #   --dry-run        print the keys and password files that would be used, and stop
 #
@@ -31,11 +34,12 @@ set -euo pipefail
 root="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "$root"
 
-keys="" ; password_file="" ; key_dir="" ; slot=9 ; dry_run=0
+keys="" ; password_file="" ; key_dir="" ; xml="" ; slot=9 ; dry_run=0
 usage() { sed -n '/^# Usage:/,/^# Every/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' | sed '$d' >&2; exit 2; }
 while [ $# -gt 0 ]; do
    case "$1" in
       --key-dir)        key_dir="${2:-}"; shift 2 ;;
+      --xml)            xml="${2:-}"; shift 2 ;;
       --keys)           keys="${2:-}"; shift 2 ;;
       --password-file)  password_file="${2:-}"; shift 2 ;;
       --slot)           slot="${2:-}"; shift 2 ;;
@@ -94,13 +98,20 @@ cleanup()
 trap cleanup EXIT
 
 abs() { ( cd "$( dirname "$1" )" && printf '%s/%s' "$PWD" "$( basename "$1" )" ); }
-python3 - "$dir/request.json" "$( abs "$keys" )" "$( abs "$password_file" )" \
-   "$root/script/Loom.js" "$root/script/FrameSelector.js" "$root/script/FlyThrough.js" <<'PY'
+if [ -n "$xml" ]; then
+   [ -f "$xml" ] || { echo "sign: XML document not found: $xml" >&2; exit 1; }
+   targets=( --xml "$( abs "$xml" )" )
+else
+   targets=( --scripts "$root/script/Loom.js" "$root/script/FrameSelector.js" "$root/script/FlyThrough.js" )
+fi
+python3 - "$dir/request.json" "$( abs "$keys" )" "$( abs "$password_file" )" "${targets[@]}" <<'PY'
 import json, os, sys
-out, keys, pw, *files = sys.argv[1:]
+out, keys, pw, kind, *files = sys.argv[1:]
+req = {"keys": keys, "passwordFile": pw, "files": [], "xml": []}
+req["xml" if kind == "--xml" else "files"] = files
 fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
-    json.dump({"keys": keys, "passwordFile": pw, "files": files}, f)
+    json.dump(req, f)
 PY
 
 if ! pgrep -f "PixInsight -n=$slot" >/dev/null; then
@@ -126,5 +137,9 @@ if not r["ok"]:
     sys.exit("sign: FAILED: " + (r["error"] or "a signature is not valid"))
 PY
 
-node ci/check-signatures.js --write
-echo "sign: done. Commit the .xsgn files and ci/signed-tree.sha256 with the release."
+if [ -n "$xml" ]; then
+   echo "sign: done. $xml carries its signature; do not edit it any more."
+else
+   node ci/check-signatures.js --write
+   echo "sign: done. Commit the .xsgn files and ci/signed-tree.sha256 with the release."
+fi

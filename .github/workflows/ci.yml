@@ -85,7 +85,7 @@ jobs:
       # is done by ci/release.sh on the maintainer's Mac; CI only checks).
       - name: Check the scripts are signed and current
         if: github.ref_type == 'tag'
-        run: node ci/check-signatures.js
+        run: node ci/check-signatures.js --repo
 
       - name: Build the zip
         run: ci/package.sh "${{ steps.version.outputs.version }}"
@@ -117,8 +117,22 @@ jobs:
       # place a release is ever built: tagging is the whole procedure, so
       # a maintenance release cannot accidentally ship a zip someone made
       # by hand from a tree that was not the tagged one.
+      #
+      # A tag does not build the update repository: ci/release.sh built it on
+      # the maintainer's Mac and signed its updates.xri (CI has neither the
+      # keys nor PixInsight), and repo/ holds the result. Every other push
+      # builds an unsigned one, only so the layout checks below have
+      # something to check.
       - name: Build the update repository
+        if: github.ref_type != 'tag'
         run: ci/repository.sh "${{ steps.version.outputs.version }}"
+
+      - name: Take the signed update repository
+        if: github.ref_type == 'tag'
+        run: |
+          test -f repo/updates.xri || { echo "repo/updates.xri is missing: releases are cut with ci/release.sh"; exit 1; }
+          rm -rf dist/repo
+          cp -R repo dist/repo
 
       # The repository package deploys into the PixInsight INSTALLATION
       # directory, so its top level is src/scripts/Loom -- not Loom, which
@@ -194,8 +208,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the repository
-        run: ci/repository.sh "${GITHUB_REF_NAME#v}"
+      # Not built here: the signed repository ci/release.sh committed, which
+      # the package job has already checked against the tagged sources.
+      - name: Take the signed repository
+        run: |
+          test -f repo/updates.xri || { echo "repo/updates.xri is missing: releases are cut with ci/release.sh"; exit 1; }
+          mkdir -p dist
+          cp -R repo dist/repo
 
       # An index so the URL is not a bare 404 to anyone who opens it in a
       # browser looking for what to subscribe to.
@@ -221,8 +240,8 @@ jobs:
                add this URL, then
                <b>Resources &rarr; Updates &rarr; Check for Updates</b>:</p>
             <p><code>https://fcarucci.github.io/Loom/</code></p>
-            <p>The repository is not signed, so PixInsight will ask you to
-               confirm it once.</p>
+            <p>The repository is signed by the Certified PixInsight Developer
+               <b>Francesco Carucci</b>.</p>
             <p><a href="https://github.com/fcarucci/Loom">Source and releases</a>
                &middot; <a href="LICENSE">Licence (MIT)</a></p>
           </body>

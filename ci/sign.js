@@ -5,8 +5,12 @@
  * keys. Run by ci/sign.sh in a separate PixInsight instance -- never start it
  * by hand in the main one. It takes no input from the interface:
  *
- *    <dir>/request.json   { keys, passwordFile, files: [ absolute .js paths ] }
+ *    <dir>/request.json   { keys, passwordFile, files: [ absolute .js paths ], xml: [ absolute .xri paths ] }
  *    <dir>/result.json    written last: { ok, error, files: [ { file, signature, valid, developerId, scriptId, timestamp } ] }
+ *
+ * Scripts get a .xsgn file beside them; an XML document (the update
+ * repository's updates.xri) carries its signature inside, so it is rewritten
+ * in place -- sign it only when it is final.
  *
  * where <dir> is Sign.DIR. The password is read from passwordFile (its own
  * text, trailing newline dropped) and never copied anywhere; the request is
@@ -27,12 +31,20 @@ Sign.run = function()
       var password = File.readTextFile( request.passwordFile ).replace( /[\r\n]+$/, "" );
       if ( password.length == 0 )
          throw new Error( "the password file is empty: " + request.passwordFile );
-      for ( var i = 0; i < request.files.length; ++i )
+      var files = request.files || [];
+      for ( var i = 0; i < files.length; ++i )
       {
-         var script = request.files[i], signature = script.replace( /\.js$/, ".xsgn" );
+         var script = files[i], signature = script.replace( /\.js$/, ".xsgn" );
          Security.generateScriptSignatureFile( signature, script, [], request.keys, password );
          var s = Security.getScriptSignature( script );
          result.files.push( { file: script, signature: signature, valid: s.valid, developerId: s.developerId, scriptId: s.scriptId, timestamp: s.timestamp } );
+      }
+      var xml = request.xml || [];
+      for ( var j = 0; j < xml.length; ++j )
+      {
+         Security.generateXMLSignature( xml[j], request.keys, password );
+         var x = Security.getXMLSignature( xml[j] );
+         result.files.push( { file: xml[j], signature: xml[j], valid: x.valid, developerId: x.developerId, scriptId: "(xml)", timestamp: x.timestamp } );
       }
       password = "";
       result.ok = result.files.length > 0 && result.files.every( function( f ) { return f.valid; } );
