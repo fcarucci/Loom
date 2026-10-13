@@ -27,7 +27,7 @@ It then:
 
 A script signature covers the script and every file it includes, so any change to `script/` after signing (the version bump included) invalidates it, and PixInsight refuses a script whose signature is invalid. Signing needs PixInsight's `Security` object and the private keys, so it cannot run in CI. CI only checks (`ci/check-signatures.js`, on tags): the signature files exist and the sources match the hash recorded when they were signed.
 
-`ci/sign.sh` can also be run alone, with the same `--keys` and `--password-file`. It signs in a separate PixInsight instance (slot 9, `--slot N` to change), never in the one in use for work.
+`ci/sign.sh` can also be run alone, with the same `--keys` and `--password-file`. It signs in a separate PixInsight instance (slot 9, `--slot N` to change), never in the one in use for work. If the script started that instance, it closes it when signing is done; an instance that was already running is left alone.
 
 ## Not covered yet
 

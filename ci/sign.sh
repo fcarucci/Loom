@@ -7,8 +7,8 @@
 #
 # Signing needs PixInsight (its Security object) and the private keys, so it
 # runs on the maintainer's Mac and never in CI. The script is signed in a
-# SEPARATE PixInsight instance (slot 9, started if need be), never in the
-# one in use for work.
+# SEPARATE PixInsight instance (slot 9), never in the one in use for work.
+# The instance is started if need be and closed again when signing is done.
 #
 # Usage: ci/sign.sh ( --key-dir <folder> | --keys <file.xssk> --password-file <file> ) [--slot N] [--dry-run]
 #
@@ -81,7 +81,17 @@ pi="${LOOM_PIXINSIGHT:-/Applications/PixInsight/PixInsight.app/Contents/MacOS/Pi
 dir=/tmp/agent-scratch/loom-sign        # must match Sign.DIR in ci/sign.js
 mkdir -p "$dir" ; chmod 700 "$dir"
 rm -f "$dir/request.json" "$dir/result.json"
-trap 'rm -f "$dir/request.json"' EXIT
+started=0
+# The PixInsight instance is closed when signing is over, but only one this
+# script started: an instance that was already running belongs to someone else.
+cleanup()
+{
+   rm -f "$dir/request.json"
+   if [ "$started" = 1 ]; then
+      pkill -f "PixInsight -n=$slot" 2>/dev/null || true
+   fi
+}
+trap cleanup EXIT
 
 abs() { ( cd "$( dirname "$1" )" && printf '%s/%s' "$PWD" "$( basename "$1" )" ); }
 python3 - "$dir/request.json" "$( abs "$keys" )" "$( abs "$password_file" )" \
@@ -94,7 +104,8 @@ with os.fdopen(fd, "w") as f:
 PY
 
 if ! pgrep -f "PixInsight -n=$slot" >/dev/null; then
-   echo "sign: starting PixInsight instance $slot"
+   echo "sign: starting PixInsight instance $slot (closed again when signing is done)"
+   started=1
    open -n -a "$( dirname "$pi" )/../.." --args -n="$slot" --automation-mode --no-splash
    sleep 15
 fi
