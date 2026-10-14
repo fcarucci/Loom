@@ -3,7 +3,7 @@ name: Siril CI
 on:
   push:
     branches: [ main ]
-    tags: [ 'siril-v*' ]
+    tags: [ 'v*' ]
   pull_request:
     paths: [ 'siril/**', '.github/workflows/siril.yml' ]
   workflow_dispatch:

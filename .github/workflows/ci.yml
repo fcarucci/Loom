@@ -17,7 +17,7 @@ on:
 
 # Every run: step starts in pixinsight/, so the paths below are as they were
 # when the repository held only the PixInsight scripts. Tags v* are PixInsight
-# releases; the Siril port's are siril-v*.
+# releases of the whole repository (the Siril port is released with them).
 defaults:
   run:
     working-directory: pixinsight

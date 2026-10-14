@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format follows
 
 First release, and an experimental one: the Loom pipeline has been run in Siril's dialog and headless, but
 expect rough edges. The Siril port now lives in the Loom repository, under `siril/` (PixInsight's Loom is in
-`pixinsight/`); its tags are `siril-vX.Y.Z`.
+`pixinsight/`); it is released together with the PixInsight scripts, under the same `vX.Y.Z` tag.
 
 ### Added
 

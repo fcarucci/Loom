@@ -5,7 +5,7 @@ a push-in video of a finished astrophoto whose stars move at their real Gaia
 distances.
 
 Part of the [Loom](https://github.com/fcarucci/Loom) repository, whose `pixinsight/` folder is the PixInsight
-version. This folder is the Siril port: its code is Python and its releases are independent (tags `siril-vX.Y.Z`).
+version. This folder is the Siril port: its code is Python and it is released together with the PixInsight scripts, under the same `vX.Y.Z` tag.
 
 ## Status
 
@@ -23,7 +23,7 @@ version. This folder is the Siril port: its code is Python and its releases are 
   test image; they skip without it.
 - The Loom pipeline (`Loom/loom_preprocess.py`, see the Loom section) is a port of Loom's JavaScript to numpy and scipy.
   [docs/PARITY-LOOM.md](docs/PARITY-LOOM.md) lists each ported function and the deviations from Loom.
-- Version 0.5.0 (tag `siril-v0.5.0`) is the first release and is experimental.
+- Version 0.5.0 (tag `v0.5.0`, shared with the PixInsight scripts) is the first release and is experimental.
 
 ## What it does
 

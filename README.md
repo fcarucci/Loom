@@ -6,7 +6,7 @@ video whose stars pass by at their real Gaia distances. It comes in two ports of
 | Folder | For | Install and use |
 |---|---|---|
 | [`pixinsight/`](pixinsight/README.md) | PixInsight (Loom, Frame Selector, Fly-Through) | the signed update repository `https://fcarucci.github.io/Loom/`, or a git checkout; releases are tagged `vX.Y.Z` |
-| [`siril/`](siril/README.md) | Siril 1.4 (Loom pipeline and Fly-Through as Python scripts) | a checkout of this repository, scripts under `siril/Loom/`; releases are tagged `siril-vX.Y.Z` |
+| [`siril/`](siril/README.md) | Siril 1.4 (Loom pipeline and Fly-Through as Python scripts) | a checkout of this repository, scripts under `siril/Loom/`; released together with the PixInsight scripts, under one `vX.Y.Z` tag |
 
 The two are meant to run comparable pipelines: the Siril port is a port of the PixInsight JavaScript to numpy and
 scipy (see `siril/docs/PARITY-LOOM.md`), with Siril's own tools where PixInsight's processes have no equivalent.

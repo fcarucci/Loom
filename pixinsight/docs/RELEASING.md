@@ -2,7 +2,7 @@
 
 A release is signed on the maintainer's Mac and published by CI when the tag is pushed.
 
-This repository also holds the Siril port, which is released separately. Tags `v*` (for example `v0.5.0`) are PixInsight releases; tags `siril-v*` (for example `siril-v0.5.0`) are Siril's. Everything here concerns the PixInsight scripts: the commands run from the `pixinsight/` folder, and `main`, `CHANGELOG.md`, `script/` and `repo/` are meant relative to it.
+This repository also holds the Siril port, which is released together with it: one `v*` tag (for example `v0.5.0`) is both, and `siril/` takes the same version number. Everything here concerns the PixInsight scripts and the signing: the commands run from the `pixinsight/` folder, and `main`, `CHANGELOG.md`, `script/` and `repo/` are meant relative to it.
 
 ## One command
 
