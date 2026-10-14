@@ -5,11 +5,39 @@ video whose stars pass by at their real Gaia distances. It comes in two ports of
 
 | Folder | For | Install and use |
 |---|---|---|
-| [`pixinsight/`](pixinsight/README.md) | PixInsight (Loom, Frame Selector, Fly-Through) | the signed update repository `https://fcarucci.github.io/Loom/`, or a git checkout; releases are tagged `vX.Y.Z` |
+| [`pixinsight/`](pixinsight/README.md) | PixInsight (Loom, Frame Selector, Fly-Through) | the PixInsight update repository `https://fcarucci.github.io/Loom/`, or a git checkout (one of the two, not both); see below; releases are tagged `vX.Y.Z` |
 | [`siril/`](siril/README.md) | Siril 1.4 (Loom pipeline and Fly-Through as Python scripts) | a checkout of this repository, scripts under `siril/Loom/`; released together with the PixInsight scripts, under one `vX.Y.Z` tag |
 
 The two are meant to run comparable pipelines: the Siril port is a port of the PixInsight JavaScript to numpy and
 scipy (see `siril/docs/PARITY-LOOM.md`), with Siril's own tools where PixInsight's processes have no equivalent.
+
+## Loom for PixInsight
+
+Three PixInsight scripts for the work between capture and making pictures:
+
+- **Loom** takes integrated masters to finished plates: solving, flux calibration, gradient removal, registration,
+  cropping, combination and colour calibration, optionally followed by sharpening, star extraction, stretch, noise
+  reduction and a layered Photoshop file.
+- **Frame Selector** measures a folder of subframes and removes the bad ones before you integrate. It can also import a
+  night straight from an ASIAIR.
+- **Fly-Through** turns a finished image into a push-in video whose stars pass by at their real Gaia distances.
+
+Loom is for people who already know PixInsight. It needs PixInsight 1.9.4 or later, on macOS or Windows.
+
+### Install
+
+Install from the update repository or from git, not both: two copies register the scripts twice.
+
+1. **From the PixInsight update repository.** In PixInsight, open Resources, Updates, Manage Repositories, add
+   `https://fcarucci.github.io/Loom/` (with the trailing `/`), then run Resources, Updates, Check for Updates and apply
+   the Loom update. PixInsight restarts to install it. The repository is signed by the Certified PixInsight Developer
+   Francesco Carucci. The scripts appear under Script, Loom; if they do not, run Script, Feature Scripts, Regenerate.
+   Later updates come through Check for Updates again.
+2. **From git.** Clone `https://github.com/fcarucci/Loom` (`git@github.com:fcarucci/Loom.git`), then use Script,
+   Feature Scripts, Add and choose the clone's `pixinsight` folder (not the clone itself, and not the `script`
+   folder inside it). A git checkout can update itself.
+
+Full documentation, every option and the details of each script: [pixinsight/README.md](pixinsight/README.md).
 
 ## Experimental: Loom for Siril
 

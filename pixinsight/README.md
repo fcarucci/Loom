@@ -38,8 +38,9 @@ copies register the scripts twice.
 
 3. **Resources → Updates → Check for Updates.** Make sure Loom is selected and
    click **Apply**.
-4. The repository is not yet signed, so PixInsight asks you to confirm the
-   download from an unsigned source. Confirm it.
+4. The repository is signed by the Certified PixInsight Developer **Francesco
+   Carucci**, and so are the scripts, so PixInsight can verify where the
+   download comes from.
 5. **Restart PixInsight** when asked; updates are installed while it restarts.
 
 The scripts appear under **Script → Loom**: **Loom**, **Frame Selector** and
