@@ -1,0 +1,791 @@
+"""Loom's input rules: which file is which channel, selection checks, master ranking, palettes and camera mapping.
+
+Ported from Loom's JavaScript (read-only reference, tag v0.4.1): script/lib/Util.js and script/lib/Pipeline.js, cited
+as file:line where a rule is ported. Each ``snake_case`` function here is the port of the JavaScript function of the
+same name; the values are pinned by tests/oracle/loom_channels.json.
+
+Functions take plain data and never open a file, with two exceptions: ``read_header`` (one header read) and
+``scan_masters`` (a folder listing plus one header read per candidate). Both take their disk access as injectable
+callables, so the rules are testable without masters on disk.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import re
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from loomsiril import io_fits
+from loomsiril.jsmath import js_string, parse_float
+from loomsiril.loom import xisf
+
+# ---------------------------------------------------------------------------
+# Channels (Util.js:436-449)
+# ---------------------------------------------------------------------------
+
+CHANNELS: list[str] = ["L", "R", "G", "B", "H", "S", "O"]
+BROADBAND: list[str] = ["L", "R", "G", "B"]
+RGB_GROUP: list[str] = ["R", "G", "B"]
+NARROWBAND: list[str] = ["H", "S", "O"]
+
+
+def is_broadband(key: str) -> bool:
+    return key in BROADBAND
+
+
+# ---------------------------------------------------------------------------
+# Header keywords (Util.js:447-460)
+# ---------------------------------------------------------------------------
+
+
+def keyword_value(keywords: Sequence[Mapping[str, Any]], name: str) -> Optional[str]:
+    """The bare value of the first keyword called ``name``, or None when absent or blank.
+
+    FITS string values arrive single-quoted and blank-padded; the quotes and padding go.
+    """
+    for kw in keywords:
+        if kw["name"] == name:
+            v = str(kw["value"]).strip()
+            if len(v) >= 2 and v[0] == "'" and v[-1] == "'":
+                v = v[1:-1]
+            v = v.strip()
+            return v if len(v) > 0 else None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Selection checks (Util.js:603-669)
+# ---------------------------------------------------------------------------
+
+
+def _has_path(p: Any) -> bool:
+    return isinstance(p, str) and len(p) > 0
+
+
+def channel_supplied(paths: Mapping[str, Any], views: Mapping[str, Any], k: str) -> bool:
+    """A channel is supplied by a file path or an open view (Util.js:613-617)."""
+    if _has_path(paths.get(k)):
+        return True
+    v = views.get(k)
+    return v is not None and len(js_string(v)) > 0
+
+
+def channel_group_problems(paths: Mapping[str, Any], views: Mapping[str, Any]) -> list[str]:
+    """The RGB group is all or nothing; any narrowband subset is fine; there must be something (Util.js:623-643)."""
+    problems: list[str] = []
+    rgb_present = [c for c in RGB_GROUP if channel_supplied(paths, views, c)]
+    rgb_missing = [c for c in RGB_GROUP if not channel_supplied(paths, views, c)]
+    if rgb_present and rgb_missing:
+        problems.append("Incomplete RGB set: missing " + ", ".join(rgb_missing) +
+                        ". Supply all three or none.")
+    nb_count = sum(1 for k in NARROWBAND if channel_supplied(paths, views, k))
+    if not rgb_present and nb_count == 0:
+        problems.append("Nothing to do: supply R, G and B, or at least one of H, S, O")
+    return problems
+
+
+def _path_key(p: str) -> str:
+    """The identity of a path for the duplicate check.
+
+    POSIX-style paths compare exactly, as Loom does. A Windows-style path (a backslash, or a drive letter) is
+    compared with separators unified to "/" and case folded, because Windows file names are case-insensitive.
+    """
+    if "\\" in p or re.match(r"^[A-Za-z]:", p):
+        return p.replace("\\", "/").lower()
+    return p
+
+
+def duplicate_file_problems(paths: Mapping[str, Any]) -> list[str]:
+    """The same file named for two channels, reported once per repeat (Util.js:646-661).
+
+    Paths are compared through ``_path_key``, so C:\\a\\x.xisf and C:/a/x.xisf name the same file. The message
+    prints the path as the second channel gave it, as Loom does.
+    """
+    problems: list[str] = []
+    seen: dict[str, str] = {}
+    for k in CHANNELS:
+        p = paths.get(k)
+        if not _has_path(p):
+            continue
+        key = _path_key(p)
+        if key in seen:
+            problems.append("Same file selected for " + seen[key] + " and " + k + ": " + p)
+        else:
+            seen[key] = k
+    return problems
+
+
+def validate_selection(paths: Mapping[str, Any], views: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Every structural problem with a channel selection; an empty list means the selection is valid (Util.js:603-608)."""
+    v: Mapping[str, Any] = views or {}
+    return channel_group_problems(paths, v) + duplicate_file_problems(paths)
+
+
+# ---------------------------------------------------------------------------
+# Filter -> channel (Util.js:670-712)
+# ---------------------------------------------------------------------------
+
+FILTER_LETTERS: dict[str, str] = {"l": "L", "r": "R", "g": "G", "b": "B", "h": "H", "s": "S", "o": "O"}
+
+# Tried in order: narrowband before broadband, because "sii" and "oiii" would be misread by a naive "i" test.
+FILTER_NAMES: list[dict[str, Any]] = [
+    {"token": "halpha", "exact": "ha", "channel": "H"},
+    {"token": "sii", "exact": "s2", "channel": "S"},
+    {"token": "oiii", "exact": "o3", "channel": "O"},
+    {"token": "lum", "exact": None, "channel": "L"},
+    {"token": "red", "exact": None, "channel": "R"},
+    {"token": "green", "exact": None, "channel": "G"},
+    {"token": "blue", "exact": None, "channel": "B"},
+]
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]")
+
+
+def channel_from_filter(filter_value: Any) -> Optional[str]:
+    """The channel a FILTER keyword value names, or None. Case and punctuation are ignored (Util.js:670-691)."""
+    if filter_value is None:
+        return None
+    f = _NON_ALNUM.sub("", js_string(filter_value).lower())
+    if not f:
+        return None
+    if f in FILTER_LETTERS:
+        return FILTER_LETTERS[f]
+    for rule in FILTER_NAMES:
+        if rule["token"] in f or f == rule["exact"]:
+            return rule["channel"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The saved selection list (Util.js:713-748)
+# ---------------------------------------------------------------------------
+
+
+def serialize_entries(entries: Sequence[Mapping[str, str]]) -> str:
+    """One ``source<TAB>ref`` record per line."""
+    return "\n".join(e["source"] + "\t" + e["ref"] for e in entries)
+
+
+def deserialize_entries(text: Optional[str], warn: Optional[Callable[[str], None]] = None) -> list[dict[str, str]]:
+    """The file entries of a saved list.
+
+    Only ``file`` records are restored. A ``view`` record refers to an open PixInsight view that does not exist in a
+    Siril session, so it is dropped and reported through ``warn`` when given. Blank, tab-less and empty-reference
+    lines are skipped silently.
+    """
+    result: list[dict[str, str]] = []
+    if not text:
+        return result
+    for line in str(text).split("\n"):
+        if line == "":
+            continue
+        tab = line.find("\t")
+        if tab < 0:
+            continue
+        source = line[:tab]
+        ref = line[tab + 1:]
+        if not ref:
+            continue
+        if source == "file":
+            result.append({"source": "file", "ref": ref})
+        elif source == "view" and warn is not None:
+            warn("saved selection: view entry " + repr(ref) + " dropped (only file entries are restored)")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Drizzle factor (Util.js:749-837)
+# ---------------------------------------------------------------------------
+
+NATIVE_PIXEL_SIZE: float = 3.76  # um, the ASI2600MM's native pitch
+
+
+def _js_float(x: Any) -> float:
+    """``parseFloat`` of a value: a number passes through, text is read by its leading number, anything else is NaN."""
+    if x is None or isinstance(x, bool):
+        return math.nan
+    if isinstance(x, (int, float)):
+        return float(x)
+    return parse_float(str(x))
+
+
+def factor_label(factor: float) -> str:
+    """"Nx" for a clean integer factor of at least 2 (within 0.05), else ""."""
+    f = float(factor)
+    if not math.isfinite(f):
+        return ""
+    rounded = math.floor(f + 0.5)  # Math.round
+    if rounded < 2 or abs(f - rounded) > 0.05:
+        return ""
+    return str(rounded) + "x"
+
+
+def drizzle_label(xpixsz: Any) -> str:
+    """The XPIXSZ rule alone: the drizzle factor the recorded pixel size implies (Util.js:761-766)."""
+    v = _js_float(xpixsz)
+    if not math.isfinite(v) or v <= 0:
+        return ""
+    return factor_label(NATIVE_PIXEL_SIZE / v)
+
+
+def unescape_history(history: Any) -> str:
+    """A ProcessingHistory as plain XML text: it may be stored escaped (Util.js:769-772)."""
+    s = "" if history is None else str(history)
+    return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&")
+
+
+_DRIZZLE_INSTANCE = re.compile(r'<instance\s+class="DrizzleIntegration"[\s\S]*?(?=<instance\s|\Z)')
+_SCALE_PARAMETER = re.compile(r'<parameter\s+id="scale"\s+value="([^"]*)"')
+_IMAGE_INTEGRATION_INSTANCE = re.compile(r'<instance\s+class="ImageIntegration"')
+
+
+def drizzle_scale_from_history(history: Any) -> Optional[float]:
+    """The scale of the LAST DrizzleIntegration instance: None when there is none, NaN when it has no readable scale.
+
+    Only that instance's own text is searched, so another process's "scale" is not read (Util.js:779-788).
+    """
+    h = unescape_history(history)
+    last: Optional[str] = None
+    for m in _DRIZZLE_INSTANCE.finditer(h):
+        last = m.group(0)
+    if last is None:
+        return None
+    sm = _SCALE_PARAMETER.search(last)
+    return parse_float(sm.group(1)) if sm else math.nan
+
+
+def integration_drizzle_label(history: Any, signature: Any, xpixsz: Any) -> str:
+    """The drizzle label of a master from its integration metadata (Util.js:800-817).
+
+    1. a DrizzleIntegration scale: that factor (a clean integer of at least 2, else "")
+    2. a DrizzleIntegration signature without a scale: the XPIXSZ factor, else "drizzle"
+    3. an ImageIntegration signature or history: not drizzled ("")
+    4. no metadata: the XPIXSZ rule
+    """
+    scale = drizzle_scale_from_history(history)
+    if scale is not None and math.isfinite(scale):
+        return factor_label(scale)
+    sig = "" if signature is None else str(signature)
+    if scale is not None or re.match(r"process=DrizzleIntegration", sig):
+        return drizzle_label(xpixsz) or "drizzle"
+    if re.match(r"process=ImageIntegration", sig) or _IMAGE_INTEGRATION_INSTANCE.search(unescape_history(history)):
+        return ""
+    return drizzle_label(xpixsz)
+
+
+def master_drizzle_label(info: Optional[Mapping[str, Any]]) -> str:
+    """The drizzle label of a header read as ``read_header`` returns it (Util.js:819-825)."""
+    if info is None:
+        return ""
+    return integration_drizzle_label(info.get("history"), info.get("signature"),
+                                     keyword_value(info.get("keywords") or [], "XPIXSZ"))
+
+
+# ---------------------------------------------------------------------------
+# Camera -> QE curve (Util.js:838-890, 1401-1438)
+# ---------------------------------------------------------------------------
+
+IDEAL_QE_CURVE_NAME = "Ideal QE curve"
+
+# Loom's table: normalised INSTRUME text (lowercase, alphanumeric) that contains a token -> PixInsight curve name.
+CAMERA_QE_CURVES: list[tuple[tuple[str, ...], str]] = [
+    (("asi2600", "asi6200", "asi533", "asi094", "qhy268", "qhy600",
+      "imx571", "imx455", "imx461", "imx533", "imx411"), "Sony IMX411/455/461/533/571"),
+    (("asi1600", "mn34230"), "Panasonic MN34230 (ASI1600MM)"),
+    (("asi178", "imx178"), "Sony IMX178"),
+    (("asi183", "imx183"), "Sony IMX183"),
+    (("asi294", "imx492"), "Sony IMX492"),
+    (("asi585", "imx585"), "Sony IMX585"),
+    (("kaf16200",), "KAF-16200"),
+    (("kaf16803",), "KAF-16803"),
+    (("kaf8300",), "KAF-8300"),
+]
+
+
+def _normalised(text: Any) -> str:
+    return _NON_ALNUM.sub("", js_string(text).lower())
+
+
+def qe_curve_name_for_camera(instrume: Any) -> Optional[str]:
+    """Loom's PixInsight QE curve name for a camera's INSTRUME, or None when the sensor is not in the table."""
+    if instrume is None:
+        return None
+    n = _normalised(instrume)
+    if not n:
+        return None
+    for tokens, curve in CAMERA_QE_CURVES:
+        for tok in tokens:
+            if tok in n:
+                return curve
+    return None
+
+
+# The same matching, mapped to the sensor names of Siril 1.4.4's SPCC database. Patterns are tried in Loom's order
+# against the normalised INSTRUME text; a camera that matches none is "Generic mono sensor".
+GENERIC_SENSOR = "Generic mono sensor"
+
+SPCC_SENSOR_TABLE: dict[str, str] = {
+    r"asi2600|asi6200|asi533|asi094|qhy268|qhy600|imx571|imx455|imx461|imx533|imx411": "Sony IMX411/455/461/533/571",
+    r"asi1600|mn34230": "Panasonic MN34230ALJ",
+    r"asi178|imx178": "Sony IMX178",
+    r"asi183|imx183": "Sony IMX183",
+    r"asi294|imx492": "Sony IMX492/294",
+    r"asi585|imx585": "Sony IMX585",
+    r"kaf16200": "KAF16200",
+    r"kaf16803": "KAF16803",
+    r"kaf8300": "KAF8300",
+}
+
+
+def spcc_sensor_for(instrume: Any) -> str:
+    """The Siril SPCC sensor name for a camera's INSTRUME value; "Generic mono sensor" when unknown."""
+    if instrume is None:
+        return GENERIC_SENSOR
+    n = _normalised(instrume)
+    if not n:
+        return GENERIC_SENSOR
+    for pattern, sensor in SPCC_SENSOR_TABLE.items():
+        if re.search(pattern, n):
+            return sensor
+    return GENERIC_SENSOR
+
+
+def common_instrument(values: Sequence[Any]) -> Optional[str]:
+    """The camera every non-blank value names, or None when they disagree or none is given (Util.js:1412-1427)."""
+    seen: Any = None
+    for v in values:
+        if v is None or v == "":
+            continue
+        if seen is None:
+            seen = v
+        elif seen != v:
+            return None
+    return seen
+
+
+# ---------------------------------------------------------------------------
+# Narrowband palettes (Util.js:1461-1557)
+# ---------------------------------------------------------------------------
+
+PALETTES: dict[str, list[str]] = {
+    "SHO": ["S", "H", "O"],
+    "HOO": ["H", "O", "O"],
+    "HSO": ["H", "S", "O"],
+}
+
+NARROWBAND_NM: dict[str, float] = {"H": 656.28, "S": 671.60, "O": 500.70}
+
+
+def palette_names() -> list[str]:
+    return list(PALETTES.keys())
+
+
+def palette_wavelengths(palette: str) -> Optional[list[dict[str, Any]]]:
+    """The (channel, nm) pairs a palette presents to SPCC, in R, G, B order; None for an unknown palette."""
+    mapping = PALETTES.get(palette)
+    if mapping is None:
+        return None
+    out: list[dict[str, Any]] = []
+    for ch in mapping:
+        nm = NARROWBAND_NM.get(ch)
+        if nm is None:
+            return None
+        out.append({"channel": ch, "nm": nm})
+    return out
+
+
+def palette_channels(palette: str) -> Optional[list[str]]:
+    """The distinct channels a palette needs, in first-use order; None for an unknown palette."""
+    mapping = PALETTES.get(palette)
+    if mapping is None:
+        return None
+    out: list[str] = []
+    for ch in mapping:
+        if ch not in out:
+            out.append(ch)
+    return out
+
+
+def palette_missing(palette: str, available: Sequence[str]) -> Optional[list[str]]:
+    """The channels a palette needs that ``available`` lacks; [] means it can be built; None for an unknown palette."""
+    need = palette_channels(palette)
+    if need is None:
+        return None
+    return [ch for ch in need if ch not in available]
+
+
+# ---------------------------------------------------------------------------
+# Master selection (Util.js:1558-1645)
+# ---------------------------------------------------------------------------
+
+
+def is_autocrop_name(name: Any) -> bool:
+    """Autocrop is not recorded in metadata, so the file name is the only source."""
+    return re.search("autocrop", "" if name is None else str(name), re.IGNORECASE) is not None
+
+
+def is_master_light(name: Any, imagetyp: Any) -> bool:
+    """IMAGETYP decides when present; the name prefix is the fallback for files that lack it."""
+    if imagetyp is not None and str(imagetyp) != "":
+        return re.search("light", str(imagetyp), re.IGNORECASE) is not None
+    return re.match("masterLight", "" if name is None else str(name), re.IGNORECASE) is not None
+
+
+def master_variant_rank(drizzle_label_value: Any, autocrop: Any) -> int:
+    """3 drizzled and autocropped, 2 drizzled, 1 autocropped, 0 plain."""
+    d = drizzle_label_value is not None and str(drizzle_label_value) != ""
+    a = bool(autocrop)
+    if d and a:
+        return 3
+    if d:
+        return 2
+    if a:
+        return 1
+    return 0
+
+
+_FILTER_TOKEN = re.compile(r"FILTER-([A-Za-z][A-Za-z0-9]*)", re.IGNORECASE)
+_DRIZZLE_TOKEN = re.compile(r"drizzle_([0-9]+)x", re.IGNORECASE)
+
+
+def parse_master_name(name: Any) -> Optional[dict[str, Any]]:
+    """What a master's FILE NAME claims: filter, channel, drizzle and autocrop. A pre-filter only.
+
+    None when the name carries no FILTER token. The FILTER keyword in the header stays authoritative (Util.js:1610-1622).
+    """
+    n = "" if name is None else str(name)
+    m = _FILTER_TOKEN.search(n)
+    if m is None:
+        return None
+    dm = _DRIZZLE_TOKEN.search(n)
+    return {
+        "filter": m.group(1),
+        "channel": channel_from_filter(m.group(1)),
+        "drizzle": (dm.group(1) + "x") if dm else "",
+        "autocrop": is_autocrop_name(n),
+    }
+
+
+def select_masters(candidates: Sequence[Optional[Mapping[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """The best master per channel: highest variant rank, then the most recent ``mtime`` (Util.js:1625-1643).
+
+    Each candidate is a mapping with ``channel``, ``drizzle``, ``autocrop`` and ``mtime`` (plus any other fields).
+    Returns the winning candidate per channel as a copy carrying its ``rank``; entries without a channel are ignored.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    for c in candidates:
+        if not c or not c.get("channel"):
+            continue
+        rank = master_variant_rank(c.get("drizzle"), c.get("autocrop"))
+        cur = best.get(c["channel"])
+        if (cur is None or rank > cur["rank"] or
+                (rank == cur["rank"] and (c.get("mtime") or 0) > (cur.get("mtime") or 0))):
+            winner = dict(c)
+            winner["rank"] = rank
+            best[c["channel"]] = winner
+    return best
+
+
+# ---------------------------------------------------------------------------
+# Project name (Pipeline.js:204-260)
+# ---------------------------------------------------------------------------
+
+GENERIC_FOLDERS: list[str] = ["master", "masters", "integration", "integrations",
+                              "calibrated", "registered", "drizzle", "autocrop",
+                              "light", "lights", "output", "outputs", "tiff",
+                              "cache", "tmp", "temp"]
+
+
+def psb_base_name(config: Optional[Mapping[str, Any]]) -> str:
+    """The project name, trimmed, or "Loom" when there is none (Pipeline.js:204-208)."""
+    raw = config.get("projectName") if config else None
+    n = str(raw).strip() if raw else ""
+    return n if len(n) > 0 else "Loom"
+
+
+def extract_directory(path: str) -> str:
+    """The directory part of a path, as PixInsight's File.extractDirectory gives it.
+
+    PJSR's File API speaks forward slashes on every platform, so backslashes are read as separators: they are
+    replaced by "/", and the directory is everything before the last "/" ("" when there is none).
+    """
+    p = path.replace("\\", "/")
+    i = p.rfind("/")
+    return "" if i < 0 else p[:i]
+
+
+def project_name_from_path(path: Any) -> str:
+    """The name of the folder a master lives in, skipping generic container folders (Pipeline.js:226-244).
+
+    Both "/" and "\\" separate folders (see ``extract_directory``), so Windows, mixed and UNC paths resolve alike.
+    """
+    if not path or str(path) == "":
+        return ""
+    d = extract_directory(str(path))
+    for part in reversed(d.split("/")):
+        if part == "":
+            continue
+        if part.lower() in GENERIC_FOLDERS:
+            continue
+        return part
+    return ""
+
+
+def project_name_for(config: Optional[Mapping[str, Any]]) -> str:
+    """The project name guessed from the first source path of the run, in channel order (Pipeline.js:247-260)."""
+    if not config or not config.get("paths"):
+        return ""
+    paths = config["paths"]
+    for k in CHANNELS:
+        p = paths.get(k)
+        if p and str(p) != "":
+            n = project_name_from_path(p)
+            if n:
+                return n
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Narrowband supply and palette reports (Pipeline.js:95-149)
+# ---------------------------------------------------------------------------
+
+
+def narrowband_supplied(config: Mapping[str, Any]) -> list[str]:
+    """The narrowband channels the run supplies, as files or open views."""
+    paths = config.get("paths") or {}
+    views = config.get("views") or {}
+    return [k for k in NARROWBAND if channel_supplied(paths, views, k)]
+
+
+def wanted_palettes(config: Mapping[str, Any]) -> list[str]:
+    """The saved palettes this run can build: every channel the palette needs is supplied."""
+    have = narrowband_supplied(config)
+    out: list[str] = []
+    for pal in config.get("palettes") or []:
+        missing = palette_missing(pal, have)
+        if missing is not None and len(missing) == 0:
+            out.append(pal)
+    return out
+
+
+def report_skipped_palettes(config: Mapping[str, Any]) -> list[str]:
+    """The warning messages for saved palettes this run leaves out. Nothing is reported when no narrowband is supplied."""
+    have = narrowband_supplied(config)
+    messages: list[str] = []
+    for pal in config.get("palettes") or []:
+        missing = palette_missing(pal, have)
+        if missing is not None and len(missing) == 0:
+            continue
+        if missing is None:
+            messages.append("the " + pal + " palette is skipped: it is not a palette Loom knows")
+        elif len(have) > 0:
+            messages.append("the " + pal + " palette is skipped: it needs " + " and ".join(missing) + ", which " +
+                            ("was" if len(missing) == 1 else "were") + " not supplied")
+    return messages
+
+
+def inherit_instrument(chans: Mapping[str, dict[str, Any]]) -> list[str]:
+    """Give each channel with no INSTRUME the camera the other channels name, when they agree (Pipeline.js:1780-1798).
+
+    Mutates the channel records in place (``instrume`` and ``instrumeInherited``) and returns the log messages.
+    """
+    keys = list(chans.keys())
+    common = common_instrument([chans[k].get("instrume") for k in keys])
+    logs: list[str] = []
+    if common is not None:
+        for k in keys:
+            cc = chans[k]
+            if cc.get("instrume") is None or cc.get("instrume") == "":
+                cc["instrume"] = common
+                cc["instrumeInherited"] = True
+                logs.append(cc["key"] + " has no INSTRUME; taking '" + common +
+                            "' from the other masters of this session")
+    return logs
+
+
+# ---------------------------------------------------------------------------
+# Header reads (the only functions here that touch the disk, apart from scan_masters)
+# ---------------------------------------------------------------------------
+
+_FITS_BLOCK = 2880
+
+
+def _fits_value_text(v: Any) -> str:
+    """A parsed FITS value as the quoted or bare text Loom's keyword() would see."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "T" if v else "F"
+    if isinstance(v, str):
+        return "'" + v + "'"
+    if isinstance(v, float):
+        return repr(v)
+    return str(v)
+
+
+def _read_fits_header(path: str) -> dict[str, Any]:
+    """The primary header of a FITS file, read block by block up to END. No pixels are read."""
+    data = b""
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(_FITS_BLOCK)
+            if not block:
+                raise ValueError(f"FITS header has no END card: {path}")
+            data += block
+            try:
+                header, _ = io_fits._parse_header(data)
+                break
+            except ValueError:
+                if len(block) < _FITS_BLOCK:
+                    raise
+    keywords = [{"name": k, "value": _fits_value_text(v)} for k, v in header.items()]
+
+    def _int(key: str) -> Optional[int]:
+        v = header.get(key)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    return {"format": "fits", "keywords": keywords, "history": None, "signature": None,
+            "width": _int("NAXIS1"), "height": _int("NAXIS2"), "notes": []}
+
+
+def read_header(path: str) -> dict[str, Any]:
+    """The header fields a master needs, read without decoding pixels.
+
+    Returns ``{"format", "keywords": [{"name", "value"}], "history", "signature", "width", "height"}``. ``history``
+    and ``signature`` are the XISF properties ``PixInsight:ProcessingHistory`` and
+    ``PCL:Signature:Integration``; FITS has neither. Raises ValueError for anything that is neither XISF nor FITS.
+    """
+    with open(path, "rb") as fh:
+        sig = fh.read(8)
+    if sig == xisf.XISF_SIGNATURE:
+        hdr = xisf.read_xisf_header(path)
+        geometry = hdr.geometry
+        return {
+            "format": "xisf",
+            "keywords": [{"name": n, "value": v} for n, v, _c in hdr.keywords],
+            "history": hdr.properties.get("PixInsight:ProcessingHistory"),
+            "signature": hdr.properties.get("PCL:Signature:Integration"),
+            "width": geometry[0] if geometry else None,
+            "height": geometry[1] if geometry else None,
+            "notes": list(hdr.notes),
+        }
+    if sig.startswith(b"SIMPLE"):
+        return _read_fits_header(path)
+    raise ValueError("not an XISF or FITS file: " + str(path))
+
+
+def _is_master_file_name(name: str) -> bool:
+    return re.search(r"\.(xisf|fits?|fit)$", name, re.IGNORECASE) is not None
+
+
+def _is_calibration_name(name: str) -> bool:
+    return re.match(r"master(Flat|Dark|Bias)", name, re.IGNORECASE) is not None
+
+
+def scan_masters(
+    folder: str,
+    read_header: Optional[Callable[[str], Optional[dict[str, Any]]]] = None,
+    stat: Optional[Callable[[str], float]] = None,
+    list_dir: Optional[Callable[[str], Sequence[str]]] = None,
+    is_dir: Optional[Callable[[str], bool]] = None,
+) -> Optional[dict[str, Any]]:
+    """Pick the best master per channel from a WBPP master folder (UI.js:1940-2110, without the quality measurement).
+
+    Phase 1 ranks candidates by their file names alone; calibration masters are skipped by name. Phase 2 reads the
+    header of each winner: its FILTER keyword decides the channel, and it must be a light (IMAGETYP). Files whose
+    names carry no filter are opened only when no candidate has a filter in its name (UI.js:1995-1997).
+
+    Returns None when ``folder`` is not a directory. Otherwise a dict with ``confirmed`` (channel -> entry),
+    ``corrected`` (name-versus-header disagreements), ``skipped`` (winners that were not lights) and ``total``.
+    Directories are skipped, even when their names end in .fits. The default ``read_header``, ``stat``, ``list_dir``
+    and ``is_dir`` use the disk; tests inject their own.
+    """
+    reader = read_header or _read_header_or_none
+    mtime_of = stat or _mtime
+    listing = list_dir or os.listdir
+    directory = is_dir or os.path.isdir
+    if not directory(folder):
+        return None
+
+    scan_total = 0
+    named: list[dict[str, Any]] = []
+    unnamed: list[dict[str, Any]] = []
+    for name in sorted(listing(folder)):
+        if name.startswith(".") or not _is_master_file_name(name):
+            continue
+        path = os.path.join(folder, name)
+        if directory(path):
+            continue
+        scan_total += 1
+        if _is_calibration_name(name):
+            continue
+        rec: dict[str, Any] = {"path": path, "name": name, "mtime": mtime_of(path)}
+        parsed = parse_master_name(name)
+        if parsed is not None and parsed["channel"] is not None:
+            rec.update(channel=parsed["channel"], drizzle=parsed["drizzle"], autocrop=parsed["autocrop"])
+            named.append(rec)
+        else:
+            unnamed.append(rec)
+
+    picks = select_masters(named)
+    if not picks and unnamed:
+        for rec in unnamed:
+            info = reader(rec["path"])
+            if info is None:
+                continue
+            channel = channel_from_filter(keyword_value(info.get("keywords") or [], "FILTER"))
+            if channel is None:
+                continue
+            rec.update(channel=channel, drizzle=master_drizzle_label(info), autocrop=is_autocrop_name(rec["name"]))
+            named.append(rec)
+        picks = select_masters(named)
+
+    confirmed: dict[str, dict[str, Any]] = {}
+    corrected: list[str] = []
+    skipped = 0
+    for pick in picks.values():
+        info = reader(pick["path"])
+        if info is None:
+            continue
+        kws = info.get("keywords") or []
+        if not is_master_light(pick["name"], keyword_value(kws, "IMAGETYP")):
+            skipped += 1
+            continue
+        filter_value = keyword_value(kws, "FILTER")
+        channel = channel_from_filter(filter_value)
+        if channel is None:
+            continue
+        if channel != pick["channel"]:
+            corrected.append(pick["name"] + ": name says " + pick["channel"] + ", header says " + channel)
+        entry = {
+            "path": pick["path"],
+            "name": pick["name"],
+            "filter": filter_value,
+            "instrume": keyword_value(kws, "INSTRUME"),
+            "channel": channel,
+            "width": info.get("width"),
+            "height": info.get("height"),
+            "drizzle": master_drizzle_label(info),
+            "autocrop": pick["autocrop"],
+            "mtime": pick["mtime"],
+        }
+        prev = confirmed.get(channel)
+        if prev is None or (master_variant_rank(entry["drizzle"], entry["autocrop"]) >
+                            master_variant_rank(prev["drizzle"], prev["autocrop"])):
+            confirmed[channel] = entry
+    return {"confirmed": confirmed, "corrected": corrected, "skipped": skipped, "total": scan_total}
+
+
+def _read_header_or_none(path: str) -> Optional[dict[str, Any]]:
+    try:
+        return read_header(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0

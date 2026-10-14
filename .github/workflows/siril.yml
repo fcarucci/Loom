@@ -1,0 +1,62 @@
+name: Siril CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'siril-v*' ]
+  pull_request:
+    paths: [ 'siril/**', '.github/workflows/siril.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: siril
+
+jobs:
+  test:
+    name: test (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: ffmpeg (best effort; its tests skip without it)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg || true
+          else
+            brew install ffmpeg || true
+          fi
+      - name: pytest
+        run: python -m pytest -q -rs
+
+  docker:
+    # Best effort: the Siril and StarNet downloads can be flaky, so this job does not gate the merge.
+    name: docker image (full suite)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image without StarNet and run the suite
+        # StarNet2 is never downloaded in CI: its licence must be accepted by a person (README, StarNet2 section),
+        # so both build args are empty here and the starnet tests skip with a reason.
+        run: |
+          docker build --build-arg STARNET_URL= --build-arg STARNET_SHA256= -f docker/Dockerfile -t loomsiril-ci .
+          docker run --rm loomsiril-ci python -m pytest -q -rs

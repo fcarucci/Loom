@@ -1,0 +1,26 @@
+{
+ "about": {"recorder":"tools/oracle/geometry.js","loom":"v0.4.1","source":"Loom script/lib (read-only)"},
+ "cases": {
+  "constants": [{"args":[],"out":{"BACKDROP_MOTION_DEFAULT":0.4,"HDR_MAG_RANGE":5,"HEADROOM_RADIUS":6,"HEADROOM_SIGMA":0.5,"HDR_REFERENCE_WHITE":203,"SPIKE_LENGTH_MAX":4,"SHUTTER":0.5,"TWINKLE_DEFAULT":0.03,"GROWTH_DEFAULT":0.15,"MODEL_BLEND":[2,4],"CORE_MODEL_BLEND":[1,1.5],"FADE_NEAR":[6,14]}}],
+  "moved": [{"args":[324.745,57.514,500,{"ra":324.745,"dec":57.514},100],"out":{"ra":324.745,"dec":57.51399999999999,"front":true,"ratio":1.25}},{"args":[324.745,58.514,100,{"ra":324.745,"dec":57.514},50],"out":{"ra":324.745,"dec":59.51369549851742,"front":true,"ratio":1.9993910588455055}},{"args":[324.745,57.6,40,{"ra":324.745,"dec":57.514},60],"out":{"ra":144.745,"dec":-57.342000968760686,"front":false,"ratio":1.999986482436962}},{"args":[324.745,57.514,50,{"ra":324.745,"dec":57.514},50],"out":{"ra":0,"dec":NaN,"front":false,"ratio":Infinity}},{"args":[NaN,57.514,100,{"ra":324.745,"dec":57.514},50],"out":{"ra":NaN,"dec":NaN,"front":false,"ratio":NaN}}],
+  "screenPosition": [{"args":[{"x":200,"y":100},{"x":150,"y":100},{"x":150,"y":100},1.2],"out":{"x":200,"y":100}},{"args":[{"x":110,"y":100},{"x":120,"y":100},{"x":100,"y":100},1.5],"out":{"x":130,"y":100}},{"args":[{"x":100,"y":100},{"x":120,"y":100},{"x":100,"y":100},1.5],"out":{"x":130,"y":100}},{"args":[{"x":110,"y":100},{"x":120,"y":100},{"x":100,"y":100},1],"out":{"x":110,"y":100}},{"args":[{"x":110,"y":100},{"x":120,"y":100},{"x":100,"y":100},NaN],"out":{"x":110,"y":100}}],
+  "backdropZoom": [{"args":[900,180,1],"out":1.25},{"args":[900,180,0.4],"out":1.1},{"args":[900,180,0],"out":1},{"args":[Infinity,180,1],"out":1},{"args":[900,900,0.4],"out":Infinity}],
+  "backdropScale": [{"args":[900,180],"out":1.25},{"args":[Infinity,180],"out":1},{"args":[900,0],"out":1},{"args":[900,900],"out":Infinity}],
+  "radialSource": [{"args":[3,5,2],"out":3},{"args":[25,5,2],"out":15},{"args":[25,5,1],"out":25},{"args":[25,5,2,1],"out":15},{"args":[25,5,2,0.5],"out":25},{"args":[25,5,2,0],"out":205},{"args":[25,5,2,NaN],"out":NaN}],
+  "discVisible": [{"args":[50,50,5,100,100],"out":1},{"args":[0,50,5,100,100],"out":0.5},{"args":[100,100,5,100,100],"out":0.25},{"args":[-10,50,5,100,100],"out":0},{"args":[3,3,5,100,100],"out":0.7120535714285714},{"args":[50,50,NaN,100,100],"out":0}],
+  "discGridCount": [{"args":[50,50,5,100,100],"out":{"inDisc":448,"inFrame":448}},{"args":[0,50,5,100,100],"out":{"inDisc":448,"inFrame":224}},{"args":[-10,50,5,100,100],"out":{"inDisc":448,"inFrame":0}},{"args":[50,50,NaN,100,100],"out":{"inDisc":576,"inFrame":0}}],
+  "coverFraction": [{"args":[5,5,11],"out":0},{"args":[3,10,4],"out":1},{"args":[5,5,5],"out":0.3910022189557707},{"args":[10,3,2],"out":0.09},{"args":[5,3,4],"out":0.23204401933091387},{"args":[5,5,0],"out":1},{"args":[5,5,NaN],"out":NaN}],
+  "headroomBump": [{"args":[0,2,4],"out":4},{"args":[2,2,4],"out":2.8195919791379005},{"args":[20,2,4],"out":1},{"args":[3,0,4],"out":1},{"args":[0,0,4],"out":NaN}],
+  "magnitudeGain": [{"args":[5,5,4],"out":4},{"args":[7.5,5,4],"out":2.5},{"args":[10,5,4],"out":1},{"args":[12,5,4],"out":1},{"args":[NaN,5,4],"out":NaN}],
+  "spikeLength": [{"args":[1,true,1],"out":1},{"args":[3,true,1.3],"out":3},{"args":[9,true,2.2],"out":4},{"args":[3,false,1.3],"out":1.3},{"args":[0.5,true,1],"out":1},{"args":[NaN,true,1],"out":NaN}],
+  "shutterSteps": [{"args":[0.2],"out":1},{"args":[6],"out":8},{"args":[100],"out":12},{"args":[0],"out":1},{"args":[Infinity],"out":12},{"args":[NaN],"out":NaN}],
+  "seeded": [{"args":[17,0],"out":0.4341956140124239},{"args":[17,5],"out":0.4664689709497907},{"args":[1,0.5],"out":0.9647921830037376},{"args":[2.25,8],"out":0.474527457721706},{"args":[-3.5,1],"out":0.6497626459095045}],
+  "twinkle": [{"args":[17,1,0.03,0],"out":1.0097023277319854},{"args":[17,2.5,0.03,0],"out":1.0102839411920757},{"args":[1,2.5,0.03,0],"out":1.032541818534596},{"args":[1,2.5,0.03,2],"out":1.0232137761725453},{"args":[17,2.5,0,0],"out":1},{"args":[17,2.5,0.03,NaN],"out":1.0102839411920757},{"args":[1,0,0.03,0],"out":1}],
+  "growth": [{"args":[1,0.15],"out":1},{"args":[3,0.15],"out":1.3},{"args":[2.5,0.2],"out":1.3},{"args":[0,0.15],"out":0.85}],
+  "pixelScale": [{"args":[2.5,0.2,true],"out":3.6982248520710055},{"args":[2.5,0.2,false],"out":0.5917159763313609},{"args":[3,0.15,true],"out":5.325443786982248},{"args":[0,0.15,true],"out":0},{"args":[2,-1,true],"out":Infinity}],
+  "coreModelWeight": [{"args":[0.5],"out":0},{"args":[1],"out":0},{"args":[1.25],"out":0.5},{"args":[1.5],"out":1},{"args":[2],"out":1}],
+  "modelWeight": [{"args":[1],"out":0},{"args":[2],"out":0},{"args":[3],"out":0.5},{"args":[4],"out":1},{"args":[10],"out":1}],
+  "opacity": [{"args":[2,true],"out":1},{"args":[25,true],"out":0},{"args":[10,true],"out":0.5},{"args":[1.5,false],"out":0},{"args":[6,true],"out":1},{"args":[14,true],"out":0}],
+  "ease": [{"args":[0.3,"smooth"],"out":0.216},{"args":[0.3,"linear"],"out":0.3},{"args":[0.001,"smoothstep"],"out":0.000002998},{"args":[0,"smooth"],"out":0},{"args":[NaN,"smooth"],"out":NaN}]
+ }
+}
