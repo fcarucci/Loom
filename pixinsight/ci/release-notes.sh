@@ -1,6 +1,7 @@
 #!/bin/sh
 # The release notes for version $1: its "## [$1]" section of CHANGELOG.md
-# (without the heading), then how to install. Fails when the section is
+# (without the heading), then how to install Loom in PixInsight and in
+# Siril, with the version substituted. Fails when the section is
 # missing or empty, so a release cannot ship without its changelog.
 set -eu
 v="$1"
@@ -14,15 +15,40 @@ if [ -z "$( printf '%s' "$notes" | tr -d '[:space:]' )" ]; then
   exit 1
 fi
 printf '%s\n\n' "$notes"
-cat <<'INSTALL'
----
+cat <<INSTALL
+## Installing
 
-Install from the update repository: **Resources → Updates → Manage
-Repositories**, add `https://fcarucci.github.io/Loom/` (with the final `/`),
-then **Check for Updates**. Or unzip the archive into your PixInsight scripts
-folder, so that you have `<scripts>/Loom`, then **Script → Feature Scripts →
-Add** and point it at that folder.
+### PixInsight
 
-A release install does not update itself: use **Check for Updates** in
-PixInsight's update repository to get the next release.
+Needs PixInsight 1.9.4 or later, on macOS or Windows. Use one of these, not
+several: two copies register the scripts twice.
+
+- **Update repository (recommended).** **Resources → Updates → Manage
+  Repositories → Add** \`https://fcarucci.github.io/Loom/\` (with the final
+  \`/\`), then **Resources → Updates → Check for Updates**, apply the Loom
+  update and restart PixInsight when asked.
+- **Zip.** Unzip the attached \`Loom-$v.zip\` into your PixInsight scripts
+  folder, so that you have \`<scripts>/Loom\`, then **Script → Feature
+  Scripts → Add** and point it at that folder.
+- **Git.** Clone the repository, then **Script → Feature Scripts → Add** and
+  choose the clone's \`pixinsight\` folder.
+
+An install from the repository or the zip does not update itself: use **Check
+for Updates** to get the next release.
+
+### Siril (experimental)
+
+Needs Siril 1.4 with Python scripting. The Siril port is not part of the
+attached zip or the update repository: it is installed from a clone.
+
+1. \`git clone --branch v$v https://github.com/fcarucci/Loom\` (any checkout
+   of the repository works).
+2. In Siril, open **Preferences → Scripts**, add the clone's \`siril/Loom\`
+   folder, click refresh, then **Apply**.
+3. \`loom_preprocess.py\` and \`loom_fly_through.py\` appear under **Scripts →
+   Loom**. On first run the script installs \`numpy\`, \`scipy\` and
+   \`tifffile\` into Siril's Python environment, which needs the network.
+
+Details: [pixinsight/README.md](https://github.com/fcarucci/Loom/blob/v$v/pixinsight/README.md)
+and [siril/README.md](https://github.com/fcarucci/Loom/blob/v$v/siril/README.md).
 INSTALL
