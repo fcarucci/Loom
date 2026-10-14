@@ -1,0 +1,32 @@
+{
+  "bxt": {
+    "schemaVersion": 5,
+    "tool": "bxt",
+    "version": "2.5.0",
+    "license": {"valid": true},
+    "parameters": [
+      {"name": "correct_only", "flag": "--correct-only", "type": "boolean"},
+      {"name": "sharpen_stars", "flag": "--ss", "type": "number", "min": 0, "max": 1},
+      {"name": "sharpen_detail", "flag": "--sn", "type": "number", "min": 0, "max": 1},
+      {"name": "auto_psf", "flag": "--ansp", "type": "boolean"}
+    ]
+  },
+  "nxt": {
+    "schemaVersion": 5,
+    "tool": "nxt",
+    "version": "2.5.0",
+    "license": {"valid": true},
+    "parameters": [
+      {"name": "denoise", "flag": "--dn", "type": "number", "min": 0, "max": 1},
+      {"name": "denoise_color", "flag": "--dc", "type": "number", "min": 0, "max": 1},
+      {"name": "recover_detail", "flag": "--rd", "type": "number", "min": 0, "max": 1}
+    ]
+  },
+  "sxt": {
+    "schemaVersion": 5,
+    "tool": "sxt",
+    "version": "2.5.0",
+    "license": {"valid": true},
+    "parameters": []
+  }
+}

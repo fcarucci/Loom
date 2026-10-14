@@ -1,0 +1,13 @@
+{
+ "about": {"recorder":"tools/oracle/loom_smoke.js","loom":"v0.4.1","source":"Loom script/lib (read-only)"},
+ "cases": {
+  "hash_abc": "a9993e364706816aba3e25717850c26c9cd0d89d",
+  "hash_utf8": "1ba4b97c3de416e95d1794064e3ac2f43ff3a8e7",
+  "params_string": "a=x;b=2;c={\"z\":1,\"y\":[1,2]}",
+  "chain_key": "e3b1aef55f027a725cec52ccc70fdc9cf29e63df",
+  "stage_order": ["solve","spfc","mgc","graxpert","aberration","register","combine","solveRGB","spfcRGB","spccRGB","sharpenRGB","extractRGB","denoiseLinearRGB","stretchRGB","denoiseRGB","paletteCombine","paletteSpcc","paletteNorm","paletteSharpen","paletteExtract","paletteDenoiseLinear","paletteStretch","paletteDenoise","extractL","denoiseLinearL","stretchL","denoiseL"],
+  "default_keys": ["autoUpdate","cacheDir","detailLevel","exportDir","exportPsb","filters","gradientTool","graxpertNarrowband","ignoreCache","keepLinear","keepWindowsOnError","marsPath","narrowbandBandwidth","narrowbandNormalize","noiseLevel","noiseLevelL","noiseTool","palettes","parallaxFamily","paths","projectName","reduceHalos","savedList","separateLStars","sharpenTool","smoothing","starReduction","starTool","stretch","stretchMethod","useCache","validateOnly","views"],
+  "channel_from_filter": [["L","L"],["Ha","H"],["SII","S"],["OIII","O"],["Red","R"],["green","G"],["Lum","L"],["xyz",null]],
+  "mtf_midtone_for": 0.13636363636363638
+ }
+}

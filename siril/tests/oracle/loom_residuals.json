@@ -1,0 +1,26 @@
+{
+ "about": {"recorder":"tools/oracle/loom_residuals.js","loom":"v0.4.1","source":"Loom script/lib (read-only)"},
+ "cases": {
+  "warn_px": 0.315,
+  "bad_px": 3,
+  "published_recursive_spline": "ok",
+  "published_old_solver_bar": "ok",
+  "just_past_bar": "poor",
+  "well_past_bar": "poor",
+  "at_matching_tolerance": "bad",
+  "beyond_matching_tolerance": "bad",
+  "perfect": "ok",
+  "nan": "unknown",
+  "undefined": "unknown",
+  "null": "unknown",
+  "string_0_1": "unknown",
+  "negative_one": "unknown",
+  "infinity": "unknown",
+  "negative_infinity": "unknown",
+  "wbpp_master_real": "ok",
+  "recursive_spline_master_real": "ok",
+  "tiny_positive": "ok",
+  "just_below_bar": "ok",
+  "just_below_bad": "poor"
+ }
+}

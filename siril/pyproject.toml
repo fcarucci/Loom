@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loomsiril"
+dynamic = ["version"]
+description = "Loom for Siril: the Loom processing pipeline and Loom's Fly-Through as Siril Python scripts"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# numpy: every typed-array loop of the JS becomes a vectorised operation.
+# tifffile: 16-bit TIFF frames with an ICC tag, and reading TIFF inputs.
+# scipy: 3x3 median, Gaussian blur and robust linear fits of the Loom pipeline.
+dependencies = ["numpy>=1.22", "scipy>=1.8", "tifffile>=2022.5.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+loomsiril = "loomsiril.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["loomsiril*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "loomsiril.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "siril: needs a Siril binary (siril-cli); skipped when absent",
+    "starnet: needs the StarNet2 CLI ($LOOMSIRIL_STARNET or starnet2 on PATH); skipped when absent",
+    "ffmpeg: needs ffmpeg on PATH; skipped when absent",
+    "perf: timing budget test; runs only with LOOMSIRIL_PERF=1 (set in the Docker image)",
+    "vendor: needs a real vendor tool installed and licensed; runs only with LOOMSIRIL_VENDOR=1",
+    "network: needs an internet connection (online catalogues); runs only with LOOMSIRIL_NETWORK=1, never in the suite",
+]

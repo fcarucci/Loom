@@ -1,10 +1,11 @@
-name: CI
+name: PixInsight CI
 
-# GitHub reads workflows only from .github/workflows, so this file lives
-# here rather than at the repository root. The work itself is in ci/, so
-# the same build can be run and inspected locally:
+# The PixInsight scripts live in pixinsight/ (the Siril port is in siril/,
+# see siril.yml). GitHub reads workflows only from .github/workflows, so this
+# file lives here. The work itself is in pixinsight/ci/, so the same build can
+# be run and inspected locally:
 #
-#    ci/package.sh
+#    pixinsight/ci/package.sh
 #
 on:
   push:
@@ -13,6 +14,13 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+
+# Every run: step starts in pixinsight/, so the paths below are as they were
+# when the repository held only the PixInsight scripts. Tags v* are PixInsight
+# releases; the Siril port's are siril-v*.
+defaults:
+  run:
+    working-directory: pixinsight
 
 jobs:
   # Most of what the suite asserts is arithmetic, cache keys, shell
@@ -110,7 +118,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Loom-${{ steps.version.outputs.version }}
-          path: dist/*.zip
+          path: pixinsight/dist/*.zip
           if-no-files-found: error
 
       # A tag publishes the archive as a release asset. This is the only
@@ -182,8 +190,8 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
-          body_path: dist/release-notes.md
+          files: pixinsight/dist/*.zip
+          body_path: pixinsight/dist/release-notes.md
 
   # The update repository, served over HTTPS so PixInsight can subscribe to
   # it: https://fcarucci.github.io/Loom/updates.xri
@@ -250,7 +258,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist/repo
+          path: pixinsight/dist/repo
 
       - id: deploy
         uses: actions/deploy-pages@v4

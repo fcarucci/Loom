@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+# StarNet2 binaries and weights: licence forbids redistribution; never committed.
+docker/vendor/starnet/*
+!docker/vendor/starnet/README.md
