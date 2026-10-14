@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-14
+
 - **One repository for PixInsight and Siril.** The repository now also holds the Siril port of Loom (in `siril/`), and the PixInsight scripts moved to the `pixinsight/` folder. A git clone now contains both, so in **Script → Feature Scripts → Add** choose the clone's `pixinsight` folder instead of the old Loom folder, and add it again if it was registered before. The update repository (`https://fcarucci.github.io/Loom/`) is unchanged, so installs through **Check for Updates** need nothing. A git checkout still updates itself. Loom for Siril 0.5.0, an experimental port, is released with it (see `siril/CHANGELOG.md`).
 
 ## [0.4.4] — 2026-10-13
