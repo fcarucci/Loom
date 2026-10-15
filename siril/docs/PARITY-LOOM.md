@@ -402,6 +402,7 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 | `siril_ops.SirilCommandOps` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
 | `siril_ops.RecordingOps` | - | S | `tests/loom/test_siril_ops.py` |
 | `siril_ops.spcc_names` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
+| `siril_ops.spcc_narrowband_names` | - | S | `tests/loom/test_siril_ops.py` |
 | `siril_ops.spcc_database_candidates` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
 | `siril_ops.siril_data_dir` | - | S | `tests/loom/test_siril_ops.py` |
 
