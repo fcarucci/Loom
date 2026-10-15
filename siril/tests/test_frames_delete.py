@@ -261,7 +261,10 @@ def test_non_utf8_file_name_is_written_back_as_its_bytes(tmp_path: Path, home: s
     folder.mkdir()
     name = os.fsdecode(b"caf\xe9-light.fit")
     path = os.path.join(str(folder), name)
-    Path(path).write_bytes(b"x" * 40)
+    try:
+        Path(path).write_bytes(b"x" * 40)
+    except OSError as e:  # APFS (macOS) only stores UTF-8 names: EILSEQ, "Illegal byte sequence"
+        pytest.skip("this file system refuses a non-UTF-8 file name: " + str(e))
     rows = [_row(path, F.REJECTED)]
     messages: list[str] = []
     result = D.execute(_manifest(rows), home=home, now=NOW, log=messages.append)

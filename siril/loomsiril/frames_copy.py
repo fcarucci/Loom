@@ -21,7 +21,8 @@ module adds a safety layer that works on resolved paths, because the string rule
 
 - the destination must be absolute and must not be a symbolic link (or a Windows junction); it is not followed;
 - the destination, every source folder, its parent and the home folder are resolved with ``os.path.realpath`` and
-  compared after ``os.path.normcase``; on macOS and Windows the comparison is also case-folded. A destination that is
+  compared after ``os.path.normcase``; on macOS and Windows the comparison is also case-folded. ``samefile`` and the
+  refusal messages use the resolved paths in their own case, never the folded comparison keys. A destination that is
   the filesystem root, the home folder, or equal to or an ancestor of a source folder, its parent or the home folder
   is refused; so is one that is the same directory (``os.path.samefile``) as any of them;
 - the same checks run again right before anything is removed;
@@ -156,10 +157,21 @@ def convert_in_place(paths: Optional[list[str]]) -> dict[str, Any]:
 
 # ---- paths -----------------------------------------------------------------------------------------------
 
+def _resolve(path: str) -> str:
+    """The path with symbolic links, "." and ".." resolved and normalised, keeping its letter case: a path that can
+    still be opened, given to ``samefile`` and shown to the user."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _fold(resolved: str) -> str:
+    """The comparison key of a resolved path: case-folded where names fold case. Only for comparing strings: on a
+    case-sensitive volume (possible on macOS) the folded spelling may name no folder at all."""
+    return resolved.casefold() if _CASE_FOLD else resolved
+
+
 def _canon(path: str) -> str:
     """The path with symbolic links, "." and ".." resolved, normalised, and case-folded where names fold case."""
-    p = os.path.normcase(os.path.realpath(path))
-    return p.casefold() if _CASE_FOLD else p
+    return _fold(_resolve(path))
 
 
 def _inside(child: str, parent: str) -> bool:
@@ -201,26 +213,30 @@ def _path_refusal(approved: list[str], destination: str, home: Optional[str]) ->
         return "the output folder must be an absolute path"
     if _is_link(destination):
         return "the output folder is a symbolic link or junction; it is not followed"
+    # Strings are compared on the folded keys; samefile and the messages get the resolved paths, in their own case:
+    # a folded path may not exist on a case-sensitive volume, and samefile on it would always say "no".
     dst = _canon(destination)
     if os.path.dirname(dst) == dst:
         return "refusing to empty the filesystem root"
     home_dir = home if home is not None else os.path.expanduser("~")
-    home_canon = _canon(home_dir)
+    home_real = _resolve(home_dir)
+    home_canon = _fold(home_real)
     if dst == home_canon:
         return "refusing to empty the home folder"
     if _inside(home_canon, dst):
         return "refusing to empty a folder that contains the home folder"
-    folders = []
+    folders: list[str] = []
     for src in approved:
-        folder = _canon(os.path.dirname(src))
-        folders.append(folder)
+        folder_real = _resolve(os.path.dirname(src))
+        folder = _fold(folder_real)
+        folders.append(folder_real)
         if _inside(folder, dst) or _inside(os.path.dirname(folder), dst):
-            return "the output folder contains the frames being copied (" + folder + ")"
+            return "the output folder contains the frames being copied (" + folder_real + ")"
     # Same directory as the source folder or any ancestor of it (up to the root), or of the home folder: an alias
     # (bind mount, another spelling on a case-insensitive mount) of an ancestor is as dangerous as the folder itself.
     root = os.path.abspath(os.sep)
     candidates: list[str] = []
-    for base in folders + [home_canon]:
+    for base in folders + [home_real]:
         candidates += _ancestors(base)
     candidates.append(root)
     for other in candidates:

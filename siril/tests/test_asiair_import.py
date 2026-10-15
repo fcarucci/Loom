@@ -449,11 +449,31 @@ def test_write_manifest_requires_the_card_root(lights: list[str], tmp_path: Path
 def test_a_card_spelled_in_another_case_is_the_card_where_names_fold_case(card: str, monkeypatch: pytest.MonkeyPatch,
                                                                          tmp_path: Path) -> None:
     spelled = card.lower() + "/export"
+    # Without case folding the strings differ; whether the lower-case spelling is still the card is then the file
+    # system's answer (samefile on its existing ancestors): yes on default APFS (macOS), no on a case-sensitive one.
+    card_folds = os.path.isdir(card.lower()) and os.path.samefile(card.lower(), card)
     monkeypatch.setattr(AI, "_CASE_FOLD", False)
-    assert AI.outputs_are_safe(spelled, card) is True
+    assert AI.outputs_are_safe(spelled, card) is (not card_folds)
     monkeypatch.setattr(AI, "_CASE_FOLD", True)
     assert AI.outputs_are_safe(spelled, card) is False
     assert AI.on_card(spelled, card) is True
+
+
+def test_a_card_spelled_in_another_case_on_a_case_folding_volume_is_the_card_without_string_folding(
+        card: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Names compared as strings keep case (Linux), but the card is on a volume that folds case (exFAT, default APFS,
+    as on the macOS CI runner): the lower-case spelling opens the card, and the samefile walk must catch it.
+    Simulated: exists and samefile treat any spelling of the card as the card."""
+    real_exists, real_samefile = os.path.exists, os.path.samefile
+
+    def on_disk(p: str) -> str:
+        return card if os.path.abspath(p).casefold() == card.casefold() else p
+
+    monkeypatch.setattr(AI.os.path, "exists", lambda p: real_exists(on_disk(p)))
+    monkeypatch.setattr(AI.os.path, "samefile", lambda a, b: real_samefile(on_disk(a), on_disk(b)))
+    monkeypatch.setattr(AI, "_CASE_FOLD", False)
+    assert AI.outputs_are_safe(card.lower() + "/export", card) is False
+    assert AI.on_card(card.lower(), card) is True
 
 
 def test_a_samefile_alias_of_the_card_is_refused(card: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -42,6 +42,33 @@ class StubSiril:
         return SimpleNamespace(data=data, header=header)
 
 
+def _folds_case(folder: Path) -> bool:
+    """Does the file system under ``folder`` fold case (default APFS on macOS, NTFS)? Probed with a real file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    probe = folder / "case-probe"
+    probe.write_bytes(b"")
+    try:
+        return (folder / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def _strict_alias_samefile(alias_of: str) -> Any:
+    """os.path.samefile, except that ``alias_of`` is also the same directory as every other existing directory (a
+    simulated bind mount, standing in even before the destination is created). Like the real one it fails when the
+    folder it is compared with does not exist, so a caller that hands it a spelling of a folder that is not on disk (a
+    case-folded one on a case-sensitive volume) gets no match."""
+    real_samefile = os.path.samefile
+
+    def samefile(x: str, y: str) -> bool:
+        os.stat(y)
+        if os.path.realpath(y) == alias_of:
+            return True
+        return real_samefile(x, y)
+
+    return samefile
+
+
 def _names(folder: Path) -> list[str]:
     return sorted(os.listdir(folder))
 
@@ -467,6 +494,8 @@ def test_output_names_collide_case_folded_where_case_folds(tmp_path: Path, monke
 
 def test_output_names_differing_only_in_case_stay_distinct_where_case_is_kept(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if _folds_case(tmp_path / "probe"):
+        pytest.skip("this file system folds case: a.fit and A.fit are one file here (default APFS on macOS)")
     monkeypatch.setattr(C, "_CASE_FOLD", False)
     a = _fits(tmp_path / "one" / "a.fit")
     b = _fits(tmp_path / "two" / "A.fit", 0.9)
@@ -564,14 +593,7 @@ def test_an_alias_of_a_source_ancestor_is_refused_and_sources_survive(
     frames = [str(a), str(b)]
     before = _sources_bytes(frames)
     alias_of = os.path.realpath(str(folder.parents[ancestor_depth - 1]))
-    real_samefile = os.path.samefile
-
-    def fake_samefile(x: str, y: str) -> bool:
-        if os.path.realpath(y) == alias_of:
-            return True
-        return real_samefile(x, y)
-
-    monkeypatch.setattr(os.path, "samefile", fake_samefile)
+    monkeypatch.setattr(os.path, "samefile", _strict_alias_samefile(alias_of))
     dest = tmp_path / "other"
 
     result = C.export_approved(frames, str(dest), None, home=str(tmp_path / "home"))
@@ -579,3 +601,50 @@ def test_an_alias_of_a_source_ancestor_is_refused_and_sources_survive(
     assert result["refused"] == "the output folder is the same folder as " + alias_of
     assert _sources_bytes(frames) == before
     assert not dest.exists()
+
+
+@pytest.mark.parametrize("case_fold", [False, True])
+def test_an_alias_of_a_mixed_case_ancestor_is_refused_on_a_case_sensitive_volume(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case_fold: bool) -> None:
+    """macOS (case_fold True) with the frames on a case-sensitive volume, which the Linux tmp folder stands in for:
+    the alias check must hand samefile the folders as they are spelled on disk, not their case-folded comparison keys
+    (".../astro" does not exist there, so it never matched and the alias was let through). The refusal names the
+    folder in its own case."""
+    folder = tmp_path / "Astro" / "M31" / "frames"
+    frames = [str(_fits(folder / "a.fit")), str(_fits(folder / "b.fit", 0.5))]
+    before = _sources_bytes(frames)
+    alias_of = os.path.realpath(str(tmp_path / "Astro"))
+    monkeypatch.setattr(C, "_CASE_FOLD", case_fold)
+    monkeypatch.setattr(os.path, "samefile", _strict_alias_samefile(alias_of))
+    dest = tmp_path / "other"
+
+    result = C.export_approved(frames, str(dest), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] == "the output folder is the same folder as " + alias_of
+    assert _sources_bytes(frames) == before
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize("case_fold", [False, True])
+def test_frames_under_a_symlinked_root_are_reported_by_their_resolved_path(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case_fold: bool) -> None:
+    """macOS keeps temporary and user folders under /var, a symbolic link to /private/var: the frames are named
+    through the link, the checks run on the resolved folders and the refusal names the folder as resolved, in its
+    own case. Simulated with tmp/var -> tmp/private/var."""
+    (tmp_path / "private" / "var").mkdir(parents=True)
+    (tmp_path / "var").symlink_to(tmp_path / "private" / "var", target_is_directory=True)
+    folder = tmp_path / "var" / "Folders" / "frames"
+    frames = [str(_fits(folder / "a.fit")), str(_fits(folder / "b.fit", 0.5))]
+    alias_of = os.path.realpath(str(tmp_path / "var" / "Folders"))
+    assert alias_of.startswith(os.path.realpath(str(tmp_path / "private")))
+    monkeypatch.setattr(C, "_CASE_FOLD", case_fold)
+    monkeypatch.setattr(os.path, "samefile", _strict_alias_samefile(alias_of))
+
+    result = C.export_approved(frames, str(tmp_path / "other"), None, home=str(tmp_path / "home"))
+    assert result["refused"] == "the output folder is the same folder as " + alias_of
+
+    # The destination spelled through the resolved path, the frames through the link: only the resolved check sees it.
+    inside = tmp_path / "private" / "var" / "Folders"
+    result = C.export_approved(frames, str(inside), None, home=str(tmp_path / "home"))
+    assert result["refused"] == ("the output folder contains the frames being copied ("
+                                 + os.path.realpath(str(folder)) + ")")
