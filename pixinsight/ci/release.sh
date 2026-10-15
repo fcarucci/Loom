@@ -11,14 +11,16 @@
 # Before running: the work for the release is merged on main, and the
 # CHANGELOG's [Unreleased] section describes it. This script then:
 #   1. checks it is on a clean main and the tag does not exist
-#   2. turns [Unreleased] into the dated <version> section and sets Util.LOOM_VERSION
+#   2. turns [Unreleased] into the dated <version> section and sets Util.LOOM_VERSION;
+#      the same for the Siril port (siril/CHANGELOG.md, loomsiril.__version__)
 #   3. runs the suite as 1.9.5 and as 1.9.4
 #   4. signs the entry scripts (ci/sign.sh) -- after step 2, because the version
 #      lives in a file the signature covers
 #   5. builds the update repository (ci/repository.sh), signs its updates.xri and
 #      puts the result in repo/ -- after step 4, because the package holds the
 #      signed scripts and the manifest holds the package's checksum
-#   6. commits "Loom <version>" with the signatures, the signed-tree hash and repo/,
+#   6. commits "Loom <version>" with the signatures, the signed-tree hash, repo/ and
+#      the Siril changelog and version,
 #      and tags v<version> (SSH-signed, verified before any push)
 #   7. with --push, pushes main and the tag to origin and github; CI then checks
 #      the signatures, builds the release zip and PUBLISHES repo/ as the update
@@ -68,6 +70,9 @@ if u2 == u:
 open("script/lib/Util.js", "w").write(u2)
 PY
 
+# The Siril port is released with it: its changelog section and package version.
+node ci/release-prep.js "$version"
+
 node ci/run-tests.js | tail -1
 LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js | tail -1
 
@@ -81,7 +86,7 @@ mkdir repo
 cp dist/repo/updates.xri dist/repo/LICENSE dist/repo/*.zip repo/
 node ci/check-signatures.js --repo
 
-git add CHANGELOG.md script ci/signed-tree.sha256 repo
+git add CHANGELOG.md script ci/signed-tree.sha256 repo ../siril/CHANGELOG.md ../siril/loomsiril/__init__.py
 git commit -q -m "Loom $version"
 git tag -s "v$version" -m "Loom $version"
 git tag -v "v$version" >/dev/null 2>&1 || {

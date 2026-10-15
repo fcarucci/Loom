@@ -7,6 +7,7 @@ subprocess shows what a bare ``import loomsiril`` does.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -83,3 +84,11 @@ def test_dir_lists_the_module_dunders_too() -> None:
     names = set(loomsiril.__dir__())
     assert {"__version__", "__name__", "__file__", "__doc__"} <= names
     assert loomsiril.__dir__() == sorted(loomsiril.__dir__())
+
+
+def test_version_is_the_newest_dated_changelog_section() -> None:
+    """The release script sets both together, so this holds before and after a release."""
+    text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    dated = re.findall(r"^## \[(\d+\.\d+\.\d+)\] \u2014 \d{4}-\d{2}-\d{2}\s*$", text, flags=re.MULTILINE)
+    assert dated, "no dated section in CHANGELOG.md"
+    assert loomsiril.__version__ == dated[0]
