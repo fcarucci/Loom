@@ -23060,13 +23060,14 @@ function runPipeTests()
       // The clean reference calibrates with the effective filters.
       var refSeen = [];
       var keepFns = [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
-                      "registerCleanChannel", "releaseTemps" ].map( function( n ) { return Pipeline[n]; } );
+                      "registerCleanChannel", "cropCleanChannel", "releaseTemps" ].map( function( n ) { return Pipeline[n]; } );
       var keepSteps = [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].map( function( n ) { return Steps[n]; } );
       var keepFree = Util.freeWindowId, keepLog3 = Util.log;
       Pipeline.cleanWhiteBalanceKey = function() { return "k"; };
       Pipeline.cleanWhiteBalanceCachePath = function() { return "p"; };
       Pipeline.cachedCleanWhiteBalance = function() { return null; };
       Pipeline.registerCleanChannel = function() { return {}; };
+      Pipeline.cropCleanChannel = function() { return {}; };
       Pipeline.releaseTemps = function() {};
       Util.freeWindowId = function( id ) { return id; };
       Util.log = function() {};
@@ -23079,12 +23080,12 @@ function runPipeTests()
       {
          var cleanCfg = oscConfig(); cleanCfg.useCache = false;
          cleanCfg.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
-         Pipeline.measureCleanWhiteBalance( oscChans, cleanCfg, reg, monoCommon, null, {}, "ref" );
+         Pipeline.measureCleanWhiteBalance( oscChans, cleanCfg, reg, monoCommon, null, {}, "ref", "G" );
       }
       finally
       {
          [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
-           "registerCleanChannel", "releaseTemps" ].forEach( function( n, i ) { Pipeline[n] = keepFns[i]; } );
+           "registerCleanChannel", "cropCleanChannel", "releaseTemps" ].forEach( function( n, i ) { Pipeline[n] = keepFns[i]; } );
          [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].forEach( function( n, i ) { Steps[n] = keepSteps[i]; } );
          Util.freeWindowId = keepFree; Util.log = keepLog3;
       }
