@@ -1,6 +1,6 @@
 """The Siril master-flat engine (loomsiril.master_flat_siril, MasterFlat.js 1088-1398) against a stub Siril.
 
-The stub records every command, follows ``cd`` and the ``setcompress`` switch, and on ``calibrate`` and ``stack``
+The stub records every command, follows ``cd`` and the compression switch, and on ``calibrate`` and ``stack``
 writes FITS files into the working folder named as Siril names them (``pp_f_00001.fit``, ``integrated.fit``). The
 command lines checked here are the ones measured on siril-cli 1.4.4. The stub needs no Siril. One test runs the
 engine in real siril-cli and is marked siril (skipped locally).
@@ -8,6 +8,7 @@ engine in real siril-cli and is marked siril (skipped locally).
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ import numpy as np
 import pytest
 
 from loomsiril import master_flat as mf
+from loomsiril import master_flat_run as mfr
 from loomsiril import master_flat_siril as mfs
 from loomsiril.io_fits import read_fits, write_fits
 from loom.siril_run import run_pyscript
@@ -80,39 +82,46 @@ def make_flats(folder: Path, count: int, *, filt: str = "L", exposure: float = 2
 
 
 class FakeSiril:
-    """A Siril stand-in: ``cmd`` runs the few commands the engine sends and records each one."""
+    """A Siril stand-in: ``cmd`` runs the few commands the engine sends and records each one.
+
+    The only compression state is ``compression.enabled``; ``set compression.enabled=<bool>`` changes it.
+    ``read_fails`` makes the config read raise, ``set_fails`` makes the switch off raise.
+    """
 
     def __init__(self, root: Path, *, compression: bool = False, fail: Optional[str] = None,
-                 bad_stack: bool = False) -> None:
+                 bad_stack: bool = False, read_fails: bool = False, set_fails: bool = False) -> None:
         self.root = str(root)
         self.cwd = str(root)
         self.cmds: list[str] = []
         self.compression = compression
-        self.setcompress_args: list[list[str]] = []
-        self.config = {"enabled": compression, "type": 1, "quantization": 16}
         self.fail = fail
         self.bad_stack = bad_stack
+        self.read_fails = read_fails
+        self.set_fails = set_fails
 
     def get_siril_wd(self) -> str:
         return self.cwd
 
     def get_siril_config(self, section: str, key: str) -> Any:
-        assert section == "compression"
-        return self.config[key]
+        assert (section, key) == ("compression", "enabled"), (section, key)
+        if self.read_fails:
+            raise RuntimeError("no such config call")
+        return self.compression
 
     def cmd(self, text: str) -> bool:
         self.cmds.append(text)
         if self.fail is not None and self.fail in text:
             raise RuntimeError("Siril said no to " + text)
+        if text == "set compression.enabled=false" and self.set_fails:
+            raise RuntimeError("Siril said no to " + text)
+        if text.startswith("set compression.enabled="):
+            self.compression = text.endswith("=true")
+            return True
         parts = shlex.split(text)
         if parts[0] == "cd":
             if not os.path.isdir(parts[1]):
                 raise RuntimeError("no such folder: " + parts[1])
             self.cwd = parts[1]
-            return True
-        if parts[0] == "setcompress":
-            self.compression = parts[1] == "1"
-            self.setcompress_args.append(parts[1:])
             return True
         if parts[0] == "calibrate":
             return self._calibrate(parts)
@@ -247,22 +256,55 @@ def test_dark_commands_follow_the_rejection_rule(tmp_path: Path, count: int, sta
 # ---------------------------------------------------------------------------
 
 
-def test_compression_is_off_for_the_step_and_restored(tmp_path: Path) -> None:
+def test_compression_enabled_is_switched_off_for_the_step_and_back_on(tmp_path: Path) -> None:
     root = tmp_path / "siril-wd"
     root.mkdir()
     darks = make_darks(tmp_path / "raw", 2)
     siril = FakeSiril(root, compression=True)
     engine = mfs.SirilMasterFlatEngine(siril, read_header, str(tmp_path / "cache"))
     assert engine.master_dark(dark_group(darks))["ok"]
-    assert siril.cmds.count("setcompress 0") == 1
-    assert siril.setcompress_args == [["0"], ["1", "-type=gzip1", "16"]]
+    switches = [c for c in siril.cmds if c.startswith("set compression")]
+    assert switches == ["set compression.enabled=false", "set compression.enabled=true"]
+    stack_at = next(i for i, c in enumerate(siril.cmds) if c.startswith("stack"))
+    assert siril.cmds.index("set compression.enabled=false") < stack_at < siril.cmds.index(
+        "set compression.enabled=true")
     assert siril.compression is True
 
 
-def test_no_compression_switch_when_compression_is_off(rig: SimpleNamespace) -> None:
-    job = flat_job(rig.flats)
-    integrate_flats(rig.engine, job, rig.flats, rig.darks[0], str(rig.dest / ".partial_masterFlat_L.fit"))
-    assert not any(c.startswith("setcompress") for c in rig.siril.cmds)
+def test_compression_disabled_is_left_disabled(tmp_path: Path) -> None:
+    root = tmp_path / "siril-wd"
+    root.mkdir()
+    darks = make_darks(tmp_path / "raw", 2)
+    siril = FakeSiril(root, compression=False)
+    engine = mfs.SirilMasterFlatEngine(siril, read_header, str(tmp_path / "cache"))
+    assert engine.master_dark(dark_group(darks))["ok"]
+    assert not any(c.startswith("set compression") for c in siril.cmds)
+    assert siril.compression is False
+
+
+def test_unreadable_compression_state_is_left_alone_with_a_warning(tmp_path: Path) -> None:
+    root = tmp_path / "siril-wd"
+    root.mkdir()
+    darks = make_darks(tmp_path / "raw", 2)
+    siril = FakeSiril(root, compression=True, read_fails=True)
+    log: list[str] = []
+    engine = mfs.SirilMasterFlatEngine(siril, read_header, str(tmp_path / "cache"), log=log.append)
+    assert engine.master_dark(dark_group(darks))["ok"]
+    assert not any(c.startswith("set compression") for c in siril.cmds)
+    assert any(line.startswith("master flat: warning: FITS compression state could not be read") for line in log)
+
+
+def test_compression_is_switched_back_on_when_switching_off_raised(tmp_path: Path) -> None:
+    root = tmp_path / "siril-wd"
+    root.mkdir()
+    darks = make_darks(tmp_path / "raw", 2)
+    siril = FakeSiril(root, compression=True, set_fails=True)
+    engine = mfs.SirilMasterFlatEngine(siril, read_header, str(tmp_path / "cache"))
+    res = engine.master_dark(dark_group(darks))
+    assert res["ok"] is False
+    assert res["reason"] == "Siril said no to set compression.enabled=false"
+    assert siril.compression is True
+    assert siril.cwd == str(root)
 
 
 def test_cd_and_compression_restored_when_stack_raises(tmp_path: Path) -> None:
@@ -270,12 +312,11 @@ def test_cd_and_compression_restored_when_stack_raises(tmp_path: Path) -> None:
     root.mkdir()
     flats = make_flats(tmp_path / "raw", 9)
     darks = make_darks(tmp_path / "raw_d", 2)
-    siril = FakeSiril(root, compression=True, fail="stack")
+    siril = FakeSiril(root, compression=True)
     engine = mfs.SirilMasterFlatEngine(siril, read_header, str(tmp_path / "cache"))
     job = flat_job(flats)
     dest = tmp_path / "masters"
     dest.mkdir()
-    siril.fail = None
     dark = engine.master_dark(dark_group(darks))
     assert dark["ok"]
     siril.fail = "stack"
@@ -285,7 +326,7 @@ def test_cd_and_compression_restored_when_stack_raises(tmp_path: Path) -> None:
     assert res["reason"].startswith("Siril said no to stack")
     assert siril.cwd == str(root)
     assert siril.compression is True
-    assert siril.setcompress_args[-1] == ["1", "-type=gzip1", "16"]
+    assert siril.cmds[-2:] == ["set compression.enabled=true", f'cd "{root}"']
     assert not os.path.exists(out)
 
 
@@ -451,6 +492,57 @@ def test_publish_moves_and_remove_reports(rig: SimpleNamespace) -> None:
     assert rig.engine.exists(str(final)) is False
 
 
+def test_publish_never_replaces_an_existing_master(rig: SimpleNamespace) -> None:
+    partial = rig.dest / ".partial_masterFlat_L.fit"
+    partial.write_bytes(b"new")
+    final = rig.dest / "masterFlat_L.fit"
+    final.write_bytes(b"kept")
+    assert rig.engine.publish(str(partial), str(final)) is False
+    assert final.read_bytes() == b"kept"
+
+
+def test_publish_loses_a_race_to_another_writer(rig: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = rig.dest / ".partial_masterFlat_L.fit"
+    partial.write_bytes(b"new")
+    final = rig.dest / "masterFlat_L.fit"
+    real_link = os.link
+
+    def racing_link(src: str, dst: str) -> None:
+        Path(dst).write_bytes(b"other writer")  # the other writer lands between the check and the link
+        real_link(src, dst)
+
+    monkeypatch.setattr(mfs.os, "link", racing_link)
+    assert rig.engine.publish(str(partial), str(final)) is False
+    assert final.read_bytes() == b"other writer"
+
+
+def test_publish_without_hard_links_copies_exclusively(rig: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = rig.dest / ".partial_masterFlat_L.fit"
+    partial.write_bytes(b"master")
+    final = rig.dest / "masterFlat_L.fit"
+
+    def no_links(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(mfs.os, "link", no_links)
+    assert rig.engine.publish(str(partial), str(final)) is True
+    assert final.read_bytes() == b"master" and not partial.exists()
+
+
+def test_publish_copy_fallback_never_replaces_either(rig: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    partial = rig.dest / ".partial_masterFlat_L.fit"
+    partial.write_bytes(b"new")
+    final = rig.dest / "masterFlat_L.fit"
+    final.write_bytes(b"kept")
+
+    def no_links(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(mfs.os, "link", no_links)
+    assert rig.engine.publish(str(partial), str(final)) is False
+    assert final.read_bytes() == b"kept"
+
+
 def test_remove_dir_removes_the_folder_and_its_steps(rig: SimpleNamespace) -> None:
     job = flat_job(rig.flats)
     integrate_flats(rig.engine, job, rig.flats, rig.darks[0], str(rig.dest / ".partial_masterFlat_L.fit"))
@@ -466,12 +558,12 @@ def test_remove_dir_removes_the_folder_and_its_steps(rig: SimpleNamespace) -> No
 
 
 def _got(width: int = W, height: int = H, filt: Optional[str] = "L", imagetyp: Optional[str] = "Master Flat",
-         mean: Any = 0.5) -> dict[str, Any]:
+         mean: Any = 0.5) -> SimpleNamespace:
     keywords = {"FILTER": filt, "IMAGETYP": imagetyp}
-    return {"width": width, "height": height, "keyword": lambda n: keywords.get(n), "mean": mean}
+    return SimpleNamespace(width=width, height=height, keyword=lambda n: keywords.get(n), mean=mean)
 
 
-WANT = {"width": W, "height": H}
+WANT = SimpleNamespace(width=W, height=H)
 
 
 @pytest.mark.parametrize(
@@ -491,15 +583,17 @@ WANT = {"width": W, "height": H}
         (_got(mean=None), "L", "the master is empty or not finite"),
     ],
 )
-def test_verify_master_checks(got: dict[str, Any], filt: Optional[str], expected: Optional[str]) -> None:
-    assert mfs.verify_master(got, WANT, filt) == expected
+def test_verify_master_checks(got: SimpleNamespace, filt: Optional[str], expected: Optional[str]) -> None:
+    assert mfr.verify_master(got, WANT, filt) == expected
 
 
-def test_engine_verify_passes_a_written_master(rig: SimpleNamespace) -> None:
+def test_engine_verify_is_the_shared_check_on_the_written_master(rig: SimpleNamespace) -> None:
     out = rig.dest / ".partial_masterFlat_L.fit"
     job = flat_job(rig.flats)
     assert integrate_flats(rig.engine, job, rig.flats, rig.darks[0], str(out))["ok"]
     assert rig.engine.verify(str(out), job) is None
+    wrong = dict(job, filter="Ha")
+    assert rig.engine.verify(str(out), wrong) == "FILTER is L, expected Ha"
 
 
 def test_mean_of_is_the_mean_of_every_pixel(tmp_path: Path) -> None:

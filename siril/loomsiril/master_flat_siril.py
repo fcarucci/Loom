@@ -16,13 +16,13 @@ Ported, by JavaScript line range (pixinsight/script/lib/MasterFlat.js):
 * ``integrationApplyHeader`` (1153-1163) -> :func:`integration_apply_header`.
 * ``integration`` (1165-1188) -> ``SirilMasterFlatEngine._integration``.
 * ``sizeOf`` (1190-1194) -> :func:`size_of`; ``meanOf`` (1196-1213) -> :func:`mean_of`; ``move`` (1215-1222) ->
-  :func:`move`.
+  :func:`publish_exclusive`, which never replaces an existing file.
 * ``masterDarkMissing`` (1224-1231) -> :func:`master_dark_missing`; ``masterDarkSources`` (1233-1238) ->
   :func:`master_dark_sources`; ``masterDarkProblem`` (1240-1248) -> :func:`master_dark_problem`;
   ``masterDarkStore`` (1250-1260) -> :func:`master_dark_store`.
-* ``masterFlatVerifyGeometry``, ``masterFlatVerifyFilter``, ``masterFlatVerifyImagetyp``, ``masterFlatVerifyMean``
-  (564-597) and ``MasterFlat.verifyMaster`` (599-609) -> :func:`verify_master`. Carried here until the master-flat run
-  module provides the same rules; the checks are the same.
+
+The checks of a written master (MasterFlat.js 564-609) are ``master_flat_run.verify_master``; ``verify`` passes it
+the master's geometry, keyword and mean.
 
 Not ported: ``open``, ``ids``, ``closeNew``, ``integrationFindWindow`` (1090-1109, 1141-1151). They manage PixInsight
 windows; Siril writes named files.
@@ -32,12 +32,16 @@ Differences from the JavaScript, each deliberate:
 * Work folders. Every step runs in its own folder: a master dark in ``<cache>/master-flat-work/masterDark_<key>``, a
   job's calibration in the job folder (``temp_dir``), a job's integration in ``integrate`` below the job folder. The
   inputs are linked in as ``<prefix>00001.fit``, ``<prefix>00002.fit``... (symbolic links), the dark as ``dark.fit``.
-  Commands use the relative names. The Siril working directory is restored in a ``finally``, and so is FITS
-  compression: when ``compression.enabled`` is true it is switched off for the step (``setcompress 0``) and restored
-  afterwards with its method and quantization (``setcompress 1 -type=<method> <quantization>``).
+  Commands use the relative names. The Siril working directory is restored in a ``finally``.
+* FITS compression. When ``compression.enabled`` is true it is switched off for the step
+  (``set compression.enabled=false``) and switched back on afterwards, in a ``finally``, with the same command. The
+  method and quantization are never touched. When the state cannot be read, nothing is changed and a warning is
+  logged; when it is off, nothing is sent.
 * Stacking writes ``integrated.fit`` in the step folder. The header is then rewritten in Python (read with
   ``io_fits.read_fits``, written with ``write_fits`` at -32 bits) to the partial path. Nothing is loaded into the
   user's open Siril image, and the partial never survives a failure.
+* A master is published only under a name nothing holds (a hard link, or an exclusive copy when links are not
+  possible); an existing file is never replaced.
 * Rejection normalisation (JS ``equalizeFluxes``) has no separate Siril switch: ``stack`` uses its own scaling.
 * Names. Calibrated frames are ``pp_f_<n>.fit`` (Siril's output for the ``f_`` input prefix). A job folder drops a
   trailing ``.fit`` where the JavaScript drops ``.xisf``.
@@ -47,11 +51,14 @@ Differences from the JavaScript, each deliberate:
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import re
 import shutil
+import warnings
 from collections.abc import Callable, Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any, Optional, TypeVar
 
 import numpy as np
@@ -59,7 +66,8 @@ import numpy as np
 from loomsiril import master_flat as mf
 from loomsiril.io_fits import read_fits, write_fits
 from loomsiril.jsmath import js_string
-from loomsiril.loom.siril_ops import command_text, quote_path
+from loomsiril.loom.siril_ops import _text_set_compression, command_text, quote_path
+from loomsiril.master_flat_run import verify_master
 
 T = TypeVar("T")
 
@@ -71,14 +79,12 @@ RESERVED_KEYWORDS = ("FILTER", "IMAGETYP", "XBINNING", "YBINNING", "EXPTIME", "G
 STACK_OUT = "integrated"
 #: The name a calibrated flat's link and the master dark's link take in the folder of their step.
 DARK_LINK = "dark.fit"
-#: The FITS compression method names of ``setcompress -type=``, by the stored method number (0 rice, 1 gzip1, 2 gzip2).
-COMPRESSION_METHODS = {0: "rice", 1: "gzip1", 2: "gzip2"}
 #: The image extension a job name carries, dropped for its work folder (JS: ".xisf", MasterFlat.js tempDir, 1276-1282).
 _IMAGE_EXT = re.compile(r"\.(xisf|fit)\Z")
 _PARTIAL_FLAT = re.compile(r"\.partial_masterFlat_.*\.fit")
-_FLAT_WORD = re.compile("flat", re.IGNORECASE | re.ASCII)
 
 ReadHeader = Callable[[str], Any]
+Log = Optional[Callable[[str], Any]]
 
 
 class _StepError(Exception):
@@ -97,7 +103,7 @@ def _header_value(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Pure helpers: the integration, the header and the checks
+# Pure helpers: the integration, the header and the files
 # ---------------------------------------------------------------------------
 
 
@@ -154,15 +160,38 @@ def mean_of(path: str) -> Optional[float]:
         return None
 
 
-def move(src: str, dst: str) -> bool:
-    """MasterFlat.js move (1215-1222): move ``src`` to ``dst`` unless ``dst`` exists; True when it did."""
-    if os.path.exists(dst):
+def publish_exclusive(partial: str, final: str) -> bool:
+    """MasterFlat.js move (1215-1222), without the overwrite: the partial becomes ``final`` only when no file is at
+    ``final``, and then the partial is gone. A hard link does it atomically; where links are not possible, an exclusive
+    copy (``open(final, "xb")``) does. Returns False and leaves the partial when ``final`` exists or the move fails."""
+    try:
+        os.link(partial, final)
+    except FileExistsError:
+        return False
+    except OSError:
+        return _copy_exclusive(partial, final)
+    try:
+        os.remove(partial)
+    except OSError:
+        pass
+    return True
+
+
+def _copy_exclusive(partial: str, final: str) -> bool:
+    created = False
+    try:
+        with open(partial, "rb") as src, open(final, "xb") as dst:
+            created = True
+            shutil.copyfileobj(src, dst)
+    except OSError as exc:
+        if created and exc.errno != errno.EEXIST:
+            _discard(final)
         return False
     try:
-        shutil.move(src, dst)
+        os.remove(partial)
     except OSError:
-        return False
-    return os.path.exists(dst) and not os.path.exists(src)
+        pass
+    return True
 
 
 def master_dark_missing(group: Mapping[str, Any]) -> Optional[str]:
@@ -202,57 +231,10 @@ def master_dark_store(partial: str, path: str) -> dict[str, Any]:
             os.remove(path)  # a cache file that failed its read above
         except OSError:
             pass
-    if not move(partial, path):
-        try:
-            os.remove(partial)
-        except OSError:
-            pass
+    if not publish_exclusive(partial, path):
+        _discard(partial)
         return _fail("could not store the master dark in the cache")
     return {"ok": True, "path": path, "reason": ""}
-
-
-def _verify_geometry(got: Mapping[str, Any], want: Mapping[str, Any]) -> Optional[str]:
-    """MasterFlat.js masterFlatVerifyGeometry (564-572)."""
-    if got is None or got.get("width") is None:
-        return "the master could not be read"
-    if got["width"] != want["width"] or got["height"] != want["height"]:
-        return "geometry changed"
-    return None
-
-
-def _verify_filter(got: Mapping[str, Any], filter_name: Any) -> Optional[str]:
-    """MasterFlat.js masterFlatVerifyFilter (574-581)."""
-    f = got["keyword"]("FILTER")
-    if filter_name is not None and f != filter_name:
-        return "FILTER is " + ("missing" if f is None else js_string(f)) + ", expected " + js_string(filter_name)
-    return None
-
-
-def _verify_imagetyp(got: Mapping[str, Any]) -> Optional[str]:
-    """MasterFlat.js masterFlatVerifyImagetyp (583-590): IMAGETYP must say flat."""
-    t = got["keyword"]("IMAGETYP")
-    if t is None or _FLAT_WORD.search(js_string(t)) is None:
-        return "IMAGETYP is " + ("missing" if t is None else js_string(t)) + ", expected a master flat"
-    return None
-
-
-def _verify_mean(got: Mapping[str, Any]) -> Optional[str]:
-    """MasterFlat.js masterFlatVerifyMean (592-597): a finite, positive mean."""
-    m = got.get("mean")
-    if (not isinstance(m, (int, float)) or isinstance(m, bool) or not math.isfinite(m) or m <= 0):
-        return "the master is empty or not finite"
-    return None
-
-
-def verify_master(got: Mapping[str, Any], want: Mapping[str, Any], filter_name: Any) -> Optional[str]:
-    """MasterFlat.js MasterFlat.verifyMaster (599-609): what is wrong with a written master, or None.
-
-    ``got`` is ``{width, height, keyword, mean}`` for the master and ``want`` ``{width, height}`` for one flat it came
-    from. Geometry must match, FILTER must be the job's, IMAGETYP must say flat, and the mean must be finite and
-    positive.
-    """
-    return (_verify_geometry(got, want) or _verify_filter(got, filter_name) or _verify_imagetyp(got)
-            or _verify_mean(got))
 
 
 # ---------------------------------------------------------------------------
@@ -296,13 +278,6 @@ def _discard(path: str) -> None:
         pass
 
 
-def _config(siril: Any, key: str) -> Any:
-    try:
-        return siril.get_siril_config("compression", key)
-    except Exception:  # noqa: BLE001 -- an older Siril without the config call: treated as absent
-        return None
-
-
 # ---------------------------------------------------------------------------
 # The engine
 # ---------------------------------------------------------------------------
@@ -312,12 +287,11 @@ class SirilMasterFlatEngine:
     """The engine of MasterFlat.engine (1088-1398) on siril-cli, with the JS method names in snake_case.
 
     ``siril`` is the connected Siril interface (``cmd``, ``get_siril_wd``, ``get_siril_config``). ``read_header(path)``
-    returns an object with ``info`` (None when unreadable: ``width``, ``height``) and ``keyword(name)``, the way
-    ``master_flat_run.quiet_header_obj`` does. ``cache_dir`` holds the work folders and the master dark cache.
+    returns an object with ``info`` (None when unreadable: ``width``, ``height``) and ``keyword(name)``; production
+    passes ``master_flat_run.quiet_header_obj``. ``cache_dir`` holds the work folders and the master dark cache.
     """
 
-    def __init__(self, siril: Any, read_header: ReadHeader, cache_dir: str,
-                 log: Optional[Callable[[str], Any]] = None) -> None:
+    def __init__(self, siril: Any, read_header: ReadHeader, cache_dir: str, log: Log = None) -> None:
         self._siril = siril
         self._read_header = read_header
         self._cache_dir = os.fspath(cache_dir)
@@ -363,6 +337,12 @@ class SirilMasterFlatEngine:
 
     # -- Siril steps -------------------------------------------------------
 
+    def _warn(self, text: str) -> None:
+        if self._log is not None:
+            self._log("master flat: warning: " + text)
+        else:
+            warnings.warn(text, stacklevel=2)
+
     def _send(self, text: str) -> None:
         if self._log is not None:
             self._log("master flat: siril: " + text)
@@ -373,35 +353,35 @@ class SirilMasterFlatEngine:
         if ok is False:
             raise _StepError("Siril reported that the command failed: " + text)
 
-    def _compression_off(self) -> Optional[str]:
-        """When FITS compression is on, turn it off and return the command that restores it; else None."""
-        if _config(self._siril, "enabled") is not True:
+    def _compression_state(self) -> Optional[bool]:
+        """``compression.enabled`` as Siril reports it (siril_ops fits_compression); None, with a warning, when it
+        cannot be read or is not a bool."""
+        try:
+            value = self._siril.get_siril_config("compression", "enabled")
+        except Exception as exc:  # noqa: BLE001 -- an older Siril without the config call
+            self._warn("FITS compression state could not be read (" + str(exc) + "); left as it is")
             return None
-        method = _config(self._siril, "type")
-        type_name = "rice"
-        if isinstance(method, int) and not isinstance(method, bool):
-            type_name = COMPRESSION_METHODS.get(method, "rice")
-        quantization = _config(self._siril, "quantization")
-        args: list[Any] = ["setcompress", 1, "-type=" + type_name]
-        if isinstance(quantization, (int, float)) and not isinstance(quantization, bool):
-            args.append(quantization)
-        restore = command_text(*args)
-        self._send("setcompress 0")
-        return restore
+        if isinstance(value, bool):
+            return value
+        self._warn("FITS compression state is not a bool (" + js_string(value) + "); left as it is")
+        return None
 
     def _in_folder(self, folder: str, step: Callable[[], T]) -> T:
-        """Run ``step`` in ``folder``: remember the Siril working directory, cd there with FITS compression off, and in
-        a ``finally`` restore the compression and cd back, also when ``step`` raises."""
+        """Run ``step`` in ``folder``. The Siril working directory is remembered and restored, and when FITS
+        compression is on it is switched off for the step and switched back on, all in a ``finally``: the
+        switch back happens also when the switch off or ``step`` raised."""
         wd0 = os.fspath(self._siril.get_siril_wd())
         self._send(_cd_text(folder))
-        restore: Optional[str] = None
+        restore = False
         try:
-            restore = self._compression_off()
+            if self._compression_state() is True:
+                restore = True
+                self._send(_text_set_compression(False))
             return step()
         finally:
             try:
-                if restore is not None:
-                    self._send(restore)
+                if restore:
+                    self._send(_text_set_compression(True))
             finally:
                 self._send(_cd_text(wd0))
 
@@ -505,15 +485,17 @@ class SirilMasterFlatEngine:
         return os.path.realpath(dir_ or ".") + "/" + name
 
     def publish(self, partial: str, final_path: str) -> bool:
-        """MasterFlat.js publish (1386): move the partial to its final name."""
-        return move(partial, final_path)
+        """MasterFlat.js publish (1386): move the partial to its final name, never over an existing file."""
+        return publish_exclusive(partial, final_path)
 
     def verify(self, path: str, job: Mapping[str, Any]) -> Optional[str]:
-        """MasterFlat.js verify (1387-1397): the reason the written master is wrong, or None."""
+        """MasterFlat.js verify (1387-1397): the reason the written master is wrong, or None, by
+        ``master_flat_run.verify_master`` (MasterFlat.js 564-609)."""
         got = self._read_header(path)
         src = self._read_header(job["flats"][0]["path"])
         if got is None or got.info is None or src is None or src.info is None:
             return "the master could not be read"
-        return verify_master({"width": got.info.width, "height": got.info.height, "keyword": got.keyword,
-                              "mean": mean_of(path)},
-                             {"width": src.info.width, "height": src.info.height}, job.get("filter"))
+        return verify_master(
+            SimpleNamespace(width=got.info.width, height=got.info.height, keyword=got.keyword, mean=mean_of(path)),
+            SimpleNamespace(width=src.info.width, height=src.info.height),
+            job.get("filter"))
