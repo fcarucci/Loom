@@ -61,7 +61,8 @@ module.exports = function( js )
       };
    }
 
-   /* An onBatch fake: returns false at its call index falseAt (-1 never), true otherwise. */
+   /* An onBatch fake: returns false at its call index falseAt, undefined at undefinedAt, 0 at zeroAt (-1 never);
+      true otherwise. It throws at throwAt. */
    function fakeOnBatch( spec, log )
    {
       let calls = 0;
@@ -69,11 +70,15 @@ module.exports = function( js )
       {
          const c = calls++;
          log.push( "onBatch " + c + " " + done );
+         if ( spec.throwAt === c ) throw new Error( "onBatch failed at call " + c );
+         if ( spec.undefinedAt === c ) return undefined;
+         if ( spec.zeroAt === c ) return 0;
          return c !== spec.falseAt;
       };
    }
 
-   /* A settler fake: start returns the token "t<k>" (null when startNull); finish and kill log their token. */
+   /* A settler fake: start returns the token "t<k>" (null when startNull) and throws at call startThrowAt; finish
+      throws for the token "t<finishThrowAt>"; finish and kill log their token. */
    function fakeSettler( spec, log )
    {
       let starts = 0;
@@ -82,9 +87,14 @@ module.exports = function( js )
          {
             const k = starts++;
             log.push( "start " + batch.join( "," ) + " got " + Object.keys( got ).join( "," ) );
+            if ( spec.startThrowAt === k ) throw new Error( "settler start failed at call " + k );
             return spec.startNull ? null : "t" + k;
          },
-         finish: function( token ) { log.push( "finish " + token ); },
+         finish: function( token )
+         {
+            log.push( "finish " + token );
+            if ( token === "t" + spec.finishThrowAt ) throw new Error( "settler finish failed for " + token );
+         },
          kill: function( token ) { log.push( "kill " + token ); }
       };
    }
@@ -145,6 +155,28 @@ module.exports = function( js )
 
    // no callback and no settler at all
    measureCase( "measure/no_callbacks", { paths: P7, size: 3, measure: M( {} ), onBatch: null, settler: null } );
+
+   // onBatch answers that are not false go on: undefined, 0 (the JS tests === false)
+   measureCase( "measure/onbatch_undefined_goes_on", { paths: P7, size: 3, measure: M( {} ),
+                  onBatch: Object.assign( {}, OB( -1 ), { undefinedAt: 0 } ), settler: S( false ) } );
+   measureCase( "measure/onbatch_zero_goes_on", { paths: P7, size: 3, measure: M( {} ),
+                  onBatch: Object.assign( {}, OB( -1 ), { zeroAt: 1 } ), settler: S( false ) } );
+
+   // exceptions from the callbacks: onBatch throws with a settle open, so that batch is killed
+   measureCase( "measure/onbatch_throws_killed", { paths: P7, size: 3, measure: M( {} ),
+                  onBatch: Object.assign( {}, OB( -1 ), { throwAt: 1 } ), settler: S( false ) } );
+   measureCase( "measure/onbatch_throws_no_settler", { paths: P7, size: 3, measure: M( {} ),
+                  onBatch: Object.assign( {}, OB( -1 ), { throwAt: 0 } ), settler: null } );
+
+   // settler.start throws before a token exists: nothing is killed; the batch before was already finished
+   measureCase( "measure/start_throws_first", { paths: P7, size: 3, measure: M( {} ), onBatch: OB( -1 ),
+                  settler: Object.assign( {}, S( false ), { startThrowAt: 0 } ) } );
+   measureCase( "measure/start_throws_second", { paths: P7, size: 3, measure: M( {} ), onBatch: OB( -1 ),
+                  settler: Object.assign( {}, S( false ), { startThrowAt: 1 } ) } );
+
+   // settler.finish throws: the token is still the pending one, so it is killed
+   measureCase( "measure/finish_throws_killed", { paths: P7, size: 3, measure: M( {} ), onBatch: OB( -1 ),
+                  settler: Object.assign( {}, S( false ), { finishThrowAt: 0 } ) } );
 
    // NO_SETTLER itself: start yields no token, finish and kill do nothing
    cases["no_settler/methods"] = { args: {}, log: [],

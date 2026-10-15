@@ -50,10 +50,16 @@ def _fake_measure(spec: dict[str, Any], log: list[str]):
 def _fake_on_batch(spec: dict[str, Any], log: list[str]):
     calls = [0]
 
-    def on_batch(done: int) -> bool:
+    def on_batch(done: int) -> Any:
         c = calls[0]
         calls[0] += 1
         log.append(f"onBatch {c} {done}")
+        if spec.get("throwAt") == c:
+            raise RuntimeError(f"onBatch failed at call {c}")
+        if spec.get("undefinedAt") == c:
+            return None  # JS undefined: goes on
+        if spec.get("zeroAt") == c:
+            return 0  # JS 0 is not === false: goes on
         return c != spec["falseAt"]
 
     return on_batch
@@ -67,10 +73,14 @@ def _fake_settler(spec: dict[str, Any], log: list[str]):
             k = starts[0]
             starts[0] += 1
             log.append(f"start {','.join(batch)} got {','.join(got)}")
+            if spec.get("startThrowAt") == k:
+                raise RuntimeError(f"settler start failed at call {k}")
             return None if spec["startNull"] else f"t{k}"
 
         def finish(self, token: Any) -> None:
             log.append(f"finish {token}")
+            if token == f"t{spec.get('finishThrowAt')}":
+                raise RuntimeError(f"settler finish failed for {token}")
 
         def kill(self, token: Any) -> None:
             log.append(f"kill {token}")
