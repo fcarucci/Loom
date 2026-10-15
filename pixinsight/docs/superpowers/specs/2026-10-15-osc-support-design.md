@@ -1,7 +1,7 @@
 # Loom: one-shot colour (OSC) masters — design
 
 **Date:** 2026-10-15
-**Status:** revision 3, after adversarial review rounds 1 and 2
+**Status:** revision 4, after three adversarial review rounds
 
 ## What this is for
 
@@ -159,6 +159,15 @@ run, the first time a sibling needs pixels, and not at all when every stage it
 feeds is a cache hit. The loader owns the master's window and releases it once
 every sibling has its working copy.
 
+**Split planes are cached.** When the master is opened, each sibling's plane is
+stored in the cache under its sibling source key (`Cache.store`), before any stage
+runs on it. A sibling's `load()` first tries `Cache.load` of that key and opens
+the master only on a miss. This covers consumers that need a sibling's pixels
+without any cached stage of their own: a reference that needs no registration,
+cropping, and an `OSCNB` channel with no narrowband stages. The rule for the
+number of master opens is therefore dependency-based: the master is opened only
+when some sibling's split plane is not in the cache.
+
 **Identity and storage keys.** Identity strings are never used as file names.
 Every key that names something in the cache is `Cache.hash( identity )`, so it
 keeps the cache's hexadecimal-key convention and is a valid file name on every
@@ -197,6 +206,14 @@ This applies to:
 - the clean white-balance measurement (below).
 
 A mono L keeps its own camera and filter for its own SPFC, as today.
+
+**Camera inheritance stays within mono masters.** `Pipeline.inheritInstrument`
+lends a camera name to a master whose header lacks `INSTRUME` (WBPP's autocrop
+drops it). It now collects camera names from mono channels only, and lends them
+only to mono channels: colour-group siblings neither give nor take a camera (they
+use Ideal QE anyway). A mono L with no camera and no other mono master naming one
+gets the Ideal QE curve, as `Steps.deviceCurveForImage` does today, and the log
+says so.
 
 **A filter in front of the camera.** PixInsight cannot multiply a second curve
 into the sensor curves, so a broadband filter in front (UV/IR, L-Pro, CLS) is not
@@ -315,6 +332,13 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
   group image) is registered with `-layer=` set to the group's alignment plane
   (1 for `OSC`, 0 for `OSCNB`), and the registered group image is split back into
   its siblings. A reference group's siblings are not registered.
+- **Calibration identity in the cache.** The Siril port has no per-channel SPFC
+  stage whose key would carry the response, so the response enters the keys
+  explicitly: a resolved calibration identity (the mode, OSC or mono, and every
+  effective spectral argument: sensor, front filter, low-pass filter, or the mono
+  sensor and the three filters) is added to `rgb_stage_params` (the composite
+  SPCC stage) and to the clean white-balance key. Changing any one of them
+  re-runs colour calibration, with sharpening on or off.
 - **Narrowband SPCC** passes per-channel bandwidths (`-rbw`, `-gbw`, `-bbw`),
   which its command already supports.
 
@@ -350,8 +374,12 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
 - a changed overlap (a dual-band master covering less of the field) re-registers
   the clean group; a replacement L with an unchanged crop re-measures the white
   balance;
-- counting opens of the master file: one on a cold run, none on a warm run, one
-  when only a later stage is invalidated;
+- counting opens of the master file: one on a cold run, none on any later run
+  while the split planes are cached (whatever later stage is invalidated), one
+  after the split planes are removed from the cache; including `OSCNB` alone with
+  narrowband gradient removal off;
+- an autocropped mono L without `INSTRUME` beside a labelled `OSC` master does not
+  take the colour camera (Ideal QE, logged);
 - changing one sibling's input re-registers the group; deleting one sibling's
   split re-splits without re-registering;
 - `OSC` with a mono L from another camera: the composite uses the sensor curves
@@ -359,7 +387,9 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
 
 **Siril:** the logic pinned against values recorded from the JavaScript, plus
 `siril`-marked tests in the Docker image: grouped registration with a mono
-reference (mixed channel counts), SPCC with an OSC sensor, and SPCC called OSC
+reference (mixed channel counts), SPCC with an OSC sensor, warm-cache runs changing
+each OSC spectral choice in turn (sensor, front filter, low-pass filter) with
+sharpening on and off, and SPCC called OSC
 then mono and mono then OSC in one session, checking each call's arguments.
 
 ## Out of scope
