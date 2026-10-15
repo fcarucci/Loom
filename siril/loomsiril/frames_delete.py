@@ -91,10 +91,26 @@ def _report(log: Log, level: str, message: str) -> None:
         getattr(_log, level)(message)
 
 
+def _open_folder(folder: str) -> int:
+    return os.open(folder, os.O_RDONLY)
+
+
 def _fsync_folder(folder: str) -> None:
-    fd = os.open(folder, os.O_RDONLY)
+    """Best effort: make the new directory entry durable where the platform allows it.
+
+    Windows cannot open a directory this way, and some file systems refuse the fsync; neither stops a deletion, since
+    the file itself has already been fsync-ed. Only OSError from opening or syncing the folder is ignored.
+    """
+    if os.name == "nt":
+        return
+    try:
+        fd = _open_folder(folder)
+    except OSError:
+        return
     try:
         os.fsync(fd)
+    except OSError:
+        pass
     finally:
         os.close(fd)
 
@@ -128,6 +144,10 @@ def write_manifest_log(manifest: Manifest, path: str, log: Log = None) -> bool:
                                 "; ".join(e["reasons"])]))
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    except Exception as ex:  # noqa: BLE001 - e.g. the log folder is a regular file: reported once, nothing deleted
+        _report(log, "error", f"could not write the deletion log: {ex}")
+        return False
+    try:
         _write_new_text(path, "\n".join(lines) + "\n")
         return True
     except FileExistsError:

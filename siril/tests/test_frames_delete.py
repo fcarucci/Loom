@@ -356,3 +356,31 @@ def test_resumed_manifest_acts_only_on_pending_entries(frames_in: dict[str, str]
     lines = _lines(result["logPath"])
     assert lines[2] == "# 3 frame(s) condemned"
     assert lines[-1].startswith(f"deleted\t{frames_in['c.fit']}\t")
+
+
+def test_folder_fsync_failure_does_not_stop_the_deletion(frames_in: dict[str, str], home: str,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_folder(folder: str) -> int:
+        raise PermissionError("cannot open a directory here")
+
+    monkeypatch.setattr(D, "_open_folder", no_folder)
+    result = D.execute(_manifest(_rejected_rows(frames_in)), home=home, now=NOW, log=lambda _m: None)
+    assert result["deleted"] == 3 and result["stopped"] is False and result["logPath"] is not None
+    assert not any(os.path.exists(frames_in[n]) for n in ["a.fit", "b.fit", "c.fit"])
+    lines = _lines(result["logPath"])
+    assert len(lines) == 3 + 3 + 3
+    assert lines[-1].startswith(f"deleted\t{frames_in['c.fit']}\t")
+
+
+def test_log_folder_that_is_a_regular_file_is_reported_once(frames_in: dict[str, str], home: str) -> None:
+    folder = Path(home) / "Siril"
+    folder.mkdir()
+    (folder / "Loom-frame-selector").write_text("not a folder")
+    messages: list[str] = []
+    result = D.execute(_manifest(_rejected_rows(frames_in)), home=home, now=NOW, log=messages.append)
+    assert result["deleted"] == 0 and result["logPath"] is None and result["stopped"] is False
+    assert all(os.path.exists(frames_in[n]) for n in ["a.fit", "b.fit", "c.fit", "keep.fit"])
+    assert sum("could not write the deletion log" in m for m in messages) == 1
+    assert sum("nothing deleted" in m for m in messages) == 1
+    assert len(messages) == 2
+    assert (folder / "Loom-frame-selector").read_text() == "not a folder"
