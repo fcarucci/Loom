@@ -507,6 +507,103 @@ def test_output_names_differing_only_in_case_stay_distinct_where_case_is_kept(
     assert _names(dest) == ["A.fit", "a.fit"]
 
 
+def test_names_differing_only_in_case_are_refused_where_the_destination_folds_case(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux (no folding by platform) writing to an exFAT card or a mounted APFS/SMB share: the probe says the output
+    folder folds case, so a.fit and A.fit would be one file. Refused before the folder is emptied."""
+    monkeypatch.setattr(C, "_CASE_FOLD", False)
+    probed: list[str] = []
+    monkeypatch.setattr(C, "folds_case", lambda folder: probed.append(folder) or True)
+    a = _fits(tmp_path / "one" / "a.fit")
+    b = _fits(tmp_path / "two" / "A.fit", 0.9)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "old.fit").write_bytes(b"old")
+
+    result = C.export_approved([str(a), str(b)], str(dest), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] == ("two or more frames would be written to the same name (the output folder's file "
+                                 "system ignores letter case): A.fit")
+    assert probed == [str(dest)]
+    assert _names(dest) == ["old.fit"]
+    assert (result["written"], result["failed"]) == (0, 0)
+
+
+def test_names_differing_only_in_case_are_written_where_the_destination_keeps_case(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(C, "_CASE_FOLD", False)
+    monkeypatch.setattr(C, "folds_case", lambda folder: False)
+    a = _fits(tmp_path / "one" / "a.fit")
+    b = _fits(tmp_path / "two" / "A.fit", 0.9)
+
+    result = C.export_approved([str(a), str(b)], str(tmp_path / "out"), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is None
+    assert (result["written"], result["failed"]) == (2, 0)
+
+
+def test_the_case_probe_finds_a_folding_file_system_and_leaves_nothing_behind(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = tmp_path / "out"
+    folder.mkdir()
+    (folder / "kept.fit").write_bytes(b"kept")
+    assert C.folds_case(str(folder)) is _folds_case(tmp_path / "probe")
+    assert _names(folder) == ["kept.fit"]
+
+    # A folding file system, simulated: any spelling of an existing name is that file.
+    real_samefile = os.path.samefile
+
+    def folding_samefile(x: str, y: str) -> bool:
+        def on_disk(p: str) -> str:
+            d, n = os.path.split(p)
+            for e in os.listdir(d):
+                if e.casefold() == n.casefold():
+                    return os.path.join(d, e)
+            return p
+        return real_samefile(on_disk(x), on_disk(y))
+
+    monkeypatch.setattr(os.path, "samefile", folding_samefile)
+    assert C.folds_case(str(folder)) is True
+    assert _names(folder) == ["kept.fit"]
+
+
+def test_a_case_probe_that_cannot_be_made_answers_folding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*a: Any, **k: Any) -> int:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(os, "open", refuse)
+    assert C.folds_case(str(tmp_path)) is True
+
+
+def test_outputs_that_are_one_file_on_disk_report_the_overwritten_frames_missing(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe missed (or could not see) a folding file system: a.fit and A.fit land in one file, the later write
+    replacing the earlier one. Simulated with a hard link: the outputs share device and inode. Only the frame written
+    last is reported written."""
+    monkeypatch.setattr(C, "_CASE_FOLD", False)
+    monkeypatch.setattr(C, "folds_case", lambda folder: False)
+    a = _fits(tmp_path / "one" / "a.fit")
+    b = _fits(tmp_path / "two" / "A.fit", 0.9)
+    c = _fits(tmp_path / "three" / "c.fit", 0.1)
+
+    def folding_writes(sources: list[str], mapping: dict[str, str], siril: Any = None) -> bool:
+        first = mapping[sources[0]]
+        for src in sources:
+            target = first if src == sources[1] else mapping[src]
+            C.write_output(src, target, siril)
+            if src == sources[1] and not os.path.exists(mapping[src]):  # already one file where case folds (APFS)
+                os.link(first, mapping[src])
+        return True
+
+    monkeypatch.setattr(C, "run_output_routine", folding_writes)
+
+    result = C.export_approved([str(a), str(b), str(c)], str(tmp_path / "out"), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is None
+    assert result["outcomes"] == {str(a): "missing", str(b): "written", str(c): "written"}
+    assert (result["written"], result["failed"]) == (2, 1)
+
+
 def test_a_junction_is_removed_as_a_link_and_its_target_is_not_emptied(tmp_path: Path,
                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
     folder = tmp_path / "folder"

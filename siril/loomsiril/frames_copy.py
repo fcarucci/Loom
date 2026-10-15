@@ -26,7 +26,12 @@ module adds a safety layer that works on resolved paths, because the string rule
   the filesystem root, the home folder, or equal to or an ancestor of a source folder, its parent or the home folder
   is refused; so is one that is the same directory (``os.path.samefile``) as any of them;
 - the same checks run again right before anything is removed;
-- output names are compared case-folded on macOS and Windows, so ``a.fit`` and ``A.fit`` collide there;
+- output names are compared case-folded on macOS and Windows, so ``a.fit`` and ``A.fit`` collide there; elsewhere the
+  created destination is probed (a uniquely named file looked up under its swapped case, then removed by its exact
+  name) and, when that file system folds case (exFAT, a mounted APFS or SMB share), the names are compared folded too,
+  before anything is removed;
+- an output that turns out to be the same file (device and inode) as an earlier output of the run is reported
+  "missing" for the earlier frame(s): only the last one written survives in it;
 - emptying never follows a symbolic link or a junction; a junction is removed as a directory link;
 - a copied non-FITS source drops the keywords that describe Siril's own row order and checksums (ROWORDER, CHECKSUM,
   DATASUM), which would be wrong for the new file;
@@ -42,6 +47,7 @@ import os
 import re
 import shutil
 import sys
+import uuid
 from typing import Any, Optional
 
 import numpy as np
@@ -264,15 +270,45 @@ def _mapping(approved: list[str], destination: str) -> dict[str, Any]:
     a = Fi.output_mapping(fits, destination, None) if fits else {"mapping": {}, "aliased": False}
     b = Fi.output_mapping(other, destination, ".fit") if other else {"mapping": {}, "aliased": False}
     mapping = {**a["mapping"], **b["mapping"]}
+    collisions = _collisions(approved, mapping, _CASE_FOLD)
+    return {"mapping": mapping, "collisions": collisions, "aliased": a["aliased"] or b["aliased"]}
+
+
+def _collisions(approved: list[str], mapping: dict[str, str], fold: bool) -> list[str]:
+    """The output names that repeat an earlier one, compared case-folded when ``fold``."""
     seen: set[str] = set()
     collisions: list[str] = []
     for p in approved:
         name = Fi.output_name(mapping[p])
-        key = name.casefold() if _CASE_FOLD else name
+        key = name.casefold() if fold else name
         if key in seen:
             collisions.append(name)
         seen.add(key)
-    return {"mapping": mapping, "collisions": collisions, "aliased": a["aliased"] or b["aliased"]}
+    return collisions
+
+
+def folds_case(folder: str) -> bool:
+    """Does the file system of the existing ``folder`` fold case? A uniquely named probe file is created there, looked
+    up under its swapped case and removed by its exact name. A probe that cannot be made answers True, the safe side:
+    names are then compared folded."""
+    name = ".loom-case-probe-" + uuid.uuid4().hex
+    probe = os.path.join(folder, name)
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return True
+    try:
+        os.close(fd)
+        other = os.path.join(folder, name.swapcase())
+        try:
+            return os.path.samefile(probe, other)
+        except OSError:
+            return False
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
 
 
 def export_refusal(m: dict[str, Any]) -> Optional[str]:
@@ -287,9 +323,19 @@ def export_refusal(m: dict[str, Any]) -> Optional[str]:
 
 def confirm_written(written: list[str], m: dict[str, Any], result: dict[str, Any]) -> None:
     """Each output is checked on disk rather than assumed from the write returning, so a retry knows which outputs
-    this run produced."""
+    this run produced. Outputs are written in order, so when two of them are one file on disk (same device and inode:
+    a file system that folds case or otherwise aliases names) only the last one survives; the earlier ones are
+    "missing"."""
+    last: dict[tuple[int, int], str] = {}
     for s in written:
-        if os.path.exists(m["mapping"][s]):
+        try:
+            st = os.stat(m["mapping"][s])
+        except OSError:
+            continue
+        last[(st.st_dev, st.st_ino)] = s
+    survivors = set(last.values())
+    for s in written:
+        if s in survivors:
             result["outcomes"][s] = "written"
             result["written"] += 1
         else:
@@ -349,7 +395,7 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
     """Write the approved frames into ``destination``, emptying it first.
 
     Refused before anything is removed when two frames would share an output name (case-folded where names fold
-    case), when the destination is a source folder, or when it is, or contains, a source folder, the filesystem root
+    case, or where the output folder's file system folds case), when the destination is a source folder, or when it is, or contains, a source folder, the filesystem root
     or the home folder, on the JS string rules and on resolved paths (see the module docstring). The checks run again
     just before the emptying. If the folder cannot be fully emptied nothing is copied. ``outcomes`` says per frame
     whether it was "written" or is "missing"; a failure part way keeps the outputs already written as "written".
@@ -371,6 +417,12 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
         result["refused"] = _path_refusal(approved, destination, home)
         if result["refused"] is not None:
             return result
+        if not _CASE_FOLD and folds_case(destination):
+            folded = _collisions(approved, m["mapping"], True)
+            if folded:
+                result["refused"] = ("two or more frames would be written to the same name (the output folder's file "
+                                     "system ignores letter case): " + ", ".join(folded))
+                return result
         emptied = empty_directory(destination)
         result["emptied"] = emptied["removed"]
         if emptied["failed"]:
