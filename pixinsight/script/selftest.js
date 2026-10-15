@@ -20549,7 +20549,7 @@ function runPipeTests()
               } ],
             [ Util, "readImageInfo", function( p )
               {
-                 return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [] };
+                 return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [], numberOfChannels: 1 };
               } ] ] );
          try { return Pipeline.preflight( config ); }
          finally { restore(); }
@@ -21879,6 +21879,14 @@ function runPipeTests()
              [ Pipeline.oscKindProblems( blank, infoOf( { OSCNB: { filter: "", numberOfChannels: 3, width: 9, height: 9 } } ) ),
                blank.oscKinds.OSCNB ], [ [], "dualband" ] );
       check( "marsProblems counts derived RGB", Util.suppliedChannels( cfg( { OSC: "/m/a" } ) ).length, 3 );
+      check( "inputChannelProblems says when the channel count cannot be read",
+             Pipeline.inputChannelProblems( cfg( { L: "/m/l.xisf" } ),
+                infoOf( { L: { filter: "L", path: "/m/l.xisf", width: 9, height: 9 } } ) ),
+             [ "could not read the channel count of /m/l.xisf" ] );
+      check( "oscKindProblems says when the channel count cannot be read",
+             Pipeline.oscKindProblems( cfg( { OSC: "/m/a.xisf" } ),
+                infoOf( { OSC: { filter: "UV/IR Cut", path: "/m/a.xisf", width: 9, height: 9 } } ) ),
+             [ "could not read the channel count of /m/a.xisf" ] );
       check( "oscSensorProblems is empty for now", Pipeline.oscSensorProblems( cfg( { OSC: "/m/a" } ) ), [] );
       check( "oscInfoOf gives null for a missing file",
              Pipeline.oscInfoOf( cfg( { OSC: "/m/definitely/not/here.xisf" } ) )( "OSC" ), null );

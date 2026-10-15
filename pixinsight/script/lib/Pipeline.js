@@ -229,7 +229,9 @@ Pipeline.inputChannelProblems = function( config, infoOf )
       if ( info == null )
          return;
       var path = info.path || ( config.paths && config.paths[key] ) || ( config.views && config.views[key] );
-      if ( info.numberOfChannels == 3 )
+      if ( typeof info.numberOfChannels != "number" )
+         problems.push( "could not read the channel count of " + path );
+      else if ( info.numberOfChannels == 3 )
          problems.push( path + " is a colour master (3 channels); a mono slot needs a one-channel master" );
       else if ( info.numberOfChannels != 1 )
          problems.push( Util.channelCountProblem( path, info.numberOfChannels ) );
@@ -252,6 +254,11 @@ Pipeline.oscKindProblems = function( config, infoOf )
          return;
       // never an empty key: a blank-filter choice is stored under the path
       var path = info.path || ( config.paths && config.paths[slot] ) || ( config.views && config.views[slot] );
+      if ( typeof info.numberOfChannels != "number" )
+      {
+         problems.push( "could not read the channel count of " + path );
+         return;
+      }
       if ( info.numberOfChannels == 1 )
       {
          problems.push( path + " is a mono master (1 channel); a colour slot needs a three-channel master" );
@@ -305,9 +312,6 @@ Pipeline.oscInfoOf = function( config )
       if ( !path || !File.exists( path ) )
          return null;
       var info = Util.readImageInfo( path );
-      // a header that did not say how many channels it has cannot be checked
-      if ( typeof info.numberOfChannels != "number" )
-         return null;
       return { filter: Util.keywordValue( info.keywords, "FILTER" ), path: path,
                numberOfChannels: info.numberOfChannels, width: info.width, height: info.height };
    };
