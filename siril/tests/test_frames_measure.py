@@ -7,6 +7,7 @@ where a real register would, so they need no Siril. One test runs real siril-cli
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import shutil
