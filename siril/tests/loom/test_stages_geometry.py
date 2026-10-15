@@ -747,8 +747,8 @@ def test_a_colour_run_never_measures_and_registers_even_when_the_quality_functio
     c = _Colour(tmp_path, monkeypatch)
     ref = c.run.register()
     assert ref == "G"
-    assert "register: reference is G: no L, and no usable star measurements; G by the fixed order G > R > B > H > O" \
-        in c.lines
+    assert "register: reference is G: colour group reference" in c.lines
+    assert not any("no usable star measurements" in ln for ln in c.lines)
     _check_nb(c, _nb_planes())
 
 
@@ -817,7 +817,20 @@ def test_a_cold_group_registration_stores_the_group_image_and_each_split(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     c = _Colour(tmp_path, monkeypatch)
     siblings = c.sibling_paths()
+    writes: list[str] = []
+    real_store = c.store.store
+
+    def spy(key: str, planes: Any, header: Any, meta: Any) -> Any:
+        writes.append(key)
+        return real_store(key, planes, header, meta)
+
+    monkeypatch.setattr(c.store, "store", spy)
     c.run.register()
+    # an unregistered plate is written once, by the loader when it opens the master (the plates are lazy), and never
+    # again by the grouped step, which writes only the group image and the two splits
+    sibling_keys = set(c.before.values())
+    assert all(writes.count(k) <= 1 for k in sibling_keys), writes
+    assert sorted(k for k in writes if k not in sibling_keys) == sorted([c.group_key()] + c.split_keys())
     stored = {k: c.store.lookup(c.before[k]) for k in c.before}
     first = {k: _stat(p) for k, p in siblings.items() if os.path.exists(p)}
     group = c.store.load(c.group_key())
@@ -900,7 +913,11 @@ def test_a_cached_group_image_and_split_that_both_fail_register_again(tmp_path: 
 def test_ignore_cache_registers_again_and_writes_the_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _Colour(tmp_path, monkeypatch).run.register()
     again = _Colour(tmp_path, monkeypatch, ignoreCache=True)
+    written = [again.group_key()] + again.split_keys()
+    for k in written:
+        os.remove(again.store.path_for(k))   # so that only this run can have written them
     again.run.register()
+    assert all(os.path.exists(again.store.path_for(k)) for k in written)
     assert len(_register_commands(again.ops)) == 5 and again.layers == [0]
     _check_nb(again, _nb_planes())
     assert all(again.store.load(k) is not None for k in [again.group_key()] + again.split_keys())

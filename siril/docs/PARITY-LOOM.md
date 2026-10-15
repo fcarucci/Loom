@@ -455,7 +455,7 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 | `stages_geometry.match_halos` | `lib/Pipeline.js:2274` | P | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.balance_narrowband` | `lib/Pipeline.js:2337` | P | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.group_register_params` | `lib/Pipeline.js:2928` | P | `tests/loom/test_stages_geometry.py` |
-| `stages_geometry.member_split_header` | `lib/Pipeline.js:2911` | R | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.member_split_header` | `lib/Pipeline.js:2911` | P | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.register_group_image` | `lib/Pipeline.js:2928` | R | `tests/loom/test_stages_geometry.py` |
 
 ## loomsiril/loom/stages_subsky.py

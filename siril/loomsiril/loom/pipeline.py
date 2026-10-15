@@ -312,11 +312,12 @@ class _Run:
         groups = osc.osc_channel_groups({k: {"group": ch.group} for k, ch in self.chans.items()})
         plan = osc.osc_registration_plan(present, groups) if groups else None
         quality = {} if groups else self._registration_quality(present)
-        ref_key, reason = reference.registration_choice(present, quality)
+        if plan is not None and plan["ref"] is not None:
+            ref_key, reason = plan["ref"], "colour group reference"
+        else:
+            ref_key, reason = reference.registration_choice(present, quality)
         if ref_key is None:
             raise StageFailed("No channels to register.")
-        if plan is not None and plan["ref"] != ref_key:
-            raise ValueError(f"internal: the colour reference is {plan['ref']} but the fixed order chose {ref_key}")
         self.ctx.log(f"register: reference is {ref_key}: {reason}")
         ref_fingerprint = self.chans[ref_key].current_key
         grouped: set[str] = set()
@@ -369,10 +370,9 @@ class _Run:
             else:
                 action = "split"
         if parts is None and action == "split" and store is not None:
-            parts = self._split_cached_group(chans, key, split_keys, label)
+            parts = self._split_cached_group(chans, key, split_keys, label, list(entry["planes"]))
         if parts is None:
-            if store is not None and not self.cfg.get("ignoreCache"):
-                self.ctx.log(f"[cache] {label} registerGroup MISS")
+            self.ctx.log(f"[cache] {label} registerGroup MISS")
             parts = self._register_and_split(entry, ref_key, chans, key, split_keys, label, params)
         for ch, path, split_key in zip(chans, parts, split_keys):
             ch.plate = path
@@ -390,7 +390,8 @@ class _Run:
             return None
         return self.store.path_for(split_key)
 
-    def _split_cached_group(self, chans: list[_Chan], key: str, split_keys: list[str], label: str) -> Optional[list[str]]:
+    def _split_cached_group(self, chans: list[_Chan], key: str, split_keys: list[str], label: str,
+                            plane_names: Sequence[str]) -> Optional[list[str]]:
         assert self.store is not None
         loaded = self.store.load(key)
         if loaded is None or len(loaded[0]) != 3:
@@ -400,7 +401,8 @@ class _Run:
         parts: list[str] = []
         for i, ch in enumerate(chans):
             cached = self._usable_split(ch, split_keys[i])
-            parts.append(cached if cached is not None else self._place_split(ch, i, planes[i], header, split_keys[i]))
+            parts.append(cached if cached is not None
+                         else self._place_split(ch, i, planes[i], header, split_keys[i], plane_names))
         return parts
 
     def _register_and_split(self, entry: Mapping[str, Any], ref_key: str, chans: list[_Chan], key: str,
@@ -416,14 +418,16 @@ class _Run:
             meta = {"channel": label, "stage": "registerGroup", "params": dict(params)}
             if self.store.store(key, planes, header, meta) is None:
                 self.ctx.warn(f"[cache] the registered {label} image could not be cached")
-        return [self._place_split(ch, i, planes[i], header, split_keys[i]) for i, ch in enumerate(chans)]
+        return [self._place_split(ch, i, planes[i], header, split_keys[i], list(entry["planes"]))
+                for i, ch in enumerate(chans)]
 
-    def _place_split(self, ch: _Chan, plane: int, pixels: Any, group_header: Mapping[str, Any], split_key: str) -> str:
+    def _place_split(self, ch: _Chan, plane: int, pixels: Any, group_header: Mapping[str, Any], split_key: str,
+                     planes: Sequence[str]) -> str:
         """Stores one registered plane under its split key (or in the work folder); the keywords are the member's."""
         assert ch.plane is not None
         header = stages_geometry.member_split_header(group_header, ch.key, ch.path, ch.plane)
         if self.store is not None:
-            meta = {"channel": ch.key, "stage": "registerGroup", "params": {"plane": plane}}
+            meta = {"channel": ch.key, "stage": "registerGroup", "params": {"plane": plane, "planes": ",".join(planes)}}
             stored = self.store.store(split_key, [pixels], header, meta)
             if stored is not None:
                 return stored
