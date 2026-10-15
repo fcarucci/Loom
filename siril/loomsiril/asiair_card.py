@@ -17,8 +17,10 @@ Ported from the JavaScript:
   (209-218).
 * ``describe`` (Asiair.js 246-255): :func:`describe`, reading the header through ``frames_headers.quiet_header``.
 
-New here, with no JavaScript counterpart: :func:`mount_roots`, which says where the mount points are on each
-platform (macOS ``/Volumes``, Linux ``/media/<user>``, ``/run/media/<user>`` and ``/mnt``, Windows drive letters).
+New here, with no JavaScript counterpart: :func:`mount_roots`, which says where the volumes are on each platform.
+Each entry is ``(path, is_volume)``: on macOS and Linux the path is a mount directory whose children are the volumes
+(``/Volumes``, ``/media/<user>``, ``/run/media/<user>``, ``/mnt``); on Windows each drive root is itself the volume
+(``E:\\``), so a card at the drive root is found there and not among its children.
 
 Read-only: nothing in this module writes to a card or to a frame. The JavaScript's ``processEvents`` calls have no
 counterpart here and are dropped; cancellation is the caller's ``should_stop`` callback, checked between volumes and
@@ -69,25 +71,48 @@ def _exists_dir(path: str) -> bool:
         return False
 
 
-def mount_roots(
-    platform: str = sys.platform, env: Mapping[str, str] = os.environ, user: Optional[str] = None
-) -> list[str]:
-    """The directories whose children are candidate volumes, for ``platform``.
+def _windows_drives(should_stop: Optional[Callable[[], bool]] = None) -> list[str]:
+    """The drive roots that exist: ``os.listdrives()`` where Python has it (3.12+), else each letter checked.
 
-    macOS: ``["/Volumes"]``. Linux: ``/media/<user>``, ``/run/media/<user>`` and ``/mnt``; the per-user roots are
-    left out when no user name is known (``user``, else ``env["USER"]``, else ``env["LOGNAME"]``), because
-    ``/media/`` itself would be listed as a volume. Windows: each drive letter ``A:\\`` to ``Z:\\`` that exists.
-    Any other platform: no roots, so nothing is detected.
+    The letter loop stops early when ``should_stop`` says so, between drives.
+    """
+    listdrives = getattr(os, "listdrives", None)
+    if listdrives is not None:
+        return list(listdrives())
+    drives: list[str] = []
+    for letter in string.ascii_uppercase:
+        if should_stop and should_stop():
+            break
+        if _exists_dir(f"{letter}:\\"):
+            drives.append(f"{letter}:\\")
+    return drives
+
+
+def mount_roots(
+    platform: str = sys.platform,
+    env: Mapping[str, str] = os.environ,
+    user: Optional[str] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> list[tuple[str, bool]]:
+    """The places to look for volumes on ``platform``, as ``(path, is_volume)`` pairs.
+
+    ``is_volume`` False: ``path`` is a mount directory and its children are the volumes. macOS: ``/Volumes``.
+    Linux: ``/media/<user>``, ``/run/media/<user>`` and ``/mnt``; the per-user roots are left out when no user name
+    is known (``user``, else ``env["USER"]``, else ``env["LOGNAME"]``), because ``/media/`` itself would be listed
+    as a volume.
+
+    ``is_volume`` True: ``path`` is the volume. Windows: each existing drive root (``E:\\``), since a drive root is
+    the volume and not a folder of volumes. Any other platform: nothing is detected.
     """
     if platform == "darwin":
-        return list(MOUNT_ROOTS)
+        return [(path, False) for path in MOUNT_ROOTS]
     if platform.startswith("linux"):
         who = user if user is not None else (env.get("USER") or env.get("LOGNAME") or "")
         roots = [f"/media/{who}", f"/run/media/{who}"] if who else []
         roots.append("/mnt")
-        return roots
+        return [(path, False) for path in roots]
     if platform == "win32":
-        return [f"{letter}:\\" for letter in string.ascii_uppercase if _exists_dir(f"{letter}:\\")]
+        return [(drive, True) for drive in _windows_drives(should_stop)]
     return []
 
 
@@ -126,19 +151,23 @@ def entries_in(directory: str, want_directories: bool) -> list[str]:
     return names
 
 
-def detect(roots: Iterable[str], should_stop: Optional[Callable[[], bool]] = None,
+def detect(roots: Iterable[tuple[str, bool]], should_stop: Optional[Callable[[], bool]] = None,
            on_volume: Optional[Callable[[int, int, str], None]] = None) -> list[str]:
-    """The volumes under ``roots`` that carry the ASIAIR layout (Asiair.js 47-66).
+    """The volumes that carry the ASIAIR layout (Asiair.js 47-66), from :func:`mount_roots` pairs.
 
+    A pair with ``is_volume`` False contributes its children, one level; with True it contributes its own path.
     Every root is listed first, so each volume can be reported as ``k of n``. ``should_stop`` is checked before each
     root is listed and before each volume is looked at; a stop returns the cards found so far. ``on_volume(k, n,
     path)`` is called before each volume is checked. Returns the card roots in listing order.
     """
     volumes: list[str] = []
-    for mount in roots:
+    for path, is_volume in roots:
         if should_stop and should_stop():
             break
-        volumes.extend(os.path.join(mount, name) for name in entries_in(mount, True))
+        if is_volume:
+            volumes.append(path)
+        else:
+            volumes.extend(os.path.join(path, name) for name in entries_in(path, True))
 
     found: list[str] = []
     for index, root in enumerate(volumes):

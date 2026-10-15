@@ -77,7 +77,7 @@ def test_detect_finds_only_the_card_one_level_deep(tmp_path: Path) -> None:
     (mnt / "Plain").mkdir()
     (mnt / ".hidden" / "Plan" / "Light").mkdir(parents=True)  # dot names are never volumes
 
-    roots = [str(media), str(mnt), str(tmp_path / "not-mounted")]
+    roots = [(str(media), False), (str(mnt), False), (str(tmp_path / "not-mounted"), False)]
     found = C.detect(roots)
 
     assert found == [
@@ -97,7 +97,7 @@ def test_detect_stops_between_volumes(tmp_path: Path) -> None:
     def on_volume(k: int, n: int, root: str) -> None:
         calls.append((k, n, root))
 
-    found = C.detect([str(mnt)], should_stop=lambda: len(calls) >= 1, on_volume=on_volume)
+    found = C.detect([(str(mnt), False)], should_stop=lambda: len(calls) >= 1, on_volume=on_volume)
 
     assert found == [os.path.join(str(mnt), "A")]
     assert [c[:2] for c in calls] == [(1, 3)]
@@ -107,7 +107,7 @@ def test_detect_stop_before_start_checks_nothing(tmp_path: Path) -> None:
     mnt = tmp_path / "mnt"
     make_card(mnt / "A")
     calls: list[str] = []
-    assert C.detect([str(mnt)], should_stop=lambda: True, on_volume=lambda k, n, r: calls.append(r)) == []
+    assert C.detect([(str(mnt), False)], should_stop=lambda: True, on_volume=lambda k, n, r: calls.append(r)) == []
     assert calls == []
 
 
@@ -248,20 +248,62 @@ def _write_fits_header(path: Path, values: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     ("platform", "env", "user", "expected"),
     [
-        ("darwin", {}, None, ["/Volumes"]),
-        ("linux", {"USER": "ada"}, None, ["/media/ada", "/run/media/ada", "/mnt"]),
-        ("linux", {"USER": "ada", "LOGNAME": "bob"}, "carol", ["/media/carol", "/run/media/carol", "/mnt"]),
-        ("linux", {"LOGNAME": "bob"}, None, ["/media/bob", "/run/media/bob", "/mnt"]),
-        ("linux", {}, None, ["/mnt"]),
+        ("darwin", {}, None, [("/Volumes", False)]),
+        ("linux", {"USER": "ada"}, None, [("/media/ada", False), ("/run/media/ada", False), ("/mnt", False)]),
+        ("linux", {"USER": "ada", "LOGNAME": "bob"}, "carol",
+         [("/media/carol", False), ("/run/media/carol", False), ("/mnt", False)]),
+        ("linux", {"LOGNAME": "bob"}, None, [("/media/bob", False), ("/run/media/bob", False), ("/mnt", False)]),
+        ("linux", {}, None, [("/mnt", False)]),
         ("freebsd13", {"USER": "ada"}, None, []),
     ],
 )
-def test_mount_roots_per_platform(platform: str, env: dict[str, str], user: Optional[str], expected: list[str]) -> None:
+def test_mount_roots_per_platform(platform: str, env: dict[str, str], user: Optional[str],
+                                  expected: list[tuple[str, bool]]) -> None:
     assert C.mount_roots(platform=platform, env=env, user=user) == expected
 
 
-def test_mount_roots_windows_lists_existing_drive_letters(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mount_roots_windows_uses_listdrives_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(C.os, "listdrives", lambda: ["C:\\", "E:\\"], raising=False)
+    assert C.mount_roots(platform="win32", env={}) == [("C:\\", True), ("E:\\", True)]
+
+
+def test_mount_roots_windows_letter_loop_without_listdrives(monkeypatch: pytest.MonkeyPatch) -> None:
     existing = {"C:\\", "D:\\", "Z:\\"}
+    monkeypatch.delattr(C.os, "listdrives", raising=False)
     monkeypatch.setattr(C, "_exists_dir", lambda path: path in existing)
-    assert C.mount_roots(platform="win32", env={}) == ["C:\\", "D:\\", "Z:\\"]
+    assert C.mount_roots(platform="win32", env={}) == [("C:\\", True), ("D:\\", True), ("Z:\\", True)]
+
+
+def test_mount_roots_windows_letter_loop_stops_between_drives(monkeypatch: pytest.MonkeyPatch) -> None:
+    probed: list[str] = []
+    monkeypatch.delattr(C.os, "listdrives", raising=False)
+
+    def exists(path: str) -> bool:
+        probed.append(path)
+        return True
+
+    monkeypatch.setattr(C, "_exists_dir", exists)
+    roots = C.mount_roots(platform="win32", env={}, should_stop=lambda: len(probed) >= 2)
+    assert probed == ["A:\\", "B:\\"]
+    assert roots == [("A:\\", True), ("B:\\", True)]
+
+
+def test_windows_drive_root_is_itself_the_volume(tmp_path: Path) -> None:
+    drive = tmp_path / "E"
+    _touch(drive / "Plan" / "Light" / "IC 1396A" / LIGHT)
+    (drive / "Autorun" / "Light").mkdir(parents=True)
+    other = tmp_path / "F"
+    _touch(other / "Plan" / "Light" / "x" / LIGHT)
+    child_only = tmp_path / "G"
+    make_card(child_only / "volume")  # a card one level under a drive root is not that drive's card
+
+    roots = [(str(drive), True), (str(other), True), (str(child_only), True)]
+    assert C.detect(roots) == [str(drive), str(other)]
+
+
+def test_windows_drive_root_detect_checks_root_not_children(tmp_path: Path) -> None:
+    drive = tmp_path / "E"
+    (drive / "Autorun" / "Light").mkdir(parents=True)
+    assert C.detect([(str(drive), True)]) == [str(drive)]
+    assert C.detect([(str(drive), False)]) == []  # as a folder of volumes, the drive's children are checked instead
 
