@@ -359,7 +359,8 @@ def test_destination_text_for_a_copy_says_nothing_is_deleted() -> None:
     st["destination"] = "/elsewhere"
     t = _totals(st)
     assert FS.destination_text(st, t) == (
-        "<i>/elsewhere</i> &mdash; the 10 kept frame(s) are copied there; nothing is deleted.")
+        "<i>/elsewhere</i> &mdash; the folder is <b>emptied first</b> (everything in it, hidden files and "
+        "subfolders included), then the 10 kept frame(s) are copied there; the originals are left alone.")
 
 
 def test_destination_text_without_a_folder_and_with_a_long_one_is_elided_at_the_head() -> None:

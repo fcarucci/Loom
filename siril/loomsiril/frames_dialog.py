@@ -1041,8 +1041,9 @@ class Dialog(_Actions):
         self.dest_button = ttk.Button(self.dest_frame, text="Folder...", command=self._on_destination)
         self.dest_button.pack(side="left", padx=6)
         Tooltip(self.dest_button, "Leave it on the folder the frames came from to cull them where they are. Point it "
-                                  "anywhere else and the kept frames are copied there instead, and every original "
-                                  "is left alone.")
+                                  "anywhere else and that folder is emptied first (everything in it, hidden files and "
+                                  "subfolders included), then the kept frames are copied there; every original is "
+                                  "left alone.")
         self.dest_var = tk.StringVar(master=self.top, value="")
         import tkinter.font as tkfont
 

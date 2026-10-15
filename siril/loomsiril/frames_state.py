@@ -223,13 +223,19 @@ def destination_text(state: State, t: Totals) -> str:
     """What the destination means for the run, as the dialog says it (FrameSelector.js 3337-3350).
 
     The destructive sentence is only written when the destination is the folder the frames are in.
+
+    Wording deviation from FrameSelector.js 3337-3350: the copy sentence says the destination folder is emptied
+    first (everything in it, hidden files and subfolders included), then the kept frames are copied there and the
+    originals are left alone. The JS sentence says only that nothing is deleted, which is not true of the
+    destination's existing content: the copy empties that folder first.
     """
     if state["destination"] is None:
         return "<i>no folder chosen</i>"
     where = "<i>" + elide_head(state["destination"], _PATH_WIDTH) + "</i>"
     if not destination_is_source(state):
-        return where + " &mdash; the " + str(t["approved"]) + " kept frame(s) are copied " + \
-            "there; nothing is deleted."
+        return where + " &mdash; the folder is <b>emptied first</b> (everything in it, hidden files and " + \
+            "subfolders included), then the " + str(t["approved"]) + " kept frame(s) are copied there; " + \
+            "the originals are left alone."
     return where + " &mdash; <b>the folder the frames are in.</b> Nothing is " + \
         "copied; the " + str(t["condemned"]) + " rejected frame(s) are " + \
         "<b>deleted</b> where they are."

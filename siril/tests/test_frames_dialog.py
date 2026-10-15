@@ -534,7 +534,8 @@ def test_choosing_another_folder_makes_it_a_copy(make, monkeypatch, tmp_path) ->
     monkeypatch.setattr(fd, "askdirectory", lambda **kw: str(tmp_path / "out"))
     d._on_destination()
     assert d.state["destination"] == str(tmp_path / "out") and d.copying_out()
-    assert "copied there; nothing is deleted" in d.dest_var.get()
+    assert "emptied first" in d.dest_var.get() and "copied there" in d.dest_var.get()
+    assert "nothing is deleted" not in d.dest_var.get()
     assert "approved to copy" in d.summary_var.get()
     assert not d.run_button.instate(["disabled"])
     monkeypatch.setattr(fd, "askdirectory", lambda **kw: "")      # cancelled: unchanged
