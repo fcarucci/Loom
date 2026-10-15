@@ -40,7 +40,9 @@ def _join(*parts: str) -> str:
 
 
 # Built from fragments: this file is itself scanned.
-LOCAL_PATHS = [re.escape(_join("/ho", "me/")), re.escape(_join("~/", "src")), re.escape(_join("/var/", "tmp"))]
+# A synthetic "/home/u" (a made-up user in path-handling cases) and the container's "/home/loom" are allowed, as in the
+# repository-wide hygiene test.
+LOCAL_PATHS = [_join("/ho", r"me/(?!loom\b|u\b)"), re.escape(_join("~/", "src")), re.escape(_join("/var/", "tmp"))]
 HOSTS = [_join("docker", "dev")]
 PROCESS_WORDS = [_join("sw", "arm"), _join("jud", "ge"), _join("se", "at"), _join("bri", "ef")]
 PROCESS_WORDS_UPPER = [_join("P", "M"), _join("E", "L")]
