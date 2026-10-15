@@ -21806,6 +21806,84 @@ function runPipeTests()
              var s = withConfigStore( {}, {}, function() { saveConfig( c ); } );
              return withConfigStore( s.stored, s.paramsSet, function() { return loadConfig(); } ).result.oscKinds; } )(), {} );
    } )();
+   } if ( testGroup( "osc.preflight" ) ) {
+   ( function()
+   {
+      function cfg( paths, palettes )
+      {
+         var c = defaultConfig();
+         for ( var k in paths ) c.paths[k] = paths[k];
+         if ( palettes ) c.palettes = palettes;
+         return c;
+      }
+      function infoOf( table ) { return function( slot ) { return table[slot]; }; }
+      check( "oscPaletteProblem SHO with colour",
+             Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "SHO", "HOO" ] ) ),
+             "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
+      check( "oscPaletteProblem HSO with OSC", Pipeline.oscPaletteProblem( cfg( { OSC: "/m/a" }, [ "HSO" ] ) ),
+             "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
+      check( "oscPaletteProblem HOO only", Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), null );
+      check( "oscPaletteProblem mono run unaffected",
+             Pipeline.oscPaletteProblem( cfg( { H: "/m/h", S: "/m/s", O: "/m/o" }, [ "SHO" ] ) ), null );
+      check( "narrowbandSupplied OSCNB", Pipeline.narrowbandSupplied( cfg( { OSCNB: "/m/nb" } ) ), [ "H", "O" ] );
+      check( "narrowbandSupplied mono unchanged", Pipeline.narrowbandSupplied( cfg( { H: "/m/h", O: "/m/o" } ) ), [ "H", "O" ] );
+      var mc = cfg( { R: "/m/r.xisf", H: "/m/h.xisf" } );
+      check( "inputChannelProblems colour file in a mono slot",
+             Pipeline.inputChannelProblems( mc, infoOf( {
+                R: { filter: "R", path: "/m/r.xisf", numberOfChannels: 3, width: 9, height: 9 },
+                H: { filter: "Ha", path: "/m/h.xisf", numberOfChannels: 2, width: 9, height: 9 } } ) ),
+             [ "/m/r.xisf is a colour master (3 channels); a mono slot needs a one-channel master",
+               "/m/h.xisf has 2 channels; Loom takes mono (1) or colour (3) masters" ] );
+      var sz = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      check( "oscKindProblems different sizes allowed",
+             Pipeline.oscKindProblems( sz, infoOf( {
+                OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
+                OSCNB: { filter: "L-eXtreme", path: "/m/b.xisf", numberOfChannels: 3, width: 90, height: 70 } } ) ), [] );
+      check( "wantedPalettes OSCNB gives HOO",
+             Pipeline.wantedPalettes( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), [ "HOO" ] );
+      check( "wantedPalettes OSCNB drops SHO", Pipeline.wantedPalettes( cfg( { OSCNB: "/m/nb" }, [ "SHO", "HOO" ] ) ), [ "HOO" ] );
+      var c = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      var probs = Pipeline.oscKindProblems( c, infoOf( {
+         OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
+         OSCNB: { filter: "Duo",       path: "/m/b.xisf", numberOfChannels: 3, width: 100, height: 80 } } ) );
+      check( "oscKindProblems unconfident needs a choice",
+             probs, [ "choose Broadband or Dual-band Hα + OIII for /m/b.xisf" ] );
+      check( "oscKindProblems fills oscKinds", c.oscKinds.OSC, "broadband" );
+      var c2 = cfg( { OSCNB: "/m/c.xisf" } );
+      check( "oscKindProblems unsupported filter",
+             Pipeline.oscKindProblems( c2, infoOf( { OSCNB: { filter: "ALP-T SII/Hb", path: "/m/c.xisf",
+                                                             numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" ] );
+      var c3 = cfg( { OSC: "/m/m.xisf" } );
+      check( "oscKindProblems mono file in a colour slot",
+             Pipeline.oscKindProblems( c3, infoOf( { OSC: { filter: "", path: "/m/m.xisf",
+                                                           numberOfChannels: 1, width: 9, height: 9 } } ) ),
+             [ "/m/m.xisf is a mono master (1 channel); a colour slot needs a three-channel master" ] );
+      var c4 = cfg( { OSCNB: "/m/u.xisf" } );
+      check( "oscKindProblems broadband in the dual-band slot",
+             Pipeline.oscKindProblems( c4, infoOf( { OSCNB: { filter: "UV/IR Cut", path: "/m/u.xisf",
+                                                             numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "/m/u.xisf is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master" ] );
+      var dd = cfg( { OSC: "/m/d.xisf" } );
+      check( "oscKindProblems dual-band in the broadband slot",
+             Pipeline.oscKindProblems( dd, infoOf( { OSC: { filter: "L-eXtreme", path: "/m/d.xisf",
+                                                          numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "/m/d.xisf is a dual-band colour master; the broadband slot needs a Broadband master" ] );
+      var ch = cfg( { OSCNB: "/m/q.xisf" } ); ch.oscKindChoices = { "filter:duo": "dualband" };
+      check( "oscKindProblems a remembered choice resolves an unconfident filter",
+             [ Pipeline.oscKindProblems( ch, infoOf( { OSCNB: { filter: "Duo", path: "/m/q.xisf",
+                                                              numberOfChannels: 3, width: 9, height: 9 } } ) ),
+               ch.oscKinds.OSCNB ], [ [], "dualband" ] );
+      var blank = cfg( { OSCNB: "/m/u.xisf" } ); blank.oscKindChoices = { "path:/m/u.xisf": "dualband" };
+      check( "oscKindProblems keys a blank filter by the configured path when infoOf has none",
+             [ Pipeline.oscKindProblems( blank, infoOf( { OSCNB: { filter: "", numberOfChannels: 3, width: 9, height: 9 } } ) ),
+               blank.oscKinds.OSCNB ], [ [], "dualband" ] );
+      check( "marsProblems counts derived RGB", Util.suppliedChannels( cfg( { OSC: "/m/a" } ) ).length, 3 );
+      check( "oscSensorProblems is empty for now", Pipeline.oscSensorProblems( cfg( { OSC: "/m/a" } ) ), [] );
+      check( "oscInfoOf gives null for a missing file",
+             Pipeline.oscInfoOf( cfg( { OSC: "/m/definitely/not/here.xisf" } ) )( "OSC" ), null );
+      check( "oscInfoOf gives null for an empty slot", Pipeline.oscInfoOf( cfg( {} ) )( "OSC" ), null );
+   } )();
    } if ( testGroup( "pipeline.run" ) ) {
    /*
     * TG-2 (T9, T12, T16, T23): what Pipeline.run, exportResults,

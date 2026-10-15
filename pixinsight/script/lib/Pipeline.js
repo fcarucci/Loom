@@ -39,9 +39,10 @@ Pipeline.gradientToolProblems = function( config )
 Pipeline.preflightChannels = function( config )
 {
    var problems = [];
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+   var keys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var j = 0; j < keys.length; ++j )
    {
-      var key = Util.CHANNELS[j];
+      var key = keys[j];
       if ( config.views && config.views[key] )
          problems = problems.concat( Pipeline.preflightView( key, config.views[key] ) );
       else if ( config.paths[key] )
@@ -58,6 +59,17 @@ Pipeline.preflightChannels = function( config )
 Pipeline.preflight = function( config )
 {
    var problems = Util.validateSelection( config.paths, config.views );
+
+   var mix = Util.colourMixProblem( config );
+   if ( mix != null )
+      problems.push( mix );
+   var palette = Pipeline.oscPaletteProblem( config );
+   if ( palette != null )
+      problems.push( palette );
+   var infoOf = Pipeline.oscInfoOf( config );
+   problems = problems.concat( Pipeline.inputChannelProblems( config, infoOf ) );
+   problems = problems.concat( Pipeline.oscKindProblems( config, infoOf ) );
+   problems = problems.concat( Pipeline.oscSensorProblems( config ) );
 
    for ( var i = 0; i < Pipeline.REQUIRED_PROCESSES.length; ++i )
    {
@@ -94,10 +106,8 @@ Pipeline.preflight = function( config )
  */
 Pipeline.narrowbandSupplied = function( config )
 {
-   return Util.NARROWBAND.filter( function( k )
-   {
-      return Util.channelSupplied( config.paths || {}, config.views || {}, k );
-   } );
+   var supplied = Util.suppliedChannels( config );
+   return Util.NARROWBAND.filter( function( k ) { return supplied.indexOf( k ) >= 0; } );
 };
 
 /*
@@ -149,10 +159,8 @@ Pipeline.reportSkippedPalettes = function( config )
  */
 Pipeline.marsProblems = function( config )
 {
-   var broadband = Util.BROADBAND.filter( function( k )
-   {
-      return ( config.views && config.views[k] ) || config.paths[k];
-   } );
+   var supplied = Util.suppliedChannels( config );
+   var broadband = Util.BROADBAND.filter( function( k ) { return supplied.indexOf( k ) >= 0; } );
    if ( broadband.length == 0 )
       return [];
    var mgc = Steps.configuredMGC( config.marsPath );
@@ -190,6 +198,124 @@ Pipeline.preflightPath = function( key, path )
    if ( Util.keywordValue( kws, "FILTER" ) === null )
       return [ "No FILTER keyword in " + key + ": " + path +
                " (SPFC cannot proceed; the script will not guess a filter)" ];
+   return [];
+};
+
+/*
+ * A colour camera cannot separate SII from Ha, so the palettes that need
+ * SII cannot be built from a colour master.
+ */
+Pipeline.oscPaletteProblem = function( config )
+{
+   if ( Util.colourSupplied( config ).length == 0 )
+      return null;
+   var pals = config.palettes || [];
+   if ( pals.indexOf( "SHO" ) >= 0 || pals.indexOf( "HSO" ) >= 0 )
+      return "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO";
+   return null;
+};
+
+/*
+ * Channel-count problems of the mono slots. infoOf( slot ) gives
+ * { path, numberOfChannels, ... } or null; colour slots are left to
+ * oscKindProblems.
+ */
+Pipeline.inputChannelProblems = function( config, infoOf )
+{
+   var problems = [];
+   Util.monoSupplied( config ).forEach( function( key )
+   {
+      var info = infoOf( key );
+      if ( info == null )
+         return;
+      var path = info.path || ( config.paths && config.paths[key] ) || ( config.views && config.views[key] );
+      if ( info.numberOfChannels == 3 )
+         problems.push( path + " is a colour master (3 channels); a mono slot needs a one-channel master" );
+      else if ( info.numberOfChannels != 1 )
+         problems.push( Util.channelCountProblem( path, info.numberOfChannels ) );
+   } );
+   return problems;
+};
+
+/*
+ * The checks of the colour slots: three channels, a kind (broadband or
+ * dual-band) that is known and matches the slot. The kind found is left in
+ * config.oscKinds for the run.
+ */
+Pipeline.oscKindProblems = function( config, infoOf )
+{
+   var problems = [];
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      var info = infoOf( slot );
+      if ( info == null )
+         return;
+      // never an empty key: a blank-filter choice is stored under the path
+      var path = info.path || ( config.paths && config.paths[slot] ) || ( config.views && config.views[slot] );
+      if ( info.numberOfChannels == 1 )
+      {
+         problems.push( path + " is a mono master (1 channel); a colour slot needs a three-channel master" );
+         return;
+      }
+      if ( info.numberOfChannels != 3 )
+      {
+         problems.push( Util.channelCountProblem( path, info.numberOfChannels ) );
+         return;
+      }
+      var k = Util.effectiveOscKind( slot, info.filter, path, config.oscKindChoices );
+      if ( k.kind == "unsupported" )
+         problems.push( "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" );
+      else if ( k.source == "none" )
+         problems.push( "choose Broadband or Dual-band Hα + OIII for " + path );
+      else if ( slot == "OSCNB" && k.kind == "broadband" )
+         problems.push( path + " is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master" );
+      else if ( slot == "OSC" && k.kind == "dualband" )
+         problems.push( path + " is a dual-band colour master; the broadband slot needs a Broadband master" );
+      else
+      {
+         if ( !config.oscKinds )
+            config.oscKinds = {};
+         config.oscKinds[slot] = k.kind;
+      }
+   } );
+   return problems;
+};
+
+/*
+ * A function of the slot giving what preflight needs to know of its master:
+ * { filter, path, numberOfChannels, width, height }, or null when there is
+ * nothing to read (preflightView and preflightPath report the absence).
+ * A file is read by its header only, and never when it is missing.
+ */
+Pipeline.oscInfoOf = function( config )
+{
+   return function( slot )
+   {
+      var id = config.views && config.views[slot];
+      if ( id )
+      {
+         var w = ImageWindow.windowById( id );
+         if ( w == null || w.isNull )
+            return null;
+         var img = w.mainView.image;
+         return { filter: Util.keywordValue( w.keywords, "FILTER" ), path: id,
+                  numberOfChannels: img.numberOfChannels, width: img.width, height: img.height };
+      }
+      var path = config.paths && config.paths[slot];
+      if ( !path || !File.exists( path ) )
+         return null;
+      var info = Util.readImageInfo( path );
+      // a header that did not say how many channels it has cannot be checked
+      if ( typeof info.numberOfChannels != "number" )
+         return null;
+      return { filter: Util.keywordValue( info.keywords, "FILTER" ), path: path,
+               numberOfChannels: info.numberOfChannels, width: info.width, height: info.height };
+   };
+};
+
+/* The colour camera's sensor checks; a later change fills this. */
+Pipeline.oscSensorProblems = function( config )
+{
    return [];
 };
 
