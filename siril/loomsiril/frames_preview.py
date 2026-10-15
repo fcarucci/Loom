@@ -406,12 +406,12 @@ class PreviewControl:
         self.paint_viewport()
 
     def dispose(self) -> None:
-        """dispose (FrameSelector.js 1807-1811): drops the frame; the photo images go with it."""
+        """dispose (FrameSelector.js 1807-1811): drops the frame and its photo images; the scroll position is kept."""
         self.image = None
         self._photo = None
         self._fit_photo = None
         self._fit_key = None
-        self.view.set_image(0, 0)
+        # The scroll position is kept on purpose (load 1893-1932): the next show() clamps it to the new frame's size.
         try:
             self.paint_viewport()
         except Exception:

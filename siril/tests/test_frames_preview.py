@@ -17,6 +17,7 @@ import pytest
 
 from loomsiril import frames_preview as P
 from loomsiril.frames_preview_cache import PreviewCache
+from loomsiril.io_fits import write_fits
 
 
 # ---- pure: the view
@@ -315,7 +316,27 @@ def test_load_of_a_missing_file_leaves_the_preview_empty(tk_root: Any, tmp_path:
     ctl.show(_frame())
     cache = PreviewCache(str(tmp_path / "cache"))
     assert ctl.load(str(tmp_path / "gone.fit"), None, cache) is False
-    assert ctl.image is None and ctl.view.has_image is False
+    assert ctl.image is None and ctl.canvas.find_all() == ()
+
+
+def test_the_view_stays_in_place_when_the_frame_changes(tk_root: Any, tmp_path: Path) -> None:
+    ctl = P.PreviewControl(tk_root)
+    ctl.show(_frame())
+    _size(ctl)
+    ctl.pan(60, 30)
+    assert (ctl.view.x, ctl.view.y) == (60, 30)
+
+    ctl.dispose()
+    ctl.show(_frame())
+    assert (ctl.view.x, ctl.view.y) == (60, 30)
+
+    plane = (0.5 + 0.01 * np.random.default_rng(1).standard_normal((200, 300))).astype(np.float32)
+    path = tmp_path / "frame.fit"
+    write_fits(path, [plane])
+    cache = PreviewCache(str(tmp_path / "cache"))
+    assert ctl.load(str(path), None, cache) is True
+    assert ctl.image is not None and ctl.image.shape[:2] == (200, 300)
+    assert (ctl.view.x, ctl.view.y) == (60, 30)
 
 
 def test_release_removes_the_frame_and_the_bindings(tk_root: Any) -> None:
