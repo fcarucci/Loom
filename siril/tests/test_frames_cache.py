@@ -1,7 +1,6 @@
 """Frame identities and the measurement cache: loomsiril.frames_cache, ported from FrameSelector.js.
 
-These tests need neither Siril, PixInsight, node nor a display. Files live under pytest's tmp_path, which the test
-command points at the Siril worktree's scratch area.
+These tests need neither Siril, PixInsight, node nor a display. Files live under pytest's tmp_path.
 """
 
 from __future__ import annotations
@@ -77,7 +76,7 @@ def test_file_stat_fields_and_types(tmp_path: Path) -> None:
     assert set(st) == {"size", "mtime", "created", "at"}
     assert st["size"] == 3
     assert isinstance(st["mtime"], int) and isinstance(st["at"], int)
-    assert isinstance(st["created"], int)  # st_birthtime or st_ctime: always present on these systems
+    assert st["created"] == os.stat(path).st_ctime_ns // 1_000_000  # ctime, never the birth time
     assert before <= st["at"] <= after
 
 
@@ -263,8 +262,13 @@ def test_touching_a_file_digests_only_that_one(tmp_path: Path, counted: list[str
     assert second["ids"][touched]["mtime"] != first["ids"][touched]["mtime"]
 
 
-def test_a_just_written_file_is_not_cached(tmp_path: Path, counted: list[str]) -> None:
-    """The racy rule: a file changed within the settle window cannot vouch for its own digest, so it is read again."""
+def test_a_just_written_file_is_not_cached(tmp_path: Path, counted: list[str],
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """The racy rule: a file changed within the settle window cannot vouch for its own digest, so it is read again.
+
+    The settle window is made far larger than any test runs, so the file is always inside it: no timing involved.
+    """
+    monkeypatch.setattr(FF, "DIGEST_SETTLE_MS", 10**12)
     cache = str(tmp_path / "cache")
     p = _write(tmp_path / "fresh.fit", b"just written")
     _scan([p], cache, use_cache=True)
@@ -308,6 +312,11 @@ def test_abandon_remembers_only_the_digests_taken(tmp_path: Path, monkeypatch: p
     for p in fast + [slow]:
         _age(p)
 
+    # A stale entry for the slow path (wrong size, so it is no hit): the cancel must leave it exactly as it was.
+    stale = {"size": -1, "mtime": 1, "created": 1, "digest": "f" * 40}
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / C.DIGEST_CACHE_NAME).write_text(json.dumps({slow: stale}), encoding="utf-8")
+
     release = threading.Event()
     real = C.digest
 
@@ -332,7 +341,8 @@ def test_abandon_remembers_only_the_digests_taken(tmp_path: Path, monkeypatch: p
         hasher.close()
 
     table = json.loads((tmp_path / "cache" / C.DIGEST_CACHE_NAME).read_text(encoding="utf-8"))
-    assert set(table) == set(fast)
+    assert set(table) == set(fast) | {slow}
+    assert table[slow] == stale  # left alone: neither re-recorded nor set to None
     for p in fast:
         assert table[p]["digest"] == hashlib.sha1(Path(p).read_bytes()).hexdigest()
 
@@ -364,3 +374,45 @@ def test_config_signature_is_twelve_hex_digits() -> None:
     sig = C.config_signature("settings")
     assert sig == hashlib.sha1("settings".encode("utf-8")).hexdigest()[:12]
     assert len(sig) == 12
+
+
+def test_same_path_new_bytes_changes_the_identity_and_misses(tmp_path: Path) -> None:
+    """A frame rewritten in place (same path, same size) must not be served the old measurement."""
+    cache = str(tmp_path / "cache")
+    path = _write(tmp_path / "frame.fit", b"AAAA frame bytes")
+    old = C.file_identity(path)
+    assert old is not None
+    store = C.MeasurementStore(cache, "config A")
+    store.store(old, _metrics(3.0))
+    store.save()
+
+    _write(tmp_path / "frame.fit", b"BBBB frame bytes")  # same size, different bytes
+    new = C.file_identity(path)
+    assert new is not None
+    assert new["size"] == old["size"]
+    assert new["digest"] != old["digest"]
+    fresh = C.MeasurementStore(cache, "config A")
+    assert fresh.cached(new) is None
+    assert fresh.cached(old) == _metrics(3.0)  # the old bytes keep their own entry
+
+
+def test_failed_save_keeps_the_old_table_and_leaves_no_temp_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                 caplog: pytest.LogCaptureFixture) -> None:
+    cache = tmp_path / "cache"
+    store = C.MeasurementStore(str(cache), "config A")
+    store.store(_identity("a" * 40), _metrics(1.0))
+    store.save()
+    table_file = cache / C.TABLE_NAME
+    before = table_file.read_bytes()
+
+    def broken_replace(src: str, dst: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(C.os, "replace", broken_replace)
+    later = C.MeasurementStore(str(cache), "config A")
+    later.store(_identity("b" * 40), _metrics(2.0))
+    later.save()  # warns, does not raise
+
+    assert table_file.read_bytes() == before
+    assert "could not save measurements" in caplog.text
+    assert sorted(p.name for p in cache.iterdir()) == [C.TABLE_NAME]

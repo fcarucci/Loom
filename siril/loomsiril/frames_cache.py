@@ -33,8 +33,9 @@ Differences from the JavaScript, all deliberate:
 
 * No module globals for the cache location or the table: a MeasurementStore or an Identities holds its own.
 * ``MEASURE_VERSION`` is the Siril port's version (``"siril-v1"``), not the PixInsight ``"v3"``.
-* ``created`` is ``st_birthtime`` where the OS reports it, and ``st_ctime`` otherwise (Linux, and Windows before
-  Python 3.12). Times are integer milliseconds, as JS ``getTime()`` gives.
+* ``created`` is always ``st_ctime``, as FrameSelector.js 635 says (``FileInfo.timeCreated`` is ctime on macOS).
+  It is NOT ``st_birthtime``: a birth time does not change on edit, so a same-size edit with the mtime restored
+  would hit the digest cache. Times are integer milliseconds, as JS ``getTime()`` gives.
 * ``digest`` warns once for a file it cannot read, including one that does not exist (FrameSelector.js 602 is silent
   for a missing file). The result is still None.
 * Digests run on a thread pool of ``min(4, os.cpu_count())`` threads with ``hashlib.sha1``, not on an external
@@ -52,6 +53,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
 from collections.abc import Callable
 from typing import Any, Optional
@@ -101,16 +103,15 @@ def digest(path: str, warn: Warn = None) -> Optional[str]:
 def file_stat(path: str) -> Optional[Entry]:
     """``{size, mtime, created, at}`` in integer milliseconds, or None for a file that is not there.
 
-    ``created`` is ``st_birthtime`` where the OS has it and ``st_ctime`` where it does not, None never; ``at`` is the
-    time the stat was taken, before any digest. The caller takes this BEFORE digesting the file.
+    ``created`` is ``st_ctime`` (the status change time, not the birth time: see the module docstring), in
+    milliseconds, never None; ``at`` is the time the stat was taken, before any digest. The caller takes this
+    BEFORE digesting the file.
     """
     try:
         st = os.stat(path)
     except OSError:
         return None
-    birth = getattr(st, "st_birthtime", None)
-    created = int(birth * 1000) if birth is not None else st.st_ctime_ns // 1_000_000
-    return {"size": st.st_size, "mtime": st.st_mtime_ns // 1_000_000, "created": created,
+    return {"size": st.st_size, "mtime": st.st_mtime_ns // 1_000_000, "created": st.st_ctime_ns // 1_000_000,
             "at": time.time_ns() // 1_000_000}
 
 
@@ -207,6 +208,26 @@ class Hasher:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
 
+def _write_atomic(path: str, text: str) -> None:
+    """Writes ``text`` to ``path`` through a temp file in the same directory and an os.replace.
+
+    A reader sees the old file or the new one, never a half-written one; a failure leaves the old file in place
+    and removes the temp file. Raises OSError.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _digest_cache_path(cache_dir: str) -> str:
     return os.path.join(cache_dir, DIGEST_CACHE_NAME)
 
@@ -229,8 +250,7 @@ def _save_digest_cache(cache_dir: Optional[str], table: dict[str, Any]) -> None:
         return
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        with open(_digest_cache_path(cache_dir), "w", encoding="utf-8") as f:
-            f.write(json.dumps(table, separators=(",", ":"), ensure_ascii=False))
+        _write_atomic(_digest_cache_path(cache_dir), json.dumps(table, separators=(",", ":"), ensure_ascii=False))
     except (OSError, TypeError, ValueError) as e:
         _warn(None, f"could not save the frame digests: {e}")
 
@@ -347,8 +367,8 @@ class MeasurementStore:
         table = self.load_table()
         try:
             os.makedirs(self._dir, exist_ok=True)
-            with open(os.path.join(self._dir, TABLE_NAME), "w", encoding="utf-8") as f:
-                f.write(json.dumps(table, separators=(",", ":"), ensure_ascii=False))
+            _write_atomic(os.path.join(self._dir, TABLE_NAME),
+                          json.dumps(table, separators=(",", ":"), ensure_ascii=False))
         except (OSError, TypeError, ValueError) as e:
             _warn(None, f"could not save measurements: {e}")
 
