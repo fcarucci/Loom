@@ -302,7 +302,7 @@ class DialogActions:
                 made = self._make_master_flats(manifest, result, dest, note)
             except Exception as exc:  # noqa: BLE001 - the copy is done: say so, and say what went wrong after it
                 note("EXCEPTION: " + str(exc))
-                master_text = "\n\nThe master flats failed: " + str(exc) + "\nThe raw flats were kept."
+                master_text = "\n\nThe master flats failed: " + str(exc) + "\n" + self._after_master_crash(dest)
                 icon = "warning"
                 made = False
             if made is False:
@@ -327,6 +327,19 @@ class DialogActions:
         tell(outcome["text"] + master_text, icon, master=self.top)
         self.refresh()
         return result
+
+    def _after_master_crash(self, dest: str) -> str:
+        """What a crashed master-flat step left: the run's own result is lost with the exception, so the Flat folder
+        is read. A master that is there was made and checked, and its raw flats were deleted at that point."""
+        flat_dir = AN.import_root(dest)["root"] + "/Flat"
+        try:
+            masters = sorted(n for n in os.listdir(flat_dir)
+                             if n.startswith("masterFlat_") and n.endswith(master_flat_run.MASTER_EXT))
+        except OSError:
+            masters = []
+        lead = (("Master flats finished before the failure (their raw flats were deleted once each was checked): "
+                 + ", ".join(masters) + ".\n") if masters else "No master flat was finished.\n")
+        return (lead + "The raw flats were kept for the filters without a finished master; check " + flat_dir)
 
     def _make_master_flats(self, manifest: dict[str, Any], written: dict[str, Any], dest: str, note: Any) -> Any:
         from loomsiril.master_flat_siril import SirilMasterFlatEngine

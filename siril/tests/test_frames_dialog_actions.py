@@ -546,7 +546,12 @@ def test_a_cancelled_master_flat_step_reports_cancelled_and_never_reports_none(c
 def test_an_exception_in_the_master_flats_reports_the_import_and_the_log(card, rec, tmp_path, monkeypatch) -> None:
     _with_master_flats(card, tmp_path)
 
+    flat_dir = card.out / "Flat"
+
     def boom(*a: Any, **kw: Any) -> Any:
+        flat_dir.mkdir(parents=True)
+        (flat_dir / "masterFlat_L.fit").write_bytes(b"x")          # the first filter finished, then the crash
+        (flat_dir / ".partial_masterFlat_R.fit").write_bytes(b"x")
         raise RuntimeError("siril went away")
 
     monkeypatch.setattr(card.DA.AI, "make_master_flats", boom)
@@ -556,7 +561,21 @@ def test_an_exception_in_the_master_flats_reports_the_import_and_the_log(card, r
     text, icon = rec.told[-1]
     assert text.startswith("Imported 22 frame(s).") and "The master flats failed: siril went away" in text
     assert "Log: " + str(logs[0]) in text and icon == "warning"
+    assert "finished before the failure" in text and "masterFlat_L.fit." in text and "masterFlat_R" not in text
+    assert "raw flats were kept for the filters without a finished master; check " + str(flat_dir) in text
+    assert "The raw flats were kept." not in text
     assert card.d.state["locked"] is True
+
+
+def test_a_crash_before_any_master_says_none_was_finished(card, rec, tmp_path, monkeypatch) -> None:
+    _with_master_flats(card, tmp_path)
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("no siril")
+
+    monkeypatch.setattr(card.DA.AI, "make_master_flats", boom)
+    card.run()
+    assert "No master flat was finished." in rec.told[-1][0]
 
 
 def test_an_unexpected_error_during_the_copy_is_logged_and_raised_with_the_log_path(card, rec, tmp_path,
