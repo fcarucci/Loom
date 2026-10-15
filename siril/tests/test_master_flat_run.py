@@ -286,8 +286,8 @@ def test_quiet_header_obj_reads_a_real_fits(tmp_path: Any) -> None:
     hv = run.quiet_header_obj(str(p))
     assert hv.info is not None
     assert (hv.info.width, hv.info.height) == (4, 3)
-    assert hv.keyword("FILTER").strip().strip("'").strip() == "Ha"
-    assert hv.keyword("IMAGETYP").strip().strip("'").strip() == "Master Flat"
+    assert hv.keyword("FILTER") == "Ha"
+    assert hv.keyword("IMAGETYP") == "Master Flat"
     assert hv.keyword("NOPE") is None
 
 
@@ -305,7 +305,7 @@ def test_describe_and_scan_read_through_the_adapter(tmp_path: Any) -> None:
     _write_flat(flat, {"IMAGETYP": "Flat Field", "FILTER": "Ha"})
     described = mf.describe(str(flat), run.quiet_header_obj(str(flat)).keyword)
     assert described["path"] == str(flat)
-    assert described["filter"].strip().strip("'").strip() == "Ha"
+    assert described["filter"] == "Ha"
     found = mf.scan_folder(str(tmp_path), run.quiet_header_obj)
     assert [e["path"] for e in found] == [str(dark)]
     assert found[0]["exposure"] == 30.0
@@ -330,3 +330,17 @@ _CORE_ROUND = pytest.mark.xfail(strict=True, reason="loomsiril.core.js_round rou
 ])
 def test_master_flat_num_rounds_as_js_math_round(value: float, printed: str) -> None:
     assert mf.master_flat_num(value, 1) == printed
+
+
+@pytest.mark.parametrize("mean, reason", [
+    (np.float32(1.5), None),
+    (np.float64(2.0), None),
+    (np.int64(3), None),
+    (np.float32("nan"), "the master is empty or not finite"),
+    (np.float64("inf"), "the master is empty or not finite"),
+    (np.float64(0.0), "the master is empty or not finite"),
+    (np.bool_(True), "the master is empty or not finite"),
+])
+def test_verify_mean_accepts_numpy_scalars(mean: Any, reason: str | None) -> None:
+    got = _Got({"width": 4, "height": 3, "mean": mean, "keywords": {"FILTER": "Ha", "IMAGETYP": "Master Flat"}})
+    assert run.verify_master(got, _Obj({"width": 4, "height": 3}), "Ha") == reason

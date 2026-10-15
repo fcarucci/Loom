@@ -40,8 +40,11 @@ engine has no callable ``resolve``, nothing is deleted (see :func:`_check_job_sk
 from __future__ import annotations
 
 import math
+import numbers
 import re
 from typing import Any, Callable, Optional, Protocol
+
+import numpy as np
 
 from loomsiril.jsmath import is_falsy, js_string
 from loomsiril.frames_headers import HeaderInfo, quiet_header
@@ -95,8 +98,8 @@ def quiet_header_obj(path: str) -> HeaderView:
 class MasterFlatEngine(Protocol):
     """What :func:`execute` calls, with the JS shapes of the results (see the module docstring).
 
-    Optional, as in the JS: ``remove_partials(dir)`` (called on the destination Flat folder when present) and
-    ``resolve(path)`` (the real path with symlinks followed; without it nothing is deleted).
+    Optional, as in the JS: ``remove_partials(dir)`` (called on the destination Flat folder when the engine has it) and
+    ``resolve(path)`` (the real path with symlinks followed; an engine without it deletes nothing).
     """
 
     def exists(self, path: str) -> bool: ...
@@ -117,6 +120,10 @@ class MasterFlatEngine(Protocol):
     def verify(self, partial_path: str, job: dict[str, Any]) -> Optional[str]: ...
 
     def publish(self, partial_path: str, final_path: str) -> bool: ...
+
+    def resolve(self, path: str) -> str: ...
+
+    def remove_partials(self, dir_path: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +159,7 @@ def _verify_imagetyp(got: Any) -> Optional[str]:
 def _verify_mean(got: Any) -> Optional[str]:
     """``masterFlatVerifyMean``: a finite, positive mean (an empty or NaN integration is not a master)."""
     m = got.mean
-    if isinstance(m, bool) or not isinstance(m, (int, float)) or not math.isfinite(m) or m <= 0:
+    if isinstance(m, (bool, np.bool_)) or not isinstance(m, numbers.Real) or not math.isfinite(m) or m <= 0:
         return "the master is empty or not finite"
     return None
 
@@ -454,7 +461,7 @@ def _process_all_jobs(jobs: list[dict[str, Any]], engine: MasterFlatEngine, opts
     """``masterFlatProcessAllJobs``: each job in order: progress, skip check, then the job."""
     for j, job in enumerate(jobs):
         on_progress = opts.get("onProgress")
-        if on_progress is not None:
+        if not is_falsy(on_progress):
             on_progress(j, len(jobs), js_string(job["filter"])
                         + (" (bin " + js_string(job["binning"]) + ")" if job.get("binning") is not None else ""))
         skip_reason = _check_job_skip(job, stopped, engine)
@@ -499,7 +506,7 @@ def execute(jobs: list[dict[str, Any]], engine: MasterFlatEngine, opts: Optional
     _process_all_jobs(jobs, engine, opts, out, stopped, ext)
 
     on_progress = opts.get("onProgress")
-    if on_progress is not None:
+    if not is_falsy(on_progress):
         on_progress(len(jobs), len(jobs), "")
     return out
 
