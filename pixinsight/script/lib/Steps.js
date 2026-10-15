@@ -2897,6 +2897,9 @@ Steps.exportTiff16 = function( window, dir, name )
                   window, Util.freeWindowId( Steps.syqonSanitizeFileName( name ) + "_export" ) );
    try
    {
+      // Provenance (LOOMSRC) is carried by the XISF and FITS results and the run log. A TIFF
+      // written for other applications most likely cannot hold FITS keywords, and the non-strict
+      // save drops what it cannot store, so this copy is harmless and not relied on.
       var srcKw = Util.loomSourceKeywords( window );
       if ( srcKw.length > 0 )
          clone.keywords = srcKw;
@@ -4131,8 +4134,9 @@ Steps.exportPsb = function( results, dir, name )
       var c = Steps.syqonCloneWindowForProcessing(
                  entry.window, Util.freeWindowId(
                     Steps.syqonSanitizeFileName( entry.name ) + "_psb" ) );
-      // A PSB has no per-layer keyword store: the provenance lives on the layer's source
-      // window (and in the exported channel files), so the clone only carries it along.
+      // A PSB has no per-layer keyword store, and provenance is carried by the XISF and FITS
+      // results and the run log: TIFF and PSB exports for other applications do not carry it.
+      // The copy is harmless and not relied on.
       var srcKw = Util.loomSourceKeywords( entry.window );
       if ( srcKw.length > 0 )
          c.keywords = srcKw;

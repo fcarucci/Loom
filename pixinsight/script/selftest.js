@@ -21429,6 +21429,122 @@ function runPipeTests()
          Pipeline.stampSources( monoOut, monoChans );
          Pipeline.exportResults( monoOut, cfg );
          check( "mono exports carry no LOOMSRC", seen, { L: null, RGB: null } );
+
+         // Util.loomSourceKeywords keeps LOOMSRC and nothing else
+         var mixed = win( "m", [ new FITSKeyword( "FILTER", "'x'", "" ), new FITSKeyword( "LOOMSRC", "'f|plane:0'", "" ),
+                                 new FITSKeyword( "EXPTIME", "60", "" ) ] );
+         check( "loomSourceKeywords: only LOOMSRC of a mixed header",
+                Util.loomSourceKeywords( mixed ).map( function( k ) { return k.name; } ), [ "LOOMSRC" ] );
+         check( "loomSourceKeywords: none without one", Util.loomSourceKeywords( win( "n", [ new FITSKeyword( "FILTER", "'x'", "" ) ] ) ), [] );
+         check( "loomSourceKeywords: an unreadable window gives none",
+                Util.loomSourceKeywords( { get keywords() { throw new Error( "closed" ); } } ), [] );
+
+         // The export clones: colour gets exactly the LOOMSRC keyword, mono's are left alone.
+         var KEEP = [ "syqonCloneWindowForProcessing", "buildPsbDocument", "psbProfileOrNull", "assertPlatesShareSize" ];
+         var keptSteps = {}, keptFree = Util.freeWindowId, keptWrite = Psb.write;
+         KEEP.forEach( function( n ) { keptSteps[n] = Steps[n]; } );
+         var SENTINEL = [ { name: "CLONE" } ], clones = [];
+         try
+         {
+            Util.freeWindowId = function( id ) { return id; };
+            Steps.syqonCloneWindowForProcessing = function()
+            {
+               var c = { keywords: SENTINEL, setSampleFormat: function() {}, saveAs: function() {}, forceClose: function() {},
+                         mainView: { image: { width: 1, height: 1 } } };
+               clones.push( c );
+               return c;
+            };
+            var colourSrc = win( "c", [ new FITSKeyword( "FILTER", "'x'", "" ), new FITSKeyword( "LOOMSRC", "'f|plane:0'", "" ) ] );
+            var monoSrc = win( "o", [ new FITSKeyword( "FILTER", "'x'", "" ) ] );
+            clones.length = 0;
+            savedFns.exportTiff16( colourSrc, "/nonexistent-osc-log", "colour" );
+            savedFns.exportTiff16( monoSrc, "/nonexistent-osc-log", "mono" );
+            check( "exportTiff16: the colour clone gets exactly LOOMSRC, the mono clone is untouched",
+                   [ clones[0].keywords.map( function( k ) { return k.name; } ), clones[1].keywords === SENTINEL ],
+                   [ [ "LOOMSRC" ], true ] );
+
+            Steps.buildPsbDocument = function() { return [ { name: "c", window: colourSrc }, { name: "o", window: monoSrc } ]; };
+            Steps.psbProfileOrNull = function() { return null; };
+            Steps.assertPlatesShareSize = function() {};
+            var written = null;
+            Psb.write = function( path, doc ) { written = doc; };
+            clones.length = 0;
+            savedFns.exportPsb( {}, "/nonexistent-osc-log", "psb" );
+            check( "exportPsb: the colour layer's clone gets exactly LOOMSRC, the mono layer's is untouched",
+                   [ written[0].window.keywords.map( function( k ) { return k.name; } ), written[1].window.keywords === SENTINEL ],
+                   [ [ "LOOMSRC" ], true ] );
+         }
+         finally
+         {
+            KEEP.forEach( function( n ) { Steps[n] = keptSteps[n]; } );
+            Util.freeWindowId = keptFree; Psb.write = keptWrite;
+         }
+
+         // Pipeline.run stamps the colour results; buildPalette logs the sources once per palette.
+         var runKeep = {}, runStubs = {
+            Pipeline: { loadChannels: null, inheritInstrument: null, correctBroadband: null, correctNarrowband: null,
+                        registerToReference: null, cropToCommonArea: null, matchHalos: null, balanceNarrowband: null,
+                        compositeInstrument: null, cleanWhiteBalance: null, buildRGB: null, splitLuminance: null,
+                        retainResults: null, publishOutputs: null, sweepNewWindows: null, exportResults: null,
+                        arrangeOutputs: null, reportSkippedPalettes: null },
+            Steps: { assignProfile: null }, Cache: { disableIfDirMissing: null, warnIfLowSpace: null } };
+         var runChans = { R: chan( "R", "OSC", 0, "/m/OSC master.xisf" ), G: chan( "G", "OSC", 1, "/m/OSC master.xisf" ),
+                          B: chan( "B", "OSC", 2, "/m/OSC master.xisf" ) };
+         var runRgb = win( "RGB" );
+         var keptReg = Util.Registry, keptWins = ImageWindow.windows;
+         Object.keys( runStubs ).forEach( function( ns )
+         {
+            var owner = { Pipeline: Pipeline, Steps: Steps, Cache: Cache }[ns];
+            Object.keys( runStubs[ns] ).forEach( function( n ) { runKeep[ns + "." + n] = owner[n]; } );
+         } );
+         try
+         {
+            Util.Registry = function() { this.closeAll = function() {}; };
+            ImageWindow.windows = [];
+            Cache.disableIfDirMissing = function() {}; Cache.warnIfLowSpace = function() {};
+            Pipeline.loadChannels = function() { return runChans; };
+            [ "inheritInstrument", "correctBroadband", "correctNarrowband", "matchHalos", "balanceNarrowband",
+              "splitLuminance", "sweepNewWindows", "exportResults", "arrangeOutputs", "reportSkippedPalettes" ]
+               .forEach( function( n ) { Pipeline[n] = function() {}; } );
+            Pipeline.registerToReference = function() { return { refView: {}, refFingerprint: "f", refKey: "G" }; };
+            Pipeline.cropToCommonArea = function() { return {}; };
+            Pipeline.compositeInstrument = function() { return null; };
+            Pipeline.cleanWhiteBalance = function() { return null; };
+            Pipeline.buildRGB = function() { return null; };
+            Pipeline.retainResults = function( results ) { results.RGB = runRgb; return []; };
+            Pipeline.publishOutputs = function() { return []; };
+            Steps.assignProfile = function() {};
+            Pipeline.run( { palettes: [] } );
+            check( "run: the colour composite is stamped with its master", src( runRgb ), "OSC OSC master.xisf planes 0,1,2" );
+         }
+         finally
+         {
+            Util.Registry = keptReg; ImageWindow.windows = keptWins;
+            Object.keys( runKeep ).forEach( function( k )
+            {
+               var parts = k.split( "." );
+               ( { Pipeline: Pipeline, Steps: Steps, Cache: Cache }[parts[0]] )[parts[1]] = runKeep[k];
+            } );
+         }
+
+         var keptPc = Pipeline.processChain, keptCa = Pipeline.checkAbort, keptLog = Util.log, palLines = [];
+         try
+         {
+            Pipeline.checkAbort = function() {};
+            Util.freeWindowId = function( id ) { return id; };
+            Util.log = function( tag, msg ) { if ( msg.indexOf( " from OSCNB" ) > 0 ) palLines.push( msg ); };
+            var nbCfg = Config.defaults(); nbCfg.paths.OSCNB = "/m/n.xisf"; nbCfg.oscKinds = { OSCNB: "dualband" };
+            var palChans = { H: { key: "H", currentKey: "kH", view: {}, group: "OSCNB", filter: "L-eXtreme" },
+                             O: { key: "O", currentKey: "kO", view: {}, group: "OSCNB", filter: "L-eXtreme" } };
+            // the line is written before the chain runs, so a cold build and a cache hit both log it once
+            Pipeline.processChain = function( holder ) { holder.window = null; };
+            Pipeline.buildPalette( "HOO", palChans, nbCfg, { add: function() {} }, {} );
+            Pipeline.processChain = function( holder ) { holder.window = {}; };
+            Pipeline.buildPalette( "HOO", palChans, nbCfg, { add: function() {} }, {} );
+            check( "buildPalette logs the sources line once per palette built",
+                   palLines.length, 2 );
+         }
+         finally { Pipeline.processChain = keptPc; Pipeline.checkAbort = keptCa; Util.freeWindowId = keptFree; Util.log = keptLog; }
       }
       finally
       {
@@ -21470,7 +21586,7 @@ function runPipeTests()
       Cache.setDir( cacheDir );
       var masterDir = Cache.dir() + "/masters";
       File.createDirectory( masterDir, true );
-      var masterPaths = [], opened = [], logLines = [], spcc = [], windowsBefore = {};
+      var masterPaths = [], opened = [], logLines = [], spcc = [];
       var stubs = [ "solve", "spfc", "mgc", "removeGradient", "spccRGB", "spccNarrowband" ];
       var savedSteps = {};
 
@@ -21539,7 +21655,7 @@ function runPipeTests()
       function makeConfig( paths, tag )
       {
          var c = Config.defaults();
-         c.paths = paths;
+         c.paths = Object.assign( {}, c.paths, paths );
          c.oscKinds = { OSC: "broadband", OSCNB: "dualband" };
          c.oscSensor = sensor( tag || "A" );
          c.gradientTool = Steps.GRADIENT_TOOL_NONE;
@@ -21569,7 +21685,11 @@ function runPipeTests()
          try
          {
             results = Pipeline.run( config );
-            Object.keys( results ).forEach( function( k ) { src[k] = Util.keywordValue( results[k].keywords, "LOOMSRC" ); } );
+            Object.keys( results ).forEach( function( k )
+            {
+               if ( Pipeline.windowIsUsable( results[k] ) )
+                  src[k] = Util.keywordValue( results[k].keywords, "LOOMSRC" );
+            } );
          }
          finally { closeNew( before ); }
          return { src: src, keys: Object.keys( results || {} ).sort() };
@@ -21584,7 +21704,7 @@ function runPipeTests()
          Pipeline.correctBroadband( chans, config, reg );
          Pipeline.correctNarrowband( chans, config, reg );
          var ref = Pipeline.registerToReference( chans, config, reg );
-         Pipeline.cropToCommonArea( chans, ref.refKey );
+         var common = Pipeline.cropToCommonArea( chans, ref.refKey );
          return { chans: chans, reg: reg, ref: ref, common: common };
       }
       function peak( view )
@@ -21621,6 +21741,13 @@ function runPipeTests()
       }
 
       var before0 = snapshot();
+      // One failing scenario is reported by name and does not hide the ones after it.
+      function scenario( name, body )
+      {
+         try { body(); }
+         catch ( e ) { check( "osc.e2e: " + name + " ran to the end", "threw " + String( e ), "no error" ); }
+      }
+      var osc = null, nb = null, both = null;
       try
       {
          ImageWindow.open = function( path )
@@ -21628,6 +21755,7 @@ function runPipeTests()
             if ( masterPaths.indexOf( path ) >= 0 ) opened.push( path );
             return savedOpen.apply( ImageWindow, arguments );
          };
+         check( "the master-open counter is installed", ImageWindow.open !== savedOpen, true );
          Util.log = function( stage, message ) { logLines.push( stage + ": " + message ); };
          stubs.forEach( function( n ) { savedSteps[n] = Steps[n]; } );
          Steps.solve = function() {};
@@ -21637,148 +21765,210 @@ function runPipeTests()
          Steps.spccNarrowband = function() {};
          Steps.spccRGB = function( view, instrume, filters ) { spcc.push( { instrume: instrume, filters: filters } ); };
 
-         var osc = makeMaster( "OSC_master.xisf", "OSC" );
-         var nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ] } );
-         var both = { OSC: osc, OSCNB: nb };
-
-         // cold: each master opened once; the exports' provenance names the master files
-         var cold = fullRun( makeConfig( both, "A" ) );
-         check( "cold run: each master opened once", [ count( osc ), count( nb ) ], [ 1, 1 ] );
-         check( "cold run: the composite and the palette name their master files",
-                [ cold.src.RGB, cold.src.HOO ],
-                [ "OSC OSC_master.xisf planes 0,1,2", "OSCNB OSCNB_master.xisf plane 0; OSCNB OSCNB_master.xisf plane 1" ] );
-         check( "cold run: the palette sources are logged",
-                logged( /^palette: HOO: H from OSCNB L-eXtreme \(Ha, plus SII for quad-band\), O from OSCNB L-eXtreme \(OIII with Hβ\)$/ ), true );
-
-         // warm: nothing opened
-         fullRun( makeConfig( both, "A" ) );
-         check( "warm run: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
-
-         // only the sensor changed: no open, the white balance is measured again with the sensor curves
-         fullRun( makeConfig( both, "B" ) );
-         check( "sensor change: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
-         check( "sensor change: the composite calibration is a cache miss", logged( /RGB spccRGB MISS/ ), true );
-         check( "sensor change: SPCC gets the sensor curves and no camera (the Ideal QE curve)",
-                spcc.length > 0 && spcc[spcc.length - 1].instrume == null &&
-                spcc[spcc.length - 1].filters.R == "Sensor B R" && spcc[spcc.length - 1].filters.B == "Sensor B B", true );
-
-         // siblings are pixel-aligned after registration
-         var st = staged( makeConfig( both, "B" ) );
-         try
-         {
-            var pg = peak( st.chans.G.view ), ph = peak( st.chans.H.view ), po = peak( st.chans.O.view );
-            check( "corrected branch: the OSCNB siblings sit on the OSC reference",
-                   [ Math.abs( pg.x - ph.x ) <= 1 && Math.abs( pg.y - ph.y ) <= 1,
-                     Math.abs( pg.x - po.x ) <= 1 && Math.abs( pg.y - po.y ) <= 1 ], [ true, true ] );
-            var splitKeyH = st.chans.H.currentKey;
-         }
-         finally { st.reg.closeAll(); }
-
-         // a registered split deleted: split again without registering again
-         File.remove( Cache.pathFor( splitKeyH ) );
-         st = staged( makeConfig( both, "B" ) );
-         st.reg.closeAll();
-         check( "a deleted registered split is split again, not registered again",
-                [ logged( /registerGroup HIT \(split again\)/ ), logged( /registerGroup MISS/ ), count( nb ) ], [ true, false, 0 ] );
-
-         // the split planes removed from the cache: one open, for that master only
-         var gidOsc = Pipeline.oscGroupIdentity( Cache.fingerprintFile( osc ), "broadband" );
-         for ( var p = 0; p < 3; ++p )
-         {
-            var sp = Cache.pathFor( Pipeline.oscSiblingKey( gidOsc, p ) );
-            if ( File.exists( sp ) ) File.remove( sp );
-         }
-         fullRun( makeConfig( both, "C" ) );
-         check( "split planes removed: the master opens once, the other not at all", [ count( osc ), count( nb ) ], [ 1, 0 ] );
-
-         // one sibling's input changed: the group registers again
-         nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ], mark: "remade" } );
+         osc = makeMaster( "OSC_master.xisf", "OSC" );
+         nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ] } );
          both = { OSC: osc, OSCNB: nb };
-         st = staged( makeConfig( both, "C" ) );
-         st.reg.closeAll();
-         check( "a re-made OSCNB master: opened once and the group registers again",
-                [ count( nb ), logged( /registerGroup MISS/ ) ], [ 1, true ] );
 
-         // clean white balance branch: the OSC planes are on the reference already, so they are only
-         // cropped (once, with the corrected planes) and need no registration
-         var cleanCfg = makeConfig( both, "D" );
-         cleanCfg.sharpenTool = Steps.SHARPEN_TOOL_BXT;
-         var keptAberration = Steps.aberration, keptFactors = Steps.readWhiteBalanceFactors;
-         var keptRegClean = Pipeline.registerCleanChannel, keptCropClean = Pipeline.cropCleanChannel;
-         var regCalls = 0, cleanPeaks = {}, cleanSizes = {};
-         try
+         scenario( "cold, warm and sensor-change runs", function()
          {
-            Steps.aberration = function() {};
-            Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
-            Pipeline.registerCleanChannel = function() { ++regCalls; return keptRegClean.apply( Pipeline, arguments ); };
-            Pipeline.cropCleanChannel = function( cleanKey, k )
-            {
-               var v = keptCropClean.apply( Pipeline, arguments );
-               cleanPeaks[k] = peak( v );
-               cleanSizes[k] = [ v.image.width, v.image.height ];
-               return v;
-            };
-            st = staged( cleanCfg );
+            // cold: each master opened once; the exports' provenance names the master files
+            var cold = fullRun( makeConfig( both, "A" ) );
+            check( "cold run: each master opened once", [ count( osc ), count( nb ) ], [ 1, 1 ] );
+            check( "cold run: the composite and the palette name their master files",
+                   [ cold.src.RGB, cold.src.HOO ],
+                   [ "OSC OSC_master.xisf planes 0,1,2", "OSCNB OSCNB_master.xisf plane 0; OSCNB OSCNB_master.xisf plane 1" ] );
+            check( "cold run: the palette sources are logged",
+                   logged( /^palette: HOO: H from OSCNB L-eXtreme \(Ha, plus SII for quad-band\), O from OSCNB L-eXtreme \(OIII with Hβ\)$/ ), true );
+
+            // warm: nothing opened
+            fullRun( makeConfig( both, "A" ) );
+            check( "warm run: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
+
+            // only the sensor changed: no open, the white balance is measured again with the sensor curves
+            fullRun( makeConfig( both, "B" ) );
+            check( "sensor change: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
+            check( "sensor change: the composite calibration is a cache miss", logged( /RGB spccRGB MISS/ ), true );
+            check( "sensor change: SPCC gets the sensor curves and no camera (the Ideal QE curve)",
+                   spcc.length > 0 && spcc[spcc.length - 1].instrume == null &&
+                   spcc[spcc.length - 1].filters.R == "Sensor B R" && spcc[spcc.length - 1].filters.B == "Sensor B B", true );
+         } );
+
+         var splitKeyH = null;
+         scenario( "siblings are pixel-aligned after registration", function()
+         {
+            var st = staged( makeConfig( both, "B" ) );
             try
             {
-               var factors = Pipeline.cleanWhiteBalance( st.chans, cleanCfg, st.reg, st.common, null,
-                                                         st.ref.refView, st.ref.refFingerprint, st.ref.refKey );
-               var gv = st.chans.G.view, pgc = peak( gv );
-               check( "clean branch: factors were measured", factors, [ 1, 1, 1 ] );
-               check( "clean branch: no registration is run for the OSC planes", regCalls, 0 );
-               check( "clean branch: each clean plane has the corrected planes' size (one crop)",
-                      [ "R", "G", "B" ].map( function( k ) { return cleanSizes[k]; } ),
-                      [ "R", "G", "B" ].map( function() { return [ gv.image.width, gv.image.height ]; } ) );
-               check( "clean branch: the clean planes are pixel-aligned with the reference",
-                      [ "R", "G", "B" ].map( function( k )
-                      { return Math.abs( cleanPeaks[k].x - pgc.x ) <= 1 && Math.abs( cleanPeaks[k].y - pgc.y ) <= 1; } ),
-                      [ true, true, true ] );
+               var pg = peak( st.chans.G.view ), ph = peak( st.chans.H.view ), po = peak( st.chans.O.view );
+               check( "corrected branch: the OSCNB siblings sit on the OSC reference",
+                      [ Math.abs( pg.x - ph.x ) <= 1 && Math.abs( pg.y - ph.y ) <= 1,
+                        Math.abs( pg.x - po.x ) <= 1 && Math.abs( pg.y - po.y ) <= 1 ], [ true, true ] );
+               splitKeyH = st.chans.H.currentKey;
             }
             finally { st.reg.closeAll(); }
-         }
-         finally
-         {
-            Steps.aberration = keptAberration; Steps.readWhiteBalanceFactors = keptFactors;
-            Pipeline.registerCleanChannel = keptRegClean; Pipeline.cropCleanChannel = keptCropClean;
-         }
+         } );
 
-         // OSCNB alone, narrowband gradient removal off: one open cold, none warm
-         var alone = makeMaster( "OSCNB_alone.xisf", "OSCNB" );
-         fullRun( makeConfig( { OSCNB: alone }, "A" ) );
-         check( "OSCNB alone, cold: one open", count( alone ), 1 );
-         fullRun( makeConfig( { OSCNB: alone }, "A" ) );
-         check( "OSCNB alone, warm: no open", count( alone ), 0 );
-
-         // O is the green plane exactly, whatever the blue plane holds
-         var nbA = makeMaster( "OSCNB_blueA.xisf", "OSCNB", { hbeta: 0.05 } );
-         var nbB = makeMaster( "OSCNB_blueB.xisf", "OSCNB", { hbeta: 0.4 } );
-         var oFrom = [ nbA, nbB ].map( function( path )
+         scenario( "a deleted registered split", function()
          {
-            var reg = new Util.Registry, o = null;
+            File.remove( Cache.pathFor( splitKeyH ) );
+            var st = staged( makeConfig( both, "B" ) );
+            st.reg.closeAll();
+            check( "a deleted registered split is split again, not registered again",
+                   [ logged( /registerGroup HIT \(split again\)/ ), logged( /registerGroup MISS/ ), count( nb ) ], [ true, false, 0 ] );
+         } );
+
+         scenario( "split planes removed from the cache", function()
+         {
+            // The planes and every cached stage of the OSC channels go, so a stage that must run
+            // has to ask for its plane again, which opens the master once.
+            var gidOsc = Pipeline.oscGroupIdentity( Cache.fingerprintFile( osc ), "broadband" );
+            [ 0, 1, 2 ].forEach( function( p )
+            {
+               var sib = Pipeline.oscSiblingKey( gidOsc, p ), key = [ "R", "G", "B" ][p];
+               var keys = [ sib ];
+               [ "A", "B", "C" ].forEach( function( tag )
+               {
+                  var cfg = makeConfig( both, tag );
+                  Pipeline.buildStageKeys( sib, Pipeline.broadbandStages( key, { group: "OSC", instrume: null }, cfg ) )
+                     .forEach( function( e ) { keys.push( e.key ); } );
+               } );
+               keys.forEach( function( k )
+               {
+                  var sp = Cache.pathFor( k );
+                  if ( File.exists( sp ) ) File.remove( sp );
+               } );
+            } );
+            fullRun( makeConfig( both, "C" ) );
+            check( "split planes removed: the master opens once, the other not at all", [ count( osc ), count( nb ) ], [ 1, 0 ] );
+         } );
+
+         scenario( "a re-made OSCNB master", function()
+         {
+            nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ], mark: "remade" } );
+            both = { OSC: osc, OSCNB: nb };
+            var st = staged( makeConfig( both, "C" ) );
+            st.reg.closeAll();
+            check( "a re-made OSCNB master: opened once and the group registers again",
+                   [ count( nb ), logged( /registerGroup MISS/ ) ], [ 1, true ] );
+         } );
+
+         scenario( "clean white-balance branch", function()
+         {
+            // the OSC planes are on the reference already, so they are only cropped (once, with the
+            // corrected planes) and need no registration
+            var cleanCfg = makeConfig( both, "D" );
+            cleanCfg.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+            var keptAberration = Steps.aberration, keptFactors = Steps.readWhiteBalanceFactors;
+            var keptRegClean = Pipeline.registerCleanChannel, keptCropClean = Pipeline.cropCleanChannel;
+            var regCalls = 0, cleanPeaks = {}, cleanSizes = {};
             try
             {
-               var chans = Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: path }, "A" ), reg );
-               chans.O.load();
-               o = samples( chans.O.view );
+               Steps.aberration = function() {};
+               Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
+               Pipeline.registerCleanChannel = function() { ++regCalls; return keptRegClean.apply( Pipeline, arguments ); };
+               Pipeline.cropCleanChannel = function( cleanKey, k )
+               {
+                  var v = keptCropClean.apply( Pipeline, arguments );
+                  cleanPeaks[k] = peak( v );
+                  cleanSizes[k] = [ v.image.width, v.image.height ];
+                  return v;
+               };
+               var st = staged( cleanCfg );
+               try
+               {
+                  // measureCleanWhiteBalance itself: cleanWhiteBalance would swallow a failure
+                  var factors = Pipeline.measureCleanWhiteBalance( st.chans, cleanCfg, st.reg, st.common, null,
+                                                                   st.ref.refView, st.ref.refFingerprint, st.ref.refKey );
+                  var gv = st.chans.G.view, pgc = peak( gv );
+                  check( "clean branch: factors were measured", factors, [ 1, 1, 1 ] );
+                  check( "clean branch: no registration is run for the OSC planes", regCalls, 0 );
+                  check( "clean branch: each clean plane has the corrected planes' size (one crop)",
+                         [ "R", "G", "B" ].map( function( k ) { return cleanSizes[k]; } ),
+                         [ "R", "G", "B" ].map( function() { return [ gv.image.width, gv.image.height ]; } ) );
+                  check( "clean branch: the clean planes are pixel-aligned with the reference",
+                         [ "R", "G", "B" ].map( function( k )
+                         { return Math.abs( cleanPeaks[k].x - pgc.x ) <= 1 && Math.abs( cleanPeaks[k].y - pgc.y ) <= 1; } ),
+                         [ true, true, true ] );
+               }
+               finally { st.reg.closeAll(); }
             }
-            finally { reg.closeAll(); }
-            return o;
+            finally
+            {
+               Steps.aberration = keptAberration; Steps.readWhiteBalanceFactors = keptFactors;
+               Pipeline.registerCleanChannel = keptRegClean; Pipeline.cropCleanChannel = keptCropClean;
+            }
          } );
-         check( "O equals the green plane exactly",
-                [ sameSamples( oFrom[0], planeOf( nbA, 1 ) ), sameSamples( oFrom[1], planeOf( nbB, 1 ) ) ], [ true, true ] );
-         check( "O does not depend on the blue plane", sameSamples( oFrom[0], oFrom[1] ), true );
 
-         // a constant plane is refused
-         var flat = makeMaster( "OSCNB_flat.xisf", "OSCNB", { constant: 2 } );
-         var refusal = null, regF = new Util.Registry;
-         try
+         scenario( "OSCNB alone", function()
          {
-            Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: flat }, "A" ), regF ).H.load();
-         }
-         catch ( e ) { refusal = String( e.message || e ); }
-         finally { regF.closeAll(); }
-         check( "a constant plane is refused with the plane named",
-                refusal != null && refusal.indexOf( ": plane 2 is constant (all values 0.5); the master looks broken" ) > 0, true );
+            // narrowband gradient removal off: one open cold, none warm
+            var alone = makeMaster( "OSCNB_alone.xisf", "OSCNB" );
+            fullRun( makeConfig( { OSCNB: alone }, "A" ) );
+            check( "OSCNB alone, cold: one open", count( alone ), 1 );
+            fullRun( makeConfig( { OSCNB: alone }, "A" ) );
+            check( "OSCNB alone, warm: no open", count( alone ), 0 );
+         } );
+
+         scenario( "O is the green plane", function()
+         {
+            var nbA = makeMaster( "OSCNB_blueA.xisf", "OSCNB", { hbeta: 0.05 } );
+            var nbB = makeMaster( "OSCNB_blueB.xisf", "OSCNB", { hbeta: 0.4 } );
+            var oFrom = [ nbA, nbB ].map( function( path )
+            {
+               var reg = new Util.Registry, o = null;
+               try
+               {
+                  var chans = Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: path }, "A" ), reg );
+                  chans.O.load();
+                  o = samples( chans.O.view );
+               }
+               finally { reg.closeAll(); }
+               return o;
+            } );
+            check( "O equals the green plane exactly",
+                   [ sameSamples( oFrom[0], planeOf( nbA, 1 ) ), sameSamples( oFrom[1], planeOf( nbB, 1 ) ) ], [ true, true ] );
+            check( "O does not depend on the blue plane", sameSamples( oFrom[0], oFrom[1] ), true );
+         } );
+
+         scenario( "a constant plane", function()
+         {
+            var flat = makeMaster( "OSCNB_flat.xisf", "OSCNB", { constant: 2 } );
+            var refusal = null, regF = new Util.Registry;
+            try
+            {
+               Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: flat }, "A" ), regF ).H.load();
+            }
+            catch ( e ) { refusal = String( e.message || e ); }
+            finally { regF.closeAll(); }
+            check( "a constant plane is refused with the plane named",
+                   refusal != null && refusal.indexOf( ": plane 2 is constant (all values 0.5); the master looks broken" ) > 0, true );
+         } );
+
+         scenario( "TIFF provenance", function()
+         {
+            // PixInsight's TIFF writer may not store FITS keywords: read LOOMSRC back only when it can.
+            var canStore = ( new FileFormat( ".tif", false, true ) ).canStoreKeywords;
+            var w = new ImageWindow( 16, 16, 1, 32, true, false, Util.freeWindowId( "osc_e2e_tiff" ) );
+            var path = null;
+            try
+            {
+               w.keywords = [ new FITSKeyword( "LOOMSRC", "'OSC_master.xisf|plane:1'", "" ) ];
+               path = Steps.exportTiff16( w, masterDir, "osc_e2e_tiff" );
+               if ( canStore )
+               {
+                  var back = savedOpen.call( ImageWindow, path );
+                  try { check( "TIFF export keeps LOOMSRC", Util.keywordValue( back[0].keywords, "LOOMSRC" ), "OSC_master.xisf|plane:1" ); }
+                  finally { back.forEach( function( b ) { b.forceClose(); } ); }
+               }
+               console.writeln( "osc.e2e: the TIFF writer " + ( canStore ? "stores" : "does not store" ) +
+                                " keywords; LOOMSRC " + ( canStore ? "was read back" : "is carried by the XISF and FITS results" ) );
+            }
+            finally
+            {
+               w.forceClose();
+               if ( path != null && File.exists( path ) ) File.remove( path );
+            }
+         } );
       }
       finally
       {
@@ -21787,6 +21977,7 @@ function runPipeTests()
          stubs.forEach( function( n ) { Steps[n] = savedSteps[n]; } );
          closeNew( before0 );
          masterPaths.forEach( function( p ) { try { if ( File.exists( p ) ) File.remove( p ); } catch ( e ) {} } );
+         removeTestFolder( cacheDir );
          Cache.overrideDir = savedDir;
       }
    } )();
