@@ -317,6 +317,107 @@ module.exports = function( js )
       rec( "osc_narrowband_bandwidths/" + ( n++ ), "osc_narrowband_bandwidths", [ { narrowbandBandwidth: bw }, i ],
            a => Pipeline.oscNarrowbandBandwidths( a[0], a[1] ) ) ) );
 
+   // ---- how a colour run's channels are registered -------------------------------------------
+   const thrown = f => { try { return f(); } catch ( e ) { return { throws: e.message }; } };
+   const groupSets = [ null, {}, { OSC: [ "R", "G", "B" ] }, { OSCNB: [ "H", "O" ] },
+                       { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] }, { OSCNB: [ "H", "O" ], OSC: [ "R", "G", "B" ] },
+                       { OSC: [ "R", "G" ] }, { OSC: [ "R", "B" ] }, { OSC: [ "G" ] }, { OSC: [] }, { OSCNB: [] },
+                       { OSC: null }, { OSC: [ "B", "R", "G" ] }, { OSC: [ "R", "G", "B" ], OSCNB: [ "O" ] },
+                       { OSC: [ "R", "G", "B" ], OTHER: [ "L" ] }, { OTHER: [ "L" ] }, { OSC: [ "R", "G", "B", "L" ] } ];
+   const presents = [ [], [ "R", "G", "B" ], [ "H", "O" ], [ "R", "G", "B", "H", "O" ], [ "L", "R", "G", "B" ],
+                      [ "L", "H", "O" ], [ "R", "G" ], [ "R", "B" ], [ "G" ], [ "H" ], [ "O" ], [ "B", "G", "R" ],
+                      [ "L", "R", "G", "B", "H", "O", "S" ], [ "R", "R", "G", "B" ], [ "L" ], [ "S", "H", "O" ],
+                      [ "r", "g", "b" ] ];
+   n = 0;
+   groupSets.forEach( g => presents.forEach( p =>
+      rec( "osc_registration_plan/" + ( n++ ), "osc_registration_plan", [ p, g ], a => Pipeline.oscRegistrationPlan( a[0], a[1] ) ) ) );
+   rec( "osc_registration_plan/no-groups-arg", "osc_registration_plan", [ [ "L", "H" ], null ],
+        a => Pipeline.oscRegistrationPlan( a[0], a[1] ) );
+
+   const refKeys = [ "G", "R", "B", "H", "O", "L", "S", "", null, "g", "OSC" ];
+   n = 0;
+   groupSets.forEach( g => refKeys.forEach( r =>
+      rec( "clean_registration_plan/" + ( n++ ), "clean_registration_plan", [ r, g ],
+           a => thrown( () => Pipeline.cleanRegistrationPlan( a[0], a[1] ) ) ) ) );
+   rec( "clean_registration_plan/no-groups-no-ref", "clean_registration_plan", [ null, null ],
+        a => thrown( () => Pipeline.cleanRegistrationPlan( a[0], a[1] ) ) );
+
+   // ---- what a grouped registration does given the cache --------------------------------------
+   const policies = [ { useCache: true, ignoreCache: false }, { useCache: true, ignoreCache: true },
+                      { useCache: false, ignoreCache: false }, { useCache: false, ignoreCache: true }, {},
+                      { useCache: true }, { ignoreCache: false }, { useCache: 1, ignoreCache: 0 },
+                      { useCache: "yes", ignoreCache: "" }, { useCache: true, ignoreCache: null }, { useCache: null, ignoreCache: false } ];
+   const splitSets = [ [], [ true ], [ false ], [ true, true ], [ true, false ], [ false, true ], [ false, false ],
+                       [ true, true, true ], [ true, true, false ], [ true, false, true ], [ false, true, true ], [ false, false, false ],
+                       [ 1, "x", {} ], [ 1, 0 ], [ null, true ], [ "", true ], [ true, "0" ] ];
+   n = 0;
+   [ true, false ].forEach( gc => policies.forEach( pol => splitSets.forEach( sp =>
+      rec( "osc_group_cache_action/" + ( n++ ), "osc_group_cache_action", [ gc, sp, pol ],
+           a => Pipeline.oscGroupCacheAction( a[0], a[1], a[2] ) ) ) ) );
+
+   // ---- the colour groups of a run ---------------------------------------------------------------
+   const ch = ( group, plane ) => ( { group: group, plane: plane } );
+   const chanSets = [
+      {}, { L: ch( null, null ) }, { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ) },
+      { H: ch( "OSCNB", 0 ), O: ch( "OSCNB", 1 ) },
+      { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ), H: ch( "OSCNB", 0 ), O: ch( "OSCNB", 1 ) },
+      { B: ch( "OSC", 2 ), G: ch( "OSC", 1 ), R: ch( "OSC", 0 ) },
+      { L: ch( null, null ), R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ) },
+      { L: ch( null, null ), H: ch( "OSCNB", 0 ), O: ch( "OSCNB", 1 ), S: ch( null, null ) },
+      { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ) }, { G: ch( "OSC", 1 ) }, { H: ch( "OSCNB", 0 ) }, { O: ch( "OSCNB", 1 ) },
+      { R: ch( null, null ), G: ch( null, null ), B: ch( null, null ) },
+      { R: ch( "OSCNB", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ) },
+      { R: ch( "OSC", 0 ), G: null, B: ch( "OSC", 2 ) },
+      { R: { plane: 0 }, G: ch( "OSC", 1 ) },
+      { R: ch( "osc", 0 ), G: ch( "Osc", 1 ) },
+      { H: ch( "OSC", 0 ), O: ch( "OSC", 1 ) },
+      { L: ch( "OSC", 0 ), S: ch( "OSCNB", 0 ) },
+      { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ), H: ch( "OSC", 0 ), O: ch( "OSCNB", 1 ), L: ch( null, null ) },
+      { R: { group: "OSC" }, G: { group: "OSC" }, B: { group: "OSC" } }
+   ];
+   chanSets.forEach( ( c, i ) =>
+      rec( "osc_channel_groups/" + i, "osc_channel_groups", [ c ], a => Pipeline.oscChannelGroups( a[0] ) ) );
+
+   // ---- the colour camera's sensor checks (parity only) ----------------------------------------
+   // curveExists is a table here: channel -> the curve names that exist for it.
+   const sensorTables = [ { R: [], G: [], B: [] },
+                          { R: [ "Sony Color Sensor R" ], G: [ "Sony Color Sensor G" ], B: [ "Sony Color Sensor B" ] },
+                          { R: [ "Sony Color Sensor R" ], G: [], B: [ "Sony Color Sensor B" ] },
+                          { R: [ "Sony Color Sensor R", "Other R" ], G: [ "Other G" ], B: [ "Sony Color Sensor B", "Other B" ] },
+                          { R: [ "é R" ], G: [ "é G" ], B: [ "é B" ] }, {}, null ];
+   const oscSensors = [ { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" },
+                        { R: "Other R", G: "Other G", B: "Other B" },
+                        { R: "Sony Color Sensor R", G: "Other G", B: "Sony Color Sensor B" },
+                        { R: "Nope R", G: "Nope G", B: "Nope B" }, { R: "é R", G: "é G", B: "é B" },
+                        { R: "Sony Color Sensor R", G: "Sony Color Sensor G" }, { R: "Sony Color Sensor R", G: "", B: "Sony Color Sensor B" },
+                        { R: "", G: "", B: "" }, {}, null, { G: "Sony Color Sensor G" }, { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: null } ];
+   const sensorRuns = [ { paths: { OSC: "/m/rgb.xisf" } }, { views: { OSC: "RGB_View" } }, { paths: { OSCNB: "/m/nb.xisf" } },
+                        { paths: { R: "/m/r", G: "/m/g", B: "/m/b" } }, { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } },
+                        { paths: { OSC: "" } }, {} ];
+   n = 0;
+   sensorRuns.forEach( run => oscSensors.forEach( s => sensorTables.forEach( t =>
+   {
+      const cfg = Object.assign( {}, run, { oscSensor: s } );
+      rec( "osc_sensor_problems/" + ( n++ ), "osc_sensor_problems", [ cfg, t ], a =>
+      {
+         const table = a[1] || {};
+         return Pipeline.oscSensorProblems( a[0], ( name, channel ) => !!( table[channel] && table[channel].indexOf( name ) >= 0 ) );
+      } );
+   } ) ) );
+   sensorRuns.forEach( ( run, i ) =>
+      rec( "osc_sensor_problems/no-sensor/" + i, "osc_sensor_problems", [ run, sensorTables[1] ], a =>
+         Pipeline.oscSensorProblems( a[0], ( name, channel ) => !!( a[1][channel] && a[1][channel].indexOf( name ) >= 0 ) ) ) );
+
+   // ---- which dialog controls a colour master changes --------------------------------------------
+   const controlConfigs = [ {}, null, { paths: {} }, { paths: { OSC: "/m/rgb.xisf" } }, { paths: { OSCNB: "/m/nb.xisf" } },
+                            { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } }, { views: { OSC: "RGB_View" } },
+                            { views: { OSCNB: "NB_View" } }, { paths: { R: "/m/r", G: "/m/g", B: "/m/b" } },
+                            { paths: { OSC: "" } }, { paths: { OSC: "", OSCNB: "/m/nb.xisf" } },
+                            { paths: { OSC: "/m/rgb.xisf", L: "/m/l.xisf" } }, { views: { OSC: "" }, paths: { OSC: "/m/x" } },
+                            { paths: { H: "/m/h.xisf", O: "/m/o.xisf", S: "/m/s.xisf" } }, { views: {}, paths: {} } ];
+   controlConfigs.forEach( ( c, i ) =>
+      rec( "osc_control_state/" + i, "osc_control_state", [ c ], a => Util.oscControlState( a[0] ) ) );
+
    // ---- the white-balance key (recorded only: replayed with the white-balance port) -----
    const chansOk = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
    const common = { x0: 1, y0: 2, x1: 300, y1: 200 };

@@ -562,6 +562,138 @@ narrowband_bandwidths = osc_narrowband_bandwidths
 
 
 # ---------------------------------------------------------------------------
+# How a colour run's channels are registered and cached (Pipeline.js)
+# ---------------------------------------------------------------------------
+
+_COLOUR_REF = {"OSC": "G", "OSCNB": "H"}
+_COLOUR_PLANES = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O", "O"]}
+
+
+def osc_registration_plan(present: Sequence[Any], groups: Any) -> dict[str, Any]:
+    """``Pipeline.oscRegistrationPlan``: how the channels of a colour run are registered.
+
+    ``groups`` maps a colour slot to its members (``{"OSC": ["R", "G", "B"], "OSCNB": ["H", "O"]}``); only members
+    in ``present`` count. The reference is OSC's G, else OSCNB's H, and its own group is already on the reference
+    grid (``identity``). Any other group is one entry: its members and the planes of the temporary image that is
+    registered in one go (R, G, B for OSC; H, O, O for OSCNB, whose third plane repeats O). Channels outside every
+    group are listed under ``mono``.
+    """
+    used: set[Any] = set()
+    byslot: dict[str, list[Any]] = {}
+    for slot in COLOUR_SLOTS:
+        listed = _get(groups, slot) if _truthy(groups) else None
+        members = [k for k in listed if k in present] if _truthy(listed) else []
+        if members:
+            byslot[slot] = members
+            used.update(members)
+    ref_slot = "OSC" if "OSC" in byslot else "OSCNB" if "OSCNB" in byslot else None
+    plan: dict[str, Any] = {"ref": None, "identity": [], "groups": [], "mono": [k for k in present if k not in used]}
+    if ref_slot is None:
+        return plan
+    plan["ref"] = _COLOUR_REF[ref_slot]
+    plan["identity"] = list(byslot[ref_slot])
+    for slot in COLOUR_SLOTS:
+        if slot in byslot and slot != ref_slot:
+            plan["groups"].append({"slot": slot, "members": list(byslot[slot]), "planes": list(_COLOUR_PLANES[slot])})
+    return plan
+
+
+def clean_registration_plan(ref_key: Any, groups: Any) -> str:
+    """``Pipeline.cleanRegistrationPlan``: how the clean planes reach the reference frame.
+
+    ``"identity"`` when they are the OSC planes and the reference is OSC's own G (they already sit on it, so only
+    the crop applies), ``"mono"`` for the per-channel registration. A colour run's reference is always its OSC G;
+    any other reference there is a programming error, so it raises ``ValueError`` with the JavaScript's message.
+    """
+    osc_members = _get(groups, "OSC") if _truthy(groups) else None
+    if not _truthy(osc_members):
+        return "mono"
+    if ref_key not in osc_members:
+        raise ValueError("internal: with OSC in the run the reference must be its G (got " + _str(ref_key) + ")")
+    return "identity"
+
+
+def osc_group_cache_action(group_cached: Any, splits_cached: Sequence[Any], policy: Any) -> str:
+    """``Pipeline.oscGroupCacheAction``: what a grouped registration does given the cache.
+
+    ``"register"`` (combine, register, store, split), ``"split"`` (the group image is cached but a split is not:
+    split it again) or ``"load"`` (every split is cached). With the cache off or ignored nothing is read, so it
+    always registers. ``policy`` is ``{"useCache", "ignoreCache"}`` from the configuration.
+    """
+    if not _truthy(_get(policy, "useCache")) or _truthy(_get(policy, "ignoreCache")) or not _truthy(group_cached):
+        return "register"
+    return "load" if all(_truthy(c) for c in splits_cached) else "split"
+
+
+def osc_channel_groups(chans: Mapping[str, Any]) -> Optional[dict[str, list[str]]]:
+    """``Pipeline.oscChannelGroups``: the colour groups of a run, from the channels' own ``group`` fields.
+
+    A map of slot to members in plane order, or None when no channel has one.
+    """
+    groups: Optional[dict[str, list[str]]] = None
+    for slot in OSC_RECIPES:
+        members = [k for k in COLOUR_MEMBERS[slot] if _truthy(_get(chans, k)) and _get(_get(chans, k), "group") == slot]
+        if members:
+            groups = groups or {}
+            groups[slot] = members
+    return groups
+
+
+#: How ``osc_sensor_problems`` learns whether a sensor curve exists: a callable ``(name, channel) -> bool``, or a
+#: table of channel to the curve names that exist for it.
+CurveExists = Union[Callable[[str, str], Any], Mapping[str, Sequence[str]], None]
+
+_RGB = ["R", "G", "B"]
+
+
+def osc_sensor_problems(config: Any, curve_exists: CurveExists = None) -> list[str]:
+    """``Pipeline.oscSensorProblems``: the colour camera's sensor checks (parity only).
+
+    A colour master is calibrated against the three sensor colour-filter curves in ``config["oscSensor"]``, so all
+    three must be chosen and each must exist. A run without OSC (mono, or OSCNB alone) has no sensor to choose.
+    Loom asks its filter database when ``curve_exists`` is not given; Siril has none to ask here, so with None the
+    existence of the curves is not checked. Siril's own sensor rule is in the configuration module.
+    """
+    if "OSC" not in colour_supplied(config):
+        return []
+    sensor = _or(_get(config, "oscSensor"), {})
+    for channel in _RGB:
+        if not _truthy(_get(sensor, channel)):
+            return ["choose the sensor colour filters for the colour master (SPCC section)"]
+    if curve_exists is None:
+        return []
+    if callable(curve_exists):
+        exists = curve_exists
+    else:
+        table = curve_exists
+
+        def exists(name: str, channel: str) -> bool:
+            return name in (table.get(channel) or ())
+
+    return ["sensor colour filter curve '" + _str(sensor[c]) + "' is not in filters.xspd"
+            for c in _RGB if not _truthy(exists(sensor[c], c))]
+
+
+def osc_control_state(config: Any) -> dict[str, Any]:
+    """``Util.oscControlState``: which dialog controls a colour master changes.
+
+    Any colour master greys the mono boxes and the palettes that need SII; the sensor colour filters replace the R,
+    G and B filter boxes only while OSC (not OSCNB) is supplied. Reasons are empty while the control is enabled.
+    """
+    colour = colour_supplied(config)
+    any_colour = len(colour) > 0
+    has_osc = "OSC" in colour
+    return {
+        "monoEnabled": not any_colour,
+        "monoReason": "colour and mono masters cannot be combined" if any_colour else "",
+        "shoHsoEnabled": not any_colour,
+        "shoHsoReason": "needs SII, which a colour camera cannot separate from Ha" if any_colour else "",
+        "sensorRowVisible": has_osc,
+        "rgbFilterRowsVisible": not has_osc,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Siril only
 # ---------------------------------------------------------------------------
 

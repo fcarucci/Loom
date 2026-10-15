@@ -285,6 +285,12 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 | `osc.osc_validation_record` | `lib/Pipeline.js:2029` | P | - |
 | `osc.osc_narrowband_bandwidths` | `lib/Pipeline.js:2532` | P | - |
 | `osc.narrowband_bandwidths` | `lib/Pipeline.js:2532` | P | - |
+| `osc.osc_registration_plan` | `lib/Pipeline.js:2715` | P | `tests/loom/test_osc.py` |
+| `osc.clean_registration_plan` | `lib/Pipeline.js:1454` | P | `tests/loom/test_osc.py` |
+| `osc.osc_group_cache_action` | `lib/Pipeline.js:2752` | P | `tests/loom/test_osc.py` |
+| `osc.osc_channel_groups` | `lib/Pipeline.js:2891` | P | `tests/loom/test_osc.py` |
+| `osc.osc_sensor_problems` | `lib/Pipeline.js:327` | P | `tests/loom/test_osc.py` |
+| `osc.osc_control_state` | `lib/Util.js:771` | P | `tests/loom/test_osc.py` |
 | `osc.colour_run` | - | S | `tests/loom/test_osc.py` |
 | `osc.js_config` | - | S | `tests/loom/test_osc.py` |
 

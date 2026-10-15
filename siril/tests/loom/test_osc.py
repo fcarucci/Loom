@@ -1,4 +1,5 @@
-"""OSC detection, colour-master selection, the remembered-kind key and the colour group's cache keys (loomsiril/loom/osc.py).
+"""OSC detection, colour-master selection, the remembered-kind key, the colour group's cache keys, registration
+plan, cache action, sensor checks and dialog state (loomsiril/loom/osc.py).
 
 The oracle replay checks every recorded case of tests/oracle/loom_osc.json against the port (floats to 1e-9
 relative, everything else exactly). The other tests pin what the oracle cannot: the Siril-only helpers and the
@@ -11,6 +12,7 @@ import copy
 import inspect
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,22 @@ DEFERRED = {"clean_white_balance_key"}
 
 #: Public functions of osc.py that have no JavaScript counterpart.
 SIRIL_ONLY = {"colour_run", "js_config"}
+
+
+#: Loom functions that are recorded for nothing and not ported, with the reason.
+SKIPPED = {
+    "effectiveFilters": "Siril has no per-channel SPCC, so there are no per-channel filters to resolve",
+    "oscSplitKeywords": "sets FITS keywords on PixInsight windows; Siril's twin lives with the registration stage",
+    "oscRegisterGroup": "drives PixInsight windows and the PixInsight cache; Siril's twin lives with the registration stage",
+    "cropCleanChannel": "crops a PixInsight view loaded from the cache; Siril's twin lives with the registration stage",
+    "registrationReference": "reads PixInsight windows and keywords; Siril's twin lives with the registration stage",
+}
+
+#: The functions this part of the port adds, with the fewest recorded cases each must keep.
+NEW_FUNCTIONS = {
+    "osc_group_cache_action": 300, "osc_registration_plan": 250, "clean_registration_plan": 150,
+    "osc_channel_groups": 15, "osc_sensor_problems": 500, "osc_control_state": 12,
+}
 
 
 def _parse_constant(name: str) -> float:
@@ -68,6 +86,14 @@ def _run(case: dict[str, Any]) -> Any:
         if fn == "osc_kind_problems":
             return {"problems": problems, "oscKinds": config.get("oscKinds")}
         return problems
+    if fn == "osc_sensor_problems":
+        config, table = args
+        return osc.osc_sensor_problems(config, table or {})
+    if fn == "clean_registration_plan":
+        try:
+            return target(*args)
+        except ValueError as exc:
+            return {"throws": str(exc)}
     return target(*args)
 
 
@@ -146,3 +172,79 @@ def test_js_config_without_a_sensor_leaves_none() -> None:
     assert "oscSensor" not in osc.js_config({})
     assert osc.js_config(None) == {}
     assert osc.js_config({"oscSensor": {"sensor": ""}})["oscSensor"] == {"R": "", "G": "", "B": ""}
+
+
+def test_every_new_function_is_recorded_in_depth() -> None:
+    counts: dict[str, int] = {}
+    for case in CASES.values():
+        counts[case["fn"]] = counts.get(case["fn"], 0) + 1
+    for fn, least in NEW_FUNCTIONS.items():
+        assert counts.get(fn, 0) >= least, f"{fn}: {counts.get(fn, 0)} cases, expected at least {least}"
+        assert callable(getattr(osc, fn)), fn
+
+
+def test_the_registration_throw_is_recorded_and_raised() -> None:
+    thrown = [c for c in CASES.values() if c["fn"] == "clean_registration_plan"
+              and isinstance(c["result"], dict) and "throws" in c["result"]]
+    assert thrown, "the throw text must be recorded"
+    with pytest.raises(ValueError, match=r"^internal: with OSC in the run the reference must be its G \(got H\)$"):
+        osc.clean_registration_plan("H", {"OSC": ["R", "G", "B"]})
+    with pytest.raises(ValueError, match=r"\(got null\)$"):
+        osc.clean_registration_plan(None, {"OSC": ["R", "G", "B"]})
+    assert osc.clean_registration_plan("G", {"OSC": ["R", "G", "B"]}) == "identity"
+    assert osc.clean_registration_plan("H", None) == "mono"
+    assert osc.clean_registration_plan("H", {"OSCNB": ["H", "O"]}) == "mono"
+
+
+def test_the_skipped_functions_are_not_ported() -> None:
+    recorded = {c["fn"] for c in CASES.values()}
+    for js_name, reason in SKIPPED.items():
+        snake = re.sub(r"([A-Z])", lambda m: "_" + m.group(1).lower(), js_name)
+        assert reason
+        assert not hasattr(osc, snake), f"{snake} is listed as not ported"
+        assert snake not in recorded
+
+
+def test_sensor_curves_come_from_a_callable_a_table_or_nothing() -> None:
+    config = {"paths": {"OSC": "/m/rgb.xisf"}, "oscSensor": {"R": "a", "G": "b", "B": "c"}}
+    table = {"R": ["a"], "G": [], "B": ["c"]}
+    expected = ["sensor colour filter curve 'b' is not in filters.xspd"]
+    assert osc.osc_sensor_problems(config, table) == expected
+    assert osc.osc_sensor_problems(config, lambda name, channel: name in table[channel]) == expected
+    # without a filter database to ask, only the "all three chosen" rule can be checked
+    assert osc.osc_sensor_problems(config, None) == []
+    assert osc.osc_sensor_problems({"paths": {"OSC": "/m/rgb.xisf"}}, None) == \
+        ["choose the sensor colour filters for the colour master (SPCC section)"]
+
+
+def test_a_colour_run_registers_its_group_to_the_reference() -> None:
+    groups = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O"]}
+    plan = osc.osc_registration_plan(["L", "R", "G", "B", "H", "O"], groups)
+    assert plan == {"ref": "G", "identity": ["R", "G", "B"], "mono": ["L"],
+                    "groups": [{"slot": "OSCNB", "members": ["H", "O"], "planes": ["H", "O", "O"]}]}
+    assert osc.osc_registration_plan(["H", "O"], groups)["ref"] == "H"
+    assert osc.osc_registration_plan(["L"], None) == {"ref": None, "identity": [], "groups": [], "mono": ["L"]}
+
+
+def test_the_cache_decides_between_register_split_and_load() -> None:
+    on = {"useCache": True, "ignoreCache": False}
+    assert osc.osc_group_cache_action(True, [True, True], on) == "load"
+    assert osc.osc_group_cache_action(True, [True, False], on) == "split"
+    assert osc.osc_group_cache_action(False, [True, True], on) == "register"
+    assert osc.osc_group_cache_action(True, [True], {"useCache": True, "ignoreCache": True}) == "register"
+    assert osc.osc_group_cache_action(True, [True], {"useCache": False}) == "register"
+
+
+def test_channel_groups_follow_the_channels_own_group_field() -> None:
+    chans = {"R": {"group": "OSC", "plane": 0}, "G": {"group": "OSC", "plane": 1}, "L": {"group": None, "plane": None}}
+    assert osc.osc_channel_groups(chans) == {"OSC": ["R", "G"]}
+    assert osc.osc_channel_groups({"L": {"group": None}}) is None
+
+
+def test_control_state_follows_the_colour_slots() -> None:
+    state = osc.osc_control_state({"paths": {"OSC": "/m/rgb.xisf"}})
+    assert state["monoEnabled"] is False and state["sensorRowVisible"] is True and state["rgbFilterRowsVisible"] is False
+    nb = osc.osc_control_state({"paths": {"OSCNB": "/m/nb.xisf"}})
+    assert nb["sensorRowVisible"] is False and nb["rgbFilterRowsVisible"] is True and nb["shoHsoEnabled"] is False
+    mono = osc.osc_control_state({"paths": {"R": "/m/r.xisf"}})
+    assert mono["monoEnabled"] is True and mono["monoReason"] == "" and mono["shoHsoReason"] == ""
