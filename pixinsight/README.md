@@ -259,7 +259,7 @@ A one-shot colour camera gives one debayered RGB master per filter, as WBPP writ
 - **Colour or mono, not both.** Colour and mono masters cannot be combined: a run with a colour master and any mono master does not start, and the mono boxes are greyed while a colour master is selected.
 - **HOO only.** SHO and HSO are refused for colour masters, and their boxes are greyed: they need SII, which a colour camera cannot separate from Hα. A quad-band filter is treated as dual-band: its `H` carries SII as well as Hα. `H` is the red plane of the dual-band master and `O` is the green plane only; the blue plane is not used.
 - **Sensor colour filters.** While a broadband (`OSC`) master is used, the SPCC section shows **Sensor colour filters**, the R, G and B sensor curves of PixInsight's filter database, in place of the R, G and B filter boxes. They are used with the Ideal QE curve, since the sensor curves already include the sensor's response.
-- **Light-pollution filters.** A run with an L-Pro, CLS or similar filter goes ahead and is never refused; colour calibration does not model that filter, and the log says so.
+- **Light-pollution filters.** A run is never refused for a light-pollution filter. For the Optolong L-Pro and the Astronomik CLS and CLS-CCD filters (any brand), the log notes that colour calibration does not model the filter; no filter in front of the camera is modelled.
 - **Registration.** The planes of a colour master are registered together with one transform, so they stay aligned.
 - **Outputs.** Channels and palette layers made from a colour master carry a `LOOMSRC` keyword naming their source, and the run log names each palette's sources.
 

@@ -6,7 +6,32 @@
  * Standalone: node ci/release-prep.test.js
  */
 
-const { finalizeChangelog, setPythonVersion } = require( "./release-prep.js" );
+const fs = require( "fs" );
+const path = require( "path" );
+const { spawnSync } = require( "child_process" );
+const { finalizeChangelog, setPythonVersion, localDate } = require( "./release-prep.js" );
+
+const prep = path.join( __dirname, "release-prep.js" );
+
+// The command line against a scratch tree laid out as pixinsight/ci beside siril/.
+function cli( args, changelogText, initText )
+{
+   const base = fs.mkdtempSync( path.join( require( "os" ).tmpdir(), "loom-prep-" ) );
+   try
+   {
+      fs.mkdirSync( path.join( base, "pixinsight", "ci" ), { recursive: true } );
+      fs.mkdirSync( path.join( base, "siril", "loomsiril" ), { recursive: true } );
+      fs.copyFileSync( prep, path.join( base, "pixinsight", "ci", "release-prep.js" ) );
+      fs.writeFileSync( path.join( base, "siril", "CHANGELOG.md" ), changelogText );
+      fs.writeFileSync( path.join( base, "siril", "loomsiril", "__init__.py" ), initText );
+      const r = spawnSync( process.execPath, [ path.join( base, "pixinsight", "ci", "release-prep.js" ) ].concat( args ),
+                           { encoding: "utf8" } );
+      return { status: r.status, err: r.stderr || "",
+               changelog: fs.readFileSync( path.join( base, "siril", "CHANGELOG.md" ), "utf8" ),
+               init: fs.readFileSync( path.join( base, "siril", "loomsiril", "__init__.py" ), "utf8" ) };
+   }
+   finally { fs.rmSync( base, { recursive: true, force: true } ); }
+}
 
 function throws( fn, pattern )
 {
@@ -41,6 +66,21 @@ function run( options )
       [ "an indented mention of __version__ is not a version line",
         setPythonVersion( py + '    __version__ = "x"\n', "0.6.0" ).includes( '    __version__ = "x"' ) ]
    ];
+   const okLog = "# C\n\n## [Unreleased]\n\n- x\n\n## [0.5.1] \u2014 2026-10-15\n\n- y\n";
+   const emptyLog = "# C\n\n## [Unreleased]\n\n## [0.5.1] \u2014 2026-10-15\n\n- y\n";
+   const w = cli( [ "--date", "2026-11-01", "0.6.0" ], okLog, py );
+   const c = cli( [ "--check", "--date", "2026-11-01", "0.6.0" ], okLog, py );
+   const e = cli( [ "--check", "--date", "2026-11-01", "0.6.0" ], emptyLog, py );
+   const nd = cli( [ "0.6.0" ], okLog, py );
+   cases.push(
+      [ "the command line writes both files with the given date",
+        w.status === 0 && w.changelog.includes( "## [0.6.0] \u2014 2026-11-01" ) && w.init.includes( '__version__ = "0.6.0"' ) ],
+      [ "--check succeeds and writes nothing", c.status === 0 && c.changelog === okLog && c.init === py ],
+      [ "--check refuses an empty section and writes nothing", e.status === 1 && /empty/.test( e.err ) && e.changelog === emptyLog && e.init === py ],
+      [ "without --date the section is dated with the local date", nd.status === 0 && nd.changelog.includes( "\u2014 " + localDate() ) ],
+      [ "localDate uses local calendar fields", localDate( new Date( 2026, 10, 1, 23, 30 ) ) === "2026-11-01" &&
+        localDate( new Date( 2026, 0, 5, 0, 10 ) ) === "2026-01-05" ],
+      [ "a malformed --date is refused", cli( [ "--date", "11/01", "0.6.0" ], okLog, py ).status === 2 ] );
    let failed = 0;
    for ( const [ name, pass ] of cases )
    {

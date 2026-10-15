@@ -51,9 +51,14 @@ ci/sign.sh "${sign_args[@]}" --dry-run >/dev/null
 git rev-parse -q --verify "refs/tags/v$version" >/dev/null && { echo "release: tag v$version already exists" >&2; exit 1; }
 grep -q '^## \[Unreleased\]' CHANGELOG.md          || { echo "release: CHANGELOG.md has no [Unreleased] section" >&2; exit 1; }
 
-python3 - "$version" <<'PY'
-import datetime, re, sys
+# One local date for both changelogs, and the Siril files checked before anything is edited.
+rdate="$( date +%Y-%m-%d )"
+node ci/release-prep.js --check --date "$rdate" "$version"
+
+python3 - "$version" "$rdate" <<'PY'
+import re, sys
 v = sys.argv[1]
+d = sys.argv[2]
 s = open("CHANGELOG.md").read()
 head = "## [Unreleased]"
 i = s.index(head) + len(head)
@@ -61,7 +66,7 @@ j = s.find("\n## [", i)
 body = s[i:j if j >= 0 else len(s)]
 if not body.strip():
     sys.exit("release: the [Unreleased] section is empty")
-s = s[:i] + "\n\n## [%s] — %s" % (v, datetime.date.today().isoformat()) + s[i:]
+s = s[:i] + "\n\n## [%s] — %s" % (v, d) + s[i:]
 open("CHANGELOG.md", "w").write(s)
 u = open("script/lib/Util.js").read()
 u2 = re.sub(r'^Util\.LOOM_VERSION = "[^"]*";', 'Util.LOOM_VERSION = "%s";' % v, u, count=1, flags=re.M)
@@ -71,7 +76,7 @@ open("script/lib/Util.js", "w").write(u2)
 PY
 
 # The Siril port is released with it: its changelog section and package version.
-node ci/release-prep.js "$version"
+node ci/release-prep.js --date "$rdate" "$version"
 
 node ci/run-tests.js | tail -1
 LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js | tail -1
