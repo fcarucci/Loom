@@ -84,6 +84,8 @@ def test_oracle_covers_every_ported_function() -> None:
         assert hasattr(osc, fn), f"no twin for the recorded function {fn}"
     public = {n for n, v in vars(osc).items()
               if not n.startswith("_") and inspect.isfunction(v) and v.__module__ == osc.__name__}
+    assert osc.narrowband_bandwidths is osc.osc_narrowband_bandwidths
+    public.discard("narrowband_bandwidths")  # the same function under the stages' name
     assert public - fns - SIRIL_ONLY == set(), "public functions that are neither recorded nor Siril-only"
     assert SIRIL_ONLY <= public
     assert len(CASES) >= 3000

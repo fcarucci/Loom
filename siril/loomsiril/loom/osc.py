@@ -557,6 +557,10 @@ def osc_narrowband_bandwidths(config: Mapping[str, Any], info: Any) -> dict[str,
     return {"R": ha, "G": oiii, "B": oiii}
 
 
+#: The name the SPCC stages use for ``osc_narrowband_bandwidths``.
+narrowband_bandwidths = osc_narrowband_bandwidths
+
+
 # ---------------------------------------------------------------------------
 # Siril only
 # ---------------------------------------------------------------------------
