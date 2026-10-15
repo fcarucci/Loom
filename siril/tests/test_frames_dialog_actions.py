@@ -84,16 +84,21 @@ class Recorder:
         self.answer = True
         self.calls: list[tuple[str, Any]] = []
         self.cancel_window = False
+        self.pump: Any = None               # runs Tk events inside a box or a progress window, as the real ones do
 
     def tell(self, text: str, icon: str = "info", **kw: Any) -> None:
         self.told.append((text, icon))
 
     def ask(self, text: str, **kw: Any) -> bool:
         self.asked.append(text)
+        if self.pump is not None:
+            self.pump()
         return self.answer
 
     def with_progress(self, master: Any, title: Any, work: Any, **kw: Any) -> Any:
         self.calls.append(("progress", title))
+        if self.pump is not None:
+            self.pump()
         return work(Window(self.cancel_window))
 
 
@@ -448,6 +453,7 @@ def test_declining_the_import_summary_writes_nothing(card, rec) -> None:
     rec.answer = False
     assert card.run() is None and card.refused()
     assert len(rec.asked) == 1 and "Lights (22)" in rec.asked[0]
+    assert "FITS" in rec.asked[0] and "XISF" not in rec.asked[0]
     assert not card.out.exists()
 
 
@@ -537,18 +543,76 @@ def test_a_cancelled_master_flat_step_reports_cancelled_and_never_reports_none(c
     assert "master flats: cancelled; the raw flats were kept" in log
 
 
-def test_an_exception_in_the_master_flats_is_logged_and_raised(card, rec, tmp_path, monkeypatch) -> None:
+def test_an_exception_in_the_master_flats_reports_the_import_and_the_log(card, rec, tmp_path, monkeypatch) -> None:
     _with_master_flats(card, tmp_path)
 
     def boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("siril went away")
 
     monkeypatch.setattr(card.DA.AI, "make_master_flats", boom)
-    with pytest.raises(RuntimeError):
-        card.run()
-    log = next((tmp_path / "tmp" / "Loom-import-logs").iterdir()).read_text(encoding="utf-8")
-    assert "EXCEPTION: siril went away" in log
+    card.run()
+    logs = list((tmp_path / "tmp" / "Loom-import-logs").iterdir())
+    assert "EXCEPTION: siril went away" in logs[0].read_text(encoding="utf-8")
+    text, icon = rec.told[-1]
+    assert text.startswith("Imported 22 frame(s).") and "The master flats failed: siril went away" in text
+    assert "Log: " + str(logs[0]) in text and icon == "warning"
     assert card.d.state["locked"] is True
+
+
+def test_an_unexpected_error_during_the_copy_is_logged_and_raised_with_the_log_path(card, rec, tmp_path,
+                                                                                  monkeypatch) -> None:
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(card.DA.AI, "write_manifest", boom)
+    with pytest.raises(RuntimeError) as err:
+        card.run()
+    logs = list((tmp_path / "tmp" / "Loom-import-logs").iterdir())
+    assert "disk went away" in str(err.value) and "Log: " + str(logs[0]) in str(err.value)
+    assert "EXCEPTION: disk went away" in logs[0].read_text(encoding="utf-8")
+    assert card.d.state["locked"] is True
+
+
+# ---- a second Run while the first is in a box or a progress window
+
+def _queue_second_run(d: Any, rec: Recorder) -> None:
+    d.top.after_idle(d._on_run)
+    rec.pump = d.top.update
+
+
+def test_a_second_run_during_a_copy_does_nothing(make, rec, tmp_path) -> None:
+    d = make()
+    d.state["destination"] = str(tmp_path / "out")
+    _queue_second_run(d, rec)
+    d._on_run()
+    assert _names(rec).count("export") == 1
+
+
+def test_a_second_run_during_an_import_does_nothing(card, rec) -> None:
+    _queue_second_run(card.d, rec)
+    card.d._on_run()
+    assert len(card.writes) == 1 and len(rec.asked) == 1
+
+
+def test_a_second_run_during_a_delete_does_nothing(make, rec) -> None:
+    d = make()
+    _queue_second_run(d, rec)
+    d._on_run()
+    assert _names(rec).count("execute") == 1 and len(rec.asked) == 1
+
+
+def test_run_is_off_while_running_and_back_after(make, rec, tmp_path) -> None:
+    d = make()
+    d.state["destination"] = str(tmp_path / "out")
+    seen: list[bool] = []
+    rec.pump = lambda: seen.append(d.run_button.instate(["disabled"]))
+    d.commit()
+    assert seen and all(seen) and d._busy is False
+    assert d.run_button.instate(["disabled"])                      # locked after the copy: nothing more to run
+    d2 = make()
+    rec.answer = False
+    d2.commit()
+    assert not d2.run_button.instate(["disabled"]) and d2._busy is False   # declined: Run is back
 
 
 # ---- master-flat controls
@@ -593,19 +657,26 @@ def test_a_new_dialog_starts_from_the_remembered_master_flat_settings(make, tmp_
     state = _state()
     state["cardRoot"] = str(tmp_path / "card")
     d = make(state, options_store=FO.OptionsStore(tmp_path / "config"))
-    assert state["darksFolder"] == str(tmp_path / "darks") or state["onlyMasterFlats"] is True
+    assert state["darksFolder"] == str(tmp_path / "darks") and state["onlyMasterFlats"] is True
     assert d.master_only_var.get() is True
     assert str(tmp_path / "darks")[-20:] in d.darks_label.cget("text")
 
 
-def test_the_controls_are_inert_while_the_review_is_locked(make, tmp_path) -> None:
+def test_the_controls_are_inert_while_the_review_is_locked(make, tmp_path, monkeypatch) -> None:
+    import tkinter.filedialog as fd
+
     state = _state()
     state["cardRoot"] = str(tmp_path / "card")
     d = make(state)
     d.state["locked"] = True
     d.refresh()
     assert d.darks_button.instate(["disabled"]) and d.master_only_box.instate(["disabled"])
-    d.set_master_flat_settings("", False)
+    assert d.darks_clear.instate(["disabled"])
+    monkeypatch.setattr(fd, "askdirectory", lambda **kw: pytest.fail("the folder chooser opened while locked"))
+    d.set_master_flat_settings(str(tmp_path / "kept"), False)
+    d._on_darks_folder()                                            # editable() is False: nothing changes
+    d._on_darks_clear()
+    assert d.state["darksFolder"] == str(tmp_path / "kept")
     d.master_only_var.set(True)
     d._on_master_only()                                             # editable() is False: nothing changes
     assert d.state["onlyMasterFlats"] is False

@@ -125,6 +125,23 @@ class DialogActions:
 
     def commit(self) -> Any:
         """Run (3762-3826): an import, a copy or a delete in place, decided here and now."""
+        if getattr(self, "_busy", False):
+            return None                     # a second Run queued while the first is in a progress window
+        self._busy = True
+        try:
+            self.run_button.state(["disabled"])
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return self._commit()
+        finally:
+            self._busy = False
+            try:
+                self.refresh()              # puts Run back as the state says
+            except Exception:  # noqa: BLE001 - the window may have been closed meanwhile
+                pass
+
+    def _commit(self) -> Any:
         if not self.editable():
             return None
         # A limit typed but not yet confirmed is part of what Run acts on.
@@ -229,10 +246,16 @@ class DialogActions:
         if problem is not None:
             tell(problem, "warning", master=self.top)
             return None
-        summary = AN.import_summary(manifest, dest, AI.dark_source_of(state) if master else None)
+        summary = AI.import_summary(manifest, dest, AI.dark_source_of(state) if master else None)
         if not ask(summary, master=self.top):
             return None
 
+        return self._write_import(manifest, dest, master)
+
+    def _write_import(self, manifest: dict[str, Any], dest: str, master: bool) -> Any:
+        """The part of an import that writes: locked first, then the copy, the master flats and the log. The log is
+        written whatever happens; an unexpected error is raised with the log's path in it."""
+        state = self.state
         # Locked before the first write: the review can no longer change, and Run cannot start a second import.
         state["locked"] = True
         stamp = _dt.datetime.now(_dt.timezone.utc)
@@ -243,6 +266,17 @@ class DialogActions:
         note("destination: " + dest)
         note("lights: " + str(len(manifest["lights"])) + ", flats: " + str(len(manifest["flats"])))
         note("master flats: " + ("on, darks from " + AN.dark_source(AI.dark_source_of(state)) if master else "off"))
+        try:
+            return self._import_steps(manifest, dest, master, log, log_path)
+        except Exception as exc:  # noqa: BLE001
+            note("EXCEPTION: " + str(exc))
+            raise RuntimeError(str(exc) + "\n\nLog: " + log_path) from exc
+        finally:
+            AI.write_import_log(log_path, log)
+
+    def _import_steps(self, manifest: dict[str, Any], dest: str, master: bool, log: list[str], log_path: str) -> Any:
+        state = self.state
+        note = log.append
 
         def copy_work(w: Any) -> dict[str, Any]:
             def progress(done: int, total: int) -> bool:
@@ -266,11 +300,14 @@ class DialogActions:
             note("master flats:")
             try:
                 made = self._make_master_flats(manifest, result, dest, note)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - the copy is done: say so, and say what went wrong after it
                 note("EXCEPTION: " + str(exc))
-                AI.write_import_log(log_path, log)
-                raise
-            if made is None:
+                master_text = "\n\nThe master flats failed: " + str(exc) + "\nThe raw flats were kept."
+                icon = "warning"
+                made = False
+            if made is False:
+                pass
+            elif made is None:
                 master_text = "\n\nMaster flats cancelled: the raw flats were kept."
                 note("master flats: cancelled; the raw flats were kept")
                 icon = "warning"
