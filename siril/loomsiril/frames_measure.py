@@ -17,8 +17,10 @@ Route, for one batch of up to 8 frames of one channel:
    ``fs_.seq`` and one star list per image in ``cache/``. Afterwards Siril is sent back to the remembered
    directory and the focal length and pixel size are set again (``setfindstar -focal=... -pixelsize=...``). The
    other star-finder settings (sigma, radius, roundness, profile, relax, magnitude limits, convergence) cannot be
-   read from Siril: they are reset for the batch and not restored, and each batch logs that. A failure to send
-   Siril back is logged, not raised, so it does not hide the result.
+   read from Siril: they are reset for the batch and not restored, and each batch logs that. If the focal length
+   or pixel size cannot be read (no call, an error, or no finite number), no reset is sent and nothing is
+   restored: the batch is measured with Siril's current star-finder settings and a warning is logged. A failure
+   to send Siril back is logged, not raised, so it does not hide the result.
 3. ``fs_.seq`` is read: its ``S`` count must equal the batch size, its ``I`` indices must be exactly 1..n, and the
    registration layer must hold exactly n rows, so rows cannot shift. Results are matched to inputs by our own
    index, never by position in a listing. Siril caps the star count at ``max_stars`` (2000 after the reset).
@@ -287,12 +289,17 @@ def _cmd(siril: Any, text: str) -> None:
 
 def _read_prefs(siril: Any) -> Optional[dict[str, Any]]:
     """The star-finder focal length and pixel size, as Siril stores them (what ``setfindstar reset`` may change).
-    None when either cannot be read (no such call, or it raises): then the reset is not sent at all."""
+
+    None unless both are finite numbers: a call that is missing, raises, or gives None, a string or NaN (Siril gives
+    no response) means the reset is not sent at all."""
     try:
-        return {"focal_length": siril.get_siril_config("starfinder", "focal_length"),
-                "pixel_size": siril.get_siril_config("starfinder", "pixel_size")}
+        prefs = {"focal_length": siril.get_siril_config("starfinder", "focal_length"),
+                 "pixel_size": siril.get_siril_config("starfinder", "pixel_size")}
     except Exception:
         return None
+    if all(_finite(v) for v in prefs.values()):
+        return prefs
+    return None
 
 
 def _restore_text(prefs: Mapping[str, Any]) -> Optional[str]:
@@ -384,14 +391,14 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
                                                                         Optional[str]]:
     """Measure one batch of up to 8 frames of one channel through Siril's registration.
 
-    Returns ``(results, problem)``. When the star-finder focal length or pixel size cannot be read, the batch is
-    measured with Siril's current star-finder settings: no reset is sent, nothing is restored, and the warning is
-    passed to ``log`` on each such batch (the caller reports it once per scan). ``results`` maps each input path (as given) to its metrics, None when
-    unmeasurable. A frame that cannot be read (missing, no pixels, any error while linking it) is None and the
-    others are measured as if it were not there; if no frame can be read, ``results`` is ``{}`` and ``problem``
-    is None. ``problem`` is set only for a batch-wide failure (settings, working directory, sequence): then
-    ``results`` is ``{}``. A failed register leaves every readable frame to the fallback alone. Nothing is printed;
-    ``log`` gets the notes and the failed steps. Not safe to run concurrently against one Siril."""
+    Returns ``(results, problem)``. ``results`` maps each input path (as given) to its metrics, None when the frame
+    is unmeasurable. A frame that cannot be read (missing, no pixels, any error while linking it) is None and the
+    others are measured as if it were not there; if no frame can be read, ``results`` is ``{}`` and ``problem`` is
+    None. ``problem`` is set only for a batch-wide failure (working directory, sequence, Siril commands): then
+    ``results`` is ``{}``. If the star-finder focal length or pixel size cannot be read, no reset is sent and the
+    batch is measured with Siril's current star-finder settings; the warning goes to ``log`` on each such batch
+    (the caller reports it once per scan). A failed register leaves every readable frame to the fallback alone.
+    Nothing is printed. Not safe to run concurrently against one Siril."""
     note = log or (lambda _text: None)
     seen: set[str] = set()
     for p in paths:
@@ -417,13 +424,13 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
         seq: Optional[dict[str, Any]] = None
         wd0: Optional[str] = None
         prefs = _read_prefs(siril)
-        restore: Optional[dict[str, Any]] = None  # set once the reset has been sent: only then is it undone
-        try:
+        restore: Optional[dict[str, Any]] = None  # set just before the reset is sent: a reset that Siril applied
+        try:                                       # is undone even when its reply fails
             wd0 = siril.get_siril_wd()
             _cmd(siril, command_text("cd", quote_path(work_dir)))
             if prefs is not None:
-                _cmd(siril, command_text("setfindstar", "reset"))
                 restore = prefs
+                _cmd(siril, command_text("setfindstar", "reset"))
                 note(RESET_NOTE)
             else:
                 note(DEFAULTS_WARNING)

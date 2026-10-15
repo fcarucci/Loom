@@ -93,7 +93,8 @@ def test_parse_seq_rgb_layer_1() -> None:
 
 
 def test_parse_seq_ignores_comments_and_blank_lines() -> None:
-    seq = fm.parse_seq("#Siril sequence file.\n\nS 'fs_' 1 1 1 5 0 6 0 0 0\nL 1\nI 1 1\nR0 1 1 0.5 0 2 3 H 1 0 0 0 1 0 0 0 1\n")
+    seq = fm.parse_seq(
+        "#Siril sequence file.\n\nS 'fs_' 1 1 1 5 0 6 0 0 0\nL 1\nI 1 1\nR0 1 1 0.5 0 2 3 H 1 0 0 0 1 0 0 0 1\n")
     assert seq["count"] == 1 and seq["R"][0][0]["nbstars"] == 3
 
 
@@ -290,6 +291,7 @@ class FakeSiril:
         self.config_error = config_error
         self.config = config if config is not None else {"focal_length": 600.0, "pixel_size": 3.76}
         self.fail_cd_back = False
+        self.fail_reset = False
         self.wd_error = False
         self.load_data = True
         self.commands: list[str] = []
@@ -311,6 +313,8 @@ class FakeSiril:
 
     def cmd(self, text: str) -> bool:
         self.commands.append(text)
+        if text == "setfindstar reset" and self.fail_reset:
+            raise CommandError("reset applied but no reply")
         if text.startswith('cd "'):
             target = text[len('cd "'):-1]
             if self.fail_cd_back and target == self.wd:
@@ -577,14 +581,6 @@ def test_measure_batch_restores_focal_length_and_pixel_size(tmp_path) -> None:
     assert any("sigma" in n and "not restored" in n for n in notes)
 
 
-def test_measure_batch_missing_pixel_size_is_not_restored(tmp_path) -> None:
-    wd0 = str(tmp_path / "siril_wd")
-    os.makedirs(wd0)
-    siril = FakeSiril(wd0, config={"focal_length": None, "pixel_size": 3.76})
-    fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"))
-    assert siril.commands[-1] == "setfindstar -pixelsize=3.76"
-
-
 def _assert_measured_with_current_settings(siril: "FakeSiril", results: dict, problem, notes: list[str]) -> None:
     assert problem is None
     assert all(v is not None for v in results.values())
@@ -592,6 +588,45 @@ def _assert_measured_with_current_settings(siril: "FakeSiril", results: dict, pr
     assert not any(c.startswith("setfindstar reset") for c in siril.commands)
     assert not any(c.startswith("setfindstar -focal") for c in siril.commands)
     assert [n for n in notes if n == fm.DEFAULTS_WARNING] == [fm.DEFAULTS_WARNING]
+
+
+@pytest.mark.parametrize("config", [
+    {"focal_length": None, "pixel_size": 3.76},
+    {"focal_length": 600.0, "pixel_size": "n/a"},
+    {"focal_length": 600.0, "pixel_size": float("nan")},
+])
+def test_measure_batch_unreadable_setting_measures_with_current_settings(tmp_path, config) -> None:
+    names = _names(12, tmp_path)
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0, config=config)
+    notes: list[str] = []
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"), log=notes.append)
+    _assert_measured_with_current_settings(siril, results, problem, notes)
+    assert siril.commands[-1] == f'cd "{wd0}"'
+
+
+def test_measure_batch_finite_settings_are_reset_and_restored(tmp_path) -> None:
+    names = _names(12, tmp_path)
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0, config={"focal_length": 600.0, "pixel_size": 3.76})
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
+    assert problem is None and results
+    assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
+    assert "setfindstar reset" in siril.commands
+
+
+def test_measure_batch_reset_failure_is_still_restored(tmp_path) -> None:
+    names = _names(12, tmp_path)
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    siril.fail_reset = True
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
+    assert problem.startswith("cannot run Siril commands")
+    assert results == {}
+    assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
 
 
 def test_measure_batch_without_config_call_measures_with_current_settings(tmp_path, monkeypatch) -> None:
