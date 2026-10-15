@@ -1349,6 +1349,13 @@ Util.readImageProperty = function( f, id )
    catch ( e ) { return null; }
 };
 
+Util.channelCountProblem = function( path, n )
+{
+   if ( n == 1 || n == 3 )
+      return null;
+   return path + " has " + n + " channels; Loom takes mono (1) or colour (3) masters";
+};
+
 /*
  * The header fields of an open file: geometry and keywords, plus PixInsight's
  * integration metadata, read from the same open file with no pixel data. Both
@@ -1359,7 +1366,8 @@ Util.headerInfo = function( F, f, d )
    var info = {
       keywords: F.canStoreKeywords ? f.keywords : [],
       width: d[0].width,
-      height: d[0].height
+      height: d[0].height,
+      numberOfChannels: ( d && d[0] && d[0].numberOfChannels > 0 ) ? d[0].numberOfChannels : 1
    };
    /*
     * Only XISF implements the property reader. FITS reports that it can
@@ -1440,12 +1448,13 @@ Util.readImageInfo = function( path )
                          " -- falling back to a FULL read of the image" );
       var w = ImageWindow.open( path );
       if ( w.length == 0 )
-         info = { keywords: [], width: 0, height: 0 };
+         info = { keywords: [], width: 0, height: 0, numberOfChannels: 1 };
       else
       {
          info = { keywords: w[0].keywords,
                   width: w[0].mainView.image.width,
-                  height: w[0].mainView.image.height };
+                  height: w[0].mainView.image.height,
+                  numberOfChannels: w[0].mainView.image.numberOfChannels };
          w[0].forceClose();
       }
    }
@@ -1690,6 +1699,24 @@ Util.parseMasterName = function( name )
    return {
       filter: m[1],
       channel: Util.channelFromFilter( m[1] ),
+      drizzle: dm ? ( dm[1] + "x" ) : "",
+      autocrop: Util.isAutocropName( n )
+   };
+};
+
+/*
+ * A WBPP colour master name: FILTER-<token> runs to the next underscore,
+ * hyphens included, and _color / _RGB marks the colour case. The header
+ * stays authoritative; this only orders the work.
+ */
+Util.parseColourMasterName = function( name )
+{
+   var n = String( name || "" );
+   var m = /FILTER-([^_.]*)/i.exec( n );
+   var dm = /drizzle_(\d+)x/i.exec( n );
+   return {
+      filter: m ? m[1] : "",
+      colour: /_(color|colour|RGB)(_|\.|$)/i.test( n ),
       drizzle: dm ? ( dm[1] + "x" ) : "",
       autocrop: Util.isAutocropName( n )
    };

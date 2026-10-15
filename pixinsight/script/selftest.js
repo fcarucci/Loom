@@ -21351,7 +21351,7 @@ function runPipeTests()
 
             check( "tryHeaderRead: a FITS header, keywords and geometry, reader closed",
                    [ Util.tryHeaderRead( "/fake/a.fits" ), log.splice( 0 ) ],
-                   [ { info: { keywords: headerKws, width: 100, height: 50 }, why: null },
+                   [ { info: { keywords: headerKws, width: 100, height: 50, numberOfChannels: 1 }, why: null },
                      [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ] ] );
             check( "tryHeaderRead: no reader for the extension",
                    [ Util.tryHeaderRead( "/fake/b.zzz" ), log.splice( 0 ) ],
@@ -21366,13 +21366,13 @@ function runPipeTests()
                      [ "FileFormat .xisf true false", "open /fake/e.xisf verbosity 0" ] ] );
             check( "tryHeaderRead: a format without keywords gives none, and a failing close is ignored",
                    [ Util.tryHeaderRead( "/fake/d.tif" ), log.splice( 0 ) ],
-                   [ { info: { keywords: [], width: 100, height: 50 }, why: null },
+                   [ { info: { keywords: [], width: 100, height: 50, numberOfChannels: 1 }, why: null },
                      [ "FileFormat .tif true false", "open /fake/d.tif verbosity 0", "close" ] ] );
 
             var first = Util.readImageInfo( "/fake/a.fits" );
             check( "readImageInfo: header fields from one open, no warning",
                    [ first, log.splice( 0 ), warned.length ],
-                   [ { keywords: headerKws, width: 100, height: 50 },
+                   [ { keywords: headerKws, width: 100, height: 50, numberOfChannels: 1 },
                      [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ], 0 ] );
             var again = Util.readImageInfo( "/fake/a.fits" );
             check( "readImageInfo: the second call is the SAME object, with no second open",
@@ -21409,7 +21409,7 @@ function runPipeTests()
 
             fullWindows = [];
             check( "readImageInfo: a full read that opens nothing is empty, not an error",
-                   Util.readImageInfo( "/fake/g.zzz" ), { keywords: [], width: 0, height: 0 } );
+                   Util.readImageInfo( "/fake/g.zzz" ), { keywords: [], width: 0, height: 0, numberOfChannels: 1 } );
             fullWindows = null;
             log.splice( 0 ); warned.splice( 0 );
 
@@ -21465,6 +21465,37 @@ function runPipeTests()
       check( "readImageInfo (real file): the second call is the cached object",
              [ Util.readImageInfo( path ) === info, cache[key] === info ], [ true, true ] );
       delete cache[key];
+   } )();
+
+   } if ( testGroup( "osc.header" ) ) {
+   ( function()
+   {
+      var fakeF = { canStoreKeywords: false, canStoreImageProperties: false, name: "FITS" };
+      var hi = Util.headerInfo( fakeF, null, [ { width: 40, height: 30, numberOfChannels: 3 } ] );
+      check( "headerInfo numberOfChannels", hi.numberOfChannels, 3 );
+      check( "headerInfo keeps geometry", [ hi.width, hi.height ], [ 40, 30 ] );
+      check( "headerInfo defaults to one channel",
+             Util.headerInfo( fakeF, null, [ { width: 4, height: 3 } ] ).numberOfChannels, 1 );
+      check( "channelCountProblem 2 channels",
+             Util.channelCountProblem( "/m/a.xisf", 2 ),
+             "/m/a.xisf has 2 channels; Loom takes mono (1) or colour (3) masters" );
+      check( "channelCountProblem 3 channels", Util.channelCountProblem( "/m/a.xisf", 3 ), null );
+      var cn = Util.parseColourMasterName(
+         "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-L-eXtreme_color_drizzle_2x_autocrop.xisf" );
+      check( "parseColourMasterName hyphenated filter", cn.filter, "L-eXtreme" );
+      check( "parseColourMasterName colour flag", cn.colour, true );
+      check( "parseColourMasterName drizzle", cn.drizzle, "2x" );
+      check( "parseColourMasterName autocrop", cn.autocrop, true );
+      check( "parseColourMasterName _RGB",
+             Util.parseColourMasterName( "masterLight_FILTER-UVIR_RGB.xisf" ).colour, true );
+      check( "parseColourMasterName mono name",
+             Util.parseColourMasterName( "masterLight_FILTER-Ha_mono.xisf" ).colour, false );
+      check( "parseColourMasterName no filter token",
+             Util.parseColourMasterName( "masterLight_color.xisf" ).filter, "" );
+      check( "parseColourMasterName hyphenated filter, _RGB",
+             Util.parseColourMasterName( "masterLight_FILTER-L-Pro_RGB_autocrop.xisf" ).filter, "L-Pro" );
+      check( "parseMasterName unchanged",
+             Util.parseMasterName( "masterLight_BIN-1_FILTER-L_mono.xisf" ).channel, "L" );
    } )();
 
    } if ( testGroup( "util" ) ) {
