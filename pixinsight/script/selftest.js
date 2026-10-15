@@ -23841,6 +23841,93 @@ function runFailurePathTests()
              [ Config.defaults().oscKindChoices, Config.defaults().oscSensor ] );
    } )();
 
+   } if ( testGroup( "qa.osc.keys" ) ) {
+   /*
+    * Acceptance: every cache name a colour master generates is hexadecimal
+    * (identity strings are never file names); the sibling key follows the
+    * plane and the kind; the group key follows every sibling and the
+    * reference; the clean white-balance key follows the reference and, for
+    * a colour run, the sensor curves.
+    */
+   ( function()
+   {
+      var HEX = /^[0-9a-f]+$/;
+      function hex( s ) { return typeof s == "string" && HEX.test( s ); }
+      function distinct( list ) { return list.filter( function( v, i ) { return list.indexOf( v ) == i; } ).length == list.length; }
+
+      // Identity and sibling keys.
+      var gid = Pipeline.oscGroupIdentity( "fp-abc", "broadband" );
+      check( "qa.osc.keys: the group identity is the fingerprint plus the kind", gid, "fp-abc|osc:broadband" );
+      check( "qa.osc.keys: the identity changes with the kind and the fingerprint",
+             [ Pipeline.oscGroupIdentity( "fp-abc", "dualband" ) != gid, Pipeline.oscGroupIdentity( "fp-xyz", "broadband" ) != gid ], [ true, true ] );
+      var sib = [ 0, 1, 2 ].map( function( p ) { return Pipeline.oscSiblingKey( gid, p ); } );
+      check( "qa.osc.keys: sibling keys are hexadecimal", sib.map( hex ), [ true, true, true ] );
+      check( "qa.osc.keys: a sibling key is the cache hash of the identity and its plane",
+             sib, [ 0, 1, 2 ].map( function( p ) { return Cache.hash( gid + "|plane:" + p ); } ) );
+      check( "qa.osc.keys: sibling keys change with the plane", distinct( sib ), true );
+      var nbGid = Pipeline.oscGroupIdentity( "fp-abc", "dualband" );
+      check( "qa.osc.keys: the sibling key changes with the kind",
+             [ 0, 1 ].map( function( p ) { return Pipeline.oscSiblingKey( nbGid, p ) != sib[p]; } ), [ true, true ] );
+      check( "qa.osc.keys: the sibling key changes with the file",
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp-xyz", "broadband" ), 1 ) != sib[1], true );
+      check( "qa.osc.keys: the sibling key is stable", Pipeline.oscSiblingKey( gid, 1 ), sib[1] );
+      check( "qa.osc.keys: a view fingerprint with awkward characters still gives a hexadecimal key",
+             hex( Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "view:Name With Spaces/and\\slashes:1", "dualband" ), 0 ) ), true );
+
+      // The validation sidecar.
+      var side = Pipeline.oscValidateName( gid );
+      check( "qa.osc.keys: the validation sidecar is <hex>.osc.json", /^[0-9a-f]+\.osc\.json$/.test( side ), true );
+      check( "qa.osc.keys: the sidecar is named from the identity and \"|validate\"", side, Cache.hash( gid + "|validate" ) + ".osc.json" );
+      check( "qa.osc.keys: the sidecar differs from every sibling key", sib.indexOf( side.replace( ".osc.json", "" ) ), -1 );
+
+      // The group registration key.
+      var P = { ref: "refA", planes: "R,G,B" };
+      var g0 = Pipeline.oscGroupRegisterKey( "registerGroup", sib, P );
+      check( "qa.osc.keys: the group key is hexadecimal", hex( g0 ), true );
+      check( "qa.osc.keys: the group key is stable", Pipeline.oscGroupRegisterKey( "registerGroup", sib.slice(), { planes: "R,G,B", ref: "refA" } ), g0 );
+      [ 0, 1, 2 ].forEach( function( i )
+      {
+         var changed = sib.slice();
+         changed[i] = Cache.hash( "other input " + i );
+         check( "qa.osc.keys: the group key changes with sibling " + i, Pipeline.oscGroupRegisterKey( "registerGroup", changed, P ) != g0, true );
+      } );
+      check( "qa.osc.keys: the group key changes with the reference", Pipeline.oscGroupRegisterKey( "registerGroup", sib, { ref: "refB", planes: "R,G,B" } ) != g0, true );
+      check( "qa.osc.keys: the group key follows the plane order", Pipeline.oscGroupRegisterKey( "registerGroup", [ sib[1], sib[0], sib[2] ], P ) != g0, true );
+      var rs = [ 0, 1, 2 ].map( function( p ) { return Pipeline.oscRegisteredSiblingKey( g0, p ); } );
+      check( "qa.osc.keys: registered sibling keys are hexadecimal and differ by plane", [ rs.map( hex ), distinct( rs ) ], [ [ true, true, true ], true ] );
+      check( "qa.osc.keys: a registered sibling key is the hash of the group key and its plane", rs, [ 0, 1, 2 ].map( function( p ) { return Cache.hash( g0 + "|plane:" + p ); } ) );
+      var g1 = Pipeline.oscGroupRegisterKey( "registerGroup", sib, { ref: "refB", planes: "R,G,B" } );
+      check( "qa.osc.keys: registered sibling keys change with the group key", Pipeline.oscRegisteredSiblingKey( g1, 0 ) != rs[0], true );
+
+      // 12. The clean white-balance key.
+      var common = { x0: 1, y0: 2, x1: 300, y1: 200 };
+      var chans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
+      var monoCfg = Config.defaults();
+      monoCfg.paths.R = "/m/r.xisf"; monoCfg.paths.G = "/m/g.xisf"; monoCfg.paths.B = "/m/b.xisf";
+      var m0 = Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refA" );
+      check( "qa.osc.keys: the clean white-balance key is hexadecimal", hex( m0 ), true );
+      check( "qa.osc.keys: a mono run's key is stable", Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refA" ), m0 );
+      check( "qa.osc.keys: a mono run's key changes with the reference", Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refB" ) != m0, true );
+      check( "qa.osc.keys: a mono run's key still changes with the crop",
+             Pipeline.cleanWhiteBalanceKey( chans, monoCfg, { x0: 1, y0: 2, x1: 290, y1: 200 }, "CAM", "refA" ) != m0, true );
+
+      var colCfg = Config.defaults();
+      colCfg.paths.OSC = "/m/a.xisf";
+      colCfg.oscSensor = { R: "Sensor R", G: "Sensor G", B: "Sensor B" };
+      var c0 = Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refA" );
+      check( "qa.osc.keys: a colour run's key is hexadecimal and stable",
+             [ hex( c0 ), Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refA" ) == c0 ], [ true, true ] );
+      check( "qa.osc.keys: a colour run's key changes with the reference", Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refB" ) != c0, true );
+      [ "R", "G", "B" ].forEach( function( k )
+      {
+         var other = Config.defaults();
+         other.paths.OSC = "/m/a.xisf";
+         other.oscSensor = { R: "Sensor R", G: "Sensor G", B: "Sensor B" };
+         other.oscSensor[k] = "Another sensor " + k;
+         check( "qa.osc.keys: a colour run's key changes with the sensor's " + k + " curve",
+                Pipeline.cleanWhiteBalanceKey( chans, other, common, null, "refA" ) != c0, true );
+      } );
+   } )();
    } if ( testGroup( "cache" ) ) {
    /*
     * The cache folder's own bookkeeping, on a synthetic folder: entries
