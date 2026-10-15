@@ -122,11 +122,12 @@ def read_card(root: Any, card: str) -> Optional[dict[str, Any]]:
     return scan
 
 
-def pick_night(siril: Any, survey: Any, card: str, log: Optional[Callable[[str], None]] = None) -> Any:
-    """``pickNight`` (FrameSelector.js 4993-5002): the night chosen from the card's survey, or None."""
+def pick_night(siril: Any, root: Any, survey: Any, card: str, log: Optional[Callable[[str], None]] = None) -> Any:
+    """``pickNight`` (FrameSelector.js 4993-5002): the night chosen from the card's survey, or None. The picker is a
+    window of the one root."""
     from loomsiril import night_dialog_tk
 
-    return night_dialog_tk.pick_night(survey, card, siril=siril, log=log)
+    return night_dialog_tk.pick_night(survey, card, siril=siril, log=log, master=root)
 
 
 def offer_card(siril: Any, root: Any, store: Any, cache_dir: str,
@@ -143,7 +144,7 @@ def offer_card(siril: Any, root: Any, store: Any, cache_dir: str,
     if scan is None:
         return None
     survey = night_dialog.survey_of(scan, GAP_HOURS)
-    night = pick_night(siril, survey, card, log)
+    night = pick_night(siril, root, survey, card, log)
     if night is None:
         return None
     paths = [f["path"] for f in night["frames"]]

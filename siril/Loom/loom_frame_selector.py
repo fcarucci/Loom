@@ -15,6 +15,8 @@ LOOMSIRIL_SRC_ENV = "LOOMSIRIL_SRC"
 #: Python packages needed in Siril's Python environment (ttkthemes: Siril's theme applies only to a ThemedTk window).
 PACKAGES = ("numpy", "scipy", "tifffile", "ttkthemes")
 TITLE = "Loom Frame Selector"
+#: The oldest Siril the script runs on.
+MIN_SIRIL = "1.4.0"
 
 
 def _import_frames_main() -> Any:
@@ -37,6 +39,17 @@ def _report(siril: SirilInterface, text: str) -> None:
         print(text, file=sys.stderr)
 
 
+def _siril_is_new_enough(siril: SirilInterface) -> bool:
+    """Siril 1.4 or later (its ``requires`` command); an older one is told so in one box and nothing is installed."""
+    try:
+        ok = siril.cmd("requires", MIN_SIRIL) is not False
+    except Exception:  # the command fails on an older Siril
+        ok = False
+    if not ok:
+        siril.error_messagebox(f"{TITLE} needs Siril {MIN_SIRIL} or later. Please update Siril and run the script again.")
+    return ok
+
+
 def main() -> None:
     siril = SirilInterface()
     try:
@@ -48,6 +61,8 @@ def main() -> None:
         print(f"{TITLE}: cannot connect to Siril", file=sys.stderr)
         return
     try:
+        if not _siril_is_new_enough(siril):  # before any package is installed
+            return
         ensure_installed(*PACKAGES)  # before loomsiril is imported: it needs numpy
         _import_frames_main().main(siril)
     except Exception as exc:  # every failure is shown in a box, never a raw traceback in Siril

@@ -83,6 +83,7 @@ class Flow:
         self.chooser_args: list[Any] = []
         self.scans: list[tuple] = []
         self.picker_args: list[Any] = []
+        self.picker_master: Any = None
 
 
 @pytest.fixture
@@ -114,8 +115,9 @@ def flow(monkeypatch: pytest.MonkeyPatch, stub, tmp_path: Path):
     monkeypatch.setattr(asiair_card, "detect", lambda roots, stop, on_volume: list(f.cards))
     monkeypatch.setattr(asiair_card, "scan_card", lambda root, on_progress, stop: f.card_scan)
 
-    def pick(survey: Any, root: str, siril: Any = None, log: Any = None) -> Any:
+    def pick(survey: Any, root: str, siril: Any = None, log: Any = None, master: Any = None) -> Any:
         f.picker_args.append((survey, root))
+        f.picker_master = master
         return f.night
 
     monkeypatch.setattr(night_dialog_tk, "pick_night", pick)
@@ -190,7 +192,7 @@ def test_script_import_connects_to_nothing(stub, script) -> None:
 
 def test_script_is_thin() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
-    assert len([ln for ln in text.splitlines() if ln.strip()]) < 60
+    assert len([ln for ln in text.splitlines() if ln.strip()]) < 80
     assert "import loomsiril" not in text.split("def _import_frames_main")[0]  # nothing from loomsiril at module level
     assert "tkinter" not in text
 
@@ -350,6 +352,7 @@ def test_card_found_offers_nights_and_reviews_the_chosen_one(flow, stub, tmp_pat
     frames_main.main(stub.SirilInterface())
     assert "chooser" not in flow.calls and flow.calls[-3:] == ["run", "release", "close"]
     assert flow.picker_args[0][1] == "/media/x/ASIAIR"                       # the first card
+    assert flow.picker_master is flow.root                                   # one root: the picker is its window
     assert flow.picker_args[0][0]["gap"] is not None                         # GAP_HOURS
     kind, paths, kw = flow.scans[0]
     assert (kind, paths) == ("paths", ["/card/a.fit", "/card/b.fit"])
@@ -473,3 +476,46 @@ def test_the_real_root_is_withdrawn_and_destroyed(monkeypatch, stub, tmp_path) -
     assert seen["state"] == "withdrawn"
     with pytest.raises(tk.TclError):
         seen["root"].state()
+
+
+def test_script_tells_an_old_siril_before_installing_anything(script, stub, monkeypatch) -> None:
+    class Old(stub.SirilInterface):
+        def cmd(self, *args: str) -> bool:
+            raise stub.CommandError("requires failed")
+
+    monkeypatch.setattr(script, "SirilInterface", Old)
+    monkeypatch.setattr(script, "_import_frames_main", lambda: pytest.fail("must not import loomsiril"))
+    script.main()
+    assert stub.STATE.installs == []
+    assert len(stub.STATE.messages) == 1 and "1.4" in stub.STATE.messages[0][1]
+
+
+def test_pick_night_with_a_master_uses_it_and_leaves_it_open(monkeypatch) -> None:
+    made: list[Any] = []
+
+    class Top:
+        def transient(self, master: Any) -> None:
+            made.append(("transient", master))
+
+    class Dlg:
+        def __init__(self, master: Any, survey: Any, card_root: str) -> None:
+            self.top, self.result = Top(), {"night": 1}
+            made.append(("dialog", master))
+
+    master = SimpleNamespace(wait_window=lambda top: made.append(("wait", top)))
+    monkeypatch.setattr(night_dialog_tk, "NightDialog", Dlg)
+    monkeypatch.setattr(tk_theme, "themed_root", lambda *a, **k: pytest.fail("no second root"))
+    got = night_dialog_tk.pick_night({}, "/card", master=master)
+    assert got == {"night": 1}
+    assert [k for k, _ in made] == ["dialog", "transient", "wait"] and made[0][1] is master
+
+
+def test_pick_night_without_a_master_makes_and_closes_its_own_root(monkeypatch) -> None:
+    events: list[str] = []
+    root = SimpleNamespace(wait_window=lambda top: events.append("wait"))
+    monkeypatch.setattr(tk_theme, "themed_root", lambda siril=None, log=None: (events.append("root"), root)[1])
+    monkeypatch.setattr(tk_theme, "close_root", lambda r: events.append("close"))
+    monkeypatch.setattr(night_dialog_tk, "NightDialog",
+                        lambda m, s, c: SimpleNamespace(top=None, result=None))
+    assert night_dialog_tk.pick_night({}, "/card") is None
+    assert events == ["root", "wait", "close"]

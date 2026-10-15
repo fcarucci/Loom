@@ -126,8 +126,21 @@ def describe(survey: D.Survey, night: Optional[Night]) -> list[Segment]:
 
 
 def pick_night(survey: D.Survey, card_root: str, siril: Any = None,
-               log: Any = None) -> Optional[Night]:
-    """Shows the picker over a hidden root and returns the chosen night, or None on Cancel (the JS Dialog run)."""
+               log: Any = None, master: Any = None) -> Optional[Night]:
+    """Shows the picker and returns the chosen night, or None on Cancel (the JS Dialog run).
+
+    With ``master`` (the caller's root) the picker is a window of that root, transient to it, and the root is left
+    alone. Without it a hidden root of its own is made and destroyed.
+    """
+    if master is not None:
+        dlg = NightDialog(master, survey, card_root)
+        try:
+            dlg.top.transient(master)
+        except Exception:  # a withdrawn root cannot always be a transient parent: the picker is still usable
+            pass
+        master.wait_window(dlg.top)
+        return dlg.result
+
     from loomsiril.tk_theme import close_root, themed_root
 
     root = themed_root(siril, log=log)
