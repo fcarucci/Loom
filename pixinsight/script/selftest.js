@@ -22470,6 +22470,10 @@ function runPipeTests()
       check( "a sized, branded L-Pro is noted once", lpLog( "Optolong L-Pro 2\"" ).length, 1 );
       check( "a branded CLS is noted once", lpLog( "Optolong CLS" ).length, 1 );
       check( "a sized CLS-CCD is noted once", lpLog( "Optolong CLS-CCD 2\"" ).length, 1 );
+      check( "Astronomik CLS is noted once", lpLog( "Astronomik CLS" ),
+             [ "colour calibration does not model the Astronomik CLS filter in front of the camera" ] );
+      check( "Astronomik CLS-CCD is noted once", lpLog( "Astronomik CLS-CCD" ),
+             [ "colour calibration does not model the Astronomik CLS-CCD filter in front of the camera" ] );
       check( "UV/IR cut is not noted", lpLog( "UV/IR Cut" ), [] );
       check( "L-eXtreme is not noted for the broadband colour master", lpLog( "L-eXtreme" ), [] );
       // An OSC channel's stage parameters do not look up the camera's QE curve.
