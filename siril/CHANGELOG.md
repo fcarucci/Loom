@@ -5,10 +5,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **One-shot colour (OSC) cameras in `Loom/loom_preprocess.py`**, as in the PixInsight version: debayered colour masters, one broadband and/or one Hα + OIII dual-band master per run, split into channels when loaded, with the detected kind overridable and remembered, HOO only (SHO and HSO are refused), and no mixing of colour and mono masters. The Siril SPCC call takes the OSC sensor plus the front and low-pass filters, needed for any colour run.
+- Colour masters in `.fz` (compressed FITS) or XISF form are converted once through Siril and then split; a warm run does not convert again.
+- Siril deviations from the PixInsight version: a colour group is registered with `rgbcomp` and a layer choice because Siril cannot mix one- and three-channel images in a sequence, every SPCC call passes all its spectral arguments because Siril keeps omitted ones, and the calibration choice is part of the cache keys. See `docs/PARITY-LOOM.md`.
+
+### Changed
+
+- Mono runs measure the clean white balance once more after the upgrade: its cache key now includes the registration reference.
+
 ### Fixed
 
 - Install instructions no longer show a developer-specific folder; they explain how the script folder path is formed.
-- The README states that one-shot colour (OSC) cameras are not supported yet: Loom for Siril needs mono masters per filter.
 
 ## [0.5.1] — 2026-10-15
 

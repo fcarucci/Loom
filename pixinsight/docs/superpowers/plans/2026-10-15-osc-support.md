@@ -1084,4 +1084,4 @@ A task starts only when every task it consumes from is merged on `osc`.
 | 17 | 21 | 12, 20 |
 | 18 | 22 | 21 |
 
-Tasks in one wave never edit the same function. Waves 5 and 7 hold tasks that touch different files (6: `Pipeline.js` loading and `Steps.js` plane helpers; 10: `Util.js` discovery and `UI.js` entry routing; 8: `Pipeline.js` registration and `Steps.combinePlanes`; 11: `Util.oscControlState` and `UI.js` dialog builders). Each task's brief carries the **Interfaces** of the tasks it consumes.
+Tasks in one wave never edit the same function. Waves 5 and 7 hold tasks that touch different files (6: `Pipeline.js` loading and `Steps.js` plane helpers; 10: `Util.js` discovery and `UI.js` entry routing; 8: `Pipeline.js` registration and `Steps.combinePlanes`; 11: `Util.oscControlState` and `UI.js` dialog builders). Each task lists the **Interfaces** of the tasks it consumes.

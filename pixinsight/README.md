@@ -250,6 +250,19 @@ composite. With it off: `L`, `RGB`, `<palette>`, and the narrowband channels
 themselves when no palette was built. The plates are left open and cascaded in
 the middle of the workspace, always in the same order, the palette on top.
 
+## One-shot colour (OSC) cameras
+
+A one-shot colour camera gives one debayered RGB master per filter, as WBPP writes it. Loom takes them in place of mono masters, and the pipeline then runs as usual.
+
+- **Accepted masters.** Debayered masters with three channels. One broadband master and/or one Hα + OIII dual-band master per run: the broadband master gives R, G, B and the composite, the dual-band master gives Hα and OIII and the HOO palette. Integrate several masters of one kind in WBPP first. **Scan Masters Folder...** finds colour masters too (names with `_color` or `_RGB`, checked against the header), and a three-channel view can be dragged onto the list.
+- **Kind.** The masters list shows each colour master with its kind, detected from the `FILTER` keyword: known models (L-eXtreme, L-Ultimate, L-Enhance, ALP-T Hα/OIII, NBZ and others), broadband names (UV/IR, IR cut, L-Pro, CLS, or no filter), and family names such as Duo, Dual or Quad, which are not trusted on their own. Brand and size words are ignored. Choose **Broadband** or **Dual-band Hα + OIII** to override the detection; the choice is remembered per filter model, or per file when the filter is blank, and the **detected** link clears it. A master whose kind is not certain must be chosen before the run starts. A dual-band filter that is not Hα/OIII (such as an SII/Hβ model) is refused.
+- **Colour or mono, not both.** Colour and mono masters cannot be combined: a run with a colour master and any mono master does not start, and the mono boxes are greyed while a colour master is selected.
+- **HOO only.** SHO and HSO are refused for colour masters, and their boxes are greyed: they need SII, which a colour camera cannot separate from Hα. A quad-band filter is treated as dual-band: its `H` carries SII as well as Hα. `H` is the red plane of the dual-band master and `O` is the green plane only; the blue plane is not used.
+- **Sensor colour filters.** While a broadband (`OSC`) master is used, the SPCC section shows **Sensor colour filters**, the R, G and B sensor curves of PixInsight's filter database, in place of the R, G and B filter boxes. They are used with the Ideal QE curve, since the sensor curves already include the sensor's response.
+- **Light-pollution filters.** A run with an L-Pro, CLS or similar filter goes ahead and is never refused; colour calibration does not model that filter, and the log says so.
+- **Registration.** The planes of a colour master are registered together with one transform, so they stay aligned.
+- **Outputs.** Channels and palette layers made from a colour master carry a `LOOMSRC` keyword naming their source, and the run log names each palette's sources.
+
 ## Frame Selector
 
 ![Frame Selector](docs/images/frame-selector.png)

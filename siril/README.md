@@ -9,7 +9,7 @@ version. This folder is the Siril port: its code is Python and it is released to
 
 ## Status
 
-- **Cameras.** Loom for Siril works with mono cameras and filters: it needs calibrated, stacked masters per filter (R, G, B, optionally L, H, S, O). One-shot colour (OSC) cameras are not supported yet.
+- **Cameras.** Loom for Siril works with mono masters per filter (calibrated, stacked: R, G, B, optionally L, H, S, O) and with one-shot colour (OSC) masters: debayered colour masters, one broadband and/or one Hα + OIII dual-band per run (see "One-shot colour (OSC) masters").
 - Port of Loom v0.4.1 (`script/FlyThrough.js` and `script/lib/*.js`) to Python
   with numpy. The maths are pinned against recorded output of the JavaScript;
   [docs/PARITY.md](docs/PARITY.md) lists what is ported, vectorised, replaced or
@@ -309,6 +309,18 @@ then L_starless and L, then H, S or O. The cache folder holds stage results, the
 records and the run logs (`logs/loom-run-<stamp>.log`). Its default location is per user: `~/Library/Application Support/loomsiril/cache` on macOS, `%LOCALAPPDATA%\loomsiril\cache` on Windows, and
 `$XDG_DATA_HOME/loomsiril/cache` (or `~/.local/share/loomsiril/cache`) elsewhere. Set `cacheDir` to use another
 folder.
+
+### One-shot colour (OSC) masters
+
+A one-shot colour camera gives one debayered RGB master per filter, as WBPP writes it. Loom takes them instead of mono masters.
+
+- **Accepted masters.** Debayered masters with three channels (FITS, compressed `.fz` or XISF), one broadband master and/or one Hα + OIII dual-band master per run. Integrate several masters of one kind in WBPP first. A `.fz` or XISF master is converted once through Siril and then split; a warm run does not convert again.
+- **Kind.** The kind of each master is detected from its `FILTER` keyword: known models (L-eXtreme, L-Ultimate, L-Enhance, ALP-T Hα/OIII, NBZ and others), broadband names (UV/IR, IR cut, L-Pro, CLS, or no filter), and family names such as Duo, Dual or Quad, which are not trusted on their own. Brand and size words are ignored. Choose **Broadband** or **Dual-band Hα + OIII** per master to override the detection. The choice is remembered per filter model, or per file when the filter is blank, and a master whose kind is not certain must be chosen before the run starts. A dual-band filter that is not Hα/OIII (such as an SII/Hβ model) is refused.
+- **One kind of master per run.** Colour and mono masters cannot be combined: a run with a colour master and any mono master does not start.
+- **HOO only.** SHO and HSO are refused for colour masters: they need SII, which a colour camera cannot separate from Hα. A quad-band filter is treated as dual-band: its `H` carries SII as well as Hα. `H` is the red plane of the dual-band master and `O` is the green plane only (the blue plane is not used).
+- **Sensor colour filters.** A colour run needs the SPCC spectral choice: one OSC sensor, plus the front filter and the sensor's low-pass filter (or none). Every call passes all of them, and changing any one of them runs colour calibration again.
+- **Light-pollution filters.** A run with an L-Pro, CLS or similar filter goes ahead; colour calibration does not model that filter and the log says so.
+- **Registration.** The planes of a colour master are registered together with one transform, to the other group's reference when there is one.
 
 ## Install
 
