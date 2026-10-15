@@ -22420,6 +22420,85 @@ function runPipeTests()
          made.forEach( function( w ) { try { w.forceClose(); } catch ( e ) {} } );
       }
    }
+   ( function() {
+      var groups = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+      check( "clean plan: OSC is the reference group", Pipeline.cleanRegistrationPlan( "G", groups ), "identity" );
+      check( "clean plan: mono run", Pipeline.cleanRegistrationPlan( "L", {} ), "mono" );
+      check( "clean plan: no groups at all is a mono run", Pipeline.cleanRegistrationPlan( "L", null ), "mono" );
+      var thrown = null;
+      try { Pipeline.cleanRegistrationPlan( "H", groups ); }
+      catch ( e ) { thrown = e.message; }
+      check( "clean plan: a colour run's reference is always OSC G",
+             thrown, "internal: with OSC in the run the reference must be its G (got H)" );
+
+      // The white-balance key follows the crop and the reference in the identity case.
+      var cfgW = Config.defaults(); cfgW.paths.OSC = "/m/a.xisf";
+      cfgW.oscSensor = { R: "S R", G: "S G", B: "S B" };
+      function wbKey( common, refKey )
+      {
+         var chans = { R: { cleanKey: "r1" }, G: { cleanKey: "g1" }, B: { cleanKey: "b1" } };
+         return Pipeline.cleanWhiteBalanceKey( chans, cfgW, common, null, refKey );
+      }
+      var full = { x0: 0, y0: 0, x1: 100, y1: 80 }, smaller = { x0: 0, y0: 0, x1: 90, y1: 70 };
+      check( "clean white balance key changes when the overlap shrinks", wbKey( full, "g1" ) != wbKey( smaller, "g1" ), true );
+      check( "clean white balance key changes with a replaced OSC master (new reference key, same crop)",
+             wbKey( full, "g1" ) != wbKey( full, "g2" ), true );
+
+      // The call sequence of the measurement, identity and mono.
+      var dir = TEST_SCRATCH + "/loom-pipe-cleanwb-colour";
+      ensureDir( dir );
+      var calls, lastKey;
+      function win( id ) { return { mainView: { id: id }, isNull: false, forceClose: function() { calls.push( "close " + id ); } }; }
+      function measure( config, chans, refKey )
+      {
+         calls = [];
+         var restore = stub( [
+            [ Pipeline, "cleanWhiteBalanceCachePath", function( k ) { lastKey = k; return dir + "/" + k + ".wb.json"; } ],
+            [ Util, "freeWindowId", function( id ) { return id; } ],
+            [ Cache, "load", function( k, id ) { calls.push( "load " + id ); return win( id ); } ],
+            [ Cache, "store", function( k, w, meta ) { calls.push( "store " + meta.channel + " " + meta.stage ); } ],
+            [ Steps, "cropTo", function( v, rect ) { calls.push( "crop " + v.id + " " + rect.x1 ); } ],
+            [ Steps, "register", function( v, ref ) { calls.push( "register " + v.id + " to " + ref.id ); return win( v.id + "_r" ); } ],
+            [ Steps, "combineRGB", function( r, g, b, id ) { calls.push( "combine " + [ r.id, g.id, b.id ].join( "," ) ); return win( id ); } ],
+            [ Steps, "solve", function( v ) { calls.push( "solve " + v.id ); } ],
+            [ Steps, "spfc", function( v, a, b, inst, filters ) { calls.push( "spfc " + v.id + " " + inst + " " + JSON.stringify( filters ) ); } ],
+            [ Steps, "spccRGB", function( v, inst, filters ) { calls.push( "spcc " + v.id + " " + inst + " " + JSON.stringify( filters ) ); } ],
+            [ Steps, "readWhiteBalanceFactors", function() { return [ 1, 2, 3 ]; } ] ] );
+         var reg = { forget: function( w ) { calls.push( "forget " + w.mainView.id ); } };
+         try
+         {
+            return Pipeline.measureCleanWhiteBalance( chans, config, reg, { x0: 1, y0: 2, x1: 3, y1: 4 },
+                                                      "ZWO", { id: "REF" }, "fp", refKey );
+         }
+         finally { restore(); }
+      }
+      var oscChans = { R: { cleanKey: "kr", group: "OSC" }, G: { cleanKey: "kg", group: "OSC" }, B: { cleanKey: "kb", group: "OSC" } };
+      var oscCfg = Config.defaults(); oscCfg.useCache = false; oscCfg.paths.OSC = "/m/a.xisf";
+      oscCfg.oscSensor = { R: "S R", G: "S G", B: "S B" };
+      var sensor = JSON.stringify( Pipeline.effectiveFilters( oscCfg ) );
+      check( "OSC clean WB: no registration, each plane cropped once, sensor curves to SPFC and SPCC",
+             [ measure( oscCfg, oscChans, "G" ), calls.filter( function( c ) { return !/^(forget|close)/.test( c ); } ) ],
+             [ [ 1, 2, 3 ],
+               [ "load R_cleanref", "crop R_cleanref 3", "load G_cleanref", "crop G_cleanref 3",
+                 "load B_cleanref", "crop B_cleanref 3",
+                 "combine R_cleanref,G_cleanref,B_cleanref",
+                 "solve RGB_cleanref", "spfc RGB_cleanref null " + sensor, "spcc RGB_cleanref null " + sensor ] ] );
+      check( "OSC clean WB: the key keeps the reference key last",
+             lastKey, Pipeline.cleanWhiteBalanceKey( oscChans, oscCfg, { x0: 1, y0: 2, x1: 3, y1: 4 }, null, "fp" ) );
+      check( "OSC clean WB: the temporaries are released",
+             calls.filter( function( c ) { return /^close/.test( c ); } ).length, 4 );
+
+      var monoChans = { R: { cleanKey: "kr" }, G: { cleanKey: "kg" }, B: { cleanKey: "kb" } };
+      var monoCfg = { useCache: false };
+      measure( monoCfg, monoChans, "L" );
+      check( "mono clean WB: the call sequence is unchanged",
+             calls.filter( function( c ) { return !/^(forget|close)/.test( c ); } ),
+             [ "load R_cleanref", "register R_cleanref to REF", "load G_cleanref", "register G_cleanref to REF",
+               "load B_cleanref", "register B_cleanref to REF",
+               "combine R_cleanref_r,G_cleanref_r,B_cleanref_r",
+               "solve RGB_cleanref", "spfc RGB_cleanref ZWO " + JSON.stringify( Pipeline.effectiveFilters( monoCfg ) ),
+               "spcc RGB_cleanref ZWO " + JSON.stringify( Pipeline.effectiveFilters( monoCfg ) ) ] );
+   } )();
    } )();
    } if ( testGroup( "coreversion" ) ) {
    /*

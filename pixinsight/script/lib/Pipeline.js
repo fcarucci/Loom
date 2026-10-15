@@ -1427,10 +1427,52 @@ Pipeline.registerCleanChannel = function( cleanKey, k, config, refView, refFinge
    return registered.mainView;
 };
 
+/*
+ * One OSC plane's pre-correction result, cropped to the common area (the
+ * crop Pipeline.cropToCommonArea applies to the corrected planes, once), as
+ * a view. The window it opens is pushed onto `temps` for the caller to
+ * release.
+ */
+Pipeline.cropCleanChannel = function( cleanKey, k, common, temps )
+{
+   var w = Cache.load( cleanKey, Util.freeWindowId( k + "_cleanref" ) );
+   if ( w == null )
+      throw new Error( "the pre-correction result for " + k +
+                       " is not in the cache" );
+   temps.push( w );
+   Steps.cropTo( w.mainView, common );
+   return w.mainView;
+};
+
+/*
+ * How the clean planes reach the reference frame: "identity" when they are
+ * the OSC planes and the reference is OSC's own G (they already sit on it,
+ * so only the crop applies), "mono" for the per-channel registration. A
+ * colour run's reference is always its OSC G (Pipeline.registerToReference);
+ * any other reference there is a programming error, not a case to handle.
+ */
+Pipeline.cleanRegistrationPlan = function( refKey, groups )
+{
+   if ( !groups || !groups.OSC )
+      return "mono";
+   if ( groups.OSC.indexOf( refKey ) < 0 )
+      throw new Error( "internal: with OSC in the run the reference must be its G (got " +
+                       refKey + ")" );
+   return "identity";
+};
+
+/*
+ * `refKey` is the registration reference's channel key (not its cache key,
+ * which is `refFingerprint`); it only decides how the planes are brought to
+ * the reference, see Pipeline.cleanRegistrationPlan.
+ */
 Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
-                                              lumInstrume, refView, refFingerprint )
+                                              lumInstrume, refView, refFingerprint, refKey )
 {
    var trio = Util.RGB_GROUP;
+   var plan = Pipeline.cleanRegistrationPlan( refKey, Pipeline.oscChannelGroups( chans ) );
+   if ( plan == "identity" )
+      lumInstrume = null;
    var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume,
                                                               refFingerprint );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
@@ -1444,8 +1486,10 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
    try
    {
       for ( var i = 0; i < trio.length; ++i )
-         cleanViews[trio[i]] = Pipeline.registerCleanChannel( chans[trio[i]].cleanKey, trio[i],
-                                                              config, refView, refFingerprint, temps );
+         cleanViews[trio[i]] = plan == "identity"
+            ? Pipeline.cropCleanChannel( chans[trio[i]].cleanKey, trio[i], common, temps )
+            : Pipeline.registerCleanChannel( chans[trio[i]].cleanKey, trio[i],
+                                             config, refView, refFingerprint, temps );
 
       var refId = Util.freeWindowId( "RGB_cleanref" );
       var refWin = Steps.combineRGB( cleanViews.R, cleanViews.G,
@@ -3288,7 +3332,7 @@ Pipeline.balanceNarrowband = function( chans, config )
        * did not, so this stays.
        */
 Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
-                                       lumInstrume, refView, refFingerprint )
+                                       lumInstrume, refView, refFingerprint, refKey )
 {
    var cleanFactors = null;
    if ( chans.R && chans.G && chans.B &&
@@ -3297,7 +3341,7 @@ Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
       try
       {
          cleanFactors = Pipeline.measureCleanWhiteBalance(
-            chans, config, reg, common, lumInstrume, refView, refFingerprint );
+            chans, config, reg, common, lumInstrume, refView, refFingerprint, refKey );
       }
       catch ( e )
       {
@@ -3714,7 +3758,7 @@ Pipeline.run = function( config )
       var lumInstrume = Pipeline.compositeInstrument( chans, ref.refKey );
 
       var cleanFactors = Pipeline.cleanWhiteBalance( chans, config, reg, common,
-                                                     lumInstrume, refView, refFingerprint );
+                                                     lumInstrume, refView, refFingerprint, ref.refKey );
 
       var rgb = Pipeline.buildRGB( chans, config, reg, common,
                                    lumInstrume, cleanFactors );
