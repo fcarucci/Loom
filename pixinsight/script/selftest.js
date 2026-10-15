@@ -24217,6 +24217,181 @@ function runFailurePathTests()
              [ Config.defaults().oscKindChoices, Config.defaults().oscSensor ] );
    } )();
 
+   } if ( testGroup( "qa.osc.preflight" ) ) {
+   /*
+    * Acceptance: which runs are refused, and with which words. Channel
+    * counts, the colour slots' kinds, and the palettes a colour run can
+    * build.
+    */
+   ( function()
+   {
+      var SII = "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO";
+      var UNSUP = "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported";
+      var CHOOSE = "choose Broadband or Dual-band Hα + OIII for ";
+      function conf( paths, palettes, views )
+      {
+         var c = Config.defaults(), k;
+         for ( k in ( paths || {} ) ) c.paths[k] = paths[k];
+         for ( k in ( views || {} ) ) c.views[k] = views[k];
+         c.palettes = palettes || [];
+         return c;
+      }
+      function sorted( a ) { return a.slice().sort(); }
+      function text( p ) { return p == null ? "" : String( p ); }
+      function infoOf( table ) { return function( slot ) { return table[slot]; }; }
+      function img( filter, path, n )
+      {
+         return { filter: filter, path: path, numberOfChannels: n == null ? 3 : n, width: 120, height: 80 };
+      }
+      // Every refusal the inputs earn, from both the per-input and the per-kind checks.
+      function refusals( c, table )
+      {
+         return Pipeline.inputChannelProblems( c, infoOf( table ) ).concat( Pipeline.oscKindProblems( c, infoOf( table ) ) );
+      }
+      function choiceFor( filter, path, kind ) { var o = {}; o[ Util.oscKindKey( filter, path ) ] = kind; return o; }
+
+      // 9. Palettes.
+      [ "SHO", "HSO" ].forEach( function( pal )
+      {
+         [ { OSC: "/m/a.xisf" }, { OSCNB: "/m/b.xisf" }, { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ].forEach( function( p )
+         {
+            check( "qa.osc.preflight: " + pal + " with " + Object.keys( p ).join( "+" ) + " is refused with the verbatim text",
+                   text( Pipeline.oscPaletteProblem( conf( p, [ pal ] ) ) ).indexOf( SII ) >= 0, true );
+         } );
+      } );
+      check( "qa.osc.preflight: SHO among other palettes is still refused",
+             text( Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [ "HOO", "SHO" ] ) ) ).indexOf( SII ) >= 0, true );
+      check( "qa.osc.preflight: a colour view refuses SHO too",
+             text( Pipeline.oscPaletteProblem( conf( {}, [ "SHO" ], { OSCNB: "viewB" } ) ) ).indexOf( SII ) >= 0, true );
+      check( "qa.osc.preflight: HOO with a colour master is fine", Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [ "HOO" ] ) ), null );
+      check( "qa.osc.preflight: no palette asked is fine", Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [] ) ), null );
+      [ "SHO", "HSO" ].forEach( function( pal )
+      {
+         check( "qa.osc.preflight: a mono run is unaffected by " + pal,
+                Pipeline.oscPaletteProblem( conf( { H: "/m/h.xisf", S: "/m/s.xisf", O: "/m/o.xisf" }, [ pal ] ) ), null );
+      } );
+      // The SHO choice came from saved settings.
+      var store = {}, saveIt = conf( {}, [ "SHO" ] );
+      var saved = withConfigStore( store, {}, function() { saveConfig( saveIt ); } );
+      check( "qa.osc.preflight: the fake settings are in place for the save", saved.swapped, true );
+      if ( saved.swapped )
+      {
+         var back = withConfigStore( store, {}, function() { return loadConfig(); } );
+         var remembered = back.result;
+         check( "qa.osc.preflight: the SHO choice is remembered", remembered && remembered.palettes, [ "SHO" ] );
+         if ( remembered )
+         {
+            remembered.paths.OSCNB = "/m/b.xisf";
+            check( "qa.osc.preflight: a remembered SHO choice is still refused in a colour run",
+                   text( Pipeline.oscPaletteProblem( remembered ) ).indexOf( SII ) >= 0, true );
+            remembered.paths.OSCNB = "";
+            remembered.paths.H = "/m/h.xisf"; remembered.paths.S = "/m/s.xisf"; remembered.paths.O = "/m/o.xisf";
+            check( "qa.osc.preflight: the same remembered choice is fine in a mono run", Pipeline.oscPaletteProblem( remembered ), null );
+         }
+      }
+
+      // 8/9. Palettes that are built, from the logical channels.
+      check( "qa.osc.preflight: OSCNB supplies the narrowband channels H and O",
+             sorted( Pipeline.narrowbandSupplied( conf( { OSCNB: "/m/b.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.preflight: OSC supplies no narrowband channel", Pipeline.narrowbandSupplied( conf( { OSC: "/m/a.xisf" } ) ), [] );
+      check( "qa.osc.preflight: both colour masters supply only H and O as narrowband",
+             sorted( Pipeline.narrowbandSupplied( conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.preflight: a mono run's narrowband is unchanged",
+             sorted( Pipeline.narrowbandSupplied( conf( { H: "/m/h.xisf", S: "/m/s.xisf" } ) ) ), [ "H", "S" ] );
+      check( "qa.osc.preflight: OSCNB alone builds HOO", Pipeline.wantedPalettes( conf( { OSCNB: "/m/b.xisf" }, [ "HOO" ] ) ), [ "HOO" ] );
+      check( "qa.osc.preflight: OSCNB cannot build SHO or HSO",
+             Pipeline.wantedPalettes( conf( { OSCNB: "/m/b.xisf" }, [ "HOO", "SHO", "HSO" ] ) ), [ "HOO" ] );
+      check( "qa.osc.preflight: OSC alone builds no palette", Pipeline.wantedPalettes( conf( { OSC: "/m/a.xisf" }, [ "HOO" ] ) ), [] );
+      check( "qa.osc.preflight: a mono run still builds SHO",
+             Pipeline.wantedPalettes( conf( { H: "/m/h.xisf", S: "/m/s.xisf", O: "/m/o.xisf" }, [ "SHO" ] ) ), [ "SHO" ] );
+
+      // 3. Channel counts, for every physical input.
+      var mono = conf( { R: "/m/r.xisf", G: "/m/g.xisf", B: "/m/b.xisf" } );
+      var ok = { R: img( "R", "/m/r.xisf", 1 ), G: img( "G", "/m/g.xisf", 1 ), B: img( "B", "/m/b.xisf", 1 ) };
+      check( "qa.osc.preflight: one-channel masters in mono slots are accepted", refusals( mono, ok ), [] );
+      var three = { R: img( "R", "/m/r.xisf", 3 ), G: ok.G, B: ok.B };
+      var p3 = refusals( mono, three );
+      check( "qa.osc.preflight: a three-channel file never lands in a mono slot (refused, naming it)",
+             [ p3.length > 0, p3.some( function( p ) { return p.indexOf( "/m/r.xisf" ) >= 0; } ) ], [ true, true ] );
+      [ 2, 4, 5 ].forEach( function( n )
+      {
+         var t = { R: img( "R", "/m/r.xisf", n ), G: ok.G, B: ok.B };
+         var p = refusals( mono, t );
+         check( "qa.osc.preflight: a " + n + "-channel file in a mono slot is refused, naming the path and the count",
+                p.some( function( s ) { return s.indexOf( "/m/r.xisf" ) >= 0 && new RegExp( "(^|[^0-9])" + n + "([^0-9]|$)" ).test( s.replace( "/m/r.xisf", "" ) ); } ), true );
+      } );
+      var cslot = conf( { OSC: "/m/a.xisf" } );
+      var one = refusals( cslot, { OSC: img( "", "/m/a.xisf", 1 ) } );
+      check( "qa.osc.preflight: a one-channel file is refused in a colour slot, naming it",
+             [ one.length > 0, one.some( function( p ) { return p.indexOf( "/m/a.xisf" ) >= 0; } ) ], [ true, true ] );
+      var two = refusals( cslot, { OSC: img( "", "/m/a.xisf", 2 ) } );
+      check( "qa.osc.preflight: a two-channel file is refused in a colour slot, naming the path and the count",
+             two.some( function( s ) { return s.indexOf( "/m/a.xisf" ) >= 0 && /(^|[^0-9])2([^0-9]|$)/.test( s.replace( "/m/a.xisf", "" ) ); } ), true );
+      check( "qa.osc.preflight: a three-channel file in a colour slot passes the channel count",
+             refusals( cslot, { OSC: img( "UVIR", "/m/a.xisf", 3 ) } ), [] );
+
+      // 10. Kind against slot; the kind each slot ends up with.
+      var good = conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      var tbl = { OSC: img( "UV/IR Cut", "/m/a.xisf" ), OSCNB: img( "L-eXtreme", "/m/b.xisf" ) };
+      check( "qa.osc.preflight: a broadband OSC and a dual-band OSCNB are accepted", Pipeline.oscKindProblems( good, infoOf( tbl ) ), [] );
+      check( "qa.osc.preflight: the per-run kinds are filled in", good.oscKinds, { OSC: "broadband", OSCNB: "dualband" } );
+      var stale = conf( { OSC: "/m/a.xisf" } );
+      stale.oscKinds = { OSC: "dualband" };
+      Pipeline.oscKindProblems( stale, infoOf( { OSC: img( "UVIR", "/m/a.xisf" ) } ) );
+      check( "qa.osc.preflight: a kind left from an earlier run is replaced", stale.oscKinds.OSC, "broadband" );
+      var wrongNb = Pipeline.oscKindProblems( conf( { OSCNB: "/m/u.xisf" } ), infoOf( { OSCNB: img( "UV/IR Cut", "/m/u.xisf" ) } ) );
+      check( "qa.osc.preflight: a broadband master in the dual-band slot is refused, naming it",
+             [ wrongNb.length > 0, wrongNb.some( function( p ) { return p.indexOf( "/m/u.xisf" ) >= 0; } ) ], [ true, true ] );
+      var wrongBb = Pipeline.oscKindProblems( conf( { OSC: "/m/x.xisf" } ), infoOf( { OSC: img( "L-eXtreme", "/m/x.xisf" ) } ) );
+      check( "qa.osc.preflight: a dual-band master in the broadband slot is refused, naming it",
+             [ wrongBb.length > 0, wrongBb.some( function( p ) { return p.indexOf( "/m/x.xisf" ) >= 0; } ) ], [ true, true ] );
+      var blankBb = conf( { OSC: "/m/n.xisf" } );
+      check( "qa.osc.preflight: an unlabelled master in the broadband slot is accepted as broadband",
+             [ Pipeline.oscKindProblems( blankBb, infoOf( { OSC: img( "", "/m/n.xisf" ) } ) ), blankBb.oscKinds.OSC ], [ [], "broadband" ] );
+
+      // 4. An unconfident or unknown filter with no choice blocks the run, with the verbatim words.
+      [ "Duo", "Quad", "Astronomik Deep-Sky" ].forEach( function( f )
+      {
+         [ "OSC", "OSCNB" ].forEach( function( slot )
+         {
+            var c = conf( slot == "OSC" ? { OSC: "/m/q.xisf" } : { OSCNB: "/m/q.xisf" } ), t = {};
+            t[slot] = img( f, "/m/q.xisf" );
+            var p = Pipeline.oscKindProblems( c, infoOf( t ) );
+            check( "qa.osc.preflight: '" + f + "' in " + slot + " with no choice blocks, asking for the kind of the file",
+                   p.some( function( s ) { var i = s.indexOf( CHOOSE ); return i >= 0 && s.indexOf( "q.xisf", i ) > i; } ), true );
+         } );
+      } );
+      // ... and a choice lifts the block and wins over detection.
+      var duoC = conf( { OSCNB: "/m/q.xisf" } );
+      duoC.oscKindChoices = choiceFor( "Duo", "/m/q.xisf", "dualband" );
+      check( "qa.osc.preflight: a remembered choice lifts the block", [ Pipeline.oscKindProblems( duoC, infoOf( { OSCNB: img( "Duo", "/m/q.xisf" ) } ) ), duoC.oscKinds.OSCNB ],
+             [ [], "dualband" ] );
+      var winC = conf( { OSCNB: "/m/u.xisf" } );
+      winC.oscKindChoices = choiceFor( "UVIR", "/m/u.xisf", "dualband" );
+      check( "qa.osc.preflight: the user's choice beats the detected kind (a UV/IR-named master chosen as dual-band is accepted in the dual-band slot)",
+             [ Pipeline.oscKindProblems( winC, infoOf( { OSCNB: img( "UVIR", "/m/u.xisf" ) } ) ), winC.oscKinds.OSCNB ], [ [], "dualband" ] );
+      var blank1 = conf( { OSCNB: "/m/blank1.xisf" } );
+      blank1.oscKindChoices = choiceFor( "", "/m/blank1.xisf", "dualband" );
+      check( "qa.osc.preflight: a blank-filter choice lets its own file through",
+             Pipeline.oscKindProblems( blank1, infoOf( { OSCNB: img( "", "/m/blank1.xisf" ) } ) ), [] );
+      var blank2 = conf( { OSCNB: "/m/blank2.xisf" } );
+      blank2.oscKindChoices = choiceFor( "", "/m/blank1.xisf", "dualband" );
+      check( "qa.osc.preflight: the same choice does not let another blank-filter file through",
+             Pipeline.oscKindProblems( blank2, infoOf( { OSCNB: img( "", "/m/blank2.xisf" ) } ) ).length > 0, true );
+
+      // An unsupported filter is refused with its words, choice or no choice.
+      var uns = conf( { OSCNB: "/m/s.xisf" } );
+      check( "qa.osc.preflight: the ALP-T SII/Hβ filter is refused with the verbatim text",
+             Pipeline.oscKindProblems( uns, infoOf( { OSCNB: img( "ALP-T SII/Hβ", "/m/s.xisf" ) } ) ).some( function( p ) { return p.indexOf( UNSUP ) >= 0; } ), true );
+      var unsC = conf( { OSCNB: "/m/s.xisf" } );
+      unsC.oscKindChoices = choiceFor( "ALP-T SII/Hβ", "/m/s.xisf", "dualband" );
+      check( "qa.osc.preflight: a remembered choice does not rescue it",
+             Pipeline.oscKindProblems( unsC, infoOf( { OSCNB: img( "ALP-T SII/Hβ", "/m/s.xisf" ) } ) ).some( function( p ) { return p.indexOf( UNSUP ) >= 0; } ), true );
+
+      // Mono runs: nothing from the colour checks.
+      check( "qa.osc.preflight: a mono run has no colour kind problem", Pipeline.oscKindProblems( mono, infoOf( {} ) ), [] );
+   } )();
+
    } if ( testGroup( "qa.osc.keys" ) ) {
    /*
     * Acceptance: every cache name a colour master generates is hexadecimal
