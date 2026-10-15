@@ -306,6 +306,17 @@ module.exports = function( js )
      [ { min: 0.1, max: 0.9, median: 0.5, mean: 7 }, { min: 0, max: 0, median: 0 }, { min: 1, max: 1, median: 1 } ] ].forEach( ( l, i ) =>
       rec( "osc_validation_record/" + i, "osc_validation_record", [ l ], a => Pipeline.oscValidationRecord( a[0] ) ) );
 
+   // ---- narrowband SPCC bandwidths of a dual-band colour master --------------------------
+   // Every config names its fallback bandwidth: an absent one would leave a key out of the JSON.
+   const nbInfos = [ null, {}, { filter: null }, { filter: "" }, { filter: "L-eXtreme" }, { filter: "Optolong L-Ultimate 2\"" },
+                     { filter: "L-eNhance" }, { filter: "NBZ-II" }, { filter: "NBZ" }, { filter: "ALP-T Ha/OIII" },
+                     { filter: "ALP-T SII/Hb" }, { filter: "Duo" }, { filter: "UVIR" }, { filter: "xyzzy" },
+                     { filter: "ZWO L-eXtreme 36mm" }, { filter: "Astronomik L-Ultimate" }, { filter: "Baader Duo" } ];
+   n = 0;
+   [ 3, 6, 0, 12.5, null, 1e-9 ].forEach( bw => nbInfos.forEach( i =>
+      rec( "osc_narrowband_bandwidths/" + ( n++ ), "osc_narrowband_bandwidths", [ { narrowbandBandwidth: bw }, i ],
+           a => Pipeline.oscNarrowbandBandwidths( a[0], a[1] ) ) ) );
+
    // ---- the white-balance key (recorded only: replayed with the white-balance port) -----
    const chansOk = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
    const common = { x0: 1, y0: 2, x1: 300, y1: 200 };

@@ -539,6 +539,24 @@ def osc_validation_record(stats_list: Sequence[Mapping[str, Any]]) -> dict[str, 
     return {"planes": [{"min": s.get("min"), "max": s.get("max"), "median": s.get("median")} for s in stats_list]}
 
 
+def osc_narrowband_bandwidths(config: Mapping[str, Any], info: Any) -> dict[str, Any]:
+    """``Pipeline.oscNarrowbandBandwidths``: the SPCC bandwidth of each output channel of a dual-band colour master.
+
+    HOO is R = Ha, G = OIII, B = OIII. The filter table gives each line's bandwidth; a filter it does not know (or
+    that has none) falls back to the run's ``narrowbandBandwidth``. ``info["filter"]`` is the master's FILTER keyword.
+    """
+    fi = osc_filter_info(_get(info, "filter") if _truthy(info) else None)
+
+    def pick(nm: Any) -> Any:
+        if isinstance(nm, (int, float)) and not isinstance(nm, bool) and math.isfinite(nm) and nm > 0:
+            return nm
+        return config.get("narrowbandBandwidth")
+
+    ha = pick(fi["haNm"] if fi else None)
+    oiii = pick(fi["oiiiNm"] if fi else None)
+    return {"R": ha, "G": oiii, "B": oiii}
+
+
 # ---------------------------------------------------------------------------
 # Siril only
 # ---------------------------------------------------------------------------
