@@ -920,3 +920,35 @@ def test_an_osc_run_whose_reference_is_not_an_osc_plane_is_a_programming_error(t
                                                   ref_key="k", ref_channel="L")
     assert stages_colour.measure_clean_white_balance(ctx, clean, ref, RECT, _clean_config(), INSTRUME, None, False,
                                                      False, ref_key="k", ref_channel="G") is not None
+
+
+# ---- provenance: LOOMSRC after combining ------------------------------------------------------------------------------
+
+
+def test_combine_sets_loomsrc_after_dropping_the_keywords_that_differ(tmp_path: Path) -> None:
+    ctx, _, _ = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "register": _register_handler})
+    plates = _rgb_plates(tmp_path)
+    runners = stages_colour.rgb_runners(ctx, plates, _config(), INSTRUME, None, loomsrc="OSC m.xisf planes 0,1,2")
+    header = read_fits(runners["combine"](None, str(tmp_path / "RGB.fits")).path)[1]
+    assert header["LOOMSRC"] == "OSC m.xisf planes 0,1,2"
+    assert "FILTER" not in header and header["OBJECT"] == "M42"
+
+
+def test_combine_without_a_source_carries_no_loomsrc(tmp_path: Path) -> None:
+    ctx, _, _ = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "register": _register_handler})
+    plates = _rgb_plates(tmp_path)
+    for plate in plates.values():
+        planes, header = read_fits(plate)
+        write_fits(plate, planes, {**header, "LOOMSRC": "mono.fits|plane:0"}, bitpix=-32)
+    header = read_fits(stages_colour.rgb_runners(ctx, plates, _config(), INSTRUME, None)["combine"](
+        None, str(tmp_path / "RGB.fits")).path)[1]
+    assert "LOOMSRC" not in header
+
+
+def test_palette_combine_sets_loomsrc(tmp_path: Path) -> None:
+    ctx, _, _ = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "register": _register_handler})
+    plates = _palette_plates(tmp_path)
+    value = "OSCNB n.xisf plane 0; OSCNB n.xisf plane 1"
+    runners = stages_colour.palette_runners(ctx, "HOO", plates, _config(), None, loomsrc=value)
+    header = read_fits(runners["paletteCombine"](None, str(tmp_path / "HOO.fits")).path)[1]
+    assert header["LOOMSRC"] == value

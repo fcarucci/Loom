@@ -204,12 +204,16 @@ def _require(plates: Mapping[str, Any], needed: Sequence[str]) -> None:
         raise ValueError("missing plates: " + ", ".join(missing))
 
 
-def _combine(ctx: RunContext, paths: Sequence[Any], out_path: Any) -> StageOutput:
+def _combine(ctx: RunContext, paths: Sequence[Any], out_path: Any, loomsrc: Optional[str] = None) -> StageOutput:
     """Combine three mono plates (R, G, B order, already in one frame) into a colour plate.
 
     ``rgbcomp`` writes the composite (Siril adds ``.fit`` to its output name); the keywords whose values differ between
     the three inputs are then removed, as Loom holds them back during ChannelCombination, and the plate is rewritten
     with its pixels unchanged. The composite keeps the first plate's world coordinates, as Siril gives it.
+
+    ``loomsrc`` is the value of the LOOMSRC keyword (the colour master's file and planes, already fitted to a card):
+    it is set after the combination, and a composite of mono plates, which has none, carries none even when its inputs
+    held the same value.
     """
     r, g, b = (os.fspath(p) for p in paths)
     dst = os.fspath(out_path)
@@ -217,7 +221,10 @@ def _combine(ctx: RunContext, paths: Sequence[Any], out_path: Any) -> StageOutpu
     ctx.log(f"combine -> {os.path.basename(dst)}")
     produced = ctx.ops.rgbcomp(r, g, b, os.path.splitext(dst)[0])
     planes, header = read_fits(os.fspath(produced))
-    write_fits(dst, planes, imageops.without_inconsistent_keywords(header, headers), bitpix=-32)
+    kept = {k: v for k, v in imageops.without_inconsistent_keywords(header, headers).items() if str(k).strip() != "LOOMSRC"}
+    if loomsrc is not None:
+        kept["LOOMSRC"] = loomsrc
+    write_fits(dst, planes, kept, bitpix=-32)
     return StageOutput(path=dst)
 
 
@@ -244,17 +251,18 @@ def _spcc_rgb_runner(ctx: RunContext, config: Mapping[str, Any], lum_instrume: A
 
 
 def rgb_runners(ctx: RunContext, plates: Mapping[str, Any], config: Mapping[str, Any], lum_instrume: Any,
-                factors: Optional[Sequence[float]]) -> dict[str, Runner]:
+                factors: Optional[Sequence[float]], loomsrc: Optional[str] = None) -> dict[str, Runner]:
     """The RGB composite's runners: ``combine`` from the R, G and B plates, ``solveRGB``, and ``spccRGB``.
 
     ``plates`` maps R, G and B to their (already cropped and registered) plate paths. With ``factors`` (the measured
-    clean white balance) ``spccRGB`` applies them in numpy; without, it runs SPCC on the composite.
+    clean white balance) ``spccRGB`` applies them in numpy; without, it runs SPCC on the composite. ``loomsrc`` is the
+    composite's LOOMSRC value (None for a mono composite: it carries none).
     """
     _require(plates, RGB_CHANNELS)
     paths = [plates[ch] for ch in RGB_CHANNELS]
 
     def combine(in_path: Any, out_path: Any) -> StageOutput:
-        return _combine(ctx, paths, out_path)
+        return _combine(ctx, paths, out_path, loomsrc)
 
     return {
         "combine": combine,
@@ -374,9 +382,9 @@ def _palette_norm(ctx: RunContext, pal: str) -> Runner:
 
 
 def palette_runners(ctx: RunContext, pal: str, plates: Mapping[str, Any], config: Mapping[str, Any],
-                    rgb_spcc_names: Optional[tuple]) -> dict[str, Runner]:
+                    rgb_spcc_names: Optional[tuple], loomsrc: Optional[str] = None) -> dict[str, Runner]:
     """The runners of one narrowband palette: ``paletteCombine``, ``paletteSpcc`` and, when enabled,
-    ``paletteNorm``.
+    ``paletteNorm``. ``loomsrc`` is the palette's LOOMSRC value (None for a palette of mono channels).
 
     ``plates`` maps the narrowband channels (H, S, O) to their plate paths. ``rgb_spcc_names`` is ``(sensor, r, g, b)``
     when a broadband calibration names its database entries in this run, else None: the narrowband SPCC then carries
@@ -385,7 +393,7 @@ def palette_runners(ctx: RunContext, pal: str, plates: Mapping[str, Any], config
     mapping = _palette_map(pal, plates)
 
     def combine(in_path: Any, out_path: Any) -> StageOutput:
-        return _combine(ctx, [plates[ch] for ch in mapping], out_path)
+        return _combine(ctx, [plates[ch] for ch in mapping], out_path, loomsrc)
 
     runners: dict[str, Runner] = {
         "paletteCombine": combine,

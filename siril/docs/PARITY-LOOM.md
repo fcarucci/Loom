@@ -110,9 +110,12 @@ Conventions that differ from the JavaScript on purpose:
 | `colour_load.group_log_line` | `lib/Pipeline.js:2192` | P | `tests/loom/test_colour_load.py` |
 | `colour_load.plane_statistics` | `Steps.planeStats` | S | `tests/loom/test_colour_load.py` |
 | `colour_load.is_plain_fits` | - | S | `tests/loom/test_colour_load.py` |
+| `colour_load.fit_loomsrc` | `lib/Util.js:fitsString` (value of the keyword, trimmed to a card) | S | `tests/loom/test_colour_load.py` |
+| `colour_load.composite_loomsrc` | `lib/Pipeline.js:3595` (`oscSourceText`, then trimmed to a card) | S | `tests/loom/test_colour_load.py` |
 
 `ColourGroupLoader` writes the `LOOMSRC` keyword of a plate differently from Loom when the master's name is long (see
-[Deviations](#deviations)).
+[Deviations](#deviations)); `fit_loomsrc` is the one trim, shared with the composite and the palettes, whose values
+`composite_loomsrc` builds from Loom's own text (`osc.osc_source_text`).
 
 ## loomsiril/loom/config.py
 
@@ -655,6 +658,7 @@ These are the places where the port does not do what Loom does, or does it anoth
 documented where it is implemented.
 
 - `LOOMSRC` of a colour plate: `io_fits` has no CONTINUE long strings, so a value longer than the 68 characters a card holds (measured after doubling apostrophes) keeps the end of the master's name behind `...`; the filter, suffix, extension and `|plane:n` survive. PixInsight writes the full name.
+- `LOOMSRC` of a composite or a palette (RGB, SHO, HOO, HSO and their starless, stars and linear companions, in FITS form only; TIFF and PSB exports hold no FITS keywords and carry none, and a mono product carries none): the value is Loom's text (`OSC <file> planes 0,1,2`, `OSCNB <file> plane 0; OSCNB <file> plane 1`) and is byte-identical to PixInsight's whenever it fits the 68-character card (measured after doubling apostrophes). When it does not, `colour_load.fit_loomsrc` trims inside the file names only, keeping the end of each name behind `...`, never the group word, `plane`/`planes` or the plane list; several file names each get an equal share of what the rest of the value leaves. Non-ASCII characters in a name become `?`. PixInsight writes the full name.
 - SPFC dropped (Spectrophotometric Flux Calibration): it needs Gaia XP spectra, which are not available offline.
 - MGC replaced by Siril subsky degree 2 when the gradient tool is none (never on H, S or O): each broadband channel runs `subsky 2` with 20 samples and tolerance 1.0 in place of Loom's gradient correction.
 - MultiscaleAdaptiveStretch replaced by Siril GHS (autoghs, D 4.5, fixed values); saved configurations migrate to it.

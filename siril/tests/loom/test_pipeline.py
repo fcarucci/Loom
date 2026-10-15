@@ -635,3 +635,67 @@ def test_with_the_cache_off_the_master_is_read_once_per_run_and_nothing_is_cache
         assert cr.master_reads() == 1
         assert cr.lines.count(_COLOUR_LOG) == 1
         assert os.listdir(tmp_path / "cache") == []
+
+
+# ---- provenance: LOOMSRC values and the palette log lines ---------------------------------------------------------------
+
+_COMMON = {"x": 0, "y": 0, "w": 4, "h": 4}
+
+
+def test_result_sources_name_the_master_for_the_composite_and_every_palette_product(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband", palettes=[])
+    cr.run.load_channels()
+    names = ["L", "R", "RGB", "RGB_starless", "RGB_stars", "RGB_linear", "HOO", "HOO_starless", "HOO_stars"]
+    got = cr.run.result_sources(names)
+    value = "OSC n.fits planes 0,1,2"
+    assert got == {n: value for n in ("RGB", "RGB_starless", "RGB_stars", "RGB_linear")}
+
+
+def test_result_sources_of_a_dual_band_run_name_each_plane_of_the_palette(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, palettes=["HOO"])
+    cr.run.load_channels()
+    value = "OSCNB n.fits plane 0; OSCNB n.fits plane 1"
+    got = cr.run.result_sources(["H", "O", "HOO", "HOO_starless", "HOO_stars", "HOO_linear", "SHO"])
+    assert got == {n: value for n in ("HOO", "HOO_starless", "HOO_stars", "HOO_linear")}
+
+
+def test_result_sources_of_a_mono_run_are_empty(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    cfg = _config(tmp_path, _rgb_paths(tmp_path))
+    (tmp_path / "work").mkdir(exist_ok=True)
+    state = pipeline._Run(harness.factory()(str(tmp_path / "work")), cfg, None, str(tmp_path / "cache"), {})
+    state.load_channels()
+    assert state.result_sources(["L", "R", "RGB", "RGB_linear", "HOO"]) == {}
+
+
+def test_a_palette_built_from_a_dual_band_master_logs_its_sources_and_the_approximation(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from loomsiril.loom import osc
+    cr = _ColourRun(tmp_path, monkeypatch, palettes=["HOO"])
+    _spy_chain(monkeypatch)
+    cr.run.load_channels()
+    cr.run.build_palettes({"H": "h.fits", "O": "o.fits"}, _COMMON, None)
+    info = osc.osc_filter_info("L-eXtreme")
+    sources = ("HOO: H from OSCNB L-eXtreme (Ha, plus SII for quad-band), "
+               "O from OSCNB L-eXtreme (OIII with H\u03b2)")
+    ha, oiii = (f"{v:g}" for v in (info["haNm"], info["oiiiNm"]))
+    approx = ("HOO: approximation: H and O from a colour master are not single lines; "
+              f"bandwidths R {ha}nm, G {oiii}nm, B {oiii}nm")
+    assert sources in cr.lines and approx in cr.lines
+    assert cr.lines.index(sources) < cr.lines.index(approx)
+
+
+def test_a_palette_from_mono_channels_logs_neither_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = Harness(tmp_path)
+    cfg = _config(tmp_path, _nb_paths(tmp_path), palettes=["HOO"])
+    (tmp_path / "work").mkdir(exist_ok=True)
+    lines: list[str] = []
+    ctx = harness.factory()(str(tmp_path / "work"))
+    ctx.log = ctx.warn = lines.append
+    state = pipeline._Run(ctx, cfg, None, str(tmp_path / "cache"), {})
+    _spy_chain(monkeypatch)
+    state.load_channels()
+    state.build_palettes({"H": "h.fits", "S": "s.fits", "O": "o.fits"}, _COMMON, None)
+    assert not any("approximation" in t or "from OSCNB" in t for t in lines)

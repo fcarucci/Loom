@@ -28,6 +28,9 @@ __all__ = ["export", "leave_main_result", "publish"]
 #: The FITS keyword that marks a plate as a Loom output (lib/Steps.js:225-244).
 LOOM_OUTPUT_KEYWORD = "LOOMOUT"
 LOOM_OUTPUT_COMMENT = "Loom pipeline output"
+#: The FITS keyword that names the colour master and planes a result comes from, as Loom writes it.
+LOOM_SOURCE_KEYWORD = "LOOMSRC"
+LOOM_SOURCE_COMMENT = "colour master and planes"
 
 #: Loom's text when the results are linear and the stretch is off (lib/Pipeline.js:exportResults).
 LINEAR_REFUSAL = (
@@ -70,8 +73,14 @@ def publish(
     output_dir: str | os.PathLike[str],
     plan: Mapping[str, Any],
     log: Log,
+    sources: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
     """Load, mark, assign a profile to and save each plate as a result. Returns ``{name: output path}``.
+
+    ``sources`` maps a result name to its LOOMSRC value (the colour master's file and planes: the composite and the
+    palettes of a colour run). The keyword is written on those results in their FITS form, replacing any earlier
+    value; a value Siril cannot take is a warning and the result is still saved. The TIFF and PSB exports hold no FITS
+    keywords and carry none.
 
     The plates are visited in :func:`naming.ordered_output_keys` order. Each is saved under a unique name in
     ``output_dir``: an existing file is never overwritten (``_1``, ``_2``, ... are appended). Companions (RGB_linear,
@@ -84,6 +93,11 @@ def publish(
         plate = os.fspath(plates[name])
         ops.load(plate)
         ops.update_key(LOOM_OUTPUT_KEYWORD, name, LOOM_OUTPUT_COMMENT)
+        if sources and name in sources:
+            try:
+                ops.update_key(LOOM_SOURCE_KEYWORD, sources[name], LOOM_SOURCE_COMMENT)
+            except ValueError as exc:
+                log("warn", f"{name}: the source (LOOMSRC) was not recorded ({exc})")
         assignment = icc.assignment_for(_is_colour(plate), plan)
         ops.icc_assign(assignment.target)
         log("info", icc.assignment_log(name, assignment))

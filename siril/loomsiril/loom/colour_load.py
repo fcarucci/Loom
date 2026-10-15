@@ -24,14 +24,16 @@ import json
 import os
 import re
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Callable, Mapping, Optional
+from collections.abc import Sequence
+from typing import Any, Callable, Mapping, Optional, Union
 
 import numpy as np
 
 from loomsiril.io_fits import read_fits, write_fits
 from loomsiril.loom import cache, channels, osc
 
-__all__ = ["ColourGroupLoader", "group_log_line", "plane_statistics", "is_plain_fits"]
+__all__ = ["ColourGroupLoader", "group_log_line", "plane_statistics", "is_plain_fits", "fit_loomsrc",
+           "composite_loomsrc"]
 
 #: The FITS FILTER value of each logical channel of a colour master, as Loom's exports name them.
 _PLANE_NAMES = {"H": "Ha", "O": "OIII"}
@@ -43,6 +45,8 @@ _LOOMSRC_MAX = 68
 _ELLIPSIS = "..."
 
 _SEPARATORS = re.compile(r"[\\/]")
+#: Brackets the token that stands for a file name while the oracle text is split (a file name cannot hold NUL).
+_MARK = "\x00"
 
 
 def is_plain_fits(path: str) -> bool:
@@ -87,29 +91,81 @@ def group_log_line(slot: str, path: str, kind: str, filter_value: Optional[str],
             + ", planes " + members + ", min/max/median " + values)
 
 
-def _loomsrc(path: str, plane: int) -> str:
-    """The LOOMSRC value: the master's file name and the plane, as one FITS string that fits a card.
+def _ascii(text: str) -> str:
+    """``text`` as FITS holds it: ASCII, each other character replaced by ``?``."""
+    return text.encode("ascii", "replace").decode("ascii")
 
-    FITS strings are ASCII, and a card holds 80 characters with every apostrophe doubled. A name that is too long
-    loses its start (replaced by ``...``), never its end: the end carries the filter, the suffix and the extension
-    that tell two masters of one session apart. Never raises, whatever the name holds.
-    """
-    name = os.path.basename(path).encode("ascii", "replace").decode("ascii")
-    text = f"{name}|plane:{plane}"
 
-    def width(chars: str) -> int:
-        return len(chars) + chars.count("'")
+def _card_width(text: str) -> int:
+    """What ``text`` takes in a FITS string card: its length plus one more for each apostrophe (FITS doubles them)."""
+    return len(text) + text.count("'")
 
-    if width(text) <= _LOOMSRC_MAX:
-        return text
+
+def _trim_name(name: str, share: int) -> str:
+    """``name`` within ``share`` card characters: whole when it fits, else ``...`` and the end of the name."""
+    if _card_width(name) <= share:
+        return name
+    if share <= len(_ELLIPSIS):
+        return _ELLIPSIS[:max(share, 0)]
     kept: list[str] = []
     used = len(_ELLIPSIS)
-    for ch in reversed(text):
+    for ch in reversed(name):
         used += 2 if ch == "'" else 1
-        if used > _LOOMSRC_MAX:
+        if used > share:
             break
         kept.append(ch)
     return _ELLIPSIS + "".join(reversed(kept))
+
+
+def fit_loomsrc(parts: Sequence[Union[str, tuple[str]]]) -> str:
+    """A LOOMSRC value from its parts, as one FITS string that fits a card (68 characters once apostrophes are doubled).
+
+    A part that is a string is kept as it is (the group word, the plane list, the separators); a part that is a
+    one-item tuple holds a file name and may be trimmed. Only file names are trimmed, never the rest: a name that is
+    too long loses its start (replaced by ``...``) and keeps its end, which carries the filter, the suffix and the
+    extension that tell two masters of one session apart. When several names are given, each gets an equal share of
+    what the fixed text leaves. FITS strings are ASCII, so every other character becomes ``?``. Never raises, whatever
+    the names hold.
+    """
+    fixed = sum(_card_width(_ascii(p)) for p in parts if isinstance(p, str))
+    names = [p for p in parts if not isinstance(p, str)]
+    share = (_LOOMSRC_MAX - fixed) // len(names) if names else 0
+    return "".join(_ascii(p) if isinstance(p, str) else _trim_name(_ascii(p[0]), share) for p in parts)
+
+
+def composite_loomsrc(chans: Mapping[str, Any], keys: Sequence[str], per_plane: bool) -> Optional[str]:
+    """The LOOMSRC value of a composite or a palette, or None when none of its channels comes from a colour master.
+
+    The text is ``osc.osc_source_text`` (the one Loom writes), with each master's file name trimmed by
+    :func:`fit_loomsrc` when the whole does not fit a card. ``chans`` maps a channel to ``{"group", "path", "plane"}``.
+    """
+    tokens: dict[str, str] = {}
+    marked: dict[str, Any] = {}
+    for key, chan in chans.items():
+        if not (isinstance(chan, Mapping) and chan.get("group")):
+            marked[key] = chan
+            continue
+        name = _SEPARATORS.split(os.fspath(chan["path"]))[-1]
+        marked[key] = {**chan, "path": tokens.setdefault(name, f"{_MARK}{len(tokens)}{_MARK}")}
+    text = osc.osc_source_text(marked, list(keys), per_plane)
+    if text is None:
+        return None
+    names = {token: name for name, token in tokens.items()}
+    parts: list[Union[str, tuple[str]]] = []
+    for piece in re.split(f"({_MARK}[0-9]+{_MARK})", text):
+        if piece in names:
+            parts.append((names[piece],))
+        elif piece:
+            parts.append(piece)
+    return fit_loomsrc(parts)
+
+
+def _loomsrc(path: str, plane: int) -> str:
+    """The LOOMSRC value of a channel plate: the master's file name and the plane, as one FITS string that fits a card.
+
+    A name that is too long loses its start, never its end (see :func:`fit_loomsrc`). Never raises.
+    """
+    return fit_loomsrc([(os.path.basename(path),), f"|plane:{plane}"])
 
 
 class ColourGroupLoader:

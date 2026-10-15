@@ -69,6 +69,15 @@ class RunReport:
         }
 
 
+def _js_number(value: Any) -> str:
+    """A number as JavaScript prints it in a log line: no ``.0`` on a whole number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number == int(number) else str(number)
+
+
 def _short(text: Any) -> str:
     """One line, at most ``_MAX_LINE`` characters: large payloads must never reach the log or the console."""
     s = str(text).replace("\r", " ").replace("\n", " | ")
@@ -168,6 +177,7 @@ class _Run:
         self.plan = plan
         self.work = ctx.work_dir
         self.chans: dict[str, _Chan] = {}
+        self.group_filters: dict[str, Optional[str]] = {}  # colour slot -> the master's FILTER keyword
 
     # -- helpers --------------------------------------------------------------------------------------------------
 
@@ -227,7 +237,8 @@ class _Run:
             path = str(paths.get(key) or "")
             if not path and key in member_of:
                 slot = member_of[key]
-                loader, instrume, _filter = loaders[slot]
+                loader, instrume, filter_value = loaders[slot]
+                self.group_filters[slot] = filter_value
                 plane = osc.OSC_RECIPES[slot][key]
                 sibling = loader.sibling_key(plane)
                 self.chans[key] = _Chan(key=key, path=str(paths[slot]), source_key=sibling, instrume=instrume,
@@ -510,7 +521,8 @@ class _Run:
         params.update(levels.finishing_params(levels.RGB_FINISHING, self.cfg))
         chain = cache.build_stage_keys(source, params)
         runners: dict[str, Callable[[Any, Any], StageOutput]] = dict(
-            stages_colour.rgb_runners(self.ctx, plates, self.cfg, lum_instrume, factors))
+            stages_colour.rgb_runners(self.ctx, plates, self.cfg, lum_instrume, factors,
+                                      self._sources_of(RGB_ORDER, False)))
         runners.update(finishing.finishing_runners(self.ctx, "RGB", levels.RGB_FINISHING, self.cfg,
                                                    noun="composite"))
         result = process_chain(self.ctx, "RGB", lambda: plates["R"], chain, runners, self.store, self.cfg)
@@ -525,13 +537,16 @@ class _Run:
         built: dict[str, ChainResult] = {}
         for pal in channels.wanted_palettes(self.cfg):
             mapping = channels.PALETTES[pal]
+            for line in self.palette_source_lines(pal, mapping):
+                self.ctx.log(line)
             keys3 = [self.chans[letter].current_key for letter in mapping]
             source = cache.palette_source_key(pal, keys3, common, reduce_halos)
             params: dict[str, Any] = stages_colour.palette_stage_params(pal, self.cfg)
             params.update(levels.finishing_params(levels.PALETTE_FINISHING, self.cfg))
             chain = cache.build_stage_keys(source, params)
             runners: dict[str, Callable[[Any, Any], StageOutput]] = dict(
-                stages_colour.palette_runners(self.ctx, pal, plates, self.cfg, rgb_names))
+                stages_colour.palette_runners(self.ctx, pal, plates, self.cfg, rgb_names,
+                                          self._sources_of(mapping, True)))
             runners.update(finishing.finishing_runners(self.ctx, pal, levels.PALETTE_FINISHING, self.cfg,
                                                        noun="palette"))
             first = mapping[0]
@@ -552,6 +567,43 @@ class _Run:
         _checkpoint(self.ctx)
         return result
 
+    def _sources_of(self, keys: Sequence[str], per_plane: bool) -> Optional[str]:
+        """The LOOMSRC value of a composite or a palette made of the channels ``keys``: None unless every one of them
+        is a plane of a colour master (a mono channel, or a mix, has none)."""
+        if not all(key in self.chans and self.chans[key].group for key in keys):
+            return None
+        records = {key: {"group": self.chans[key].group, "path": self.chans[key].path, "plane": self.chans[key].plane}
+                   for key in keys}
+        return colour_load.composite_loomsrc(records, list(keys), per_plane)
+
+    def result_sources(self, names: Sequence[str]) -> dict[str, str]:
+        """The LOOMSRC value of each result among ``names`` that comes from a colour master: the RGB composite and the
+        palettes, with their starless, stars and linear companions. A channel plate carries its own from the load, and
+        a mono result has none."""
+        values: dict[str, Optional[str]] = {"RGB": self._sources_of(RGB_ORDER, False)}
+        for pal, mapping in channels.PALETTES.items():
+            values[pal] = self._sources_of(mapping, True)
+        out: dict[str, str] = {}
+        for name in names:
+            for base, value in values.items():
+                if value is not None and name in (base, base + "_starless", base + "_stars", base + "_linear"):
+                    out[name] = value
+        return out
+
+    def palette_source_lines(self, pal: str, mapping: Sequence[str]) -> list[str]:
+        """The run-log lines of a palette built from a dual-band colour master: where its channels come from, and that
+        its bandwidths approximate (H and O are not single lines there). Nothing for any other palette."""
+        if not any(key in self.chans and self.chans[key].group == "OSCNB" for key in mapping):
+            return []
+        js = osc.js_config(self.cfg)
+        filter_value = self.group_filters.get("OSCNB")
+        info = osc.osc_filter_info(filter_value)
+        lines = [osc.osc_palette_sources(js, {"OSCNB": {"name": info["name"] if info else ""}}, pal)]
+        bw = osc.osc_narrowband_bandwidths(js, {"filter": filter_value})
+        lines.append(f"{pal}: approximation: H and O from a colour master are not single lines; bandwidths "
+                     f"R {_js_number(bw['R'])}nm, G {_js_number(bw['G'])}nm, B {_js_number(bw['B'])}nm")
+        return [line for line in lines if line]
+
     def publish_results(self, named: Mapping[str, str]) -> dict[str, str]:
         available = {name: True for name in named}
         kept = naming.kept_results(available, self.cfg)
@@ -561,7 +613,7 @@ class _Run:
             to_publish[name] = named[base]
         _checkpoint(self.ctx)
         outputs = publish_steps.publish(self.ctx.ops, to_publish, self.cfg, self.cfg["outputDir"], self.plan,
-                                        self.publish_log)
+                                        self.publish_log, self.result_sources(to_publish))
         return outputs
 
     def export_results(self, outputs: Mapping[str, str]) -> list[str]:

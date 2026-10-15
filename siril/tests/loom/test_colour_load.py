@@ -436,3 +436,83 @@ def test_is_plain_fits_looks_at_the_content(tmp_path: Path) -> None:
     (tmp_path / "c.fits").write_bytes(b"XISF0100" + b"\0" * 100)
     assert not colour_load.is_plain_fits(str(tmp_path / "c.fits"))
     assert not colour_load.is_plain_fits(str(tmp_path / "missing.fits"))
+
+
+# ---- LOOMSRC of composites and palettes: the shared trim --------------------------------------------------------------
+
+
+def _fit(*parts: Any) -> str:
+    from loomsiril.loom.colour_load import fit_loomsrc
+    return fit_loomsrc(list(parts))
+
+
+def _card_width(value: str) -> int:
+    return len(value) + value.count("'")
+
+
+def test_fit_loomsrc_leaves_a_value_that_fits_untouched() -> None:
+    assert _fit("OSC ", ("m31.xisf",), " planes 0,1,2") == "OSC m31.xisf planes 0,1,2"
+
+
+def test_fit_loomsrc_trims_inside_the_file_name_only() -> None:
+    name = "2026-01-01_session_FILTER-L-eXtreme_RGB.xisf"
+    value = _fit("OSC ", (name * 2,), " planes 0,1,2")
+    assert value.startswith("OSC ...") and value.endswith("_RGB.xisf planes 0,1,2")
+    assert _card_width(value) == 68
+    assert (name * 2).endswith(value[len("OSC ..."):-len(" planes 0,1,2")])
+
+
+def test_fit_loomsrc_gives_each_file_name_an_equal_share() -> None:
+    a, b = "a" * 80, "b" * 80
+    value = _fit("OSC ", (a,), " plane 0; OSCNB ", (b,), " plane 1")
+    left, right = value.split("; OSCNB ")
+    kept_a = left[len("OSC "):-len(" plane 0")]
+    kept_b = right[:-len(" plane 1")]
+    assert kept_a.startswith("...") and kept_b.startswith("...")
+    assert len(kept_a) == len(kept_b) and _card_width(value) <= 68
+
+
+def test_fit_loomsrc_counts_doubled_apostrophes() -> None:
+    value = _fit("OSC ", ("'" * 40 + "tail.fits",), " plane 0")
+    assert value.endswith("tail.fits plane 0") and _card_width(value) <= 68
+    assert value.startswith("OSC ...")
+
+
+def test_fit_loomsrc_is_ascii_safe() -> None:
+    value = _fit("OSC ", ("M\u00e9ssier_\u03b2" * 10 + ".xisf",), " planes 0,1,2")
+    assert value.isascii() and value.endswith(".xisf planes 0,1,2") and _card_width(value) <= 68
+    assert _fit("OSC ", ("\u00e9.xisf",), " plane 0") == "OSC ?.xisf plane 0"
+
+
+def test_fit_loomsrc_matches_the_channel_plate_value() -> None:
+    from loomsiril.loom.colour_load import _loomsrc
+    for name in ("m31.fits", "x" * 90 + ".fits", "'" * 70 + "end.fits", "caf\u00e9" * 20 + ".xisf"):
+        assert _fit((name,), "|plane:2") == _loomsrc("/d/" + name, 2)
+
+
+def test_composite_loomsrc_names_the_master_and_planes_like_the_oracle() -> None:
+    from loomsiril.loom.colour_load import composite_loomsrc
+    chans = {k: {"group": "OSC", "path": "/m/sub/OSC master.xisf", "plane": i} for i, k in enumerate("RGB")}
+    assert composite_loomsrc(chans, ["R", "G", "B"], False) == "OSC OSC master.xisf planes 0,1,2"
+    nb = {"H": {"group": "OSCNB", "path": "C:\\m\\n.xisf", "plane": 0},
+          "O": {"group": "OSCNB", "path": "C:\\m\\n.xisf", "plane": 1}}
+    assert composite_loomsrc(nb, ["H", "O", "O"], True) == "OSCNB n.xisf plane 0; OSCNB n.xisf plane 1"
+    assert composite_loomsrc({"L": {"path": "/m/L.xisf"}}, ["L"], False) is None
+
+
+def test_composite_loomsrc_trims_a_long_name_but_keeps_the_group_and_planes() -> None:
+    from loomsiril.loom.colour_load import composite_loomsrc
+    long = "WBPP_master_FILTER-L-eXtreme_RGB_autocrop_registered.xisf"
+    chans = {k: {"group": "OSC", "path": "/m/" + long, "plane": i} for i, k in enumerate("RGB")}
+    value = composite_loomsrc(chans, ["R", "G", "B"], False)
+    assert value.startswith("OSC ...") and value.endswith("_autocrop_registered.xisf planes 0,1,2")
+    assert _card_width(value) <= 68
+
+
+def test_composite_loomsrc_with_apostrophes_and_non_ascii_names() -> None:
+    from loomsiril.loom.colour_load import composite_loomsrc
+    for name in ("it's_" * 12 + "n.xisf", "n\u00f6rdlich_" * 8 + "n.xisf"):
+        chans = {k: {"group": "OSCNB", "path": "/m/" + name, "plane": i} for i, k in enumerate("HO")}
+        value = composite_loomsrc(chans, ["H", "O", "O"], True)
+        assert value.isascii() and _card_width(value) <= 68
+        assert value.startswith("OSCNB ") and "; OSCNB " in value and value.endswith(" plane 1")
