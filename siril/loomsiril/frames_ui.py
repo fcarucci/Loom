@@ -250,6 +250,7 @@ class ScanWindow:
     def __init__(self, master: Any, *, title: Optional[str] = None,
                  clock: Optional[Callable[[], float]] = None) -> None:
         import tkinter as tk
+        from tkinter import ttk
 
         self.cancelled = False
         self.fraction = 0.0
@@ -266,20 +267,25 @@ class ScanWindow:
         self.top.protocol("WM_DELETE_WINDOW", self.cancel)
         self.top.withdraw()
 
-        frame = tk.Frame(self.top, padx=8, pady=8)
+        frame = ttk.Frame(self.top, padding=8)
         frame.pack(fill="both", expand=True)
-        #: Two lines, never wrapped: the count on its own line, the name elided to fit under it.
-        self.title_label = tk.Label(frame, text="starting...", anchor="w", justify="left", wraplength=0)
+        #: Two lines, never wrapped: the count on its own line (bold, as the JS puts it), the name elided to fit
+        #: under it.
+        self.title_label = ttk.Label(frame, text="starting...", anchor="w", justify="left",
+                                     font=("TkDefaultFont", 10, "bold"))
         self.title_label.pack(fill="x")
-        self.detail_label = tk.Label(frame, text="", anchor="w", justify="left", wraplength=0)
+        self.detail_label = ttk.Label(frame, text="", anchor="w", justify="left")
         self.detail_label.pack(fill="x")
+        #: The bar's frame is the theme's background, so it sits on Siril's own colour; the track and the fill are
+        #: the JS colours.
+        background = ttk.Style().lookup("TFrame", "background") or None
         self.bar = tk.Canvas(frame, width=_BAR_WIDTH, height=_BAR_HEIGHT, highlightthickness=0,
-                             bd=0, bg=tk_colour(_BAR_BACKGROUND))
+                             borderwidth=0, background=background)
         self.bar.pack(fill="x", pady=(6, 0))
-        row = tk.Frame(frame)
+        row = ttk.Frame(frame)
         row.pack(fill="x", pady=(4, 0))
         #: No confirmation, unlike the pipeline's run window: a scan has written nothing and thrown nothing away.
-        self.cancel_button = tk.Button(row, text="Cancel", command=self.cancel)
+        self.cancel_button = ttk.Button(row, text="Cancel", command=self.cancel)
         self.cancel_button.pack(side="right")
 
     def set_title(self, text: str) -> None:
@@ -289,7 +295,7 @@ class ScanWindow:
 
     def set_cancellable(self, enabled: bool) -> None:
         """Cancel is offered only for a step that can be stopped half way (withProgress' opts.cancellable)."""
-        self.cancel_button.configure(state="normal" if enabled else "disabled")
+        self.cancel_button.state(["!disabled"] if enabled else ["disabled"])
 
     def show(self) -> None:
         """Puts the window up and lets it paint."""
@@ -304,7 +310,7 @@ class ScanWindow:
         self.cancelled = True
         self.title_label.configure(text="stopping...")
         self.detail_label.configure(text="")
-        self.cancel_button.configure(state="disabled")
+        self.cancel_button.state(["disabled"])
 
     def report(self, phase: str, done: Any, total: Any, label: Any) -> bool:
         """One step of work: the count, then the name elided from the front (FrameSelector.js 4809-4826).

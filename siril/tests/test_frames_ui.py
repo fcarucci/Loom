@@ -144,6 +144,19 @@ def _gone(w: fu.ScanWindow) -> bool:
         return True
 
 
+def test_the_window_uses_themed_widgets_with_a_bold_count(tk_root) -> None:
+    from tkinter import ttk
+
+    w = fu.ScanWindow(tk_root)
+    try:
+        assert isinstance(w.title_label, ttk.Label) and isinstance(w.detail_label, ttk.Label)
+        assert isinstance(w.cancel_button, ttk.Button)
+        assert "bold" in str(w.title_label.cget("font"))
+        assert w.bar.winfo_class() == "Canvas"
+    finally:
+        w.release()
+
+
 def test_report_puts_the_count_and_the_elided_name_on_the_two_lines(tk_root) -> None:
     w = fu.ScanWindow(tk_root)
     try:
@@ -205,7 +218,7 @@ def test_cancel_sets_cancelled_and_the_callbacks_return_false(tk_root) -> None:
         w.cancel_button.invoke()
         assert w.cancelled is True
         assert w.title_label.cget("text") == "stopping..."
-        assert str(w.cancel_button.cget("state")) == "disabled"
+        assert w.cancel_button.instate(["disabled"])
         cb = w.callbacks()
         assert cb.reading(1, 4, "a.fit") is False
         assert cb.measuring(1, 4, "Ha", None) is False
@@ -248,7 +261,7 @@ def test_with_progress_offers_cancel_only_when_cancellable(tk_root) -> None:
     states: list = []
 
     def work(w):
-        states.append(str(w.cancel_button.cget("state")))
+        states.append("disabled" if w.cancel_button.instate(["disabled"]) else "normal")
 
     fu.with_progress(tk_root, None, work)
     fu.with_progress(tk_root, None, work, cancellable=True)
