@@ -551,3 +551,31 @@ def test_a_failure_part_way_keeps_the_outputs_already_written(tmp_path: Path,
     assert result["refused"] == "boom"
     assert result["outcomes"] == {frames[0]: "written", frames[1]: "missing"}
     assert (result["written"], result["failed"]) == (1, 1)
+
+
+@pytest.mark.parametrize("ancestor_depth", [2, 3])
+def test_an_alias_of_a_source_ancestor_is_refused_and_sources_survive(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ancestor_depth: int) -> None:
+    """The destination is a second name for the grandparent (depth 2) or a higher ancestor (depth 3) of the source
+    folder. samefile is simulated: it says the two are the same directory."""
+    folder = tmp_path / "a" / "b" / "frames"
+    a = _fits(folder / "a.fit")
+    b = _fits(folder / "b.fit", 0.5)
+    frames = [str(a), str(b)]
+    before = _sources_bytes(frames)
+    alias_of = os.path.realpath(str(folder.parents[ancestor_depth - 1]))
+    real_samefile = os.path.samefile
+
+    def fake_samefile(x: str, y: str) -> bool:
+        if os.path.realpath(y) == alias_of:
+            return True
+        return real_samefile(x, y)
+
+    monkeypatch.setattr(os.path, "samefile", fake_samefile)
+    dest = tmp_path / "other"
+
+    result = C.export_approved(frames, str(dest), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] == "the output folder is the same folder as " + alias_of
+    assert _sources_bytes(frames) == before
+    assert not dest.exists()

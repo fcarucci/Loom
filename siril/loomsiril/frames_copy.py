@@ -213,14 +213,30 @@ def _path_refusal(approved: list[str], destination: str, home: Optional[str]) ->
     folders = []
     for src in approved:
         folder = _canon(os.path.dirname(src))
-        folders += [folder, os.path.dirname(folder)]
+        folders.append(folder)
         if _inside(folder, dst) or _inside(os.path.dirname(folder), dst):
             return "the output folder contains the frames being copied (" + folder + ")"
+    # Same directory as the source folder or any ancestor of it (up to the root), or of the home folder: an alias
+    # (bind mount, another spelling on a case-insensitive mount) of an ancestor is as dangerous as the folder itself.
     root = os.path.abspath(os.sep)
-    for other in folders + [home_dir, root]:
+    candidates: list[str] = []
+    for base in folders + [home_canon]:
+        candidates += _ancestors(base)
+    candidates.append(root)
+    for other in candidates:
         if other and _same_dir(destination, other):
             return "the output folder is the same folder as " + other
     return None
+
+
+def _ancestors(path: str) -> list[str]:
+    """The path itself and each of its ancestors, up to and including the filesystem root."""
+    out = [path]
+    while True:
+        parent = os.path.dirname(out[-1])
+        if parent == out[-1]:
+            return out
+        out.append(parent)
 
 
 def _mapping(approved: list[str], destination: str) -> dict[str, Any]:
