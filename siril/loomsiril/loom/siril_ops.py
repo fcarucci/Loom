@@ -302,8 +302,13 @@ def _text_setref(name: Any, index1: Any) -> str:
     return command_text("setref", _plain_name(name), index)
 
 
-def _text_register(name: Any) -> str:
-    return command_text("register", _plain_name(name), "-transf=homography", "-interp=lanczos4")
+def _text_register(name: Any, layer: Optional[Any] = None) -> str:
+    parts: list[Any] = ["register", _plain_name(name), "-transf=homography", "-interp=lanczos4"]
+    if layer is not None:
+        if isinstance(layer, bool) or not isinstance(layer, (int, np.integer)) or not 0 <= int(layer) <= 2:
+            raise ValueError(f"layer must be 0, 1 or 2, got {layer!r}")
+        parts.append(f"-layer={int(layer)}")
+    return command_text(*parts)
 
 
 def _text_crop(x: Any, y: Any, w: Any, h: Any) -> str:
@@ -522,8 +527,12 @@ class SirilOps:
         """Make the 1-based frame ``index1`` of sequence ``name`` the registration reference."""
         raise NotImplementedError
 
-    def register(self, name: str) -> None:
-        """Register sequence ``name`` (homography, lanczos4; outputs ``r_<name>_NNNNN.fit``)."""
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        """Register sequence ``name`` (homography, lanczos4; outputs ``r_<name>_NNNNN.fit``).
+
+        ``layer`` (0, 1 or 2) names the channel of a colour sequence the stars are found on (``-layer=``); None adds
+        no argument, which is the command text of a mono sequence.
+        """
         raise NotImplementedError
 
     def crop(self, x: int, y: int, w: int, h: int) -> None:
@@ -739,8 +748,8 @@ class SirilCommandOps(SirilOps):
         self._send(_text_setref(name, index1))
 
     @_pipeline_only
-    def register(self, name: str) -> None:
-        self._send(_text_register(name))
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        self._send(_text_register(name, layer))
 
     @_pipeline_only
     def crop(self, x: int, y: int, w: int, h: int) -> None:
@@ -876,14 +885,15 @@ class RecordingOps(SirilOps):
     def _resolve(self, path: Any) -> str:
         return os.path.normpath(os.path.join(self.workdir, os.fspath(path)))
 
-    def _do(self, name: str, args: tuple, texts: list[str], default: Callable[[str], Any]) -> Any:
+    def _do(self, name: str, args: tuple, texts: list[str], default: Callable[[str], Any],
+            handler_args: Optional[tuple] = None) -> Any:
         self.calls.append((name, tuple(args), {}))
         self.transcript.extend(texts)
         text = texts[-1] if texts else name
         if name in self._fail:
             raise SirilOpsError(text, self._fail[name])
         if name in self.handlers:
-            return self.handlers[name](self, *args)
+            return self.handlers[name](self, *(args if handler_args is None else handler_args))
         return default(text)
 
     def _image(self, text: str) -> tuple[list[np.ndarray], dict[str, Any]]:
@@ -957,8 +967,11 @@ class RecordingOps(SirilOps):
     def setref(self, name: str, index1: int) -> None:
         return self._do("setref", (name, index1), [_text_setref(name, index1)], lambda text: None)
 
-    def register(self, name: str) -> None:
-        return self._do("register", (name,), [_text_register(name)], lambda text: None)
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        # a register handler is called with the layer only when one is given: handlers written for the plain
+        # command keep working; the recorded call always holds both parameters
+        return self._do("register", (name, layer), [_text_register(name, layer)], lambda text: None,
+                        handler_args=(name,) if layer is None else (name, layer))
 
     def crop(self, x: int, y: int, w: int, h: int) -> None:
         text_crop = _text_crop(x, y, w, h)

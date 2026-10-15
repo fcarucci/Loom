@@ -901,3 +901,46 @@ def test_spcc_narrowband_names_feed_spcc_narrowband_directly(logged, stub, mode,
     assert text.endswith(NARROW_ARGS)
     assert ("-monosensor=" in text) is (mode == "mono")
     assert ("-oscsensor=" in text) is (mode == "osc")
+
+
+# ---- register with a layer ----------------------------------------------------------------------------------
+
+
+def test_register_text_without_a_layer_is_unchanged():
+    assert siril_ops._text_register("lights") == "register lights -transf=homography -interp=lanczos4"
+    assert siril_ops._text_register("lights", None) == "register lights -transf=homography -interp=lanczos4"
+
+
+@pytest.mark.parametrize("layer", [0, 1, 2])
+def test_register_text_with_a_layer_appends_it(layer):
+    assert siril_ops._text_register("lights", layer) == \
+        f"register lights -transf=homography -interp=lanczos4 -layer={layer}"
+
+
+@pytest.mark.parametrize("layer", [-1, 3, 1.5, "1", True])
+def test_register_text_refuses_a_layer_that_is_not_0_1_or_2(layer):
+    with pytest.raises(ValueError):
+        siril_ops._text_register("lights", layer)
+
+
+def test_register_with_a_layer_sends_it_and_the_fake_records_it(logged, stub, tmp_path):
+    real, _ = logged
+    rec = RecordingOps(tmp_path)
+    for ops in (real, rec):
+        ops.register("lights")
+        ops.register("lights", layer=1)
+        ops.register("lights", 0)
+    expected = ["register lights -transf=homography -interp=lanczos4",
+                "register lights -transf=homography -interp=lanczos4 -layer=1",
+                "register lights -transf=homography -interp=lanczos4 -layer=0"]
+    assert [c[0] for c in stub.STATE.commands] == expected
+    assert rec.transcript == expected
+    assert [c[1][-1] for c in rec.calls] == [None, 1, 0]
+
+
+def test_the_fake_calls_a_register_handler_with_the_layer_only_when_one_is_given(tmp_path):
+    seen = []
+    rec = RecordingOps(tmp_path, handlers={"register": lambda ops, *args: seen.append(args)})
+    rec.register("lights")
+    rec.register("lights", layer=1)
+    assert seen == [("lights",), ("lights", 1)]

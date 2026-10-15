@@ -24,6 +24,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, TextIO
 
+from loomsiril.io_fits import write_fits
+
 from . import cache, channels, colour_load, finishing, icc, levels, naming, reference, stages_colour, stages_correct
 from . import osc, stages_geometry
 from . import publish as publish_steps
@@ -305,14 +307,27 @@ class _Run:
 
     def register(self) -> str:
         present = [key for key in CHANNEL_ORDER if key in self.chans]
-        quality = self._registration_quality(present)
+        # Colour groups first: their reference (OSC's G, else OSCNB's H) needs no star measurement, and the siblings
+        # of a colour master share the path the measurement reads.
+        groups = osc.osc_channel_groups({k: {"group": ch.group} for k, ch in self.chans.items()})
+        plan = osc.osc_registration_plan(present, groups) if groups else None
+        quality = {} if groups else self._registration_quality(present)
         ref_key, reason = reference.registration_choice(present, quality)
         if ref_key is None:
             raise StageFailed("No channels to register.")
+        if plan is not None and plan["ref"] != ref_key:
+            raise ValueError(f"internal: the colour reference is {plan['ref']} but the fixed order chose {ref_key}")
         self.ctx.log(f"register: reference is {ref_key}: {reason}")
         ref_fingerprint = self.chans[ref_key].current_key
+        grouped: set[str] = set()
+        if plan is not None:
+            grouped.update(plan["identity"])  # already on the reference grid
+            for entry in plan["groups"]:
+                self._register_group(entry, ref_key, ref_fingerprint)
+                grouped.update(entry["members"])
+                _checkpoint(self.ctx)
         for key in present:
-            if key == ref_key:
+            if key == ref_key or key in grouped:
                 continue
             ch = self.chans[key]
             chain = cache.build_stage_keys(ch.current_key, {"register": stages_geometry.register_stage_params(
@@ -323,6 +338,99 @@ class _Run:
             ch.current_key = str(chain[-1]["key"])
             _checkpoint(self.ctx)
         return ref_key
+
+    def _register_group(self, entry: Mapping[str, Any], ref_key: str, ref_fingerprint: str) -> None:
+        """Registers one colour group onto the reference as a single image, so its members share one transform.
+
+        The group image is what the cache keeps; each registered member plate is stored under a key derived from it.
+        With the cache off nothing is read or written; with the cache ignored nothing is read and everything is
+        written. A member's plate and ``current_key`` become its registered split. The unregistered plates are
+        never stored again: they were handed out by the colour loader.
+        """
+        members: list[str] = list(entry["members"])
+        plane_names: list[str] = list(entry["planes"])
+        chans = [self.chans[k] for k in members]
+        label = "/".join(members)
+        params = stages_geometry.group_register_params(ref_fingerprint, plane_names)
+        key = osc.osc_group_register_key("registerGroup", [c.current_key for c in chans], params)
+        split_keys = [osc.osc_registered_sibling_key(key, i) for i in range(len(members))]
+        store = self.store
+        action = "register"
+        if store is not None and not self.cfg.get("ignoreCache"):
+            action = osc.osc_group_cache_action(store.lookup(key) is not None,
+                                                [store.lookup(sk) is not None for sk in split_keys],
+                                                {"useCache": True, "ignoreCache": False})
+        parts: Optional[list[str]] = None
+        if action == "load":
+            loaded = [self._usable_split(chans[i], split_keys[i]) for i in range(len(members))]
+            if all(p is not None for p in loaded):
+                self.ctx.log(f"[cache] {label} registerGroup HIT")
+                parts = [str(p) for p in loaded]
+            else:
+                action = "split"
+        if parts is None and action == "split" and store is not None:
+            parts = self._split_cached_group(chans, key, split_keys, label)
+        if parts is None:
+            if store is not None and not self.cfg.get("ignoreCache"):
+                self.ctx.log(f"[cache] {label} registerGroup MISS")
+            parts = self._register_and_split(entry, ref_key, chans, key, split_keys, label, params)
+        for ch, path, split_key in zip(chans, parts, split_keys):
+            ch.plate = path
+            ch.current_key = split_key
+
+    def _usable_split(self, ch: _Chan, split_key: str) -> Optional[str]:
+        """The cached registered plate of a member, or None when it is absent, will not read or has other provenance."""
+        assert self.store is not None and ch.plane is not None
+        loaded = self.store.load(split_key)
+        if loaded is None:
+            return None
+        want = stages_geometry.member_split_header({}, ch.key, ch.path, ch.plane)
+        header = loaded[1]
+        if header.get("FILTER") != want["FILTER"] or header.get("LOOMSRC") != want["LOOMSRC"]:
+            return None
+        return self.store.path_for(split_key)
+
+    def _split_cached_group(self, chans: list[_Chan], key: str, split_keys: list[str], label: str) -> Optional[list[str]]:
+        assert self.store is not None
+        loaded = self.store.load(key)
+        if loaded is None or len(loaded[0]) != 3:
+            return None
+        planes, header = loaded
+        self.ctx.log(f"[cache] {label} registerGroup HIT (split again)")
+        parts: list[str] = []
+        for i, ch in enumerate(chans):
+            cached = self._usable_split(ch, split_keys[i])
+            parts.append(cached if cached is not None else self._place_split(ch, i, planes[i], header, split_keys[i]))
+        return parts
+
+    def _register_and_split(self, entry: Mapping[str, Any], ref_key: str, chans: list[_Chan], key: str,
+                            split_keys: list[str], label: str, params: Mapping[str, Any]) -> list[str]:
+        slot = str(entry["slot"])
+        self.ctx.log(f"register: {label} -> {ref_key} (colour group {slot}, one transform)")
+        ref_plate = self.plate_of(ref_key)
+        group_plates = [self.plate_of(k) for k in entry["planes"]]
+        planes, header = stages_geometry.register_group_image(
+            self.ctx.ops, ref_plate, group_plates, stages_geometry.GROUP_REGISTER_LAYER[slot], self.work,
+            self.ctx.log)
+        if self.store is not None:
+            meta = {"channel": label, "stage": "registerGroup", "params": dict(params)}
+            if self.store.store(key, planes, header, meta) is None:
+                self.ctx.warn(f"[cache] the registered {label} image could not be cached")
+        return [self._place_split(ch, i, planes[i], header, split_keys[i]) for i, ch in enumerate(chans)]
+
+    def _place_split(self, ch: _Chan, plane: int, pixels: Any, group_header: Mapping[str, Any], split_key: str) -> str:
+        """Stores one registered plane under its split key (or in the work folder); the keywords are the member's."""
+        assert ch.plane is not None
+        header = stages_geometry.member_split_header(group_header, ch.key, ch.path, ch.plane)
+        if self.store is not None:
+            meta = {"channel": ch.key, "stage": "registerGroup", "params": {"plane": plane}}
+            stored = self.store.store(split_key, [pixels], header, meta)
+            if stored is not None:
+                return stored
+            self.ctx.warn(f"[cache] the registered {ch.key} could not be cached; the run uses a copy in the work folder")
+        out = os.path.join(self.work, f"{ch.key}_register.fits")
+        write_fits(out, [pixels], header, bitpix=-32)
+        return out
 
     def _plate_source(self, key: str) -> Callable[[], str]:
         def source() -> str:

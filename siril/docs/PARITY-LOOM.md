@@ -454,6 +454,9 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 | `stages_geometry.measure_psf_sigma` | `lib/Steps.js:3572-3661` | S | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.match_halos` | `lib/Pipeline.js:2274` | P | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.balance_narrowband` | `lib/Pipeline.js:2337` | P | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.group_register_params` | `lib/Pipeline.js:2928` | P | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.member_split_header` | `lib/Pipeline.js:2911` | R | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.register_group_image` | `lib/Pipeline.js:2928` | R | `tests/loom/test_stages_geometry.py` |
 
 ## loomsiril/loom/stages_subsky.py
 
@@ -657,6 +660,7 @@ documented where it is implemented.
 - MLDenoise dropped; Siril denoise added (`denoise -mod 0.6/1.0/1.0`), in the linear slot.
 - An unknown stretch method raises an error. Loom falls back to MTF; the migration of saved options prevents the case.
 - Registration uses Siril's homography with lanczos4 interpolation, and keeps the reference frame bit-identical.
+- A colour group is registered as one image like Loom's, but Siril cannot mix one- and three-channel images in a sequence: the reference plate is expanded to three identical channels with `rgbcomp`, the group image is `(R, G, B)` or `(H, O, O)`, and the stars are found on one layer (`-layer=1` for an `OSC` group, `-layer=0` for `OSCNB`). The temporary frames are removed by name afterwards.
 - SPCC white-balance factors are recovered by fitting, not read from the colour calibration result.
 - TIFF export goes through `io_tiff` (Siril's `savetif` converts colours).
 - The fallback ICC profile for a mono image is Siril's built-in sRGB profile (Gray).
