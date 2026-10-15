@@ -118,7 +118,7 @@ module.exports = function( js )
    pure( "stampKey/null_refused", "stampKey", [ null ] );
 
    /* ---- sessions: the four-hour gap, unsorted input, unreadable keys, midnight, interleaved targets -------- */
-   const T0 = "20260807-200000";
+   const START = "20260807-200000";
    const H = 3600;
    pure( "sessions/empty", "sessions", [ [], null ] );
    pure( "sessions/single_run", "sessions", [ [
@@ -157,9 +157,9 @@ module.exports = function( js )
       frame( "M42", "20260807-200000", "H" ), frame( "M42", "20260807-201800", "H" ) ], 0.5 ] );
    pure( "sessions/gap_zero", "sessions", [ [
       frame( "M42", "20260807-200000", "H" ), frame( "M42", "20260807-200001", "H" ) ], 0 ] );
-   pure( "sessions/single_frame", "sessions", [ [ frame( "M42", T0, "H" ) ], null ] );
+   pure( "sessions/single_frame", "sessions", [ [ frame( "M42", START, "H" ) ], null ] );
    pure( "sessions/frame_without_key_field", "sessions", [ [
-      { target: "M42", filter: "H", stamp: T0 }, frame( "M42", "20260807-210000", "H" ) ], null ] );
+      { target: "M42", filter: "H", stamp: START }, frame( "M42", "20260807-210000", "H" ) ], null ] );
 
    /* ---- filtersOf and byTarget: the primitives nights is built from -------------------------------------- */
    pure( "filtersOf/empty", "filtersOf", [ [] ] );

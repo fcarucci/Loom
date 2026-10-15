@@ -1,5 +1,5 @@
 {
- "about": {"recorder":"tools/oracle/fs_asiair_names.js","loom":"v0.5.1-4-gc57b699","source":"Loom script/lib (read-only)"},
+ "about": {"recorder":"tools/oracle/fs_asiair_names.js","loom":"v0.5.1-14-g5c5ab37","source":"Loom script/lib (read-only)"},
  "cases": {
   "parseName/real_name": {"fn":"parseName","args":["Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fit"],"out":{"type":"Light","target":"IC 1396A","exposure":"180.0s","binToken":"Bin1","camera":"2600MM","filter":"H","gain":"gain100","stamp":"20260807-215716","rotation":"180deg","temp":"-7.0C","sequence":"0001"}},
   "parseName/real_name_fits_extension": {"fn":"parseName","args":["Light_IC 1396A_180.0s_Bin1_2600MM_H_gain100_20260807-215716_180deg_-7.0C_0001.fits"],"out":{"type":"Light","target":"IC 1396A","exposure":"180.0s","binToken":"Bin1","camera":"2600MM","filter":"H","gain":"gain100","stamp":"20260807-215716","rotation":"180deg","temp":"-7.0C","sequence":"0001"}},
