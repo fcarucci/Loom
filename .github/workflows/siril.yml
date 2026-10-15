@@ -2,7 +2,7 @@ name: Siril CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, siril-frame-selector ]
     tags: [ 'v*' ]
     paths: [ 'siril/**', '.github/workflows/siril.yml' ]
   pull_request:
