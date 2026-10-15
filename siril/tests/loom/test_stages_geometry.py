@@ -261,7 +261,8 @@ def test_measure_psf_sigma_crops_the_central_square_and_reads_the_medians(tmp_pa
     ops = _StarFake(tmp_path, {"R.fits": stars})
     sigma = measure_psf_sigma(ops, src)
     # central square of min(1200, 300, 200) = 200 px at x = (300 - 200) >> 1 = 50, y = 0
-    assert ops.transcript == [f'load "{src}"', "crop 50 0 200 200", "setfindstar reset -gaussian", "findstar"]
+    assert ops.transcript == [f'load "{src}"', "crop 50 0 200 200", "setfindstar reset -gaussian", "findstar",
+                                  "setfindstar -focal=0.0 -pixelsize=0.0"]
     assert sigma == pytest.approx((3.0 + 3.0) / 2 / FWHM_PER_SIGMA)
 
 

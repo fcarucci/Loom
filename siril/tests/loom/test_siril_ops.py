@@ -138,7 +138,8 @@ def test_find_stars_sends_the_two_commands_then_reads_stars(siril, logged, stub)
                                      beta=3.0, angle=-4.0),
                         stub.PSFStar(A=0.2, xpos=40.5, ypos=9.5, fwhmx=3.0, fwhmy=3.0)]
     stars = ops.find_stars()
-    assert [c[0] for c in stub.STATE.commands] == ["setfindstar reset -gaussian", "findstar"]
+    assert [c[0] for c in stub.STATE.commands] == ["setfindstar reset -gaussian", "findstar",
+                                                   "setfindstar -focal=0.0 -pixelsize=0.0"]
     assert stars[0] == {"xpos": 10.5, "ypos": 3.5, "fwhmx": 3.1, "fwhmy": 2.9, "amplitude": 0.5, "A": 0.5,
                         "mag": 12.0, "rmse": 0.01, "beta": 3.0, "angle": -4.0}
     assert stars[1]["mag"] == 0.0 and stars[1]["xpos"] == 40.5
@@ -539,7 +540,7 @@ def test_recording_stars_analyse_icc_and_header(tmp_path):
     rec = RecordingOps(tmp_path, stars=stars, analyse=lambda p: {"fwhm": 3.0, "path": p}, icc=b"icc")
     got = rec.find_stars()
     assert got[0]["xpos"] == 1.5 and got[0]["amplitude"] == 0.4 and got[0]["mag"] is None
-    assert rec.transcript[-2:] == ["setfindstar reset -gaussian", "findstar"]
+    assert rec.transcript[-3:] == ["setfindstar reset -gaussian", "findstar", "setfindstar -focal=0.0 -pixelsize=0.0"]
     assert rec.analyse("/x/a.fits") == {"fwhm": 3.0, "path": "/x/a.fits"}
     assert rec.icc_profile() == b"icc"
     assert rec.is_cli() is True

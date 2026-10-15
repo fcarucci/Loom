@@ -297,7 +297,21 @@ def _text_pyscript(path: Any, args: Sequence[Any]) -> str:
     return command_text(*parts)
 
 
-_FIND_STARS_TEXTS = ("setfindstar reset -gaussian", "findstar")
+_FIND_STARS_RESET = "setfindstar reset -gaussian"
+_FIND_STARS_RUN = "findstar"
+
+
+def _text_setfindstar_prefs(focal: Any, pixel_size: Any) -> str:
+    """Restore the star-finder focal length (mm) and pixel size (um) that ``setfindstar reset`` zeroed."""
+    return command_text("setfindstar", f"-focal={_num(focal)}", f"-pixelsize={_num(pixel_size)}")
+
+
+def _config_number(value: Any) -> Optional[float]:
+    """A finite preference value as a float, or None (booleans, text and missing values are not numbers here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    f = float(value)
+    return f if math.isfinite(f) else None
 
 
 def _star_dict(star: Any) -> dict[str, Any]:
@@ -666,10 +680,35 @@ class SirilCommandOps(SirilOps):
     def mtf(self, c0: float, m: float, channel: Any = None) -> None:
         self._send(_text_mtf(c0, m, channel))
 
+    def _starfinder_prefs(self) -> Optional[tuple[float, float]]:
+        """Siril's persisted star-finder focal length and pixel size, or None when either cannot be read."""
+        try:
+            focal = _config_number(self._siril.get_siril_config("starfinder", "focal_length"))
+            pixel_size = _config_number(self._siril.get_siril_config("starfinder", "pixel_size"))
+        except Exception:  # an older Siril without get_siril_config, or a failed read
+            return None
+        return None if focal is None or pixel_size is None else (focal, pixel_size)
+
     @_pipeline_only
     def find_stars(self) -> list[dict[str, Any]]:
-        for text in _FIND_STARS_TEXTS:
-            self._send(text)
+        """Run Siril's star finder (Gaussian profile, reset to Siril's defaults for the session) and read its stars.
+
+        ``setfindstar reset`` also zeroes the persisted focal length and pixel size, so they are read first and
+        restored after findstar, also when findstar fails. When they cannot be read no reset is sent: findstar runs
+        with the current settings and a warning is logged. The other session settings (sigma, radius, roundness,
+        profile, relax, amplitude range, convergence) cannot be read by a script and are reset to Siril's defaults.
+        """
+        prefs = self._starfinder_prefs()
+        if prefs is None:
+            self._log_to("warning: starfinder.focal_length and starfinder.pixel_size cannot be read; findstar runs "
+                         "with the current settings and they are not reset")
+            self._send(_FIND_STARS_RUN)
+        else:
+            try:
+                self._send(_FIND_STARS_RESET)
+                self._send(_FIND_STARS_RUN)
+            finally:
+                self._send(_text_setfindstar_prefs(*prefs))
         stars = self._siril.get_image_stars()
         return [_star_dict(s) for s in (stars or [])]
 
@@ -762,6 +801,8 @@ class RecordingOps(SirilOps):
                  fail: Optional[Mapping[str, BaseException]] = None) -> None:
         self.workdir = os.fspath(workdir)
         self.compression: Optional[bool] = False   # Siril's FITS compression preference (fits_compression)
+        # Siril's star-finder focal length and pixel size (find_stars restores them); None: cannot be read
+        self.starfinder: Optional[dict[str, float]] = {"focal_length": 0.0, "pixel_size": 0.0}
         self.handlers: dict[str, Callable[..., Any]] = dict(handlers or {})
         self.transcript: list[str] = []
         self.calls: list[tuple[str, tuple, dict]] = []
@@ -911,7 +952,13 @@ class RecordingOps(SirilOps):
             stars = self._stars() if callable(self._stars) else self._stars
             return [_star_dict(s) for s in (stars or [])]
 
-        return self._do("find_stars", (), list(_FIND_STARS_TEXTS), run)
+        prefs = self.starfinder
+        if prefs is None:
+            texts = [_FIND_STARS_RUN]
+        else:
+            texts = [_FIND_STARS_RESET, _FIND_STARS_RUN,
+                     _text_setfindstar_prefs(prefs["focal_length"], prefs["pixel_size"])]
+        return self._do("find_stars", (), texts, run)
 
     def analyse(self, path: Any) -> dict[str, Any]:
         def run(text: str) -> dict[str, Any]:

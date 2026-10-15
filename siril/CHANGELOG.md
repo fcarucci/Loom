@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 
 - Install instructions no longer show a developer-specific folder; they explain how the script folder path is formed.
 - The README states that one-shot colour (OSC) cameras are not supported yet: Loom for Siril needs mono masters per filter.
+- Star finding (`find_stars`) no longer wipes your Siril star-finder focal length and pixel size: they are read before `setfindstar reset` and restored after `findstar`, also when it fails.
 
 ## [0.5.1] — 2026-10-15
 
