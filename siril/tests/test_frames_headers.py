@@ -30,22 +30,40 @@ def _primary_cards() -> list[str]:
     return [_card("SIMPLE", "T"), _card("BITPIX", "8"), _card("NAXIS", "0"), _card("EXTEND", "T")]
 
 
-def _write_fz(path: Path, primary_extra: list[str] | None = None) -> str:
+def _write_fz(path: Path, primary_extra: list[str] | None = None, zimage: str = "T", znaxis3: str | None = None) -> str:
     """A tile-compressed frame: an empty primary HDU, then a BINTABLE of 400 x 300 with FILTER 'L'."""
     primary = _fits_bytes(_primary_cards() + (primary_extra or []))
-    ext = _fits_bytes([
+    ext_cards = [
         _card("XTENSION", "'BINTABLE'"),
         _card("BITPIX", "8"),
         _card("NAXIS", "2"),
-        _card("ZIMAGE", "T"),
+        _card("ZIMAGE", zimage),
         _card("ZBITPIX", "16"),
-        _card("ZNAXIS", "2"),
+        _card("ZNAXIS", "2" if znaxis3 is None else "3"),
         _card("ZNAXIS1", "400"),
         _card("ZNAXIS2", "300"),
-        _card("FILTER", "'L       '"),
-    ])
+    ]
+    if znaxis3 is not None:
+        ext_cards.append(_card("ZNAXIS3", znaxis3))
+    ext_cards.append(_card("FILTER", "'L       '"))
+    ext = _fits_bytes(ext_cards)
     path.write_bytes(primary + ext)
     return str(path)
+
+
+def test_compressed_fits_without_zimage_is_unknown(tmp_path: Path) -> None:
+    path = _write_fz(tmp_path / "plain_table.fits.fz", zimage="F")
+    assert fh.read_header(path) is None
+    info, keyword = fh.quiet_header(path)
+    assert info is None
+    assert keyword("FILTER") is None
+
+
+def test_three_plane_compressed_fits_has_three_channels(tmp_path: Path) -> None:
+    path = _write_fz(tmp_path / "rgb.fits.fz", znaxis3="3")
+    info = fh.read_header(path)
+    assert info is not None
+    assert (info.width, info.height, info.channels) == (400, 300, 3)
 
 
 def _xisf(path: Path, xml: str) -> str:
@@ -133,6 +151,25 @@ def test_xisf_keyword_and_geometry(tmp_path: Path) -> None:
     assert info is not None
     assert (info.width, info.height, info.channels) == (64, 48, 1)
     assert fh.keyword_value(info.keywords, "FILTER") == "OIII"
+
+
+def test_xisf_without_image_geometry_keeps_its_keywords(tmp_path: Path) -> None:
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf">\n'
+        ' <Metadata>\n'
+        '  <FITSKeyword name="FILTER" value="\'Ha\'" comment=""/>\n'
+        ' </Metadata>\n'
+        "</xisf>\n"
+    )
+    path = _xisf(tmp_path / "nogeom.xisf", xml)
+    info = fh.read_header(path)
+    assert info is not None
+    assert (info.width, info.height, info.channels) == (0, 0, 0)
+    assert fh.keyword_value(info.keywords, "FILTER") == "Ha"
+    entry = fh.entry_for(path)
+    assert (entry["width"], entry["height"]) == (0, 0)
+    assert entry["filter"] == "Ha"
 
 
 def test_keyword_value_quoted_blank_and_absent() -> None:

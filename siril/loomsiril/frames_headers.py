@@ -12,8 +12,10 @@ Only headers are read. FITS data and compressed tile blocks are skipped by seeki
 XML header and nothing after it: pixels are never read. An unreadable file, or one in a format not listed above,
 gives no header rather than an error, so a scan of a folder never stops on one bad file.
 
-Names are the JS names in snake_case. Keyword values are the text PixInsight hands to ``keywordValue``: a string
-keeps its quotes (``'L       '``), a number is its text (``120.0``), a logical is ``T`` or ``F``. A tile-compressed
+Names are the JS names in snake_case. FITS keyword values are the raw text PixInsight hands to ``keywordValue``: a
+string keeps its quotes (``'L       '``), a number is its text (``120.0``), a logical is ``T`` or ``F``. This holds for
+FITS only: an XISF keyword's value has its quotes already removed by the XISF reader, and XISF HISTORY and COMMENT
+text lives in the comment attribute, so ``calibrated`` is detected from FITS HISTORY cards only. A tile-compressed
 file lists the extension's keywords before the primary's, so :func:`keyword_value`, which returns the first match,
 gives the extension's value when both HDUs carry a keyword.
 """
@@ -155,17 +157,16 @@ def _read_fits(path: str, compressed: bool) -> Optional[HeaderInfo]:
 
 
 def _read_xisf(path: str) -> Optional[HeaderInfo]:
-    """An XISF file's XML header: keywords in document order and the first Image's geometry; None without one."""
+    """An XISF file's XML header: keywords in document order and the first Image's geometry.
+
+    Without an Image geometry the keywords are still returned, with width, height and channels all 0.
+    """
     header = read_xisf_header(path)
+    keywords = [(name, value) for name, value, _comment in header.keywords]
     if header.geometry is None:
-        return None
+        return HeaderInfo(keywords=keywords, width=0, height=0, channels=0)
     width, height, channels = header.geometry
-    return HeaderInfo(
-        keywords=[(name, value) for name, value, _comment in header.keywords],
-        width=width,
-        height=height,
-        channels=channels,
-    )
+    return HeaderInfo(keywords=keywords, width=width, height=height, channels=channels)
 
 
 def read_header(path: str) -> Optional[HeaderInfo]:
