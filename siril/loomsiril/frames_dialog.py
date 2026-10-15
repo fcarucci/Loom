@@ -57,7 +57,10 @@ this module is the window and the review. Each JS member has a Python twin, in s
 Run, Copy, Import and the master-flat controls belong to ``frames_dialog_actions``: when that module provides
 ``DialogActions`` the dialog uses it as its base; otherwise ``commit``, ``commit_copy``, ``commit_import`` and
 ``set_master_flat_settings`` raise ``NotImplementedError`` and the two master-flat hooks (``build_master_flat_controls``,
-``sync_master_flat_controls``) do nothing.
+``sync_master_flat_controls``) do nothing. The mixin is the base class, so a method the dialog defines itself overrides
+the mixin's of the same name (the mixin must not reuse a review method's name); the master-flat controls are built into
+``self.master_flat_frame``, the empty row the dialog lays out above the buttons. Only a missing ``frames_dialog_actions``
+is tolerated: any other import error propagates.
 
 Differences from the JavaScript, all deliberate:
 
@@ -65,6 +68,9 @@ Differences from the JavaScript, all deliberate:
   over its cell (``Dialog.failing_cells`` lists them).
 * A channel switch selects the channel's first frame, as opening the dialog does, so the preview, the tags and the
   strip never show the previous channel's frame.
+* The criteria's boxes and ticks are disabled while the review is not editable (locked or past the review phase);
+  the JS leaves them enabled and ignores the change. The band sentence under the plot is italic, as the JS's is.
+* The destination sentence is plain text, in red and bold while the run will delete in place (the JS bolds "deleted").
 * Rich text (the destination sentence) is shown as plain text.
 * The options of the last run (frames_options) are applied to every channel when the dialog opens and written back
   when it closes.
@@ -73,6 +79,7 @@ Differences from the JavaScript, all deliberate:
 from __future__ import annotations
 
 import logging
+import math
 import re
 from typing import Any, Callable, Optional
 
@@ -90,7 +97,10 @@ from loomsiril.frames_ui import (AUTO_FOREGROUND, REJECT_COLOUR, frame_selector_
 
 try:  # the run and import actions live in their own module; the review does not need them
     from loomsiril.frames_dialog_actions import DialogActions as _Actions
-except ImportError:
+except ModuleNotFoundError as _missing:
+    if _missing.name != "loomsiril.frames_dialog_actions":
+        raise  # the module is there but one of its own imports failed: that is a real error
+
     class _Actions:  # type: ignore[no-redef]
         """What the actions module provides, until it does: the run and the master-flat controls."""
 
@@ -447,7 +457,10 @@ class Dialog(_Actions):
         self.frame_tree.bind("<<TreeviewSelect>>", self._on_row_selected)
         # Space toggles the override on the selected row; "break" consumes it, so the tree does not also act on it.
         self.frame_tree.bind("<space>", self._on_space)
-        self.frame_tree.bind("<Configure>", lambda _e: self._schedule_marks(), add="+")
+        # The red cells are laid over the tree, so anything that moves a column or a row repaints them.
+        for sequence in ("<Configure>", "<ButtonRelease-1>", "<B1-Motion>", "<MouseWheel>", "<Button-4>", "<Button-5>",
+                         "<KeyRelease>"):
+            self.frame_tree.bind(sequence, lambda _e: self._schedule_marks(), add="+")
         self.frame_tree.bind("<Motion>", self._on_row_motion)
         self.frame_tree.bind("<Leave>", lambda _e: self._hide_tip())
 
@@ -562,16 +575,36 @@ class Dialog(_Actions):
                 text = self.frame_tree.set(iid, metric)
                 label = tk.Label(self.frame_tree, text=text, foreground=tk_colour(REJECT_COLOUR),
                                  background=background, anchor="e", borderwidth=0, padx=4)
-                label.bind("<Button-1>", lambda _e, i=index: self.select_row(i))
+                label.bind("<Button-1>", lambda _e, i=index: self._on_mark_click(i))
+                label.bind("<MouseWheel>", self._forward_wheel)
+                label.bind("<Button-4>", self._forward_wheel)
+                label.bind("<Button-5>", self._forward_wheel)
+                label.bind("<Motion>", lambda e, i=index: self._tip_at(str(i), e))
+                label.bind("<Leave>", lambda _e: self._hide_tip())
                 label.place(x=box[0], y=box[1], width=box[2], height=box[3])
                 self._marks.append(label)
         except Exception as exc:  # noqa: BLE001 - a mark that cannot be drawn must not cost the review its rows
             log.debug("rejecting measurements were not marked: %s", exc)
 
+    def _on_mark_click(self, index: int) -> None:
+        """A click on a red cell is a click on its row, and the tree takes the keyboard (Space works next)."""
+        self.select_row(index)
+        self.frame_tree.focus_set()
+
+    def _forward_wheel(self, event: Any) -> str:
+        """The wheel over a red cell scrolls the table, as it does anywhere else over it."""
+        delta = getattr(event, "delta", 0)
+        units = -1 if (event.num == 4 or delta > 0) else 1
+        self.frame_tree.yview_scroll(units * 3, "units")
+        self._schedule_marks()
+        return "break"
+
     # -- the row's tip
 
     def _on_row_motion(self, event: Any) -> None:
-        iid = self.frame_tree.identify_row(event.y)
+        self._tip_at(self.frame_tree.identify_row(event.y), event)
+
+    def _tip_at(self, iid: str, event: Any) -> None:
         if iid == self._tip_row:
             return
         self._hide_tip()
@@ -725,7 +758,11 @@ class Dialog(_Actions):
         self.plot_combo.pack(side="left", padx=6)
         self.plot_combo.bind("<<ComboboxSelected>>", lambda _e: self.fill_plot())
         self.band_var = tk.StringVar(master=self.top, value="")
-        ttk.Label(head, textvariable=self.band_var).pack(side="left", padx=(8, 0))
+        import tkinter.font as tkfont
+
+        self._band_font = tkfont.nametofont("TkDefaultFont").copy()
+        self._band_font.configure(slant="italic")
+        ttk.Label(head, textvariable=self.band_var, font=self._band_font).pack(side="left", padx=(8, 0))
         self.plot = FramesPlot(self.plot_frame)
         self.plot.on_pick = lambda index: self.select_row(index)
         self.plot.pack(fill="both", expand=True, pady=(4, 0))
@@ -839,6 +876,9 @@ class Dialog(_Actions):
         try:
             value = float(self.k_var.get().strip())
         except ValueError:
+            self.sync_knobs()
+            return
+        if not math.isfinite(value):          # "nan" and "inf" parse as floats but are no k
             self.sync_knobs()
             return
         value = round(min(max(value, K_RANGE[0]), K_RANGE[1]), 2)
@@ -1004,7 +1044,12 @@ class Dialog(_Actions):
                                   "anywhere else and the kept frames are copied there instead, and every original "
                                   "is left alone.")
         self.dest_var = tk.StringVar(master=self.top, value="")
-        ttk.Label(self.dest_frame, textvariable=self.dest_var, wraplength=SUMMARY_WRAP).pack(side="left")
+        import tkinter.font as tkfont
+
+        self._bold = tkfont.nametofont("TkDefaultFont").copy()
+        self._bold.configure(weight="bold")
+        self.dest_label = ttk.Label(self.dest_frame, textvariable=self.dest_var, wraplength=SUMMARY_WRAP)
+        self.dest_label.pack(side="left")
         self.master_flat_frame = ttk.Frame(self.main)
         self.build_master_flat_controls()
         self.button_row = ttk.Frame(self.main)
@@ -1052,6 +1097,11 @@ class Dialog(_Actions):
         self.run_button.state(["!disabled"] if self.editable() and ok else ["disabled"])
         self.dest_button.state(["!disabled"] if self.editable() else ["disabled"])
         self.dest_var.set(self.destination_text(t))
+        deleting = self.state["destination"] is not None and not copying
+        if deleting:
+            self.dest_label.configure(foreground="#b02222", font=self._bold)
+        else:
+            self.dest_label.configure(foreground="", font="TkDefaultFont")
         self.sync_master_flat_controls()
 
     # ---- refreshing

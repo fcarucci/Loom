@@ -443,10 +443,13 @@ def test_a_waiting_preview_is_dropped_when_another_frame_is_selected(make, stub_
     d.state["channels"]["R"].pop("stretch", None)
     d.select_row(2)
     assert d.pending_preview["path"].endswith("R_002.fit")
-    d._selected_row = 5                              # the user moved on before the stretch was measured
+    d.frame_tree.selection_set("5")                  # the user clicks another frame before the stretch is measured
+    _settle(d)
+    assert d.selected_row_index() == 5 and d.pending_preview["path"].endswith("R_005.fit")
     stub_frames["load"].clear()
-    d.channel_stretch(d.channel())
-    assert stub_frames["load"] == [] and d.pending_preview is not None   # not the selected frame: it is not shown
+    while d.pending_preview is not None and loop.tick():
+        pass
+    assert stub_frames["load"] == ["/data/night/R_005.fit"]     # only the frame that is selected is shown
 
 
 def test_the_preview_is_read_at_once_when_the_stretch_exists(make, stub_frames) -> None:
@@ -605,3 +608,137 @@ def test_a_channel_that_is_not_comparable_says_why(make) -> None:
     d = make(FS.state_from_scan(FS.empty_state("/data/night"), scan))
     assert d.problems_var.get().startswith("Not comparable: mixed binning")
     assert "not flagged: frames are not comparable" in d.summary_var.get()
+
+
+def test_k_rejects_non_finite_input(make) -> None:
+    d = make()
+    for text in ("nan", "inf", "-inf", "NaN"):
+        d.k_var.set(text)
+        d._on_k()
+        assert d.channel()["settings"]["k"] == 2.5 and d.k_var.get() == "2.50"
+        assert d.channel()["settings"]["kEdited"] is False
+
+
+def test_the_override_button_toggles_and_an_override_survives_a_k_change(make, stub_frames) -> None:
+    d = make()
+    d.select_row(3)
+    d.override_button.invoke()
+    assert d.channel()["rows"][3]["override"] == F.OVERRIDE["RESCUED"]
+    d.k_var.set("0.6")
+    d._on_k()
+    assert d.channel()["rows"][3]["override"] == F.OVERRIDE["RESCUED"]
+    assert F.final_state(d.channel()["rows"][3]["state"], d.channel()["rows"][3]["override"]) == F.APPROVED
+    assert "+1 rescued" in d.channel_tree.item("L", "text")
+    d.override_button.invoke()
+    assert d.channel()["rows"][3]["override"] is None
+    d.clear_overrides_button.invoke()
+
+
+def _placed(d: Any) -> dict[int, Any]:
+    d.top.deiconify()
+    d.top.update()
+    d._paint_marks()
+    return {int(m.winfo_y()): m for m in d._marks}
+
+
+def test_the_red_cell_follows_a_column_resize(make) -> None:
+    d = make()
+    d.top.deiconify()
+    d.top.update()
+    d._paint_marks()
+    assert len(d._marks) == 1
+    d.frame_tree.column("fwhm", width=160)
+    d.frame_tree.event_generate("<ButtonRelease-1>", x=1, y=1)     # the end of a header drag
+    d.top.update()
+    d.top.update()
+    box = d.frame_tree.bbox("3", "#2")
+    assert box and len(d._marks) == 1
+    assert (d._marks[0].winfo_x(), d._marks[0].winfo_width()) == (box[0], box[2])
+
+
+def test_a_click_on_a_red_cell_selects_the_row_and_gives_the_tree_the_keyboard(make, stub_frames) -> None:
+    d = make()
+    d.top.deiconify()
+    d.top.update()
+    d._paint_marks()
+    d.select_row(0)
+    d.top.update()
+    d._marks[0].event_generate("<Button-1>", x=2, y=2)
+    d.top.update()
+    assert d.selected_row_index() == 3
+    assert d.top.focus_get() is d.frame_tree
+    d.frame_tree.event_generate("<space>")
+    d.top.update()
+    assert d.channel()["rows"][3]["override"] == F.OVERRIDE["RESCUED"]
+
+
+def test_the_wheel_over_a_red_cell_scrolls_the_table_and_the_cell_has_the_row_tip(make) -> None:
+    d = make(_state(n=60))
+    d.top.deiconify()
+    d.top.update()
+    d._paint_marks()
+    scrolled: list[Any] = []
+    d.frame_tree.yview_scroll = lambda *a: scrolled.append(a)
+    event = type("E", (), {"num": 5, "delta": 0})()
+    assert d._forward_wheel(event) == "break" and scrolled == [(3, "units")]
+    d._tip_at("3", type("E", (), {"x_root": 5, "y_root": 5})())
+    assert d._tip_row == "3" and d._tip_job is not None
+    assert d.row_tooltip_text(3).startswith("/data/night/L_003.fit")
+
+
+def test_the_destination_sentence_warns_when_the_run_deletes_in_place(make, monkeypatch, tmp_path) -> None:
+    import tkinter.filedialog as fd
+
+    d = make()
+    assert str(d.dest_label.cget("foreground")) == "#b02222"
+    assert str(d.dest_label.cget("font")) == str(d._bold)
+    monkeypatch.setattr(fd, "askdirectory", lambda **kw: str(tmp_path / "out"))
+    d._on_destination()
+    assert str(d.dest_label.cget("foreground")) != "#b02222"
+
+
+def test_the_criteria_are_disabled_while_the_review_is_locked(make) -> None:
+    d = make()
+    d.state["locked"] = True
+    d.refresh()
+    assert all(c.instate(["disabled"]) for c in d.crit_checks.values())
+    assert all(e.instate(["disabled"]) for e in d.crit_edits.values())
+
+
+def test_only_a_missing_actions_module_is_tolerated() -> None:
+    import importlib
+    import sys
+
+    import loomsiril.frames_dialog as FD
+
+    class Broken:
+        pass
+
+    real = importlib.import_module
+    sys.modules.pop("loomsiril.frames_dialog_actions", None)
+    src = open(FD.__file__, encoding="utf-8").read()
+    head = src[src.index("try:  # the run"):src.index("log = logging")]
+    ns: dict[str, Any] = {"__name__": "x"}
+    imp = ModuleNotFoundError("No module named 'numpy_missing'", name="numpy_missing")
+
+    def fake_import(*a: Any, **k: Any) -> Any:
+        raise imp
+
+    import builtins
+
+    orig = builtins.__import__
+
+    def guarded(name: str, *a: Any, **k: Any) -> Any:
+        if name == "loomsiril.frames_dialog_actions":
+            raise imp
+        return orig(name, *a, **k)
+
+    builtins.__import__ = guarded
+    try:
+        with pytest.raises(ModuleNotFoundError):
+            exec(head, ns)
+        imp = ModuleNotFoundError("x", name="loomsiril.frames_dialog_actions")
+        exec(head, ns)
+        assert "_Actions" in ns
+    finally:
+        builtins.__import__ = orig
