@@ -6,8 +6,8 @@
  * replays the same calls and compares. Arguments are cloned before every call because several Frames
  * functions change what they are given (recompute, judgeRow, recordOutcome, sanitizeOptional).
  *
- * Out of this recorder, by design: anomaly flags and the grouping/files functions (T1b), plot geometry
- * (T4), the digest cache, and the Tk-side prefill and relativeHint, which exist only in the design
+ * Out of this recorder, by design: anomaly flags and the grouping/files functions (loomsiril.frames_groups /
+ * frames_flags / frames_files), plot geometry (not ported here), the digest cache, and the Tk-side prefill and relativeHint, which exist only in the design
  * specs and not in Frames.js. newChannel calls anomalyFlags, so its flags are dropped from the record.
  * buildManifest stamps the clock into `created`; only its entries are recorded.
  *
@@ -79,7 +79,7 @@ module.exports = function( js )
    FRAMES.forEach( f => { BY_PATH[f.path] = f; } );
    const with_ = ( base, patch ) => Object.assign( {}, base, patch );
 
-   /* A channel built the way the dialog builds one; the flags are T1b's and are not recorded. */
+   /* A channel built the way the dialog builds one; the flags come from loomsiril.frames_flags and are not recorded. */
    function channel( key, entries, metrics )
    {
       const ch = F.newChannel( key, entries, metrics, [] );
@@ -332,7 +332,7 @@ module.exports = function( js )
    const EVENTS = [ "commit", "stop", "finish", "resume", "abandon", "review", "unknownEvent" ];
    PHASES.forEach( p => EVENTS.forEach( e => pure( "next_phase/" + p + "/" + e, "nextPhase", [ p, e ] ) ) );
 
-   /* ---- channel, recompute, judge -------------------------------------------------------------- */
+   /* ---- channel, recompute, verdict -------------------------------------------------------------- */
    const NEW = channelOf( "L", 20 );
    cases["new_channel/basic"] = { fn: "newChannel", args: norm( [ "L", ENTRIES, BY_PATH, [] ] ), out: norm( NEW ) };
 

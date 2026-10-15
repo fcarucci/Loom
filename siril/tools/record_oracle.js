@@ -18,16 +18,18 @@
  *   - Loom main recorders (names "loom_*"): lib/Util.js, lib/Hasher.js,
  *     lib/Cache.js, lib/Psb.js, lib/Steps.js, lib/StepsSyqon.js,
  *     lib/StepsIcc.js, lib/Config.js, lib/Pipeline.js.
- *   - Frame Selector recorders (names "fs_*"): lib/Util.js, lib/Frames.js,
- *     lib/Asiair.js, lib/MasterFlat.js.
+ *   - Frame Selector recorders (names "fs_*"): lib/Util.js, lib/Hasher.js,
+ *     lib/Cache.js, lib/AsiairNames.js, lib/Asiair.js, lib/MasterFlat.js,
+ *     lib/NightDialog.js, lib/Frames.js (the order of Loom's ci/run-tests.js).
  * Only the sets the selected recorders need are loaded.
  *
  * Recorders: every tools/oracle/<name>.js exports
  *     module.exports = function( js ) { return { case: value, ... }; };
  * where js holds the loaded namespaces: { Util, Fly, Render, Sky } for the
  * Fly-Through set, { Util, Hasher, Cache, Psb, Steps, Config, Pipeline } for
- * the Loom main set (StepsSyqon.js and StepsIcc.js add to Steps), { Util, Frames, Asiair, MasterFlat }
- * for the Frame Selector set. Its result is written to <out>/<name>.json
+ * the Loom main set (StepsSyqon.js and StepsIcc.js add to Steps), and
+ * { Util, Hasher, Cache, AsiairNames, Asiair, MasterFlat, NightDialog, Frames } for the
+ * Frame Selector set. Its result is written to <out>/<name>.json
  * as { about: {...}, cases: {...} }. Each task owns its own recorder file
  * (tools/oracle/geometry.js, colour.js, ...) so branches never collide here.
  *
@@ -70,10 +72,13 @@ const FLY_LIBS = [ "lib/Util.js", "lib/Fly.js", "lib/Render.js", "lib/Sky.js" ];
 const LOOM_LIBS = [ "lib/Util.js", "lib/Hasher.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js", "lib/StepsSyqon.js",
                     "lib/StepsIcc.js", "lib/Config.js", "lib/Pipeline.js" ];
 // Loom's harness load order (ci/run-tests.js), restricted to the libraries the chosen recorders need
-const HARNESS_ORDER = [ "lib/Util.js", "lib/Frames.js", "lib/Asiair.js", "lib/MasterFlat.js", "lib/Hasher.js", "lib/Cache.js", "lib/Psb.js", "lib/Steps.js",
+const HARNESS_ORDER = [ "lib/Util.js", "lib/Hasher.js", "lib/Cache.js", "lib/AsiairNames.js", "lib/Asiair.js", "lib/MasterFlat.js",
+                        "lib/NightDialog.js", "lib/Frames.js",
+                        "lib/Psb.js", "lib/Steps.js",
                         "lib/StepsSyqon.js", "lib/StepsIcc.js", "lib/Config.js", "lib/Fly.js", "lib/Sky.js",
                         "lib/Render.js", "lib/Pipeline.js" ];
-const FS_LIBS = [ "lib/Util.js", "lib/Frames.js", "lib/Asiair.js", "lib/MasterFlat.js" ];
+const FS_LIBS = [ "lib/Util.js", "lib/Hasher.js", "lib/Cache.js", "lib/AsiairNames.js", "lib/Asiair.js", "lib/MasterFlat.js",
+                  "lib/NightDialog.js", "lib/Frames.js" ];
 const wanted = new Set();
 if ( names.some( n => !isLoomMain( n ) && !isFrameSelector( n ) ) ) FLY_LIBS.forEach( l => wanted.add( l ) );
 if ( names.some( isLoomMain ) ) LOOM_LIBS.forEach( l => wanted.add( l ) );
@@ -87,7 +92,8 @@ for ( const lib of LIBS )
    catch ( e ) { fail( "cannot load " + lib + ": " + e.message ); }
 }
 const js = {};
-for ( const ns of [ "Util", "Hasher", "Cache", "Psb", "Steps", "Config", "Pipeline", "Fly", "Render", "Sky", "Frames", "Asiair", "MasterFlat" ] )
+for ( const ns of [ "Util", "Hasher", "Cache", "Psb", "Steps", "Config", "Pipeline", "Fly", "Render", "Sky",
+                    "Frames", "AsiairNames", "Asiair", "MasterFlat", "NightDialog" ] )
    if ( typeof globalThis[ns] !== "undefined" ) js[ns] = globalThis[ns];
 
 function loomVersion()

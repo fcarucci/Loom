@@ -4,7 +4,7 @@ Ported from ``pixinsight/script/lib/Frames.js`` (constants 1691-1716, ``obsTime`
 never deletes a frame: it is a note beside the verdict, computed once from the measurements (``anomalyFlags``), so a
 knob does not move it. Pure over plain dicts. Pinned to the JavaScript by ``tests/oracle/fs_flags.json``.
 
-The median, sigma and state helpers are T1a's (``loomsiril.frames``), imported rather than copied.
+The median, sigma and state helpers are defined in ``loomsiril.frames``, imported rather than copied.
 """
 
 from __future__ import annotations

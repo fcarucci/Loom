@@ -1,7 +1,7 @@
 "use strict";
 /*
  * Golden cases for loomsiril/frames_groups.py, frames_flags.py and frames_files.py: the grouping,
- * anomaly-flag and file-list functions of pixinsight/script/lib/Frames.js (the T1b half of the port).
+ * anomaly-flag and file-list functions of pixinsight/script/lib/Frames.js (the loomsiril.frames_groups / frames_flags / frames_files half of the port).
  *
  * Each case records the arguments it was called with and what the JS returned, so the Python suite
  * replays the same calls and compares. Arguments are cloned before every call because some Frames
@@ -209,8 +209,8 @@ module.exports = function( js )
          if ( !( except && except[i] ) ) p[i] = patch;
       return p;
    }
-   const T0 = Date.UTC( 2026, 8, 18, 20, 0 );
-   const TIMES = [ ...Array( 12 ).keys() ].map( i => T0 + i * 60000 );
+   const START = Date.UTC( 2026, 8, 18, 20, 0 );
+   const TIMES = [ ...Array( 12 ).keys() ].map( i => START + i * 60000 );
    /* A frame at low altitude: its FWHM is wide raw, and near 3.0 once airmass is taken out. */
    const LOW = { altitude: 25, fwhm: 3.0 * Math.pow( 1 / Math.sin( 25 * Math.PI / 180 ), 0.6 ) };
 

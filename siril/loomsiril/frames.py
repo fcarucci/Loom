@@ -8,9 +8,10 @@ Names are the JS names in snake_case. Dict keys keep the JS camelCase (``psfSNR`
 so a row or a settings object reads the same on both sides. JS ``undefined`` has no Python twin: where the JS
 returns it (``parseLimit`` on invalid text) this returns :data:`UNDEFINED`.
 
-Out of this module, by design: anomaly flags, grouping by filter and the file lists (T1b), plot geometry (T4).
+Out of this module, by design: anomaly flags, grouping by filter and the file lists (loomsiril.frames_groups,
+frames_flags, frames_files), plot geometry (not ported here).
 ``new_channel`` returns the channel without ``flags``; the caller adds them. ``NO_FILTER`` and
-``auto_reject_allowed`` live here because ``recompute`` needs them; T1b's grouping imports them.
+``auto_reject_allowed`` live here because ``recompute`` needs them; the grouping in loomsiril.frames_groups imports them.
 """
 
 from __future__ import annotations
@@ -400,7 +401,7 @@ def absolute_failures(metrics: Metrics, limits: Optional[dict[str, Any]],
 
 
 def auto_gates(gates: Optional[dict[str, Gate]], limits: Optional[dict[str, Any]]) -> dict[str, Gate]:
-    """A metric with a typed limit is judged on that limit alone; its relative gate is set aside."""
+    """A metric with a typed limit is decided on that limit alone; its relative gate is set aside."""
     out = {}
     for key, g in (gates or {}).items():
         if limits and limits.get(key) is not None:
