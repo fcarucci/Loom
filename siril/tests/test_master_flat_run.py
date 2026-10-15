@@ -316,13 +316,8 @@ def test_describe_and_scan_read_through_the_adapter(tmp_path: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-#: loomsiril.core.js_round is floor(x + 0.5), which gives 1 for 0.49999999999999994 (the sum rounds up to 1.0).
-#: Strict xfail until core.js_round is fixed (floor(x), plus one when x - floor(x) >= 0.5); then it must pass.
-_CORE_ROUND = pytest.mark.xfail(strict=True, reason="loomsiril.core.js_round rounds 0.49999999999999994 up")
-
-
 @pytest.mark.parametrize("value, printed", [
-    pytest.param(0.49999999999999994, "0", marks=_CORE_ROUND),
+    (0.49999999999999994, "0"),
     (0.5, "1"),
     (-0.5, "0"),
     (2.5, "3"),
