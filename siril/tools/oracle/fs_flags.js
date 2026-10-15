@@ -415,6 +415,18 @@ module.exports = function( js )
    pure( "batches_of/bigger_than_list", "batchesOf", [ [ 1, 2, 3 ], 10 ] );
    pure( "batches_of/empty", "batchesOf", [ [], 3 ] );
    pure( "batches_of/negative", "batchesOf", [ [ 1, 2, 3, 4 ], -3 ] );
+   pure( "batches_of/infinity", "batchesOf", [ [ 1, 2, 3, 4, 5 ], Infinity ] );
+   pure( "batches_of/minus_infinity", "batchesOf", [ [ 1, 2, 3 ], -Infinity ] );
+   pure( "batches_of/infinity_empty", "batchesOf", [ [], Infinity ] );
+   pure( "batches_of/nan", "batchesOf", [ [ 1, 2, 3 ], NaN ] );
+   pure( "batches_of/text", "batchesOf", [ [ 1, 2, 3 ], "abc" ] );
+   pure( "batches_of/empty_text", "batchesOf", [ [ 1, 2, 3 ], "" ] );
+   pure( "batches_of/text_number", "batchesOf", [ [ 1, 2, 3, 4, 5 ], " 2 " ] );
+   pure( "batches_of/text_infinity", "batchesOf", [ [ 1, 2, 3 ], "Infinity" ] );
+   pure( "batches_of/text_hex", "batchesOf", [ [ 1, 2, 3, 4, 5 ], "0x2" ] );
+   pure( "batches_of/null", "batchesOf", [ [ 1, 2, 3 ], null ] );
+   pure( "batches_of/bool", "batchesOf", [ [ 1, 2, 3 ], true ] );
+   pure( "batches_of/huge", "batchesOf", [ [ 1, 2, 3 ], 1e300 ] );
 
    mergeCase( "merge_batch/all_asked", [ "a", "b" ], { a: { x: 1 }, b: { x: 2 } }, {} );
    mergeCase( "merge_batch/no_result", [ "a" ], null, {} );

@@ -266,12 +266,45 @@ def thumbnail_order(count: int, selected: int, first: int, visible: int) -> list
 
 # ---- batches --------------------------------------------------------------------------------------------
 
+_JS_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)")
+_JS_RADIX = re.compile(r"0([xXoObB])([0-9a-fA-F]+)")
+
+
+def _js_number(v: Any) -> float:
+    """``Number(v)`` for a batch size: NaN for what JS calls non-numeric, 0 for null and an empty string."""
+    if v is None:
+        return 0.0
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        t = v.strip()
+        if t == "":
+            return 0.0
+        m = _JS_RADIX.fullmatch(t)
+        if m:
+            return float(int(m.group(2), {"x": 16, "o": 8, "b": 2}[m.group(1).lower()]))
+        return float(t) if _JS_DECIMAL.fullmatch(t) else math.nan
+    return math.nan
+
+
+def _batch_size(size: Any) -> float:
+    """``Math.max(1, Math.floor(Number(size)) || 1)``: an int of at least 1, or infinity for an infinite size."""
+    x = _js_number(size)
+    if math.isinf(x):
+        return x if x > 0 else 1
+    if math.isnan(x):
+        return 1
+    return max(1, math.floor(x))
+
+
 def batches_of(lst: list[Any], size: Any) -> list[list[Any]]:
-    """A list cut into consecutive batches of ``size``, the last one short. A size below one is one."""
-    try:
-        n = max(1, math.floor(float(size)))
-    except (TypeError, ValueError, OverflowError):
-        n = 1
+    """A list cut into consecutive batches of ``size``, the last one short. A size below one, or not a number, is
+    one; an infinite size is one batch of everything (as ``Math.floor(Infinity)`` is in JS)."""
+    n = _batch_size(size)
+    if math.isinf(n):
+        return [list(lst)] if len(lst) else []
     return [lst[i:i + n] for i in range(0, len(lst), n)]
 
 
