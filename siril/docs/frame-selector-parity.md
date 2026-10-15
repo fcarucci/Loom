@@ -599,14 +599,16 @@ Each entry says what differs, why, and what was checked.
    SubframeSelector can return nonsense. Siril's numbers do not need them, so the bounds are not applied.
 6. **The star finder is reset for every measurement.** The port runs `setfindstar reset` so the numbers do not depend
    on what the user set in the session, as PixInsight fixes SubframeSelector's parameters. Siril exposes only the focal
-   length and pixel size of the star finder, so only those two are put back afterwards; the other star-finder settings
+   length and pixel size of the star finder, so only those two are put back afterwards (if Siril cannot report them, no
+   reset is sent: the measurement uses the current settings and a warning is logged); the other star-finder settings
    (sigma, radius, roundness, profile, relax, magnitude limits, convergence) stay at their defaults for the rest of the
    session, and the log says so. A measurement also changes Siril's working directory while it runs and sets it back.
    It must not run while another script is using the same Siril.
 7. **No "equalize fluxes" normalisation for master flats.** The calibrated flats are stacked with multiplicative
    normalisation, as PixInsight does, but PixInsight also equalises fluxes for its rejection step and Siril has no
-   separate switch for that. The master is checked (see deviation 9) and a synthetic check showed flatness within
-   0.5 % to 1.4 % of the true vignetting with calibration, against 1.8 % without it.
+   separate switch for that. The master is checked (see deviation 9) and on synthetic flats the master's
+   deviation from the true vignetting was a coefficient of variation of 0.0046 to 0.0135 with calibration, against 0.018
+   uncalibrated.
 8. **Copies and imports are FITS, not XISF.** A FITS frame is copied byte for byte; an XISF frame is read by Siril and
    written as FITS. PixInsight writes XISF through SubframeSelector's output step. An import is therefore verified by
    comparing digests of source and copy, and then still checks geometry and the required header keywords; PixInsight
@@ -655,5 +657,4 @@ Each entry says what differs, why, and what was checked.
 The refusal that stops the copy step from emptying a source folder (`FrameSelector.js`, the export refusal) compares
 path strings only. A destination that is a symbolic link to a source folder, a path such as `out/../frames`, or, on
 macOS, a different spelling of the same folder in another case, passes the refusal, and the "empty the output folder
-first" step then deletes the original frames. The Siril port had the same weakness before it resolved paths (deviation
-11). `pixinsight/` is not changed here.
+first" step then deletes the original frames. The Siril port resolves paths (deviation 11).

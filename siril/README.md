@@ -2,7 +2,7 @@
 
 Loom's tools for [Siril](https://siril.org), starting with **Fly-Through**:
 a push-in video of a finished astrophoto whose stars move at their real Gaia
-distances.
+distances. It also carries the **Frame Selector**, which rates and culls light subframes (see "Frame Selector" below).
 
 Part of the [Loom](https://github.com/fcarucci/Loom) repository, whose `pixinsight/` folder is the PixInsight
 version. This folder is the Siril port: its code is Python and it is released together with the PixInsight scripts, under the same `vX.Y.Z` tag.
@@ -23,6 +23,10 @@ version. This folder is the Siril port: its code is Python and it is released to
   test image; they skip without it.
 - The Loom pipeline (`Loom/loom_preprocess.py`, see the Loom section) is a port of Loom's JavaScript to numpy and scipy.
   [docs/PARITY-LOOM.md](docs/PARITY-LOOM.md) lists each ported function and the deviations from Loom.
+- The Frame Selector (`Loom/loom_frame_selector.py`, see the Frame Selector section) is a port of the PixInsight Frame
+  Selector, with its measurements taken from Siril. It has not been run inside Siril's user interface: it is tested
+  against a stand-in for the Siril API and, for the Siril-dependent parts, headless `siril-cli` 1.4.4 in the Docker
+  image. [docs/frame-selector-parity.md](docs/frame-selector-parity.md) lists what is ported and every deviation.
 - Version 0.5.0 (tag `v0.5.0`, shared with the PixInsight scripts) is the first release and is experimental.
 
 ## What it does
@@ -387,8 +391,8 @@ flats read, the darks found and the plan for each filter; its path is shown in t
 ### What is remembered, and where
 
 - Options are saved in one file in Siril's configuration folder (`loomsiril-frame-selector.json`): the source and
-  destination folders, the darks folder, the Combine flats box, the preset, `k`, the score weights, and the criteria with
-  any typed limits.
+  destination folders, the darks folder, the Combine flats box, the preset, `k` (only when you typed it; otherwise the preset decides it next time), the score weights, and the
+  criteria with any typed limits.
 - Measurements and file digests are cached in the Loom cache folder (the same one the Loom pipeline uses; set `cacheDir`
   to move it), so reopening a folder is quick and a changed frame is measured again. Previews, the work folders of a
   measurement or a master flat, and cached master darks are kept there too.
@@ -407,11 +411,14 @@ that ports it and every deviation with its reason. In short:
 - **Copies and imports are FITS**, not XISF, and an import is verified by digest. Master flats are built by Siril and
   named `.fit`; Siril has no "equalize fluxes" normalisation, so rejection is not flux-equalised.
 - **Delete in place does not convert the kept frames** to another format.
-- **More options are remembered**, and the preset and `k` are remembered across runs.
+- **More options are remembered**, and the preset and a hand-typed `k` are remembered across runs.
 - **The deletion log folder** is `~/Siril/Loom-frame-selector/`, and the script needs Siril 1.4 instead of a PixInsight
   core version.
 - The star finder's settings are reset for each measurement and, apart from the focal length and pixel size, not
-  restored afterwards.
+  restored afterwards. If Siril cannot report its focal length and pixel size, no reset is sent: the current settings
+  are used and a warning is logged.
+- During a master-flat run Siril's FITS compression is switched off and restored afterwards. The master's header is
+  rewritten after stacking (`IMAGETYP` Master Flat, `EXPTIME` only when every flat shares one, `DATE-OBS` dropped).
 
 ## Install
 
@@ -425,7 +432,8 @@ that ports it and every deviation with its reason. In short:
 
 2. In Siril, open Preferences, Scripts. Add the clone's `Loom` folder (for example `~/dev/Loom/siril/Loom`) on a
    new line of the script folders, click the refresh button, then Apply. Siril names the submenu after the folder:
-   `loom_preprocess.py` (the pipeline) and `loom_fly_through.py` (Fly-Through) appear under Scripts, Loom.
+   `loom_preprocess.py` (the pipeline), `loom_fly_through.py` (Fly-Through) and `loom_frame_selector.py` (Frame
+   Selector) appear under Scripts, Loom.
 3. Run one of them. The script finds the `loomsiril` package in the clone it sits in, so no environment variable
    is needed. On first run it installs `numpy`, `scipy` and `tifffile` into Siril's Python environment; that step
    needs the network.

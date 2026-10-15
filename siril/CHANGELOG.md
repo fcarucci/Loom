@@ -28,12 +28,17 @@ All notable changes to this project are documented here. The format follows
 - `docs/frame-selector-parity.md`: every PixInsight Frame Selector function with the Python function that ports it, and
   every deviation with its reason.
 
+- The Frame Selector has not been run inside Siril's user interface; it is tested against a stand-in for the Siril API
+  and, for the parts that need Siril, headless `siril-cli` 1.4.4 in the Docker image. Experimental, as 0.5.x.
+
 ### Differences from the PixInsight Frame Selector
 
 - Measurements come from Siril, not SubframeSelector: PSF SNR is the median star amplitude over the background noise,
   eccentricity is derived from Siril's roundness, the SNR estimate is dropped, the star count is capped near 2000 by
   Siril, and the altitude is read from the header or computed from the coordinates.
 - Copies, imports and master flats are FITS, not XISF; Siril has no "equalize fluxes" normalisation for master flats.
+- The star finder is reset for each measurement and, apart from focal length and pixel size, not restored; when Siril
+  cannot report those two, no reset is sent and a warning is logged.
 - Delete in place leaves the kept frames as they are. The deletion log is in `~/Siril/Loom-frame-selector/`.
 
 ## [0.5.1] — 2026-10-15
