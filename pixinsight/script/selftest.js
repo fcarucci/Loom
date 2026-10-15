@@ -20647,8 +20647,8 @@ function runPipeTests()
       }
       factors = [ 1, 0.5, 0.25 ];
       run( { useCache: false, filters: { R: "Astronomik R" } }, {} );
-      check( "clean WB: the cache key is exactly what it was",
-             lastKey, Cache.hash( "cleanwb|kr|kg|kb|crop:1,2,3,4|" + JSON.stringify( { R: "Astronomik R" } ) + "|ZWO" ) );
+      check( "clean WB: the cache key is the pinned text, the reference key last",
+             lastKey, Cache.hash( "cleanwb|kr|kg|kb|crop:1,2,3,4|" + JSON.stringify( { R: "Astronomik R" } ) + "|ZWO|ref:fp" ) );
       check( "clean WB: a missing key throws before anything opens",
              [ run( {}, { noKey: true } ), calls ], [ "threw no pre-correction cache key for B", [] ] );
       check( "clean WB: uncached, registers each channel, measures, releases everything in reverse",
