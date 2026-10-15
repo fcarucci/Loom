@@ -23652,6 +23652,152 @@ function runFailurePathTests()
              Util.parseMasterName( "masterFlat_something_else.xisf" ), null );
    } )();
 
+   } if ( testGroup( "qa.osc.config" ) ) {
+   /*
+    * Acceptance: the colour slots, the logical channels they supply, the
+    * kind override and its persistence, mixed selections, and the same
+    * file selected twice.
+    */
+   ( function()
+   {
+      var MIX = "colour masters cannot be combined with mono masters; choose either the colour masters or the mono masters";
+      function conf( paths, views )
+      {
+         var c = Config.defaults(), k;
+         for ( k in ( paths || {} ) ) c.paths[k] = paths[k];
+         for ( k in ( views || {} ) ) c.views[k] = views[k];
+         return c;
+      }
+      function sorted( a ) { return a.slice().sort(); }
+      function has( problem, text ) { return problem != null && String( problem ).indexOf( text ) >= 0; }
+      function kindOf( slot, filter, path, choices )
+      {
+         var e = Util.effectiveOscKind( slot, filter, path, choices || {} );
+         return e == null ? "null" : e.kind;
+      }
+
+      // The slots and the defaults.
+      check( "qa.osc.config: the colour slots are OSC and OSCNB", Util.COLOUR_SLOTS, [ "OSC", "OSCNB" ] );
+      var d = Config.defaults();
+      check( "qa.osc.config: the defaults carry both colour slots, empty",
+             [ "OSC" in d.paths, "OSCNB" in d.paths, !d.paths.OSC, !d.paths.OSCNB ], [ true, true, true, true ] );
+      check( "qa.osc.config: the defaults remember no kind choice and no per-run kind",
+             [ d.oscKindChoices, d.oscKinds ], [ {}, {} ] );
+      check( "qa.osc.config: the defaults have a sensor", typeof d.oscSensor, "object" );
+
+      // 8. Logical channels.
+      check( "qa.osc.config: OSC supplies R, G, B", sorted( Util.suppliedChannels( conf( { OSC: "/m/rgb.xisf" } ) ) ), [ "B", "G", "R" ] );
+      check( "qa.osc.config: OSCNB supplies H, O", sorted( Util.suppliedChannels( conf( { OSCNB: "/m/nb.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.config: both together supply R, G, B, H, O",
+             sorted( Util.suppliedChannels( conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ) ) ), [ "B", "G", "H", "O", "R" ] );
+      check( "qa.osc.config: an open view in a colour slot supplies the same",
+             [ sorted( Util.suppliedChannels( conf( {}, { OSC: "viewA" } ) ) ), sorted( Util.suppliedChannels( conf( {}, { OSCNB: "viewB" } ) ) ) ],
+             [ [ "B", "G", "R" ], [ "H", "O" ] ] );
+      check( "qa.osc.config: mono slots supply themselves, as before",
+             sorted( Util.suppliedChannels( conf( { L: "/m/l.xisf", H: "/m/h.xisf", S: "/m/s.xisf" } ) ) ), [ "H", "L", "S" ] );
+      check( "qa.osc.config: nothing selected supplies nothing", Util.suppliedChannels( conf( {} ) ), [] );
+      var both = Util.suppliedChannels( conf( { OSC: "/m/a.xisf", R: "/m/r.xisf" } ) );
+      check( "qa.osc.config: a channel is never listed twice", both.length, sorted( both ).filter( function( k, i, a ) { return i == 0 || a[i - 1] != k; } ).length );
+
+      // 6. Mixed selections.
+      [ [ { OSC: "/m/a.xisf", L: "/m/l.xisf" }, {} ], [ { OSCNB: "/m/b.xisf", H: "/m/h.xisf" }, {} ],
+        [ { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf", O: "/m/o.xisf" }, {} ], [ { OSC: "/m/a.xisf" }, { S: "monoView" } ],
+        [ {}, { OSC: "viewA", R: "viewR" } ] ].forEach( function( t, i )
+      {
+         check( "qa.osc.config: mixed selection " + i + " is refused with the verbatim text",
+                has( Util.colourMixProblem( conf( t[0], t[1] ) ), MIX ), true );
+      } );
+      [ [ { OSC: "/m/a.xisf" } ], [ { OSCNB: "/m/b.xisf" } ], [ { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ],
+        [ { L: "/m/l.xisf", R: "/m/r.xisf", G: "/m/g.xisf", B: "/m/b.xisf", H: "/m/h.xisf" } ], [ {} ] ].forEach( function( t, i )
+      {
+         check( "qa.osc.config: selection " + i + " has no mix problem", Util.colourMixProblem( conf( t[0] ) ), null );
+      } );
+
+      // 6. "Something to do".
+      function nothingToDo( paths, views )
+      {
+         var c = conf( paths, views );
+         return Util.validateSelection( c.paths, c.views ).filter( function( p ) { return /nothing to do/i.test( p ); } ).length;
+      }
+      check( "qa.osc.config: OSCNB alone is something to do", nothingToDo( { OSCNB: "/m/b.xisf" } ), 0 );
+      check( "qa.osc.config: OSC alone is something to do", nothingToDo( { OSC: "/m/a.xisf" } ), 0 );
+      check( "qa.osc.config: a colour view alone is something to do", nothingToDo( {}, { OSCNB: "viewB" } ), 0 );
+      check( "qa.osc.config: nothing at all is still nothing to do", nothingToDo( {} ), 1 );
+      var vs = conf( { OSC: "/m/a.xisf" } );
+      check( "qa.osc.config: OSC alone gives no 'incomplete RGB set' complaint",
+             Util.validateSelection( vs.paths, vs.views ).filter( function( p ) { return /incomplete/i.test( p ); } ), [] );
+
+      // 7. The same file in a colour slot and a mono slot, or in both colour slots.
+      function dups( paths ) { return Util.duplicateFileProblems( conf( paths ).paths ); }
+      var dp = dups( { OSC: "/m/a.xisf", R: "/m/a.xisf" } );
+      check( "qa.osc.config: the same file in OSC and R is reported once, naming the file and both slots",
+             [ dp.length, has( dp[0], "/m/a.xisf" ), has( dp[0], "OSC" ), has( dp[0], "R" ) ], [ 1, true, true, true ] );
+      check( "qa.osc.config: the same file in OSCNB and H is reported", dups( { OSCNB: "/m/b.xisf", H: "/m/b.xisf" } ).length, 1 );
+      check( "qa.osc.config: the same file in OSC and OSCNB is reported", dups( { OSC: "/m/c.xisf", OSCNB: "/m/c.xisf" } ).length, 1 );
+      check( "qa.osc.config: different files are not reported", dups( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf", R: "/m/r.xisf" } ), [] );
+      check( "qa.osc.config: the mono duplicate report is unchanged", dups( { L: "/m/x.xisf", R: "/m/x.xisf" } ).length, 1 );
+
+      // 4. The override key: by filter name, or by path when the filter is blank.
+      check( "qa.osc.config: the key ignores the spelling of the filter and the path",
+             Util.oscKindKey( "L-eXtreme", "/m/a.xisf" ), Util.oscKindKey( "l extreme", "/m/other.xisf" ) );
+      check( "qa.osc.config: different filters have different keys", Util.oscKindKey( "Duo", "/m/a.xisf" ) != Util.oscKindKey( "Quad", "/m/a.xisf" ), true );
+      check( "qa.osc.config: a blank filter is keyed by its path", Util.oscKindKey( "", "/m/a.xisf" ), Util.oscKindKey( null, "/m/a.xisf" ) );
+      check( "qa.osc.config: two blank-filter files have different keys", Util.oscKindKey( "", "/m/a.xisf" ) != Util.oscKindKey( "", "/m/b.xisf" ), true );
+      check( "qa.osc.config: a blank-filter key is not any filter's key",
+             Util.oscKindKey( "", "/m/a.xisf" ) != Util.oscKindKey( "UVIR", "/m/a.xisf" ), true );
+
+      // 4. Effective kind: a choice beats detection; unsupported cannot be overridden.
+      var chosen = {};
+      chosen[ Util.oscKindKey( "L-eXtreme", "/m/a.xisf" ) ] = "broadband";
+      check( "qa.osc.config: with no choice, a confident detection stands", kindOf( "OSCNB", "L-eXtreme", "/m/a.xisf" ), "dualband" );
+      check( "qa.osc.config: a remembered choice beats a confident detection", kindOf( "OSCNB", "L-eXtreme", "/m/a.xisf", chosen ), "broadband" );
+      check( "qa.osc.config: the choice follows the filter to another file and spelling", kindOf( "OSCNB", "l extreme", "/m/z.xisf", chosen ), "broadband" );
+      var unconf = {}, unknown = {};
+      unconf[ Util.oscKindKey( "Duo", "/m/a.xisf" ) ] = "dualband";
+      unknown[ Util.oscKindKey( "Astronomik Deep-Sky", "/m/a.xisf" ) ] = "broadband";
+      check( "qa.osc.config: an unconfident filter has no kind until chosen",
+             [ !kindOf( "OSCNB", "Duo", "/m/a.xisf" ), kindOf( "OSCNB", "Duo", "/m/a.xisf", unconf ) ], [ true, "dualband" ] );
+      check( "qa.osc.config: an unknown filter has no kind until chosen",
+             [ !kindOf( "OSC", "Astronomik Deep-Sky", "/m/a.xisf" ), kindOf( "OSC", "Astronomik Deep-Sky", "/m/a.xisf", unknown ) ], [ true, "broadband" ] );
+      var force = {};
+      force[ Util.oscKindKey( "ALP-T SII/Hβ", "/m/a.xisf" ) ] = "dualband";
+      check( "qa.osc.config: an unsupported filter cannot be overridden", [ kindOf( "OSCNB", "ALP-T SII/Hβ", "/m/a.xisf", force ),
+             kindOf( "OSCNB", "ALP-T SII/Hβ", "/m/a.xisf", {} ) ], [ "unsupported", "unsupported" ] );
+      var blank = {};
+      blank[ Util.oscKindKey( "", "/m/blank1.xisf" ) ] = "dualband";
+      check( "qa.osc.config: a blank-filter choice applies to its own file",
+             [ kindOf( "OSCNB", "", "/m/blank1.xisf" ), kindOf( "OSCNB", "", "/m/blank1.xisf", blank ) ], [ "broadband", "dualband" ] );
+      check( "qa.osc.config: a blank-filter choice never applies to another blank-filter file",
+             kindOf( "OSCNB", "", "/m/blank2.xisf", blank ), "broadband" );
+      check( "qa.osc.config: a blank-filter choice does not touch a named filter",
+             kindOf( "OSCNB", "UVIR", "/m/blank1.xisf", blank ), "broadband" );
+
+      // 5. Choices and the sensor survive save and load; the per-run kind does not.
+      var store = {}, c1 = Config.defaults();
+      c1.oscSensor = { R: "Test Color Sensor R", G: "Test Color Sensor G", B: "Test Color Sensor B" };
+      c1.oscKindChoices = {};
+      c1.oscKindChoices[ Util.oscKindKey( "Duo", "/m/a.xisf" ) ] = "dualband";
+      c1.oscKindChoices[ Util.oscKindKey( "", "/m/blank1.xisf" ) ] = "broadband";
+      c1.oscKinds = { OSC: "broadband", OSCNB: "dualband" };
+      var saved = withConfigStore( store, {}, function() { saveConfig( c1 ); } );
+      check( "qa.osc.config: the fake settings are in place for the save", saved.swapped, true );
+      if ( saved.swapped )
+      {
+         var back = withConfigStore( store, {}, function() { return loadConfig(); } );
+         check( "qa.osc.config: the fake settings are in place for the load", back.swapped, true );
+         var l = back.result || {};
+         check( "qa.osc.config: the sensor survives save and load", l.oscSensor, c1.oscSensor );
+         check( "qa.osc.config: the kind choices survive save and load", l.oscKindChoices, c1.oscKindChoices );
+         check( "qa.osc.config: the per-run kind is not remembered", l.oscKinds, Config.defaults().oscKinds );
+         check( "qa.osc.config: no stored setting is named for the per-run kind",
+                Object.keys( store ).filter( function( k ) { return /oscKinds/i.test( k ); } ), [] );
+      }
+      var fresh = withConfigStore( {}, {}, function() { return loadConfig(); } );
+      check( "qa.osc.config: with nothing stored, the first launch has no choices and the default sensor",
+             [ fresh.result && fresh.result.oscKindChoices, fresh.result && fresh.result.oscSensor ],
+             [ Config.defaults().oscKindChoices, Config.defaults().oscSensor ] );
+   } )();
+
    } if ( testGroup( "cache" ) ) {
    /*
     * The cache folder's own bookkeeping, on a synthetic folder: entries
