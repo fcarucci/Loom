@@ -356,9 +356,10 @@ def test_project_name_for_takes_a_backslash_path() -> None:
     assert ch.project_name_for({"paths": {"R": "C:\\Astro\\M31\\masters\\r.fits"}}) == "M31"
 
 
-def test_duplicate_check_unifies_windows_separators_and_case() -> None:
-    assert ch.validate_selection({"R": "C:\\a\\x.xisf", "G": "C:/a/X.xisf", "B": "/b.xisf"}) == [
-        "Same file selected for R and G: C:/a/X.xisf"]
+def test_duplicate_check_unifies_windows_separators_but_not_case() -> None:
+    assert ch.validate_selection({"R": "C:\\a\\x.xisf", "G": "C:/a/x.xisf", "B": "/b.xisf"}) == [
+        "Same file selected for R and G: C:/a/x.xisf"]
+    assert ch.duplicate_file_problems({"R": "C:\\a\\x.xisf", "G": "C:/a/X.xisf"}) == []
 
 
 def test_duplicate_check_keeps_posix_paths_case_sensitive() -> None:
@@ -440,8 +441,9 @@ def test_the_same_file_in_both_colour_slots_or_a_colour_and_a_mono_slot_is_repor
 def test_duplicate_paths_are_compared_as_configured_never_case_folded_or_resolved() -> None:
     assert ch.duplicate_file_problems({"OSC": "/m/A.fit", "OSCNB": "/m/a.fit"}) == []
     assert ch.duplicate_file_problems({"OSC": "/m/../m/a.fit", "OSCNB": "/m/a.fit"}) == []
-    assert ch.duplicate_file_problems({"OSC": "C:\\m\\A.fit", "OSCNB": "c:/m/a.fit"}) == [
-        "Same file selected for OSC and OSCNB: c:/m/a.fit"]
+    assert ch.duplicate_file_problems({"OSC": "C:\\m\\a.fit", "OSCNB": "C:/m/a.fit"}) == [
+        "Same file selected for OSC and OSCNB: C:/m/a.fit"]
+    assert ch.duplicate_file_problems({"OSC": "C:/a/x.fit", "OSCNB": "c:/a/X.fit"}) == []
 
 
 def test_inherit_instrument_changes_nothing_for_a_colour_run() -> None:
@@ -578,3 +580,13 @@ def test_scan_masters_a_name_that_cannot_be_decoded_is_skipped_with_the_reason()
 def test_scan_masters_dot_fz_is_a_master_file_name() -> None:
     assert ch._is_master_file_name("x.fz") and ch._is_master_file_name("X.FZ")
     assert ch._is_master_file_name("x.fits.fz") and not ch._is_master_file_name("x.fz.txt")
+
+
+def test_scan_masters_an_unnamed_mono_file_does_not_displace_a_named_winner(tmp_path: Path) -> None:
+    named = _write_fits_master(tmp_path, "masterLight_FILTER-Ha_mono.fits", "H", 1, filter_name="Ha")
+    other = _write_fits_master(tmp_path, "stack_final.fits", "H", 1, filter_name="Ha")
+    os.utime(named, (1_000_000_000, 1_000_000_000))
+    os.utime(other, (2_000_000_000, 2_000_000_000))  # newer, and a better variant would also not matter
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["confirmed"]["H"]["name"] == "masterLight_FILTER-Ha_mono.fits"

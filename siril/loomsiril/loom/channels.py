@@ -94,11 +94,11 @@ def channel_group_problems(paths: Mapping[str, Any], views: Mapping[str, Any]) -
 def _path_key(p: str) -> str:
     """The identity of a path for the duplicate check.
 
-    POSIX-style paths compare exactly, as Loom does. A Windows-style path (a backslash, or a drive letter) is
-    compared with separators unified to "/" and case folded, because Windows file names are case-insensitive.
+    Paths compare exactly as configured, as Loom does: never case-folded or resolved. A Windows-style path (a
+    backslash, or a drive letter) only has its separators unified to "/".
     """
     if "\\" in p or re.match(r"^[A-Za-z]:", p):
-        return p.replace("\\", "/").lower()
+        return p.replace("\\", "/")
     return p
 
 
