@@ -7,12 +7,17 @@ name: PixInsight CI
 #
 #    pixinsight/ci/package.sh
 #
+# Runs on main and pull requests only when pixinsight/** (or this file)
+# changed; a v* tag push always runs (path filters are not applied to tags).
+#
 on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+    paths: [ 'pixinsight/**', '.github/workflows/ci.yml' ]
   pull_request:
     branches: [ main ]
+    paths: [ 'pixinsight/**', '.github/workflows/ci.yml' ]
   workflow_dispatch:
 
 # Every run: step starts in pixinsight/, so the paths below are as they were

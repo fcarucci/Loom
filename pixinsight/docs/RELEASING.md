@@ -21,6 +21,7 @@ Standing rules:
 - Releases are ALWAYS made by the release script with `--push`: `cd pixinsight && ci/release.sh <version> --key-dir <folder> --push`. Never run it without `--push` and hand-push the tag or branch.
 - Make sure CI on `main` is green and the tree is clean on `main` BEFORE starting. The script pushes `main` and the tag at its end, and a tag push triggers the publishing run and cannot be taken back.
 - One `v*` tag releases both the PixInsight scripts and the Siril port.
+- CI on main runs only for the part that changed (pixinsight/** or siril/**); tag pushes always run both workflows.
 - If ssh to `github.com:22` is blocked, set `GIT_SSH_COMMAND='ssh -o Hostname=ssh.github.com -o Port=443'` for the script (ssh over 443).
 - Release tags are SSH-signed and show as Verified on GitHub. The script creates the tag with `git tag -s`, runs `git tag -v` on it, and aborts BEFORE any push if it does not verify. One-time setup (local to the repo, no GPG):
   - `git config --local gpg.format ssh`
