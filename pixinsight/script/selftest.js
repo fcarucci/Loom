@@ -22457,8 +22457,76 @@ function runPipeTests()
       check( "L-Pro is noted once", lpLog( "L-Pro" ),
              [ "colour calibration does not model the L-Pro filter in front of the camera" ] );
       check( "CLS CCD is noted", lpLog( "CLS CCD" ).length, 1 );
+      check( "a branded L-Pro is noted once", lpLog( "Optolong L-Pro" ),
+             [ "colour calibration does not model the Optolong L-Pro filter in front of the camera" ] );
+      check( "a sized, branded L-Pro is noted once", lpLog( "Optolong L-Pro 2\"" ).length, 1 );
+      check( "a branded CLS is noted once", lpLog( "Optolong CLS" ).length, 1 );
+      check( "a sized CLS-CCD is noted once", lpLog( "Optolong CLS-CCD 2\"" ).length, 1 );
       check( "UV/IR cut is not noted", lpLog( "UV/IR Cut" ), [] );
       check( "L-eXtreme is not noted for the broadband colour master", lpLog( "L-eXtreme" ), [] );
+      // An OSC channel's stage parameters do not look up the camera's QE curve.
+      var qeAsked = 0, realQe2 = Steps.deviceCurveForImage, realMgc2 = Steps.configuredMGC,
+          realStudio2 = Steps.studioAvailable;
+      Steps.deviceCurveForImage = function() { ++qeAsked; return { name: "camera QE" }; };
+      Steps.configuredMGC = function() { return null; };
+      Steps.studioAvailable = function() { return false; };
+      var oscStageQe, monoStageQe;
+      try
+      {
+         oscStageQe = Pipeline.broadbandStages( "R", { group: "OSC", instrume: "ZWO ASI2600MC" }, oscConfig() ).spfc.qe;
+         var askedForOsc = qeAsked;
+         monoStageQe = Pipeline.broadbandStages( "R", { instrume: "ZWO ASI2600MM" }, monoCfg ).spfc.qe;
+         check( "an OSC channel does not look up a camera QE curve", askedForOsc, 0 );
+      }
+      finally { Steps.deviceCurveForImage = realQe2; Steps.configuredMGC = realMgc2; Steps.studioAvailable = realStudio2; }
+      check( "OSC qe is Ideal QE; mono qe is the camera's", [ oscStageQe, monoStageQe ],
+             [ "Ideal QE curve", "camera QE" ] );
+
+      // The composite's own stage parameters carry the effective filters.
+      var effParams = null, realBsk = Pipeline.buildStageKeys;
+      var monoFiltersToo = oscConfig();
+      monoFiltersToo.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      Pipeline.buildStageKeys = function( src, params ) { effParams = params; return realBsk( src, params ); };
+      try { chainKeys( function() { Pipeline.buildRGB( oscChans, monoFiltersToo, reg, monoCommon, null, null ); } ); }
+      finally { Pipeline.buildStageKeys = realBsk; }
+      check( "composite spfc and spcc parameters carry the sensor curves, not config.filters",
+             [ effParams.spfcRGB.filters.G, effParams.spccRGB.filters.G, effParams.spccRGB.filters.R ],
+             [ sensor.G, sensor.G, sensor.R ] );
+
+      // The clean reference calibrates with the effective filters.
+      var refSeen = [];
+      var keepFns = [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
+                      "registerCleanChannel", "releaseTemps" ].map( function( n ) { return Pipeline[n]; } );
+      var keepSteps = [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].map( function( n ) { return Steps[n]; } );
+      var keepFree = Util.freeWindowId, keepLog3 = Util.log;
+      Pipeline.cleanWhiteBalanceKey = function() { return "k"; };
+      Pipeline.cleanWhiteBalanceCachePath = function() { return "p"; };
+      Pipeline.cachedCleanWhiteBalance = function() { return null; };
+      Pipeline.registerCleanChannel = function() { return {}; };
+      Pipeline.releaseTemps = function() {};
+      Util.freeWindowId = function( id ) { return id; };
+      Util.log = function() {};
+      Steps.combineRGB = function() { return { mainView: {} }; };
+      Steps.solve = function() {};
+      Steps.spfc = function( v, f, ch, ins, filters ) { refSeen.push( [ "spfc", ins, filters.G ] ); };
+      Steps.spccRGB = function( v, ins, filters ) { refSeen.push( [ "spcc", ins, filters.G ] ); };
+      Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
+      try
+      {
+         var cleanCfg = oscConfig(); cleanCfg.useCache = false;
+         cleanCfg.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+         Pipeline.measureCleanWhiteBalance( oscChans, cleanCfg, reg, monoCommon, null, {}, "ref" );
+      }
+      finally
+      {
+         [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
+           "registerCleanChannel", "releaseTemps" ].forEach( function( n, i ) { Pipeline[n] = keepFns[i]; } );
+         [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].forEach( function( n, i ) { Steps[n] = keepSteps[i]; } );
+         Util.freeWindowId = keepFree; Util.log = keepLog3;
+      }
+      check( "the clean reference calibrates with the sensor curves and no camera", refSeen,
+             [ [ "spfc", null, sensor.G ], [ "spcc", null, sensor.G ] ] );
+
       var lp = oscConfig();
       check( "an L-Pro run has no sensor problem", Pipeline.oscSensorProblems( lp, function() { return true; } ), [] );
    } )();

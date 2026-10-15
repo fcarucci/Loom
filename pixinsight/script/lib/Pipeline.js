@@ -2398,7 +2398,10 @@ Pipeline.correctBroadband = function( chans, config, reg )
 Pipeline.broadbandStages = function( bk, bc, config )
 {
    var chosenFilter = config.filters ? config.filters[bk] : null;
-   var qe = Steps.deviceCurveForImage( bc.instrume );
+   // A colour master is calibrated against Ideal QE, not its camera's curve,
+   // so the camera's curve is not looked up (and not logged) for it.
+   var isOsc = ( bc.group == "OSC" );
+   var qe = isOsc ? null : Steps.deviceCurveForImage( bc.instrume );
    var mgcCfg = Steps.configuredMGC( config.marsPath );
    var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
                    mgcCfg.marsDatabaseFiles.slice().sort() : [];
@@ -2407,8 +2410,8 @@ Pipeline.broadbandStages = function( bk, bc, config )
       solve: {},
       // channel key + chosen filter + resolved QE curve name: anything
       // that changes what SPFC actually calibrates against.
-      spfc: ( bc.group == "OSC" ) ? Pipeline.oscSpfcParams( bk, config )
-                                  : { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
+      spfc: isOsc ? Pipeline.oscSpfcParams( bk, config )
+                      : { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
       // the MARS database file list, not just "MGC ran" -- a different
       // database gives a different correction from the same input.
       mgc: { marsFiles: marsFiles },
@@ -2766,7 +2769,8 @@ Pipeline.compositeInstrument = function( chans, refKey )
    if ( oscKeys.length > 0 )
    {
       var fi = Util.oscFilterInfo( chans[oscKeys[0]].filter );
-      if ( fi && [ "lpro", "cls", "clsccd" ].indexOf( Util.normaliseFilter( fi.name ) ) >= 0 )
+      if ( fi && [ "lpro", "cls", "clsccd" ].indexOf(
+                Util.normaliseFilter( Util.oscModelName( chans[oscKeys[0]].filter ) ) ) >= 0 )
          Util.log( "spcc", "colour calibration does not model the " + fi.name +
                            " filter in front of the camera" );
    }
