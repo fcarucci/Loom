@@ -794,6 +794,65 @@ Pipeline.buildStageKeys = function( sourceKey, params )
 };
 
 /*
+ * The plane each colour master contributes, per kind. The index is the
+ * plane in the master's pixel order; the key is the logical channel it
+ * becomes. OSC is broadband (R, G, B); OSCNB is dual-band: H is plane 0 and
+ * O is plane 1 (green) alone, see the design's Splitting section.
+ */
+Pipeline.OSC_RECIPES = { OSC: { R: 0, G: 1, B: 2 }, OSCNB: { H: 0, O: 1 } };
+
+/*
+ * The identity of one colour group: the master's fingerprint plus its kind.
+ * Everything that keys a sibling, the group registration or the validation
+ * sidecar starts from it. The identity is hashed before it is used as a key,
+ * since its text holds a fingerprint and is never a file name.
+ */
+Pipeline.oscGroupIdentity = function( fingerprint, kind )
+{
+   return fingerprint + "|osc:" + kind;
+};
+
+/*
+ * The source key of one sibling plane of a colour group. Hashed so the key
+ * keeps the cache's hexadecimal form, which is a valid file name on every
+ * platform, whatever the master's path or view id holds.
+ */
+Pipeline.oscSiblingKey = function( groupIdentity, plane )
+{
+   return Cache.hash( groupIdentity + "|plane:" + plane );
+};
+
+/*
+ * The name of the validation sidecar for a colour group. The sidecar keeps
+ * the first load's verdict and plane statistics, so a cache hit logs the same
+ * values without reopening the master. Hashed for the same reason as the keys.
+ */
+Pipeline.oscValidateName = function( groupIdentity )
+{
+   return Cache.hash( groupIdentity + "|validate" ) + ".osc.json";
+};
+
+/*
+ * The cache key of a grouped registration: the hash of the sibling keys in
+ * plane order, chained with the stage and its parameters (the reference and
+ * the plane mapping). One changed sibling changes the key, so the whole group
+ * registers again, since one transform drives all of its planes.
+ */
+Pipeline.oscGroupRegisterKey = function( stage, siblingKeysInPlaneOrder, params )
+{
+   return Cache.chainKey( Cache.hash( siblingKeysInPlaneOrder.join( "|" ) ), stage, params );
+};
+
+/*
+ * The cache key of one registered sibling plane, derived from its group's
+ * registration key. Hashed like the other keys, for the same reason.
+ */
+Pipeline.oscRegisteredSiblingKey = function( groupKey, plane )
+{
+   return Cache.hash( groupKey + "|plane:" + plane );
+};
+
+/*
  * The stage to restart from: the LATEST entry that is complete AND
  * actually loads, with its companion already in hand.
  *
@@ -1112,20 +1171,31 @@ Pipeline.cropHalosTag = function( common, config )
 
 /*
  * The measurement's cache key, from the three pre-correction keys, the
- * crop, the filters and the instrument. Throws if a channel has no key.
+ * crop, the reference (refKey, the reference's cache key), and the sensor.
+ * An OSC run keys on its sensor curves and the QE curve, not on the mono
+ * filters; a mono run keys on its filters and instrument as before. The
+ * reference is in the key for both, so replacing it measures again. Throws
+ * if a channel has no key; a null refKey is hashed as "null".
  */
-Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume )
+Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume, refKey )
 {
    var trio = Util.RGB_GROUP;
    for ( var t = 0; t < trio.length; ++t )
       if ( !chans[trio[t]].cleanKey )
          throw new Error( "no pre-correction cache key for " + trio[t] );
 
+   var response;
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
+      response = "|osc:" + JSON.stringify( config.oscSensor || {} ) +
+                 "|qe:" + Util.IDEAL_QE_CURVE_NAME;
+   else
+      response = "|" + JSON.stringify( config.filters || {} ) +
+                 "|" + String( lumInstrume );
+
    return Cache.hash( "cleanwb|" + chans.R.cleanKey + "|" +
                       chans.G.cleanKey + "|" + chans.B.cleanKey +
-                      Pipeline.cropTag( common ) +
-                      "|" + JSON.stringify( config.filters || {} ) +
-                      "|" + String( lumInstrume ) );
+                      Pipeline.cropTag( common ) + response +
+                      "|ref:" + String( refKey ) );
 };
 
 /* The gains cached by an earlier measurement, or null to measure again. */
@@ -1208,7 +1278,8 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
                                               lumInstrume, refView, refFingerprint )
 {
    var trio = Util.RGB_GROUP;
-   var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume );
+   var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume,
+                                                              refFingerprint );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
 
    var cached = Pipeline.cachedCleanWhiteBalance( config, cachePath, cacheKey );

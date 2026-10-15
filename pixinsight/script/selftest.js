@@ -21277,6 +21277,49 @@ function runPipeTests()
       }
    }
 
+   } if ( testGroup( "osc.keys" ) ) {
+   ( function()
+   {
+      var gid = Pipeline.oscGroupIdentity( "fp-abc", "broadband" );
+      check( "oscGroupIdentity", gid, "fp-abc|osc:broadband" );
+      var hexOnly = /^[0-9a-f]+$/;
+      var k0 = Pipeline.oscSiblingKey( gid, 0 ), k1 = Pipeline.oscSiblingKey( gid, 1 );
+      check( "sibling keys are hexadecimal", [ hexOnly.test( k0 ), hexOnly.test( k1 ) ], [ true, true ] );
+      check( "sibling keys differ by plane", k0 != k1, true );
+      check( "sibling key changes with kind",
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp-abc", "dualband" ), 0 ) != k0, true );
+      var vname = Pipeline.oscValidateName( gid );
+      check( "validate sidecar name", /^[0-9a-f]+\.osc\.json$/.test( vname ), true );
+      var g1 = Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, k1, "k2" ], { ref: "refA", planes: "R,G,B" } );
+      check( "group key hexadecimal", hexOnly.test( g1 ), true );
+      check( "group key changes with one sibling",
+             Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, "k1x", "k2" ], { ref: "refA", planes: "R,G,B" } ) != g1, true );
+      check( "group key changes with the reference",
+             Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, k1, "k2" ], { ref: "refB", planes: "R,G,B" } ) != g1, true );
+      check( "registered sibling keys hexadecimal",
+             hexOnly.test( Pipeline.oscRegisteredSiblingKey( g1, 2 ) ), true );
+
+      var wbChans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
+      var common = { x0: 1, y0: 2, x1: 300, y1: 200 };
+      var mono = { paths: { R: "/m/r", G: "/m/g", B: "/m/b" }, filters: { R: "Astronomik R" } };
+      var osc = { paths: { OSC: "/m/rgb" }, oscSensor: { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" } };
+      var osc2 = JSON.parse( JSON.stringify( osc ) ); osc2.oscSensor.G = "Other G";
+      check( "clean wb key changes with the reference (OSC)",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refB" ), true );
+      check( "clean wb key changes with the sensor",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc2, common, null, "refA" ), true );
+      check( "clean wb key changes with the reference (mono)",
+             Pipeline.cleanWhiteBalanceKey( wbChans, mono, common, "CAM", "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, mono, common, "CAM", "refB" ), true );
+      check( "clean wb key of an OSC run ignores the mono filters",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) ==
+             Pipeline.cleanWhiteBalanceKey( wbChans, { paths: osc.paths, oscSensor: osc.oscSensor, filters: { R: "X" } },
+                                            common, null, "refA" ), true );
+      check( "clean wb key is hexadecimal", /^[0-9a-f]+$/.test(
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) ), true );
+   } )();
    } if ( testGroup( "imageinfo" ) ) {
    /*
     * readImageInfo, tryHeaderRead, imageInfoCacheKey and the cache they
@@ -23014,13 +23057,13 @@ function runFinishingTests()
          var wbChans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
          check( "finishing: the source key texts, crop and halos included",
                 [ capture( "RGB", everything ).src, capture( "SHO", halos ).src, capture( "L", halos ).src,
-                  Pipeline.cleanWhiteBalanceKey( wbChans, { filters: { R: "Astronomik R" } }, common, "CAM" ),
-                  Pipeline.cleanWhiteBalanceKey( wbChans, {}, common, null ) ],
+                  Pipeline.cleanWhiteBalanceKey( wbChans, { filters: { R: "Astronomik R" } }, common, "CAM", "refL" ),
+                  Pipeline.cleanWhiteBalanceKey( wbChans, {}, common, null, "refL" ) ],
                 [ "H(rgb|keyR|keyG|keyB|crop:1,2,300,200|halos:0)",
                   "H(palette|SHO|keyS|keyH|keyO|crop:1,2,300,200|halos:1)",
                   "H(lstars|keyL|crop:1,2,300,200|halos:1)",
-                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{\"R\":\"Astronomik R\"}|CAM)",
-                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{}|null)" ] );
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{\"R\":\"Astronomik R\"}|CAM|ref:refL)",
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{}|null|ref:refL)" ] );
       }
       finally { restore(); }
    } )();
