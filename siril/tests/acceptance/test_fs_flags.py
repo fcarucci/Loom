@@ -94,8 +94,9 @@ def test_dropped_below_ten_percent_of_the_median_star_count() -> None:
     lst = sharp_channel()
     lst[2]["stars"] = 15
     only(flags(lst), {2: ["dropped"]})
-    lst[2]["stars"] = 25
-    only(flags(lst), {})
+    for kept in (21, 22, 23, 25):
+        lst[2]["stars"] = kept
+        only(flags(lst), {})
 
 
 def test_a_low_star_count_alone_names_nothing() -> None:
@@ -120,6 +121,8 @@ def test_not_quite_wide_enough_is_not_tagged() -> None:
     lst = sharp_channel()
     lst[10]["fwhm"] = 3.5
     only(flags(lst), {})
+    lst[10]["fwhm"] = 3.7          # above the 3.62 cut, below 3.78 (25% above): still a blurred frame
+    only(flags(lst), {10: ["seeing"]})
 
 
 def test_focus_wide_across_consecutive_frames() -> None:
