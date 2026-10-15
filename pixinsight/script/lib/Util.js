@@ -625,9 +625,10 @@ Util.channelSupplied = function( paths, views, k )
 Util.channelGroupProblems = function( paths, views )
 {
    var problems = [];
+   var supplied = Util.suppliedChannels( { paths: paths, views: views || {} } );
    var rgbPresent = [], rgbMissing = [];
    for ( var r = 0; r < Util.RGB_GROUP.length; ++r )
-      ( Util.channelSupplied( paths, views, Util.RGB_GROUP[r] ) ? rgbPresent : rgbMissing )
+      ( supplied.indexOf( Util.RGB_GROUP[r] ) >= 0 ? rgbPresent : rgbMissing )
          .push( Util.RGB_GROUP[r] );
 
    if ( rgbPresent.length > 0 && rgbMissing.length > 0 )
@@ -635,7 +636,7 @@ Util.channelGroupProblems = function( paths, views )
                      ". Supply all three or none." );
 
    var nbCount = Util.NARROWBAND.filter( function( k )
-                    { return Util.channelSupplied( paths, views, k ); } ).length;
+                    { return supplied.indexOf( k ) >= 0; } ).length;
    if ( rgbPresent.length == 0 && nbCount == 0 )
       problems.push( "Nothing to do: supply R, G and B, or at least one of H, S, O" );
    return problems;
@@ -646,9 +647,10 @@ Util.duplicateFileProblems = function( paths )
 {
    var problems = [];
    var seen = {};
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+   var keys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var j = 0; j < keys.length; ++j )
    {
-      var k = Util.CHANNELS[j];
+      var k = keys[j];
       var p = paths[k];
       if ( !p || p.length == 0 )
          continue;
@@ -658,6 +660,98 @@ Util.duplicateFileProblems = function( paths )
          seen[p] = k;
    }
    return problems;
+};
+
+// The two colour-master slots and the logical channels each one stands for.
+Util.COLOUR_SLOTS = [ "OSC", "OSCNB" ];
+Util.COLOUR_MEMBERS = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+
+// Colour slots with a path or an open view, in COLOUR_SLOTS order.
+// paths and views may be missing, or lack the colour keys.
+Util.colourSupplied = function( config )
+{
+   var paths = ( config && config.paths ) || {};
+   var views = ( config && config.views ) || {};
+   return Util.COLOUR_SLOTS.filter( function( k ) { return Util.channelSupplied( paths, views, k ); } );
+};
+
+// Mono channels (keys of Util.CHANNELS) with a path or an open view.
+Util.monoSupplied = function( config )
+{
+   var paths = ( config && config.paths ) || {};
+   var views = ( config && config.views ) || {};
+   return Util.CHANNELS.filter( function( k ) { return Util.channelSupplied( paths, views, k ); } );
+};
+
+// Logical channels supplied: mono ones plus the members of each colour
+// slot, in Util.CHANNELS order, each once.
+Util.suppliedChannels = function( config )
+{
+   var have = Util.monoSupplied( config );
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      Util.COLOUR_MEMBERS[slot].forEach( function( k )
+      {
+         if ( have.indexOf( k ) < 0 )
+            have.push( k );
+      } );
+   } );
+   return Util.CHANNELS.filter( function( k ) { return have.indexOf( k ) >= 0; } );
+};
+
+// Colour masters and mono masters are two different kinds of run. The
+// message names the inputs: a file's name, or an open view's id.
+Util.colourMixProblem = function( config )
+{
+   var colour = Util.colourSupplied( config ), mono = Util.monoSupplied( config );
+   if ( colour.length == 0 || mono.length == 0 )
+      return null;
+   var paths = config.paths || {}, views = config.views || {};
+   function named( k )
+   {
+      var p = paths[k] != undefined && paths[k].length > 0 ? String( paths[k] ).replace( /^.*[\\\/]/, "" )
+                                                          : String( views[k] );
+      return k + "=" + p;
+   }
+   return "colour masters cannot be combined with mono masters; " +
+          "choose either the colour masters or the mono masters" +
+          " (colour: " + colour.map( named ).join( ", " ) + "; mono: " + mono.map( named ).join( ", " ) + ")";
+};
+
+/*
+ * The key a remembered kind choice is stored under: the normalised FILTER
+ * name, or the file path (an open view's id) when there is no filter name.
+ */
+Util.oscKindKey = function( filterValue, path )
+{
+   var f = Util.normaliseFilter( filterValue );
+   return f.length > 0 ? "filter:" + f : "path:" + path;
+};
+
+/*
+ * The kind a colour master is treated as. An unsupported filter is never
+ * overridable; then a remembered choice; then a confident detection;
+ * otherwise no kind (source "none") and the caller must ask.
+ */
+Util.effectiveOscKind = function( slot, filterValue, path, choices )
+{
+   var info = Util.oscFilterInfo( filterValue );
+   var name = info ? info.name : ( filterValue == null ? "" : String( filterValue ) );
+   if ( info && info.kind == "unsupported" )
+      return { kind: info.kind, name: info.name, confident: info.confident,
+               haNm: info.haNm, oiiiNm: info.oiiiNm, source: "detected" };
+
+   var key = Util.oscKindKey( filterValue, path );
+   var choice = choices && Object.prototype.hasOwnProperty.call( choices, key ) ? choices[key] : null;
+   if ( choice == "broadband" || choice == "dualband" )
+      return { kind: choice, name: name, confident: true,
+               haNm: info ? info.haNm : null, oiiiNm: info ? info.oiiiNm : null, source: "choice" };
+
+   if ( info && info.confident )
+      return { kind: info.kind, name: info.name, confident: info.confident,
+               haNm: info.haNm, oiiiNm: info.oiiiNm, source: "detected" };
+
+   return { kind: null, name: name, confident: false, haNm: null, oiiiNm: null, source: "none" };
 };
 
 /*

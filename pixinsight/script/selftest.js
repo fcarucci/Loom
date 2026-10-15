@@ -750,7 +750,9 @@ function configTranscripts()
       noiseLevelL: "low", sharpenTool: Steps.SHARPEN_TOOL_BXT, starReduction: "medium",
       detailLevel: "high", gradientTool: Steps.GRADIENT_TOOL_STUDIO, useGraXpert: true,
       autoUpdate: false, useCache: false, smoothing: 0.25, cacheDir: "/Volumes/X/cache",
-      filter_L: "Antlia L", filter_R: "Antlia R", filter_G: "Antlia G", filter_B: "Antlia B"
+      filter_L: "Antlia L", filter_R: "Antlia R", filter_G: "Antlia G", filter_B: "Antlia B",
+      oscSensor: JSON.stringify( { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" } ),
+      oscKindChoices: JSON.stringify( { "filter:duo": "dualband" } )
    };
 
    load( "empty", {}, {} );
@@ -763,7 +765,8 @@ function configTranscripts()
       savedList: "", palettes: "", projectName: "", exportDir: "", stretchMethod: "",
       marsPath: "", starTool: "", noiseTool: "", noiseLevel: "", noiseLevelL: "",
       sharpenTool: "", starReduction: "", detailLevel: "", gradientTool: "", cacheDir: "",
-      filter_L: "", filter_R: "", filter_G: "", filter_B: "" } ), {} );
+      filter_L: "", filter_R: "", filter_G: "", filter_B: "", oscSensor: "", oscKindChoices: "" } ), {} );
+   load( "malformed OSC choices are ignored", stored( { oscSensor: "{not json", oscKindChoices: "[1,2]" } ), {} );
    load( "narrowbandBandwidth 0", stored( { narrowbandBandwidth: 0 } ), {} );
    load( "narrowbandBandwidth negative", stored( { narrowbandBandwidth: -2 } ), {} );
    load( "Parameters and Settings disagree on every dual key",
@@ -774,7 +777,8 @@ function configTranscripts()
    load( "Parameters only, every name",
          {},
          { path_L: "/m/L.xisf", path_R: "/m/R.xisf", path_G: "", path_B: "/m/B.xisf",
-           path_H: "/m/H.xisf", path_S: "", path_O: "/m/O.xisf", savedList: "/m/list",
+           path_H: "/m/H.xisf", path_S: "", path_O: "/m/O.xisf", path_OSC: "/m/rgb.xisf", path_OSCNB: "",
+           savedList: "/m/list",
            smoothing: 0.7, gradientTool: Steps.GRADIENT_TOOL_NONE, useGraXpert: true,
            graxpertNarrowband: true, useCache: false, autoUpdate: false } );
    load( "palettes with empty entries", stored( { palettes: ",,SHO," } ), {} );
@@ -796,7 +800,8 @@ function configTranscripts()
                    detailLevel: "high" } ), {} );
 
    var all = defaultConfig();
-   all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf" };
+   all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf",
+                 OSC: "", OSCNB: "" };
    all.views = { L: "L_view" };
    all.savedList = "/m/list";
    all.filters = { L: "Antlia L", R: "Antlia R", G: "Antlia G", B: "Antlia B" };
@@ -828,6 +833,9 @@ function configTranscripts()
    all.useCache = false;
    all.cacheDir = "/Volumes/X/cache";
    all.ignoreCache = true;
+   all.oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+   all.oscKindChoices = { "filter:duonarrowband": "dualband", "path:/m/x.xisf": "broadband" };
+   all.oscKinds = { OSC: "broadband" };
 
    var blank = defaultConfig();
    [ "savedList", "gradientTool", "stretchMethod", "projectName", "exportDir", "marsPath", "starTool",
@@ -875,6 +883,7 @@ function configTranscripts()
    persisted.validateOnly = false;
    persisted.keepWindowsOnError = false;
    persisted.ignoreCache = false;
+   persisted.oscKinds = {};
    out.roundTripExpected = persisted;
 
    return out;
@@ -20189,9 +20198,11 @@ function runSolveTests()
     */
    ( function()
    {
-      var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache" ];
+      var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache", "oscKinds" ];
       var SPECIAL = {
-         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "" },
+         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "/p/OSC", OSCNB: "" },
+         oscSensor: { R: "r", G: "g", B: "b" },
+         oscKindChoices: { "filter:duo": "dualband" },
          palettes: [ "SHO" ],
          parallaxFamily: "aesthetics",
          filters: { L: "F" }
@@ -21689,6 +21700,68 @@ function runPipeTests()
                                        { criticalln: function() { throw new Error( "logged" ); },
                                          show: function() { throw new Error( "shown" ); } } ),
                 true );
+   } )();
+   } if ( testGroup( "osc.config" ) ) {
+   ( function()
+   {
+      function oscConfig( paths, views )
+      {
+         var c = defaultConfig();
+         for ( var k in paths ) c.paths[k] = paths[k];
+         for ( var v in ( views || {} ) ) c.views[v] = views[v];
+         return c;
+      }
+      check( "suppliedChannels OSC", Util.suppliedChannels( oscConfig( { OSC: "/m/rgb.xisf" } ) ), [ "R", "G", "B" ] );
+      check( "suppliedChannels OSCNB", Util.suppliedChannels( oscConfig( { OSCNB: "/m/nb.xisf" } ) ), [ "H", "O" ] );
+      check( "suppliedChannels both", Util.suppliedChannels( oscConfig( { OSC: "/m/a", OSCNB: "/m/b" } ) ),
+             [ "R", "G", "B", "H", "O" ] );
+      check( "suppliedChannels mono unchanged", Util.suppliedChannels( oscConfig( { L: "/m/l", H: "/m/h" } ) ),
+             [ "L", "H" ] );
+      check( "suppliedChannels colour view",
+             Util.suppliedChannels( oscConfig( {}, { OSC: "rgb_view" } ) ), [ "R", "G", "B" ] );
+      check( "suppliedChannels of an empty config", Util.suppliedChannels( {} ), [] );
+      check( "colourSupplied with no colour keys at all", Util.colourSupplied( { paths: { L: "/m/l" } } ), [] );
+      var MIX = "colour masters cannot be combined with mono masters; choose either the colour masters or the mono masters";
+      var mix = Util.colourMixProblem( oscConfig( { OSC: "/m/dir/a.xisf", L: "/m/dir/l.xisf" } ) );
+      check( "colourMixProblem mixed keeps the verbatim text", mix.indexOf( MIX ), 0 );
+      check( "colourMixProblem names the inputs", mix.substring( MIX.length ), " (colour: OSC=a.xisf; mono: L=l.xisf)" );
+      check( "colourMixProblem names a view", Util.colourMixProblem( oscConfig( { OSCNB: "/m/b.xisf" }, { H: "ha_view" } ) )
+             .substring( MIX.length ), " (colour: OSCNB=b.xisf; mono: H=ha_view)" );
+      check( "colourMixProblem colour only", Util.colourMixProblem( oscConfig( { OSC: "/m/a", OSCNB: "/m/b" } ) ), null );
+      check( "colourMixProblem mono only", Util.colourMixProblem( oscConfig( { L: "/m/l" } ) ), null );
+      check( "validateSelection OSCNB alone has something to do", Util.validateSelection( { OSCNB: "/m/b" }, {} ).length, 0 );
+      check( "validateSelection OSC alone has something to do", Util.validateSelection( { OSC: "/m/a" }, {} ).length, 0 );
+      check( "validateSelection nothing still says so", Util.validateSelection( {}, {} ),
+             [ "Nothing to do: supply R, G and B, or at least one of H, S, O" ] );
+      check( "duplicateFileProblems colour vs mono",
+             Util.duplicateFileProblems( { OSC: "/m/a.xisf", R: "/m/a.xisf" } ).length, 1 );
+      check( "oscKindKey filter", Util.oscKindKey( "L-eXtreme", "/m/a" ), "filter:lextreme" );
+      check( "oscKindKey blank uses path", Util.oscKindKey( "", "/m/a" ), "path:/m/a" );
+      var choices = { "path:/m/a": "dualband" };
+      check( "effectiveOscKind choice beats detection", Util.effectiveOscKind( "OSC", "", "/m/a", choices ).kind, "dualband" );
+      check( "effectiveOscKind choice source", Util.effectiveOscKind( "OSC", "", "/m/a", choices ).source, "choice" );
+      check( "effectiveOscKind other blank file not affected", Util.effectiveOscKind( "OSC", "", "/m/b", choices ).source, "detected" );
+      check( "effectiveOscKind unsupported cannot be overridden",
+             Util.effectiveOscKind( "OSCNB", "ALP-T SII/Hb", "/m/c", { "filter:alptsiihb": "dualband" } ).kind, "unsupported" );
+      check( "effectiveOscKind unknown name has no kind",
+             Util.effectiveOscKind( "OSCNB", "Astronomik X", "/m/d", {} ).source, "none" );
+      check( "effectiveOscKind accepts null choices", Util.effectiveOscKind( "OSCNB", "L-eXtreme", "/m/e", null ).source, "detected" );
+      check( "effectiveOscKind always returns every field",
+             Object.keys( Util.effectiveOscKind( "OSC", "Astronomik X", "/m/d", undefined ) ).sort(),
+             [ "confident", "haNm", "kind", "name", "oiiiNm", "source" ] );
+
+      var c1 = defaultConfig();
+      c1.oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+      c1.oscKindChoices = { "filter:duonarrowband": "dualband" };
+      c1.paths.OSC = "/m/rgb.xisf";
+      var saved = withConfigStore( {}, {}, function() { saveConfig( c1 ); } );
+      var back = withConfigStore( saved.stored, saved.paramsSet, function() { return loadConfig(); } );
+      check( "Config persists oscSensor", back.result.oscSensor, c1.oscSensor );
+      check( "Config persists oscKindChoices", back.result.oscKindChoices, c1.oscKindChoices );
+      check( "Config persists the OSC path through Parameters", back.result.paths.OSC, "/m/rgb.xisf" );
+      check( "Config does not persist oscKinds", ( function() { var c = defaultConfig(); c.oscKinds = { OSC: "broadband" };
+             var s = withConfigStore( {}, {}, function() { saveConfig( c ); } );
+             return withConfigStore( s.stored, s.paramsSet, function() { return loadConfig(); } ).result.oscKinds; } )(), {} );
    } )();
    } if ( testGroup( "pipeline.run" ) ) {
    /*
