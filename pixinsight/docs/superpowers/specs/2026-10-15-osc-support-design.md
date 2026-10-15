@@ -1,7 +1,7 @@
 # Loom: one-shot colour (OSC) masters — design
 
 **Date:** 2026-10-15
-**Status:** revision 4, after three adversarial review rounds
+**Status:** revision 5: revision 4 after three adversarial review rounds, with the owner decisions recorded (colour runs take no mono masters; a light-pollution filter runs normally)
 
 ## What this is for
 
@@ -24,6 +24,8 @@ Ha and OIII for the narrowband palettes.
   colour-native pipeline.
 - **One broadband and/or one dual-band colour master per run.** Several masters
   of one kind are integrated before Loom, in WBPP.
+- **Colour runs are colour only.** A run that uses a colour master takes no mono
+  master (L, R, G, B, H, S or O). Mixing colour and mono rigs is out of scope.
 - **Quad-band is dual-band.** On a colour sensor Ha and SII both land in the red
   pixels and cannot be separated, so a quad-band filter is extracted exactly as a
   dual-band one, and its `H` carries SII as well (see Mixed passbands).
@@ -102,11 +104,13 @@ beside the control clears the remembered choice for that key.
 **Open views.** A three-channel open view can be chosen for `OSC` or `OSCNB`,
 with its kind from its `FILTER` keyword and the same override.
 
-**Conflicts are preflight problems,** each naming both inputs:
-
-- `OSC` excludes mono R, G and B;
-- `OSCNB` excludes mono H and O;
-- mono L and mono S are allowed beside either.
+**Mixed selections are a preflight error** (the run does not start). A
+configuration with a colour input (`OSC` or `OSCNB`) and any mono input is
+refused, naming the inputs:
+"colour masters cannot be combined with mono masters; choose either the colour
+masters or the mono masters". In folder discovery, when both colour and mono
+winners are found, the masters list shows both and the run stays blocked until
+the user clears one side.
 
 ## Logical channels everywhere
 
@@ -199,21 +203,14 @@ This applies to:
 - per-channel SPFC of derived `R`, `G`, `B` (`Pipeline.broadbandStages` passes the
   sensor curve as the channel's filter and Ideal QE as its QE; both are already
   in the `spfc` stage's cache parameters, so the key changes with the sensor);
-- SPFC and SPCC of the RGB composite (`spfcRGB`, `spccRGB`), whatever camera a
-  mono L came from: `Pipeline.compositeInstrument` returns null for an `OSC`
-  composite, which `Steps.deviceCurveForImage` already turns into the Ideal QE
-  curve;
+- SPFC and SPCC of the RGB composite (`spfcRGB`, `spccRGB`):
+  `Pipeline.compositeInstrument` returns null for an `OSC` composite, which
+  `Steps.deviceCurveForImage` already turns into the Ideal QE curve;
 - the clean white-balance measurement (below).
 
-A mono L keeps its own camera and filter for its own SPFC, as today.
-
-**Camera inheritance stays within mono masters.** `Pipeline.inheritInstrument`
-lends a camera name to a master whose header lacks `INSTRUME` (WBPP's autocrop
-drops it). It now collects camera names from mono channels only, and lends them
-only to mono channels: colour-group siblings neither give nor take a camera (they
-use Ideal QE anyway). A mono L with no camera and no other mono master naming one
-gets the Ideal QE curve, as `Steps.deviceCurveForImage` does today, and the log
-says so.
+**No camera inheritance.** `Pipeline.inheritInstrument` (which lends a camera name
+to a mono master whose header lacks `INSTRUME`) does nothing in a colour run:
+colour-group siblings neither give nor take a camera, since they use Ideal QE.
 
 **A filter in front of the camera.** PixInsight cannot multiply a second curve
 into the sensor curves, so a broadband filter in front (UV/IR, L-Pro, CLS) is not
@@ -227,11 +224,10 @@ problem naming the missing curve, as a missing mono filter is today.
 
 ## Registration
 
-**Reference policy.** With mono L present, L is the reference, as today. Without
-it, a colour group supplies the reference deterministically: `OSC`'s `G` when
-`OSC` is used, else `OSCNB`'s `H`; mono S is never the reference beside a colour
-group. `Pipeline.registrationQuality` is not consulted for colour groups (it
-measures by file path, which siblings share).
+**Reference policy.** A colour group supplies the reference deterministically:
+`OSC`'s `G` when `OSC` is used, else `OSCNB`'s `H`. `Pipeline.registrationQuality`
+is not consulted for colour groups (it measures by file path, which siblings
+share).
 
 **Siblings share one transform.** Registering siblings separately would resample
 each slightly differently and leave colour fringes. So:
@@ -269,7 +265,7 @@ clean planes are cropped with the same `common` rectangle before measuring.
 
 `Pipeline.cleanWhiteBalanceKey` adds three things to what it hashes: the
 reference key, the sensor curve names and the QE curve name. Replacing the
-reference (a new L, say) with the crop unchanged, or changing the sensor,
+reference (a replaced `OSC` master, say) with the crop unchanged, or changing the sensor,
 therefore measures again. The reference key is added for mono runs too, so their
 cached factors are measured once more after the upgrade.
 
@@ -286,11 +282,10 @@ bandwidth.
   bandwidth. `Steps.spccNarrowband` gains per-channel bandwidths for this; mono
   runs pass the single bandwidth to all three, as today. The result is an
   approximation and the log says so.
-- Palette availability follows logical channels: `OSCNB` alone gives HOO; SHO and
-  HSO need a mono S master and are otherwise reported as skipped.
-- **Quad-band with mono S.** The `H` of a quad-band master contains SII, so an SHO
-  or HSO palette would show SII in two channels. **Owner decision needed:** build
-  those palettes with a warning (the default in this revision), or skip them.
+- Palette availability follows logical channels: `OSCNB` gives HOO. SHO and HSO
+  are never built from colour masters. Asking for SHO or HSO in a run with a
+  colour master is a preflight error (the run does not start): "SHO and HSO need
+  SII, which a colour camera cannot separate from Ha: choose HOO".
 - Outputs carry their provenance: every exported channel and palette layer from a
   colour group gets the `LOOMSRC` keyword, and the run log names each palette's
   sources ("H from OSCNB L-eXtreme (Ha, plus SII for quad-band)").
@@ -307,8 +302,11 @@ colour master: kind, filter, how it was split, and the plane statistics.
 
 - Colour masters appear in the masters list with their kind control (above) and
   the detected filter.
-- The channel boxes a colour master replaces (R, G, B or H, O) are greyed, with
-  the reason.
+- While a colour master is selected, the mono channel boxes are greyed, with the
+  reason (colour and mono masters cannot be combined).
+- While a colour master is selected, the SHO and HSO palette boxes are unticked
+  and greyed, with the reason ("needs SII, which a colour camera cannot separate
+  from Ha"); a remembered SHO or HSO choice is not applied to a colour run.
 - While `OSC` is used, the SPCC section shows "Sensor colour filters" (the R, G, B
   sensor curves) in place of the R, G and B filter boxes.
 - Every new option is remembered between runs, like the existing ones.
@@ -326,9 +324,9 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
   adapter (`siril_ops.py`) gains an OSC variant of its SPCC command builder and
   name checks.
 - **Registration of a colour group.** Siril cannot mix one- and three-channel
-  images in one sequence. The reference (mono or derived) is expanded to three
-  identical channels with `rgbcomp`, a two-image colour sequence (reference,
-  group image) is registered with `-layer=` set to the group's alignment plane
+  images in one sequence. The reference (a derived channel of the other group) is
+  expanded to three identical channels with `rgbcomp`, a two-image colour
+  sequence (reference, group image) is registered with `-layer=` set to the group's alignment plane
   (1 for `OSC`, 0 for `OSCNB`), and the registered group image is split back into
   its siblings. A reference group's siblings are not registered.
 - **Calibration identity in the cache.** The Siril port has no per-channel SPFC
@@ -352,13 +350,17 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
   validation sidecar) is hexadecimal.
 - `Util.parseColourMasterName`: hyphenated filters, `_color` / `_RGB`, misleading
   names corrected by the header.
-- Discovery: colour candidates beside mono L and S winners; unnamed colour files;
-  a name-header disagreement.
+- Discovery: colour and mono winners in one folder (both listed, run blocked);
+  unnamed colour files; a name-header disagreement.
 - Overrides: precedence over detection, keyed per filter name and per path for
   blank filters, reset.
 - `Util.suppliedChannels` and every consumer listed above, including `OSCNB`
-  alone (HOO built, SHO reported) and `OSCNB` + S.
-- Conflicts and validation.
+  alone (HOO built).
+- Preflight errors: a colour master with any mono master (both errors' messages
+  checked, run not started); SHO or HSO requested with a colour master (error,
+  run not started), including a remembered SHO choice.
+- Dialog: SHO/HSO boxes and mono boxes greyed while a colour master is selected.
+- Validation.
 - The split: `O` equals the green plane whatever the blue plane holds (synthetic
   masters with independent Hβ and OIII structure, continuum and a background
   gradient); constant planes refused.
@@ -371,25 +373,23 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
 - siblings pixel-aligned after registration, in both the corrected and the clean
   white-balance branch;
 - a changed overlap (a dual-band master covering less of the field) re-registers
-  the clean group; a replacement L with an unchanged crop re-measures the white
-  balance;
+  the clean group; a replaced `OSC` master with an unchanged crop re-measures the
+  white balance;
 - counting opens of the master file: one on a cold run, none on any later run
   while the split planes are cached (whatever later stage is invalidated), one
   after the split planes are removed from the cache; including `OSCNB` alone with
   narrowband gradient removal off;
-- an autocropped mono L without `INSTRUME` beside a labelled `OSC` master does not
-  take the colour camera (Ideal QE, logged);
 - changing one sibling's input re-registers the group; deleting one sibling's
   split re-splits without re-registering;
-- `OSC` with a mono L from another camera: the composite uses the sensor curves
-  and Ideal QE.
+- the composite uses the sensor curves and Ideal QE.
 
 **Siril:** the logic pinned against values recorded from the JavaScript, plus
-`siril`-marked tests in the Docker image: grouped registration with a mono
-reference (mixed channel counts), SPCC with an OSC sensor, warm-cache runs changing
+`siril`-marked tests in the Docker image: grouped registration against the other
+group's derived reference (mixed channel counts), SPCC with an OSC sensor, warm-cache runs changing
 each OSC spectral choice in turn (sensor, front filter, low-pass filter) with
 sharpening on and off, and SPCC called OSC
-then mono and mono then OSC in one session, checking each call's arguments.
+then mono and mono then OSC in one session (separate runs), checking each call's
+arguments.
 
 ## Out of scope
 
@@ -398,6 +398,7 @@ then mono and mono then OSC in one session, checking each call's arguments.
 - Combining the green and blue planes into `O`.
 - Dual-band filters other than Hα/OIII (SII/Hβ and similar).
 - More than one colour master of a kind in one run.
+- Colour and mono masters in one run (mixed rigs).
 - A synthetic luminance from RGB.
 - Modelling a light-pollution filter's curve in calibration.
 - OSC-specific changes to the Frame Selector or the ASIAIR import (both already
