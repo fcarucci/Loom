@@ -18,17 +18,23 @@ Python twin with the same meaning, named in snake_case:
     previewEvictions                606  -> preview_evictions
     trimPreviews                    625  -> PreviewCache.trim_previews
     prunePreviewIndex               635  -> PreviewCache.prune_preview_index
-
-Not ported: clearPreviews (Cache.js 654-665), which nothing in the Frame Selector calls.
+    clearPreviews                   654  -> PreviewCache.clear_previews (the "Clear cache" action)
 
 Differences from the JavaScript, all deliberate:
 
 * No globals. A PreviewCache holds its location: ``cache_dir`` plays the part of ``File.systemTempDirectory`` and the
   previews live in ``<cache_dir>/Loom-previews`` unless ``dir_override`` is set (``Cache.previewDirOverride``).
 * The cache is format-blind. The renderer chooses the file extension (PNG or .npy in the Siril port), so an entry is
-  any regular file in the folder except ``index.json`` and dot-files; its key is the file name without its last
-  extension. The JavaScript keeps only ``*.xisf`` files. Entries are listed sorted by name so that ties in
+  any regular file in the folder except ``index.json``, dot-files, in-progress files (``.part``, ``.tmp``) and the
+  ``stretch-<key>.json`` memos that FrameSelector.js 348 keeps beside the previews; its key is the file name without
+  its last extension. The JavaScript keeps only ``*.xisf`` files. Entries are listed sorted by name so that ties in
   ``preview_evictions`` resolve the same way on every platform (the JavaScript follows directory order).
+* ``clear_previews`` removes every non-directory entry in the folder, memos and index included, as clearPreviews does,
+  but reports only the bytes the previews held.
+* The index is written to a temporary file in the same folder and moved into place with ``os.replace``, so a crash
+  never leaves a half-written index.
+* An entry that vanishes between listing and stat is skipped, not an error. An entry without a key is counted in the
+  total but never selected for eviction (the JavaScript would push ``undefined``).
 * ``preview_key`` takes the modification time from ``os.stat`` in whole milliseconds (floor), as ``FileInfo``'s
   ``lastModified`` is a Date with millisecond precision.
 * A JSON array in the index file is read as an empty index. The JavaScript would keep the array and, after a
@@ -46,6 +52,8 @@ import json
 import math
 import os
 import re
+import stat
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -64,10 +72,28 @@ PREVIEW_CAP_BYTES = 1024 * 1024 * 1024
 #: The index file's name inside the preview folder.
 INDEX_NAME = "index.json"
 
+#: Files a writer has not finished (or left behind) are not previews.
+IN_PROGRESS_SUFFIXES = (".part", ".tmp")
+
+#: FrameSelector.js 348 stores the reference stretch of a frame beside the previews as "stretch-<key>.json".
+STRETCH_MEMO_PREFIX = "stretch-"
+STRETCH_MEMO_SUFFIX = ".json"
+
 #: The folder name under cache_dir (the JavaScript's "Loom-previews" under the system temporary folder).
 PREVIEW_FOLDER = "Loom-previews"
 
 _DECIMAL = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+
+
+def _is_preview_name(name: str) -> bool:
+    """True for a file name that can be a preview: not hidden, not the index, not in progress, not a stretch memo."""
+    if name.startswith(".") or name == INDEX_NAME:
+        return False
+    if name.endswith(IN_PROGRESS_SUFFIXES):
+        return False
+    if name.startswith(STRETCH_MEMO_PREFIX) and name.endswith(STRETCH_MEMO_SUFFIX):
+        return False
+    return True
 
 
 def _no_constant(token: str) -> Any:
@@ -148,7 +174,7 @@ def preview_evictions(entries: Sequence[Mapping[str, Any]], cap: float, keep: An
     total = 0.0
     for e in entries:
         total = total + _field(e, "bytes")
-    order = [e for e in entries if e.get("key") != keep]
+    order = [e for e in entries if "key" in e and e["key"] != keep]
 
     def compare(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
         diff = _field(a, "used") - _field(b, "used")
@@ -220,10 +246,24 @@ class PreviewCache:
             for k in idx:
                 latest = max(latest, _number_or_zero(idx[k]))
             idx[key] = _json_number(max(float(time.time_ns() // 1_000_000), latest + 1))
-            with open(self.preview_index_path(), "w", encoding="utf-8") as f:
-                f.write(json.dumps(idx, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+            self._write_index(idx)
         except (OSError, ValueError):
             pass  # the order is advisory; the entry itself is intact
+
+    def _write_index(self, idx: Mapping[str, Any]) -> None:
+        """Writes the index to a temporary file in the same folder, then moves it over the old one."""
+        folder = self.preview_dir()
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".index-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(idx, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+            os.replace(tmp, self.preview_index_path())
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
     def preview_entries(self) -> list[dict[str, Any]]:
         """``Cache.previewEntries`` (Cache.js 582-595): every entry on disk as { key, bytes, used, name }."""
@@ -233,13 +273,37 @@ class PreviewCache:
         idx = self.read_preview_index()
         out: list[dict[str, Any]] = []
         for name in sorted(os.listdir(folder)):
+            if not _is_preview_name(name):
+                continue
             full = os.path.join(folder, name)
-            if name.startswith(".") or name == INDEX_NAME or not os.path.isfile(full):
+            try:
+                st = os.stat(full)
+            except FileNotFoundError:
+                continue  # removed since it was listed
+            if not stat.S_ISREG(st.st_mode):
                 continue
             key = os.path.splitext(name)[0]
-            out.append({"key": key, "bytes": os.stat(full).st_size, "used": _number_or_zero(idx.get(key)),
-                        "name": name})
+            out.append({"key": key, "bytes": st.st_size, "used": _number_or_zero(idx.get(key)), "name": name})
         return out
+
+    def clear_previews(self) -> int:
+        """``Cache.clearPreviews`` (Cache.js 654-665): empties the folder of files; returns the bytes the previews held.
+
+        Used by the "Clear cache" action, which must leave no preview behind.
+        """
+        freed = self.preview_bytes()
+        folder = self.preview_dir()
+        if not os.path.isdir(folder):
+            return 0
+        for name in os.listdir(folder):
+            full = os.path.join(folder, name)
+            if os.path.isdir(full) and not os.path.islink(full):
+                continue
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+        return freed
 
     def preview_bytes(self) -> int:
         """``Cache.previewBytes`` (Cache.js 597-600): the bytes the previews on disk hold."""
@@ -273,7 +337,6 @@ class PreviewCache:
                 else:
                     changed = True
             if changed:
-                with open(self.preview_index_path(), "w", encoding="utf-8") as f:
-                    f.write(json.dumps(kept, separators=(",", ":"), ensure_ascii=False, allow_nan=False))
+                    self._write_index(kept)
         except (OSError, ValueError):
             pass  # the index is advisory; a stale line is only a stale line

@@ -350,3 +350,120 @@ def test_every_ported_function_is_present() -> None:
     assert callable(P.preview_key_of) and callable(P.preview_evictions)
     assert P.PREVIEW_CAP_BYTES == 1024 * 1024 * 1024
     assert P.PREVIEW_VERSION == "1"
+
+
+# ---- fix round: in-progress files, memos, clearing, atomic index, races, entries without keys -------------
+
+@pytest.mark.parametrize("name", ["abc.png.part", "abc.npy.tmp", "stretch-abc.json.part", "x.tmp"])
+def test_entries_ignore_in_progress_files(tmp_path: Path, name: str) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "real", 10)
+    Path(cache.preview_dir(), name).write_bytes(b"y" * 999)
+    assert [e["key"] for e in cache.preview_entries()] == ["real"]
+    assert cache.preview_bytes() == 10
+
+
+@pytest.mark.parametrize("name", ["stretch-abc123.json", "stretch-0f.json"])
+def test_entries_ignore_stretch_memos(tmp_path: Path, name: str) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "real", 10)
+    Path(cache.preview_dir(), name).write_text('{"midtone": 0.25}', encoding="utf-8")
+    assert [e["key"] for e in cache.preview_entries()] == ["real"]
+
+
+def test_a_memo_is_not_evicted_as_a_preview(tmp_path: Path) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "old", 60)
+    _store(cache, "new", 60)
+    memo = Path(cache.preview_dir(), "stretch-old.json")
+    memo.write_text("{}", encoding="utf-8")
+    Path(cache.preview_index_path()).write_text('{"old": 1, "new": 2}', encoding="utf-8")
+    assert cache.trim_previews(70) == 1
+    assert memo.exists()
+    assert not os.path.exists(cache.preview_path("old", ".png"))
+
+
+def test_a_memo_does_not_count_toward_the_cap(tmp_path: Path) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "a", 50)
+    Path(cache.preview_dir(), "stretch-a.json").write_bytes(b"z" * 500)
+    assert cache.trim_previews(50) == 0
+    assert os.path.exists(cache.preview_path("a", ".png"))
+
+
+def test_clear_empties_the_folder_and_reports_preview_bytes(tmp_path: Path) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "a", 1000)
+    _store(cache, "b", 1000, ".npy")
+    Path(cache.preview_dir(), "stretch-a.json").write_bytes(b"m" * 77)
+    Path(cache.preview_dir(), "left.part").write_bytes(b"p" * 33)
+    Path(cache.preview_index_path()).write_text('{"a": 1}', encoding="utf-8")
+    os.makedirs(os.path.join(cache.preview_dir(), "sub"))
+    assert cache.clear_previews() == 2000
+    assert os.listdir(cache.preview_dir()) == ["sub"]
+    assert cache.preview_entries() == []
+
+
+def test_clear_of_a_missing_folder_frees_nothing(tmp_path: Path) -> None:
+    assert _cache(tmp_path).clear_previews() == 0
+
+
+def test_index_is_replaced_atomically_in_the_same_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "old", 60)
+    _store(cache, "new", 60)
+    Path(cache.preview_index_path()).write_text('{"old": 1, "new": 2, "ghost": 3}', encoding="utf-8")
+    moves: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def spy(src: str, dst: str) -> None:
+        moves.append((os.path.dirname(src), dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    cache.trim_previews(70)
+    assert moves == [(cache.preview_dir(), cache.preview_index_path())]
+    assert json.loads(Path(cache.preview_index_path()).read_text(encoding="utf-8")) == {"new": 2}
+    assert not [n for n in os.listdir(cache.preview_dir()) if n.endswith(".tmp")]
+
+
+def test_failed_index_write_keeps_the_old_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "a", 10)
+    Path(cache.preview_index_path()).write_text('{"a":5}', encoding="utf-8")
+
+    def boom(src: str, dst: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    cache.note_preview_use("a")
+    assert Path(cache.preview_index_path()).read_text(encoding="utf-8") == '{"a":5}'
+    assert not [n for n in os.listdir(cache.preview_dir()) if n.endswith(".tmp")]
+
+
+def test_a_file_that_vanishes_before_stat_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = _cache(tmp_path)
+    _store(cache, "keep", 10)
+    gone = _store(cache, "gone", 20)
+    real_stat = os.stat
+
+    def racing_stat(path: object, *args: Any, **kwargs: Any) -> os.stat_result:
+        if os.fspath(path) == gone:
+            raise FileNotFoundError(path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", racing_stat)
+    assert [e["key"] for e in cache.preview_entries()] == ["keep"]
+    assert cache.preview_bytes() == 10
+
+
+def test_entry_without_a_key_is_counted_but_never_evicted() -> None:
+    entries = [{"bytes": 40, "used": 1}, {"key": "b", "bytes": 40, "used": 2}]
+    assert P.preview_evictions(entries, 50, None) == ["b"]
+    assert P.preview_evictions([{"bytes": 40, "used": 1}], 10, None) == []
+
+
+def test_keep_none_protects_nothing_but_a_string_key() -> None:
+    entries = [{"key": "a", "bytes": 40, "used": 1}, {"key": "b", "bytes": 40, "used": 2}]
+    assert P.preview_evictions(entries, 50, None) == ["a"]
+    assert P.preview_evictions(entries, 50, "a") == ["b"]
