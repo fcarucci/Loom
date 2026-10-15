@@ -465,3 +465,171 @@ def test_done_line_names_the_psb_and_the_tiffs() -> None:
     line = pipeline._done_line({}, ["/o/HSO.tif", "/o/Loom.psb", "/o/L.tif"], 125.0)
     assert line == "Loom is done in 2 min 5 s. Saved the PSB: /o/Loom.psb and 2 TIFF file(s)"
     assert pipeline._done_line({}, [], 9.2) == "Loom is done in 9 s."
+
+
+# ---- colour masters: one loader per slot, channel plates split from it -------------------------------------------------
+
+# The planes of this master have statistics that print exactly (min/max/median 0.1/0.9/0.2 and 0/1/0.5 twice), so the
+# group's log line can be compared with the literal Loom's own self-test checks for the same numbers.
+_COLOUR_LOG = ("OSC n.fits: dualband, filter L-eXtreme, planes H/O, min/max/median 0.10000/0.90000/0.20000, "
+               "0.00000/1.00000/0.50000, 0.00000/1.00000/0.50000")
+
+
+def _colour_master(tmp_path: Path, name: str = "n.fits") -> tuple[str, list[np.ndarray]]:
+    flat = np.full(SHAPE, 0.2, np.float32)
+    flat[0, 0], flat[0, 1] = 0.1, 0.9
+    halves = np.zeros(SHAPE, np.float32)
+    halves.reshape(-1)[halves.size // 2:] = 1.0
+    planes = [flat, halves, halves.copy()[::-1].copy()]
+    path = tmp_path / "masters"
+    path.mkdir(parents=True, exist_ok=True)
+    if (path / name).exists():
+        return str(path / name), planes  # a second run on the same file: same size and time, so the same cache keys
+    write_fits(path / name, planes, {"FILTER": "L-eXtreme", "INSTRUME": INSTRUME, "OBJECT": "NGC 7000"}, bitpix=-32)
+    return str(path / name), planes
+
+
+class _ColourRun:
+    """A run state built by hand around one colour master, with the master's reads counted and the log kept."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str = "OSCNB", kind: str = "dualband",
+                 **over: Any) -> None:
+        from loomsiril.loom import colour_load
+        self.lines: list[str] = []
+        self.master, self.planes = _colour_master(tmp_path)
+        (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "work").mkdir(exist_ok=True)
+        cfg = loom_config.defaults()
+        cfg.update({"paths": {**cfg["paths"], slot: self.master}, "oscKinds": {slot: kind}, "useCache": True,
+                    "cacheDir": str(tmp_path / "cache"), "outputDir": str(tmp_path / "out"),
+                    "gradientTool": "none"})
+        cfg.update(over)
+        self.cfg = cfg
+        ops = RecordingOps(str(tmp_path / "wd"))
+        self.ctx = RunContext(ops=ops, work_dir=str(tmp_path / "work"), log=self.lines.append,
+                              warn=self.lines.append, tools=_AnyTool())
+        store = pipeline.cache.CacheStore(str(tmp_path / "cache")) if cfg["useCache"] else None
+        self.run = pipeline._Run(self.ctx, cfg, store, str(tmp_path / "cache"), {})
+        self.reads: list[str] = []
+        real = colour_load.read_fits
+
+        def counting(path: Any) -> Any:
+            self.reads.append(os.fspath(path))
+            return real(path)
+
+        monkeypatch.setattr(colour_load, "read_fits", counting)
+
+    def master_reads(self) -> int:
+        return sum(1 for p in self.reads if p == self.master)
+
+
+def _channels_of(plate: str) -> int:
+    return len(read_fits(plate)[0])
+
+
+def test_colour_channels_keep_the_masters_path_and_take_the_sibling_key(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    from loomsiril.loom import osc
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband")
+    cr.run.load_channels()
+    gid = osc.osc_group_identity(stages_correct.source_key(cr.master), "broadband")
+    assert sorted(cr.run.chans) == ["B", "G", "R"]
+    for plane, key in enumerate(("R", "G", "B")):
+        ch = cr.run.chans[key]
+        assert ch.path == cr.master and (ch.group, ch.plane) == ("OSC", plane)
+        assert ch.source_key == ch.current_key == osc.osc_sibling_key(gid, plane)
+        assert ch.instrume == INSTRUME
+    assert cr.master_reads() == 0  # nothing is read until a plane is wanted
+    assert f"load R <- {cr.master} (plane 0)" in cr.lines
+
+
+def test_a_colour_slot_without_a_resolved_kind_is_an_internal_error(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband")
+    cr.cfg["oscKinds"] = {}
+    with pytest.raises(ValueError, match="^internal: the kind of OSC was not resolved by preflight$"):
+        cr.run.load_channels()
+
+
+def test_mono_channels_keep_their_own_record(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    cfg = _config(tmp_path, _rgb_paths(tmp_path))
+    (tmp_path / "work").mkdir(exist_ok=True)
+    state = pipeline._Run(harness.factory()(str(tmp_path / "work")), cfg, None, str(tmp_path / "cache"), {})
+    state.load_channels()
+    assert all(ch.group is None and ch.plane is None and ch.source is None for ch in state.chans.values())
+
+
+def _spy_chain(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Replaces the chain runner by one that asks for the source plate and returns it: label -> plate."""
+    got: dict[str, str] = {}
+
+    def fake(ctx: Any, label: str, source: Any, chain: Any, runners: Any, store: Any, config: Any) -> Any:
+        from loomsiril.loom.chain import ChainResult
+        got[label] = source()
+        return ChainResult(path=got[label], key=None)
+
+    monkeypatch.setattr(pipeline, "process_chain", fake)
+    return got
+
+
+def test_broadband_correction_gets_a_one_channel_plate_for_r_and_g(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband")
+    got = _spy_chain(monkeypatch)
+    cr.run.load_channels()
+    cr.run.correct_broadband()
+    assert sorted(got) == ["B", "G", "R"]
+    for plane, key in enumerate(("R", "G", "B")):
+        planes, header = read_fits(got[key])
+        assert len(planes) == 1 and header["FILTER"] == key
+        assert header["LOOMSRC"] == f"n.fits|plane:{plane}"
+    assert cr.master_reads() == 1
+
+
+def test_narrowband_correction_and_the_lazy_path_get_one_channel_plates(tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, graxpertNarrowband=True, gradientTool="GraXpert")
+    got = _spy_chain(monkeypatch)
+    cr.run.load_channels()
+    cr.run.correct_narrowband()
+    assert sorted(got) == ["H", "O"]
+    assert all(_channels_of(p) == 1 for p in got.values())
+    assert read_fits(got["H"])[1]["FILTER"] == "Ha" and read_fits(got["O"])[1]["FILTER"] == "OIII"
+    assert np.array_equal(read_fits(got["O"])[0][0], cr.planes[1])
+    # without the narrowband option no chain runs: the channels stay lazy and the plate is split when asked for
+    lazy = _ColourRun(tmp_path / "lazy", monkeypatch)
+    lazy.run.load_channels()
+    lazy.run.correct_narrowband()
+    assert lazy.master_reads() == 0
+    plate = lazy.run.plate_of("O")
+    assert _channels_of(plate) == 1 and np.array_equal(read_fits(plate)[0][0], lazy.planes[1])
+    assert lazy.run.plate_of("H") != plate and lazy.master_reads() == 1
+
+
+def test_the_group_line_is_logged_on_a_cold_and_on_a_warm_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cold = _ColourRun(tmp_path, monkeypatch)
+    cold.run.load_channels()
+    assert _COLOUR_LOG not in cold.lines  # the numbers do not exist before the master is read
+    cold.run.plate_of("H")
+    assert cold.lines.count(_COLOUR_LOG) == 1 and cold.master_reads() == 1
+    cold.run.plate_of("O")
+    assert cold.lines.count(_COLOUR_LOG) == 1 and cold.master_reads() == 1
+    warm = _ColourRun(tmp_path, monkeypatch)
+    warm.run.load_channels()
+    assert warm.lines.count(_COLOUR_LOG) == 1  # from the sidecar, with no read
+    warm.run.plate_of("H")
+    warm.run.plate_of("O")
+    assert warm.lines.count(_COLOUR_LOG) == 1 and warm.master_reads() == 0
+
+
+def test_with_the_cache_off_the_master_is_read_once_per_run_and_nothing_is_cached(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for n in (1, 2):
+        cr = _ColourRun(tmp_path, monkeypatch, useCache=False)
+        cr.run.load_channels()
+        cr.run.plate_of("H")
+        cr.run.plate_of("O")
+        assert cr.master_reads() == 1
+        assert cr.lines.count(_COLOUR_LOG) == 1
+        assert os.listdir(tmp_path / "cache") == []

@@ -24,8 +24,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, TextIO
 
-from . import cache, channels, finishing, icc, levels, naming, reference, stages_colour, stages_correct
-from . import stages_geometry
+from . import cache, channels, colour_load, finishing, icc, levels, naming, reference, stages_colour, stages_correct
+from . import osc, stages_geometry
 from . import publish as publish_steps
 from .chain import CANCEL_MESSAGE, ChainResult, RunCancelled, process_chain
 from .runctx import RunContext, StageOutput
@@ -147,6 +147,11 @@ class _Chan:
     current_key: str = ""
     clean_key: Optional[str] = None
     plate: Optional[str] = None  # the plate as the latest chain left it (None until something needs the pixels)
+    #: A colour member (a plane of a colour master) names its slot and plane; ``path`` stays the master's path, and
+    #: ``source`` gives the member's one-channel plate. All three are None for a mono channel.
+    group: Optional[str] = None
+    plane: Optional[int] = None
+    source: Optional[Callable[[], str]] = None
 
 
 class _Run:
@@ -168,7 +173,7 @@ class _Run:
         """The channel's plate, loaded from its source file the first time something needs its pixels."""
         ch = self.chans[key]
         if ch.plate is None:
-            ch.plate = stages_correct.ingest_channel(self.ctx, key, ch.path)
+            ch.plate = ch.source() if ch.source is not None else stages_correct.ingest_channel(self.ctx, key, ch.path)
         return ch.plate
 
     def publish_log(self, level: str, text: str) -> None:
@@ -187,11 +192,48 @@ class _Run:
 
     # -- steps ----------------------------------------------------------------------------------------------------
 
+    def _colour_loaders(self, paths: Mapping[str, Any]) -> dict[str, tuple[colour_load.ColourGroupLoader, str, str]]:
+        """One loader per supplied colour slot: slot -> (loader, the master's INSTRUME, the master's FILTER)."""
+        loaders: dict[str, tuple[colour_load.ColourGroupLoader, str, str]] = {}
+        for slot in osc.colour_supplied(self.cfg):
+            kind = (self.cfg.get("oscKinds") or {}).get(slot)
+            if not kind:
+                raise ValueError(f"internal: the kind of {slot} was not resolved by preflight")
+            path = str(paths.get(slot) or "")
+            keywords = channels.read_header(path).get("keywords", [])
+            loader = colour_load.ColourGroupLoader(
+                slot, kind, path, stages_correct.source_key(path),
+                store=self.store, work_dir=self.work, ignore_cache=bool(self.cfg.get("ignoreCache")),
+                convert=lambda src, name: stages_correct.ingest_channel(self.ctx, name, src), warn=self.ctx.warn)
+            filter_value = channels.keyword_value(keywords, "FILTER")
+            loader.when_validated(self._group_logger(slot, kind, path, filter_value))
+            loaders[slot] = (loader, channels.keyword_value(keywords, "INSTRUME"), filter_value)
+        return loaders
+
+    def _group_logger(self, slot: str, kind: str, path: str, filter_value: Optional[str]) -> Callable[[Any], None]:
+        def log_group(rec: Any) -> None:
+            self.ctx.log(colour_load.group_log_line(slot, path, kind, filter_value, rec))
+
+        return log_group
+
     def load_channels(self) -> None:
         paths = self.cfg.get("paths") or {}
         records: dict[str, dict[str, Any]] = {}
+        loaders = self._colour_loaders(paths)
+        member_of = {member: slot for slot in loaders for member in osc.COLOUR_MEMBERS[slot]}
         for key in CHANNEL_ORDER:
             path = str(paths.get(key) or "")
+            if not path and key in member_of:
+                slot = member_of[key]
+                loader, instrume, _filter = loaders[slot]
+                plane = osc.OSC_RECIPES[slot][key]
+                sibling = loader.sibling_key(plane)
+                self.chans[key] = _Chan(key=key, path=str(paths[slot]), source_key=sibling, instrume=instrume,
+                                        current_key=sibling, group=slot, plane=plane,
+                                        source=lambda ld=loader, pl=plane: ld.plate(pl))
+                self.ctx.log(f"load {key} <- {paths[slot]} (plane {plane})")
+                records[key] = {"key": key, "instrume": instrume}
+                continue
             if not path:
                 continue
             header = channels.read_header(path)
@@ -228,6 +270,8 @@ class _Run:
 
     def _ingest_source(self, key: str) -> Callable[[], str]:
         ch = self.chans[key]
+        if ch.source is not None:
+            return ch.source
 
         def source() -> str:
             return stages_correct.ingest_channel(self.ctx, key, ch.path)

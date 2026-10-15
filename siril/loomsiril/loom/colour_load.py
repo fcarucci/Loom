@@ -1,0 +1,231 @@
+"""The colour-master loader: one master per colour slot, split once into cached one-channel plates.
+
+The port of Loom's ``Pipeline.oscGroupLoader`` with its cache policy (``Pipeline.oscCacheIo``), the group's log line
+(``Pipeline.oscGroupLogLine``) and the plane extraction (``Steps.extractPlane``). One :class:`ColourGroupLoader`
+serves the sibling channels of a slot (R, G, B for ``OSC``; H, O for ``OSCNB``). It hands out a plate, a one-channel
+FITS file, per plane:
+
+* a plate handed out earlier in the run is handed out again;
+* else the cache entry under the sibling key;
+* else the master is read, once for all its planes: every plane is measured and checked, the verdict goes to a sidecar
+  next to the cache entries, and each plane the slot uses is stored under its sibling key and kept for its sibling.
+
+So the master is read at most once per run, and not at all when every plane the run asks for is cached. A master that
+is not an uncompressed FITS file (a ``.fz`` or an XISF) is first converted once through Siril; the converter is passed
+in, so this module does not touch Siril.
+
+Cache policy, as the stages have it: with the cache off nothing is read from or written to the cache (the plates are
+files in the work folder and live for the run); with ``ignore_cache`` nothing is read, everything is written.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Callable, Mapping, Optional
+
+import numpy as np
+
+from loomsiril.io_fits import read_fits, write_fits
+from loomsiril.loom import cache, osc
+
+__all__ = ["ColourGroupLoader", "group_log_line", "plane_statistics", "is_plain_fits"]
+
+#: The file name extensions ``read_fits`` reads as they are (compared without regard to case).
+_PLAIN_FITS = (".fit", ".fits", ".fts")
+
+#: The FITS FILTER value of each logical channel of a colour master, as Loom's exports name them.
+_PLANE_NAMES = {"H": "Ha", "O": "OIII"}
+
+#: Longest file name written to LOOMSRC: a FITS card holds 80 characters, 12 of them are the keyword and quotes.
+_LOOMSRC_NAME_MAX = 48
+
+_SEPARATORS = re.compile(r"[\\/]")
+
+
+def is_plain_fits(path: str) -> bool:
+    """True for a ``.fit``, ``.fits`` or ``.fts`` file (any case): the ones ``read_fits`` takes directly."""
+    return os.path.splitext(path)[1].lower() in _PLAIN_FITS
+
+
+def plane_statistics(plane: np.ndarray) -> dict[str, float]:
+    """The minimum, maximum and median of one plane (Python floats)."""
+    return {"min": float(plane.min()), "max": float(plane.max()), "median": float(np.median(plane))}
+
+
+def _to_fixed5(v: Any) -> str:
+    """JavaScript's ``Number.prototype.toFixed(5)``: the exact value rounded half up (away from zero), no ``-0``."""
+    x = float(v)
+    if x != x or x in (float("inf"), float("-inf")):
+        return "NaN" if x != x else ("Infinity" if x > 0 else "-Infinity")
+    d = Decimal(x).quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP)
+    return format(abs(d) if d == 0 else d, "f")
+
+
+def group_log_line(slot: str, path: str, kind: str, filter_value: Optional[str], rec: Mapping[str, Any]) -> str:
+    """``Pipeline.oscGroupLogLine``: the log line of one colour group, from its validation record."""
+    name = _SEPARATORS.split(path)[-1]
+    members = "/".join(osc.OSC_RECIPES[slot])
+    values = ", ".join(
+        _to_fixed5(p["min"]) + "/" + _to_fixed5(p["max"]) + "/" + _to_fixed5(p["median"]) for p in rec["planes"])
+    return ("OSC " + name + ": " + kind + ", filter " + ("null" if filter_value is None else filter_value)
+            + ", planes " + members + ", min/max/median " + values)
+
+
+def _loomsrc(path: str, plane: int) -> str:
+    """The LOOMSRC value: the master's file name and the plane. ASCII (FITS needs it) and short enough for one card."""
+    name = os.path.basename(path).encode("ascii", "replace").decode("ascii")
+    if len(name) > _LOOMSRC_NAME_MAX:
+        name = name[:_LOOMSRC_NAME_MAX]
+    return f"{name}|plane:{plane}"
+
+
+class ColourGroupLoader:
+    """The plates of one colour master. See the module text for the order in which a plate is found.
+
+    ``store`` is the run's :class:`~loomsiril.loom.cache.CacheStore`, or None with the cache off. ``work_dir`` holds
+    the plates that are not cached and the converted master. ``convert(path, name)`` turns a master that is not a plain
+    FITS file into one, named ``name`` in the work folder, and returns its path (the run passes ``ingest_channel``).
+    ``warn`` receives the complaints about a cache write that failed.
+    """
+
+    def __init__(self, slot: str, kind: str, path: str, fingerprint: str, *, store: Optional[cache.CacheStore],
+                 work_dir: str, ignore_cache: bool = False,
+                 convert: Optional[Callable[[str, str], str]] = None,
+                 warn: Optional[Callable[[str], None]] = None) -> None:
+        self.slot = slot
+        self.kind = kind
+        self.path = path
+        self.identity = osc.osc_group_identity(fingerprint, kind)
+        self.opens = 0
+        self._store = store
+        self._work = work_dir
+        self._reads_cache = store is not None and not ignore_cache
+        self._convert = convert
+        self._warn = warn if warn is not None else (lambda text: None)
+        self._names = {plane: member for member, plane in osc.OSC_RECIPES[slot].items()}
+        self._handed: dict[int, str] = {}   # plane -> plate given out this run
+        self._kept: dict[int, str] = {}     # plane -> plate nobody has taken yet
+        self._record: Optional[dict[str, Any]] = None   # this run's own record, when no sidecar can be read
+        self._waiting: list[Callable[[dict[str, Any]], None]] = []
+
+    # -- the plates -----------------------------------------------------------------------------------------------
+
+    def plate(self, plane: int) -> str:
+        """The path of the one-channel plate of ``plane``."""
+        if plane in self._handed:
+            return self._handed[plane]
+        if plane not in self._kept:
+            hit = self._cache_hit(plane)
+            if hit is not None:
+                self._kept[plane] = hit
+            else:
+                self._open_and_split()
+        self._handed[plane] = self._kept.pop(plane)
+        return self._handed[plane]
+
+    def sibling_key(self, plane: int) -> str:
+        return osc.osc_sibling_key(self.identity, plane)
+
+    def _cache_hit(self, plane: int) -> Optional[str]:
+        if not self._reads_cache or self._store is None:
+            return None
+        key = self.sibling_key(plane)
+        return self._store.path_for(key) if self._store.load(key) is not None else None
+
+    def _readable_master(self) -> str:
+        if is_plain_fits(self.path):
+            return self.path
+        if self._convert is None:
+            raise ValueError(self.path + ": a colour master of this format needs the converter")
+        return self._convert(self.path, "osc_" + cache.hash_str(self.identity)[:16])
+
+    def _open_and_split(self) -> None:
+        self.opens += 1
+        planes, header = read_fits(self._readable_master())
+        if len(planes) < 3:
+            raise ValueError(f"{self.path} is not a colour master: it has {len(planes)} channel"
+                             + ("" if len(planes) == 1 else "s"))
+        stats = [plane_statistics(p) for p in planes[:3]]
+        for q, s in enumerate(stats):
+            problem = osc.osc_plane_problem(s, q, self.path)
+            if problem is not None:
+                raise ValueError(problem)
+        self._record = osc.osc_validation_record(stats)
+        self._write_sidecar(self._record)
+        for plane in sorted(self._names):
+            if plane in self._handed:
+                continue  # a sibling already holds it, and its cache entry exists
+            self._kept[plane] = self._store_plate(plane, planes[plane], header)
+        self._announce()
+
+    def _store_plate(self, plane: int, pixels: np.ndarray, master_header: Mapping[str, Any]) -> str:
+        member = self._names[plane]
+        header = {k: v for k, v in master_header.items() if k not in ("FILTER", "LOOMSRC")}
+        header["FILTER"] = _PLANE_NAMES.get(member, member)
+        header["LOOMSRC"] = _loomsrc(self.path, plane)
+        if self._store is not None:
+            key = self.sibling_key(plane)
+            meta = {"channel": member, "stage": "split", "params": {"recipe": "plane:" + str(plane)}}
+            stored = self._store.store(key, [pixels], header, meta)
+            if stored is not None:
+                return stored
+            self._warn(f"[cache] plane {plane} of {os.path.basename(self.path)} could not be cached; "
+                       "the run uses a copy in the work folder")
+        out = os.path.join(self._work, f"{member}_src.fits")
+        write_fits(out, [pixels], header, bitpix=-32)
+        return out
+
+    # -- the validation record and the log line -------------------------------------------------------------------
+
+    def _sidecar_path(self) -> Optional[str]:
+        if self._store is None:
+            return None
+        return os.path.join(self._store.folder, osc.osc_validate_name(self.identity))
+
+    def _write_sidecar(self, record: Mapping[str, Any]) -> None:
+        path = self._sidecar_path()
+        if path is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(record))
+        except (OSError, TypeError, ValueError) as exc:
+            self._warn(f"could not write {os.path.basename(path)}: {exc}")
+
+    def _read_sidecar(self) -> Optional[dict[str, Any]]:
+        path = self._sidecar_path()
+        if path is None or not self._reads_cache or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+            planes = rec["planes"]
+            if len(planes) != 3:
+                return None
+            for p in planes:
+                float(p["min"]), float(p["max"]), float(p["median"])
+            return rec
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def validation(self) -> Optional[dict[str, Any]]:
+        """The sidecar's record, or this run's own when the sidecar cannot be read (None before any record)."""
+        rec = self._read_sidecar()
+        return rec if rec is not None else self._record
+
+    def when_validated(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        """Calls ``fn(record)`` once, as soon as a record exists: now (a sidecar), or after the first split."""
+        self._waiting.append(fn)
+        self._announce()
+
+    def _announce(self) -> None:
+        rec = self.validation()
+        if rec is None:
+            return
+        waiting, self._waiting = self._waiting, []
+        for fn in waiting:
+            fn(rec)
