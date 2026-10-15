@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import math
 import os
+import sys
 import zlib
 from pathlib import Path
 from typing import Any, Optional
@@ -176,6 +177,7 @@ def load_siril_run():
     spec = importlib.util.spec_from_file_location("fs_siril_run", REPO / "tests" / "loom" / "siril_run.py")
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[spec.name] = mod          # dataclasses looks the module up while it executes
     spec.loader.exec_module(mod)
     return mod
 

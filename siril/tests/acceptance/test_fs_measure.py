@@ -122,8 +122,8 @@ def test_fwhm_stars_background_and_noise_come_from_siril(tmp_path: Path) -> None
     m = res[paths[0]]
     assert m["fwhm"] == pytest.approx(3.07)
     assert m["stars"] == 117 and isinstance(m["stars"], int)
-    assert m["background"] == pytest.approx(5592.0)
-    assert m["noise"] == pytest.approx(287.818)
+    assert m["background"] == pytest.approx(5592.0 / 65535)        # divided by the M line's normValue
+    assert m["noise"] == pytest.approx(287.818 / 65535)
 
 
 def test_psf_snr_and_flux_from_the_star_list(tmp_path: Path) -> None:
@@ -131,11 +131,11 @@ def test_psf_snr_and_flux_from_the_star_list(tmp_path: Path) -> None:
     _, paths, res, _, _ = _run(tmp_path, ["a.fit", "b.fit"])
     a = res[paths[0]]
     assert a["psfSNR"] == pytest.approx(45000.0 / 287.818, rel=1e-9)
-    assert a["psfFlux"] == pytest.approx(10 ** (0.4 * 14.2), rel=1e-9)                # middle of 14.0, 14.2, 14.4
+    assert a["psfFlux"] == pytest.approx(10 ** (0.4 * 14.2) / 65535, rel=1e-9)                # middle of 14.0, 14.2, 14.4
     b = res[paths[1]]
     fluxes = [10 ** (0.4 * x) for x in (13.0, 13.2, 13.4, 13.0)]
     assert b["psfSNR"] == pytest.approx(statistics.median([20000, 24000, 30000, 31000]) / 383.124, rel=1e-9)
-    assert b["psfFlux"] == pytest.approx(statistics.median(fluxes), rel=1e-9)
+    assert b["psfFlux"] == pytest.approx(statistics.median(fluxes) / 65535, rel=1e-9)
 
 
 def test_snr_weight_is_dropped(tmp_path: Path) -> None:
