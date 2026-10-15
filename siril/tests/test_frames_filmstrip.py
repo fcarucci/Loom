@@ -384,6 +384,25 @@ def test_sync_strip_crosses_what_run_leaves_out() -> None:
     assert strip.set_rows_calls[-1][2] == [False, False, False]  # culling: nothing of a switched-off channel
 
 
+def test_sync_strip_shows_the_thumbnails_of_the_channel_on_screen() -> None:
+    a = _channel("A", ["a0", "a1"])
+    b = _channel("B", ["b0", "b1"])
+    host = FakeHost([a, b], shown=0, selected=0)
+    loader, _timer, strip = _loader(host)
+    loader.store_thumb("a0", np.zeros((2, 2), dtype=np.uint8))
+    loader.store_thumb("b0", np.ones((3, 3), dtype=np.uint8))
+    loader.sync_strip()
+    assert strip.thumbs[0] is loader.thumbs["a0"]["arr"]
+    assert strip.thumbs[1] is None
+    host.shown = 1                                   # the user switches to channel B
+    loader.sync_strip()
+    assert len(strip.thumbs) == 2
+    assert strip.thumbs[0] is loader.thumbs["b0"]["arr"]   # B's picture, not A's
+    assert strip.thumbs[1] is None
+    assert strip.failed == [False, False]
+    assert strip.updates >= 2
+
+
 def test_release_stops_the_loader_for_good() -> None:
     a = _channel("A", _paths(3, "a"))
     host = FakeHost([a])

@@ -31,6 +31,8 @@ twin with the same meaning, named in snake_case:
     :func:`loomsiril.frames_files.thumbnail_order`.
   - ``queueOtherChannels`` (2882-2900) -> :meth:`ThumbLoader.queue_other_channels`.
   - ``loaderTick`` (2902-2944) -> :meth:`ThumbLoader.loader_tick`. The stretch of a channel is measured by the host.
+    The JS pendingPreview hand-off after a stretch item (2914-2919) belongs to the host (the preview),
+    not to this loader.
   - ``storeThumb`` (2949-2965) -> :meth:`ThumbLoader.store_thumb`; the cap is ``THUMB_CAP``, the least recently shown
     thumbnail goes first.
   - ``pushThumbs`` (2967-2985) -> :meth:`ThumbLoader.push_thumbs`.
@@ -489,6 +491,7 @@ class ThumbLoader:
         enabled = ch["settings"]["enabled"]
         crossed = [left_out(r, enabled, copying) for r in ch["rows"]]
         self.strip.set_rows(ch["rows"], ch.get("flags") or [], crossed, self.host.selected_row_index())
+        self.push_thumbs()
 
     def release(self) -> None:
         """Stops the loader for good: a pending tick is cancelled and nothing re-arms (the JS mayLoad check)."""
