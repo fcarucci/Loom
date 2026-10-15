@@ -504,9 +504,9 @@ def test_run_without_the_actions_reports_instead_of_raising(make, monkeypatch) -
 
     told: list[str] = []
     monkeypatch.setattr(FD, "tell", lambda text, icon="info", **kw: told.append(text))
+    if FD._Actions.__module__ == "loomsiril.frames_dialog_actions":
+        pytest.skip("the actions module is present: Run would do real work and open real boxes")
     d = make()
-    if type(d).commit is not FD._Actions.commit:
-        pytest.skip("the actions module is present")
     d._on_run()
     assert told and told[0].startswith("The run failed")
     with pytest.raises(NotImplementedError):
