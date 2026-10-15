@@ -22,6 +22,12 @@ Standing rules:
 - Make sure CI on `main` is green and the tree is clean on `main` BEFORE starting. The script pushes `main` and the tag at its end, and a tag push triggers the publishing run and cannot be taken back.
 - One `v*` tag releases both the PixInsight scripts and the Siril port.
 - If ssh to `github.com:22` is blocked, set `GIT_SSH_COMMAND='ssh -o Hostname=ssh.github.com -o Port=443'` for the script (ssh over 443).
+- Release tags are SSH-signed and show as Verified on GitHub. The script creates the tag with `git tag -s`, runs `git tag -v` on it, and aborts BEFORE any push if it does not verify. One-time setup (local to the repo, no GPG):
+  - `git config --local gpg.format ssh`
+  - `git config --local user.signingkey ~/.ssh/github_signing_ed25519.pub`
+  - `git config --local tag.gpgSign true`
+  - `mkdir -p ~/.config/git && echo "<your email> $(cut -d' ' -f1,2 ~/.ssh/github_signing_ed25519.pub)" > ~/.config/git/allowed_signers && chmod 600 ~/.config/git/allowed_signers`, then `git config --local gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers`
+  - register the public key on GitHub as a SIGNING key: `gh ssh-key add ~/.ssh/github_signing_ed25519.pub --type signing --title "Loom release tags (this Mac)"`. If gh reports a missing scope, first run `gh auth refresh -h github.com -s admin:ssh_signing_key` (browser flow).
 - The script's last push, to a remote named `github`, failing is harmless when `origin` is GitHub.
 
 It then:
@@ -31,7 +37,7 @@ It then:
 3. runs the test suite as 1.9.5 and as 1.9.4;
 4. signs `Loom.js`, `FrameSelector.js` and `FlyThrough.js` (`ci/sign.sh`), writing the `.xsgn` files and `ci/signed-tree.sha256`;
 5. builds the update repository (`ci/repository.sh`), signs its `updates.xri` (`ci/sign.sh --xml`) and puts the result in `repo/`;
-6. commits `Loom <version>` (scripts, signatures, `repo/`) and creates the annotated tag `v<version>`;
+6. commits `Loom <version>` (scripts, signatures, `repo/`) and creates the SSH-signed annotated tag `v<version>` and verifies it;
 7. with `--push`, pushes. CI then checks the signatures and that `repo/` is signed and holds exactly the tagged sources, builds the release zip, and publishes `repo/` as the update repository. CI does not build or sign the repository.
 
 ## Why signing is local

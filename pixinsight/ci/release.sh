@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Cuts a signed release on the maintainer's Mac: version bump, tests, signing,
-# one release commit, an annotated tag. Nothing is pushed unless --push is given.
+# one release commit, a signed annotated tag. Nothing is pushed unless --push is given.
 #
 # Usage: ci/release.sh <version> ( --key-dir <folder> | --keys <file.xssk> --password-file <file> ) [--slot N] [--push]
 #
@@ -19,7 +19,7 @@
 #      puts the result in repo/ -- after step 4, because the package holds the
 #      signed scripts and the manifest holds the package's checksum
 #   6. commits "Loom <version>" with the signatures, the signed-tree hash and repo/,
-#      and tags v<version>
+#      and tags v<version> (SSH-signed, verified before any push)
 #   7. with --push, pushes main and the tag to origin and github; CI then checks
 #      the signatures, builds the release zip and PUBLISHES repo/ as the update
 #      repository -- it does not build or sign the repository itself
@@ -83,7 +83,11 @@ node ci/check-signatures.js --repo
 
 git add CHANGELOG.md script ci/signed-tree.sha256 repo
 git commit -q -m "Loom $version"
-git tag -a "v$version" -m "Loom $version"
+git tag -s "v$version" -m "Loom $version"
+git tag -v "v$version" >/dev/null 2>&1 || {
+   echo "release: the tag is not signed or does not verify: configure SSH signing (see docs/RELEASING.md)" >&2
+   exit 1
+}
 echo "release: committed and tagged v$version"
 
 if [ "$push" = 1 ]; then
