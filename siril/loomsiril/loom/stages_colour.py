@@ -83,14 +83,17 @@ def palette_stage_params(pal: str, config: Mapping[str, Any]) -> dict[str, Any]:
     """A palette's stage parameters, in Loom's order: ``paletteCombine``, ``paletteSpcc`` and, only when the option is
     on, ``paletteNorm``. Its absence (not a disabled entry) keeps the cache keys of runs without the option unchanged.
 
-    A mono run's ``paletteSpcc`` is what it always was. A colour run adds the bandwidth of each channel as sent (the
-    colour master's filter decides them) and the calibration identity of its sensor, so a change of either calibrates
-    the palette again.
+    A mono run's ``paletteSpcc`` is what it always was. A colour run replaces the run's bandwidth by the bandwidth of
+    each channel as sent (the colour master's filter decides them, the run's value only where the filter has none), and
+    adds the calibration identity only when the OSC master is supplied: that is when the sensor's names are sent
+    (an OSCNB-only run sends none, so its key does not depend on the sensor).
     """
     spcc: dict[str, Any] = {"palette": pal, "bandwidth": config.get("narrowbandBandwidth")}
     if osc.colour_run(config):
+        del spcc["bandwidth"]
         spcc["bandwidths"] = list(_palette_bandwidths(config))
-        spcc["calibration"] = calibration_identity(config)
+        if "OSC" in osc.colour_supplied(config):
+            spcc["calibration"] = calibration_identity(config)
     params: dict[str, Any] = {"paletteCombine": {}, "paletteSpcc": spcc}
     if config.get("narrowbandNormalize"):
         params["paletteNorm"] = nbnorm.stage_params(pal)
@@ -335,7 +338,8 @@ def _palette_spcc(ctx: RunContext, pal: str, plates: Mapping[str, Any], config: 
                     current = _solve_runner(ctx, pal)(current, solved).path
             ctx.log(f"{pal} narrowband: " + ", ".join(f"{'RGB'[i]}={w['channel']} {w['nm']}nm"
                                                     for i, w in enumerate(wavelengths))
-                    + ", bandwidth " + "/".join(f"{bw:g}" for bw in bandwidths) + "nm")
+                    + ", bandwidth " + (str(bandwidths[0]) if len(set(bandwidths)) == 1
+                                        else "/".join(str(bw) for bw in bandwidths)) + "nm")
             ctx.ops.load(current)
             wl = [w["nm"] for w in wavelengths]
             ctx.ops.spcc_narrowband(wl[0], bandwidths[0], wl[1], bandwidths[1], wl[2], bandwidths[2], **session)
@@ -436,12 +440,15 @@ def _measure_clean(ctx: RunContext, clean_plates: Mapping[str, tuple[str, str]],
 def measure_clean_white_balance(ctx: RunContext, clean_plates: Mapping[str, tuple[str, str]], ref_plate: Any,
                                 rect: tuple[int, int, int, int], config: Mapping[str, Any], lum_instrume: Any,
                                 store: Optional[cache.CacheStore], use_cache: bool,
-                                ignore_cache: bool, ref_key: Optional[str] = None) -> Optional[list[float]]:
+                                ignore_cache: bool, ref_key: Optional[str] = None,
+                                ref_channel: Optional[str] = None) -> Optional[list[float]]:
     """The SPCC white balance of the pre-aberration channels, as ``[r, g, b]`` gains, or None.
 
     ``clean_plates`` maps R, G and B to ``(cache key, plate path)``: the pre-aberration entry of each channel. ``ref_plate``
     is the registration reference (uncropped) and ``rect`` is the run's crop, ``(x0, y0, x1, y1)``.
 
+    ``ref_channel`` is the reference's channel letter; with the OSC master in the run it must be one of its planes
+    (its G), else ``osc.clean_registration_plan`` raises, as Loom does: that is a programming error, not a fallback.
     ``ref_key`` is the reference's current cache key: replacing the reference measures again. The stored result is
     keyed on the calibration identity too (a colour run also on its sensor choice), so a change of any spectral choice
     measures again.
@@ -454,6 +461,8 @@ def measure_clean_white_balance(ctx: RunContext, clean_plates: Mapping[str, tupl
         return None
     if any(ch not in clean_plates for ch in RGB_CHANNELS):
         return None
+    if ref_channel is not None and "OSC" in osc.colour_supplied(config):
+        osc.clean_registration_plan(ref_channel, {"OSC": list(RGB_CHANNELS)})
     use_stored = bool(use_cache) and not ignore_cache
     try:
         common = dict(zip(("x0", "y0", "x1", "y1"), (int(v) for v in rect)))

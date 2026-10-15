@@ -547,15 +547,14 @@ def test_a_broadband_colour_master_alone_is_clean_and_fills_its_kind() -> None:
     assert cfg["oscKinds"] == {"OSC": "broadband"}
 
 
-def test_a_dual_band_master_alone_gives_hoo_and_needs_the_sensor_too() -> None:
+def test_a_dual_band_master_alone_gives_hoo_and_needs_no_sensor() -> None:
     hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
     cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"])
     assert pf.preflight(make(cfg, headers=hdrs)) == []
     assert cfg["oscKinds"] == {"OSCNB": "dualband"}
     no_sensor = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"], oscSensor={"sensor": "", "frontFilter": "",
                                                                                    "lpf": ""})
-    assert pf.preflight(make(no_sensor, headers=hdrs)) == [
-        "choose the sensor colour filters for the colour master (SPCC section)"]
+    assert pf.preflight(make(no_sensor, headers=hdrs)) == []
 
 
 def test_a_colour_run_without_a_sensor_is_refused_when_the_key_is_missing_too() -> None:
@@ -717,10 +716,18 @@ def test_a_missing_database_gives_the_one_database_message_and_no_name_problems(
     assert out == ["Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
 
 
-def test_an_oscnb_only_run_checks_the_names_too() -> None:
+def test_an_oscnb_only_run_does_not_check_the_osc_names() -> None:
     cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"],
                         oscSensor={"sensor": "Sony IMX571", "frontFilter": "Nope", "lpf": ""})
     hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+
+
+def test_an_osc_and_oscnb_run_checks_the_names_and_needs_the_sensor() -> None:
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3),
+            OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    cfg = colour_config(paths={"OSC": OSC, "OSCNB": OSCNB}, palettes=["HOO"],
+                        oscSensor={"sensor": "Sony IMX571", "frontFilter": "Nope", "lpf": ""})
     assert pf.preflight(make(cfg, headers=hdrs)) == ["front filter 'Nope' is not in Siril's SPCC database"]
 
 

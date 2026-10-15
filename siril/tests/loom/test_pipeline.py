@@ -349,7 +349,7 @@ def test_clean_white_balance_is_measured_from_cached_pre_correction_plates(tmp_p
     seen: dict[str, Any] = {}
 
     def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
-                     use_cache: bool, ignore_cache: bool, ref_key: Any = None) -> list[float]:
+                     use_cache: bool, ignore_cache: bool, ref_key: Any = None, ref_channel: Any = None) -> list[float]:
         seen["channels"] = sorted(clean)
         seen["paths_exist"] = all(os.path.isfile(p) for _key, p in clean.values())
         seen["rect"] = tuple(rect)
@@ -373,7 +373,7 @@ def test_lrgb_with_narrowband_and_clean_white_balance(tmp_path: Path, monkeypatc
     seen: dict[str, Any] = {}
 
     def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
-                     use_cache: bool, ignore_cache: bool, ref_key: Any = None) -> list[float]:
+                     use_cache: bool, ignore_cache: bool, ref_key: Any = None, ref_channel: Any = None) -> list[float]:
         seen["channels"] = sorted(clean)
         return [1.1, 1.0, 0.9]
 

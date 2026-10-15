@@ -203,7 +203,8 @@ def preflight(inputs: Preflight) -> list[str]:
             file_problems.append(f"No FILTER keyword in {k}: {p} {_NO_FILTER_TAIL}")
 
     # 1b. Colour masters, in Loom's order (Pipeline.js:63-72): the mix, the palette, the channel counts of every
-    #     input, the kinds, then the sensor. Siril's narrowband SPCC uses the sensor too, so any colour run needs it.
+    #     input, the kinds, then the sensor. Only the OSC master is calibrated with the sensor (a narrowband SPCC in a
+    #     fresh session takes no names), so only a run that supplies OSC needs it.
     mix = osc.colour_mix_problem(cfg)
     if mix is not None:
         problems.append(mix)
@@ -222,7 +223,8 @@ def preflight(inputs: Preflight) -> list[str]:
     problems.extend(osc.input_channel_problems(cfg, info_of))
     problems.extend(osc.osc_kind_problems(cfg, info_of))  # type: ignore[arg-type]  # fills config["oscKinds"]
     sensor = cfg.get("oscSensor")
-    if osc.colour_run(cfg) and _blank(sensor.get("sensor") if isinstance(sensor, Mapping) else None):
+    has_osc = "OSC" in osc.colour_supplied(cfg)
+    if has_osc and _blank(sensor.get("sensor") if isinstance(sensor, Mapping) else None):
         problems.append(_SENSOR_PROBLEM)
 
     # 2. The files: not found, not readable, header unreadable, a broadband master without a FILTER keyword.
@@ -273,8 +275,8 @@ def preflight(inputs: Preflight) -> list[str]:
                 if name not in inputs.spcc_names(kind):
                     problems.append(f"SPCC filter {name} for {k} is not in Siril's SPCC database: "
                                     + _filter_fix(headless, k))
-    if osc.colour_run(cfg) and isinstance(sensor, Mapping) and not _blank(sensor.get("sensor")):
-        # The colour run's sensor, front filter and low-pass filter are Siril's own database names, with its "none"
+    if has_osc and isinstance(sensor, Mapping) and not _blank(sensor.get("sensor")):
+        # The OSC master's sensor, front filter and low-pass filter are Siril's own database names, with its "none"
         # entries for an unchosen filter: the command checks them too (siril_ops), preflight says so before the run.
         if inputs.spcc_database is not None and inputs.spcc_names is not None:
             for key, kind, label in _OSC_NAMES:

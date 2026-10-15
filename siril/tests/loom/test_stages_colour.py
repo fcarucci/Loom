@@ -877,3 +877,46 @@ def test_the_clean_balance_key_changes_with_each_spectral_choice_alone(change: d
 def test_the_clean_balance_key_of_a_mono_run_changes_with_the_sensor_override_and_the_reference() -> None:
     assert _clean_key(config=_config(spccSensor="Custom"), ref_key="r") != _clean_key(ref_key="r")
     assert _clean_key(ref_key="a") != _clean_key(ref_key="b")
+
+
+def test_a_sensor_change_leaves_an_oscnb_only_hoo_key_alone(tmp_path: Path) -> None:
+    base = _oscnb_config(tmp_path, "L-eXtreme")
+    other = _oscnb_config(tmp_path, "L-eXtreme", oscSensor={"sensor": "Canon EOS 20D", "frontFilter": "Antlia ALP-T",
+                                                            "lpf": "Baader UV/IR Cut"})
+    assert _keys("src", stages_colour.palette_stage_params("HOO", base)) == \
+        _keys("src", stages_colour.palette_stage_params("HOO", other))
+
+
+def test_the_run_bandwidth_is_not_in_a_colour_palette_key_when_the_filter_decides(tmp_path: Path) -> None:
+    a = _keys("src", stages_colour.palette_stage_params("HOO", _osc_config(tmp_path, "L-eXtreme",
+                                                                          narrowbandBandwidth=3.0)))
+    b = _keys("src", stages_colour.palette_stage_params("HOO", _osc_config(tmp_path, "L-eXtreme",
+                                                                          narrowbandBandwidth=9.0)))
+    assert a == b
+    c = _keys("src", stages_colour.palette_stage_params("HOO", _osc_config(tmp_path, "Mystery",
+                                                                          narrowbandBandwidth=3.0)))
+    d = _keys("src", stages_colour.palette_stage_params("HOO", _osc_config(tmp_path, "Mystery",
+                                                                          narrowbandBandwidth=9.0)))
+    assert c[1] != d[1]  # no table entry: the run's bandwidth is what is sent
+
+
+def test_ha_and_oiii_bandwidths_go_to_their_own_channels(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    _hoo(ctx, tmp_path, _oscnb_config(tmp_path, "L-eNhance"))
+    assert ops.transcript[1] == "spcc -narrowband -rwl=656.28 -rbw=10.00 -gwl=500.70 -gbw=24.00 -bwl=500.70 -bbw=24.00"
+
+
+def test_the_mono_log_line_keeps_a_single_bandwidth(tmp_path: Path) -> None:
+    ctx, _, log = _ctx(tmp_path)
+    _hoo(ctx, tmp_path, _config())
+    assert any(line.endswith("bandwidth 3.0nm") for line in log.lines)
+
+
+def test_an_osc_run_whose_reference_is_not_an_osc_plane_is_a_programming_error(tmp_path: Path) -> None:
+    ctx, _, _ = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "spcc_osc": lambda *a: None})
+    clean, ref = _clean_setup(tmp_path)
+    with pytest.raises(ValueError, match=r"internal: with OSC in the run the reference must be its G \(got L\)"):
+        stages_colour.measure_clean_white_balance(ctx, clean, ref, RECT, _clean_config(), INSTRUME, None, False, False,
+                                                  ref_key="k", ref_channel="L")
+    assert stages_colour.measure_clean_white_balance(ctx, clean, ref, RECT, _clean_config(), INSTRUME, None, False,
+                                                     False, ref_key="k", ref_channel="G") is not None
