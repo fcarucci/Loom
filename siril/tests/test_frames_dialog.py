@@ -706,40 +706,28 @@ def test_the_criteria_are_disabled_while_the_review_is_locked(make) -> None:
     assert all(e.instate(["disabled"]) for e in d.crit_edits.values())
 
 
-def test_only_a_missing_actions_module_is_tolerated() -> None:
-    import importlib
+def test_only_a_missing_actions_module_is_tolerated(monkeypatch) -> None:
+    import builtins
     import sys
 
     import loomsiril.frames_dialog as FD
 
-    class Broken:
-        pass
-
-    real = importlib.import_module
-    sys.modules.pop("loomsiril.frames_dialog_actions", None)
+    # Both swaps are undone by monkeypatch, so the real module stays in sys.modules for the tests that follow.
+    monkeypatch.delitem(sys.modules, "loomsiril.frames_dialog_actions", raising=False)
     src = open(FD.__file__, encoding="utf-8").read()
     head = src[src.index("try:  # the run"):src.index("log = logging")]
     ns: dict[str, Any] = {"__name__": "x"}
-    imp = ModuleNotFoundError("No module named 'numpy_missing'", name="numpy_missing")
-
-    def fake_import(*a: Any, **k: Any) -> Any:
-        raise imp
-
-    import builtins
-
+    raised = [ModuleNotFoundError("No module named 'numpy_missing'", name="numpy_missing")]
     orig = builtins.__import__
 
     def guarded(name: str, *a: Any, **k: Any) -> Any:
         if name == "loomsiril.frames_dialog_actions":
-            raise imp
+            raise raised[0]
         return orig(name, *a, **k)
 
-    builtins.__import__ = guarded
-    try:
-        with pytest.raises(ModuleNotFoundError):
-            exec(head, ns)
-        imp = ModuleNotFoundError("x", name="loomsiril.frames_dialog_actions")
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    with pytest.raises(ModuleNotFoundError):
         exec(head, ns)
-        assert "_Actions" in ns
-    finally:
-        builtins.__import__ = orig
+    raised[0] = ModuleNotFoundError("x", name="loomsiril.frames_dialog_actions")
+    exec(head, ns)
+    assert "_Actions" in ns
