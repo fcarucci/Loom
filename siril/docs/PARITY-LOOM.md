@@ -239,6 +239,43 @@ Conventions that differ from the JavaScript on purpose:
 | `nbnorm.normalize` | `lib/Steps.js:2162-2199` | R | `tests/loom/test_nbnorm.py` |
 | `nbnorm.sky_level` | - | S | `tests/loom/test_nbnorm.py` |
 
+## loomsiril/loom/osc.py
+
+The colour-master (OSC) rules. Every row marked P is replayed against `tests/oracle/loom_osc.json` (recorded by
+`tools/oracle/loom_osc.js`) in `tests/loom/test_osc.py`. `colour_run` and `js_config` are the port's own helpers.
+
+| Function | JavaScript (Loom) | Status | Test |
+|---|---|---|---|
+| `osc.normalise_filter` | `lib/Util.js:831` | P | - |
+| `osc.osc_model_name` | `lib/Util.js:870` | P | - |
+| `osc.osc_filter_info` | `lib/Util.js:879` | P | - |
+| `osc.parse_colour_master_name` | `lib/Util.js:1835` | P | - |
+| `osc.channel_count_problem` | `lib/Util.js:1475` | P | - |
+| `osc.channel_supplied` | `lib/Util.js:620` | P | - |
+| `osc.colour_supplied` | `lib/Util.js:677` | P | - |
+| `osc.mono_supplied` | `lib/Util.js:685` | P | - |
+| `osc.supplied_channels` | `lib/Util.js:694` | P | - |
+| `osc.colour_mix_problem` | `lib/Util.js:710` | P | - |
+| `osc.osc_kind_key` | `lib/Util.js:733` | P | `tests/loom/test_osc.py` |
+| `osc.effective_osc_kind` | `lib/Util.js:744` | P | - |
+| `osc.entry_channel` | `lib/Util.js:1877` | P | - |
+| `osc.select_colour_masters` | `lib/Util.js:1894` | P | - |
+| `osc.colour_candidate_correction` | `lib/Util.js:1927` | P | - |
+| `osc.osc_palette_problem` | `lib/Pipeline.js:208` | P | - |
+| `osc.input_channel_problems` | `lib/Pipeline.js:223` | P | - |
+| `osc.osc_kind_problems` | `lib/Pipeline.js:247` | P | `tests/loom/test_osc.py` |
+| `osc.osc_group_identity` | `lib/Pipeline.js:963` | P | - |
+| `osc.osc_sibling_key` | `lib/Pipeline.js:973` | P | - |
+| `osc.osc_validate_name` | `lib/Pipeline.js:983` | P | - |
+| `osc.osc_group_register_key` | `lib/Pipeline.js:994` | P | - |
+| `osc.osc_registered_sibling_key` | `lib/Pipeline.js:1003` | P | - |
+| `osc.osc_plane_problem` | `lib/Pipeline.js:2020` | P | - |
+| `osc.osc_validation_record` | `lib/Pipeline.js:2029` | P | - |
+| `osc.osc_narrowband_bandwidths` | `lib/Pipeline.js:2532` | P | - |
+| `osc.narrowband_bandwidths` | `lib/Pipeline.js:2532` | P | - |
+| `osc.colour_run` | - | S | `tests/loom/test_osc.py` |
+| `osc.js_config` | - | S | `tests/loom/test_osc.py` |
+
 ## loomsiril/loom/pipeline.py
 
 | Function | JavaScript (Loom) | Status | Test |
