@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from loomsiril.loom import siril_ops
 from loomsiril.loom.siril_ops import RecordingOps, SirilCommandOps, SirilOpsError
 
 STUB = Path(__file__).resolve().parents[1] / "sirilpy_stub"
@@ -22,6 +23,17 @@ NAMED_TEXT = ('spcc "-monosensor=Sony IMX571" "-rfilter=Baader R" "-gfilter=Baad
               "-narrowband -rwl=656.28 -rbw=7.00 -gwl=500.70 -gbw=25.00 -bwl=495.90 -bbw=20.00")
 BROADBAND_TEXT = 'spcc "-monosensor=Sony IMX571" "-rfilter=Baader R" "-gfilter=Baader G" "-bfilter=Baader B"'
 NAMES = {"sensor": "Sony IMX571", "r": "Baader R", "g": "Baader G", "b": "Baader B"}
+
+
+OSC_DB = (
+    '[{"name": "Sony IMX571 Red", "model": "Sony IMX571", "type": "OSC_SENSOR", "channel": "RED"},'
+    ' {"name": "No filter", "model": "None", "type": "OSC_FILTER"},'
+    ' {"name": "Optolong L-Pro", "model": "Optolong L-Pro Light Pollution", "type": "OSC_FILTER"},'
+    ' {"name": "Full spectrum (no filter)", "model": "Generic / None", "type": "OSC_LPF"}]'
+)
+OSC = ("Sony IMX571", "Optolong L-Pro", "Full spectrum (no filter)")
+OSC_TEXT = 'spcc "-oscsensor=Sony IMX571" "-oscfilter=Optolong L-Pro" "-osclpf=Full spectrum (no filter)"'
+NARROW_TAIL = "-narrowband -rwl=656.28 -rbw=7.00 -gwl=500.70 -gbw=25.00 -bwl=495.90 -bbw=20.00"
 
 
 @pytest.fixture
@@ -42,6 +54,7 @@ def stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 def spcc_db(tmp_path: Path) -> Path:
     folder = tmp_path / "spcc"
     folder.mkdir()
+    (folder / "osc.json").write_text(OSC_DB, encoding="utf-8")
     (folder / "sensors.json").write_text('[{"name": "Sony IMX571", "type": "MONO_SENSOR"}]', encoding="utf-8")
     (folder / "filters.json").write_text(
         '[{"name": "Baader R", "type": "MONO_FILTER", "channel": "RED"},'
@@ -84,13 +97,13 @@ def test_narrowband_after_broadband_in_one_session_transcript(stub, ops):
     assert [c[0] for c in stub.STATE.commands] == [BROADBAND_TEXT, NAMED_TEXT]
 
 
-def test_recording_call_records_all_ten_parameters(stub):
+def test_recording_call_records_all_eleven_parameters(stub):
     rec = RecordingOps(".")
     rec.spcc_narrowband(*NARROW)
     rec.spcc_narrowband(*NARROW, **NAMES)
     assert rec.calls == [
-        ("spcc_narrowband", (*NARROW, None, None, None, None), {}),
-        ("spcc_narrowband", (*NARROW, "Sony IMX571", "Baader R", "Baader G", "Baader B"), {}),
+        ("spcc_narrowband", (*NARROW, None, None, None, None, None), {}),
+        ("spcc_narrowband", (*NARROW, "Sony IMX571", "Baader R", "Baader G", "Baader B", None), {}),
     ]
 
 
@@ -165,3 +178,63 @@ def test_an_empty_name_is_refused_like_broadband(stub, ops):
     with pytest.raises(ValueError, match="spcc needs the sensor name"):
         ops.spcc_narrowband(*NARROW, sensor="", r="Baader R", g="Baader G", b="Baader B")
     assert stub.STATE.commands == []
+
+
+# ---- OSC and mono calls in one session: each call carries the full set of its own mode -----------------------
+
+
+def test_mono_after_osc_in_one_session_sends_the_full_mono_set(stub, ops):
+    rec = RecordingOps(".")
+    for o in (rec, ops):
+        o.spcc_osc(*OSC)
+        o.spcc_broadband("Sony IMX571", "Baader R", "Baader G", "Baader B")
+    assert rec.transcript == [OSC_TEXT, BROADBAND_TEXT]
+    assert [c[0] for c in stub.STATE.commands] == [OSC_TEXT, BROADBAND_TEXT]
+
+
+def test_osc_after_mono_in_one_session_sends_the_full_osc_trio(stub, ops):
+    rec = RecordingOps(".")
+    for o in (rec, ops):
+        o.spcc_broadband("Sony IMX571", "Baader R", "Baader G", "Baader B")
+        o.spcc_osc(*OSC)
+    assert rec.transcript == [BROADBAND_TEXT, OSC_TEXT]
+    assert [c[0] for c in stub.STATE.commands] == [BROADBAND_TEXT, OSC_TEXT]
+
+
+def test_osc_mono_osc_alternation_never_drops_a_flag(stub, ops):
+    for _ in range(2):
+        ops.spcc_osc(*OSC)
+        ops.spcc_broadband("Sony IMX571", "Baader R", "Baader G", "Baader B")
+    sent = [c[0] for c in stub.STATE.commands]
+    assert sent == [OSC_TEXT, BROADBAND_TEXT] * 2
+    assert all(t.count("=") == 3 for t in sent[0::2]) and all(t.count("=") == 4 for t in sent[1::2])
+
+
+def test_osc_with_no_front_filter_and_no_lpf_still_sends_all_three_flags_in_a_session(stub, ops):
+    ops.spcc_broadband("Sony IMX571", "Baader R", "Baader G", "Baader B")
+    ops.spcc_osc("Sony IMX571", None, None)
+    assert stub.STATE.commands[-1][0] == ('spcc "-oscsensor=Sony IMX571" "-oscfilter=No filter" '
+                                          '"-osclpf=Full spectrum (no filter)"')
+
+
+def test_narrowband_after_osc_carries_the_osc_trio(stub, ops):
+    rec = RecordingOps(".")
+    for o in (rec, ops):
+        o.spcc_osc(*OSC)
+        o.spcc_narrowband(*NARROW, **siril_ops.spcc_narrowband_names("osc", None, OSC))
+    assert rec.transcript == [OSC_TEXT, OSC_TEXT + " " + NARROW_TAIL]
+    assert [c[0] for c in stub.STATE.commands] == [OSC_TEXT, OSC_TEXT + " " + NARROW_TAIL]
+
+
+def test_narrowband_after_mono_then_osc_follows_the_latest_mode(stub, ops):
+    mono = ("Sony IMX571", "Baader R", "Baader G", "Baader B")
+    ops.spcc_broadband(*mono)
+    ops.spcc_narrowband(*NARROW, **siril_ops.spcc_narrowband_names("mono", mono, None))
+    ops.spcc_osc(*OSC)
+    ops.spcc_narrowband(*NARROW, **siril_ops.spcc_narrowband_names("osc", mono, OSC))
+    assert [c[0] for c in stub.STATE.commands] == [BROADBAND_TEXT, NAMED_TEXT, OSC_TEXT, OSC_TEXT + " " + NARROW_TAIL]
+
+
+def test_narrowband_in_a_fresh_session_needs_no_names(stub, ops):
+    ops.spcc_narrowband(*NARROW, **siril_ops.spcc_narrowband_names(None, None, None))
+    assert stub.STATE.commands == [(NARROW_TEXT,)]

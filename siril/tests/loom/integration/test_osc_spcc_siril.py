@@ -107,11 +107,7 @@ def _entries(folder: Path) -> list[dict]:
     return found
 
 
-def _session(tmp_path: Path, gaia_tsv_path: Path, commands: list[str]) -> tuple[SirilRun, list[dict], list[str]]:
-    """Run ``commands`` in one siril-cli session on a plate-solved colour field.
-
-    Returns the run, one {ok, error} per command (empty when Siril died) and Siril's "SPCC will use ..." lines.
-    """
+def _write_field(tmp_path: Path, gaia_tsv_path: Path) -> None:
     data = np.genfromtxt(gaia_tsv_path, delimiter="\t", names=True)
     near = np.hypot((data["ra"] - FIELD_RA) * np.cos(np.radians(FIELD_DEC)), data["dec"] - FIELD_DEC) < 0.15
     rows = np.column_stack([data["ra"][near], data["dec"][near], data["G"][near]])
@@ -120,6 +116,14 @@ def _session(tmp_path: Path, gaia_tsv_path: Path, commands: list[str]) -> tuple[
     for channel, tint in (("R", 1.0), ("G", 0.8), ("B", 0.6)):
         synth.write_master(tmp_path / f"field_nowcs_{channel.lower()}.fits",
                            _real_sky_field(channel, 0.05, tint, rows, wcs=False))
+
+
+def _session(tmp_path: Path, gaia_tsv_path: Path, commands: list[str]) -> tuple[SirilRun, list[dict], list[str]]:
+    """Run ``commands`` in one siril-cli session on a plate-solved colour field.
+
+    Returns the run, one {ok, error} per command (empty when Siril died) and Siril's "SPCC will use ..." lines.
+    """
+    _write_field(tmp_path, gaia_tsv_path)
     (tmp_path / "commands.json").write_text(json.dumps(commands), encoding="utf-8")
     run = run_pyscript(SCRIPT, tmp_path)
     steps = [json.loads(line[len("STEP="):]) for line in run.lines("STEP=")]
@@ -310,3 +314,45 @@ def test_a_partial_osc_set_in_narrowband_kills_siril_with_a_dslr_sensor(
     run, steps, used = _session(tmp_path, gaia_tsv_path, [f"spcc {OSC_CANON}", f"spcc {CANON} {NARROW}"])
     assert run.returncode == SIGSEGV
     assert used[-1] == 'SPCC will use OSC sensor "Canon EOS 20D", filter "No filter" and DSLR LPF "(null)"'
+
+
+SCRIPT_OPS = r'''
+import json, os
+import sirilpy as s
+from loomsiril.loom.siril_ops import SirilCommandOps, spcc_narrowband_names
+
+siril = s.SirilInterface(); siril.connect()
+ops = SirilCommandOps(siril, log=siril.log)
+root = siril.get_siril_wd()
+p = lambda name: os.path.join(root, name)
+ops.rgbcomp(p("field_nowcs_r.fits"), p("field_nowcs_g.fits"), p("field_nowcs_b.fits"), p("field_rgb"))
+ops.load(p("field_rgb.fit"))
+ops.platesolve()
+mono = ("Generic mono sensor", "Antlia R", "Antlia G", "Antlia B")
+osc = ("Canon EOS 20D", "Antlia Triband RGB Ultra II", "Canon EOS 350D blocking filter")
+nb = (656.28, 7.0, 500.7, 25.0, 495.9, 20.0)
+ops.spcc_osc("Sony IMX571", None, None)
+ops.spcc_osc(*osc)
+ops.spcc_narrowband(*nb, **spcc_narrowband_names("osc", mono, osc))
+ops.spcc_broadband(*mono)
+ops.spcc_narrowband(*nb, **spcc_narrowband_names("mono", mono, osc))
+ops.spcc_osc(*osc)
+ops.spcc_narrowband(*nb, **spcc_narrowband_names("osc", mono, osc))
+print("RESULT=" + json.dumps({"done": True}), flush=True)
+'''
+
+
+@NETWORK
+def test_the_ops_methods_drive_every_mode_switch_in_one_session(database: Path, tmp_path: Path,
+                                                                gaia_tsv_path: Path) -> None:
+    """spcc_osc and spcc_narrowband(**spcc_narrowband_names(...)) through SirilCommandOps: no step is refused."""
+    _write_field(tmp_path, gaia_tsv_path)
+    run = run_pyscript(SCRIPT_OPS, tmp_path).check()
+    assert run.value("RESULT") == {"done": True}
+    used = [line for line in run.printed() if line.startswith("SPCC will use")]
+    assert len(used) == 7
+    assert [("OSC" in line) for line in used] == [True, True, True, False, False, True, True]
+    # the narrowband calls took the previous mode's set
+    assert used[2].startswith('SPCC will use OSC sensor "Canon EOS 20D"')
+    assert used[4].startswith('SPCC will use mono senor "Generic mono sensor"')
+    assert len(run.lines("Spectrophotometric Color Calibration succeeded.")) == 7
