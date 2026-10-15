@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+- The release notes' Siril install steps explain how the script folder path is formed and state that OSC cameras are not supported yet.
+
 ## [0.5.1] — 2026-10-15
 
 - **Loom for Siril 0.5.1 (experimental) is released with it.** The Siril Fly-Through dialog now finds the star-extraction tools, shows the distance, finds the object by name, has Draft, a progress window, Music, Logo, Video, Stars and motion and HDR controls, and remembers its files. The PixInsight scripts themselves are unchanged. See `siril/CHANGELOG.md` for the details.

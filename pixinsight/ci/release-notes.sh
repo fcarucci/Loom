@@ -39,12 +39,19 @@ for Updates** to get the next release.
 ### Siril (experimental)
 
 Needs Siril 1.4 with Python scripting. The Siril port is not part of the
-attached zip or the update repository: it is installed from a clone.
+attached zip or the update repository: it is installed from a clone. It works
+with mono cameras and filters: it needs calibrated, stacked masters per filter
+(R, G, B, optionally L, H, S, O). One-shot colour (OSC) cameras are not
+supported yet.
 
 1. \`git clone --branch v$v https://github.com/fcarucci/Loom\` (any checkout
-   of the repository works).
-2. In Siril, open **Preferences → Scripts**, add the clone's \`siril/Loom\`
-   folder, click refresh, then **Apply**.
+   of the repository works). This creates a folder named \`Loom\` in the
+   folder where you run it; cloned in your home folder, the script folder is
+   \`/Users/<you>/Loom/siril/Loom\` on macOS and \`~/Loom/siril/Loom\` on
+   Linux.
+2. In Siril, open **Preferences → Scripts**, add the \`siril/Loom\` folder
+   inside the clone (the full path to wherever you cloned it), click refresh,
+   then **Apply**.
 3. \`loom_preprocess.py\` and \`loom_fly_through.py\` appear under **Scripts →
    Loom**. On first run the script installs \`numpy\`, \`scipy\` and
    \`tifffile\` into Siril's Python environment, which needs the network.

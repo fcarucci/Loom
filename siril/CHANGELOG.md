@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Install instructions no longer show a developer-specific folder; they explain how the script folder path is formed.
+- The README states that one-shot colour (OSC) cameras are not supported yet: Loom for Siril needs mono masters per filter.
+
 ## [0.5.1] — 2026-10-15
 
 Experimental, as 0.5.0. The Fly-Through dialog was reworked: see the entries below.

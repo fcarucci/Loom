@@ -10,8 +10,10 @@ window layout are unverified until someone runs it in Siril 1.4.4.
 ## Install by hand
 
 1. Siril 1.4 with Python scripting. Siril installs `numpy` and `tifffile` for the script on first run.
-2. Clone this repository and add its `Loom` folder to Siril's script folders (Preferences, Scripts: add the path
-   on a new line, refresh, Apply). Run the script from the Scripts menu. It imports `loomsiril` from the clone it
+2. Clone this repository (`git clone https://github.com/fcarucci/Loom` creates a folder named `Loom` in the folder where
+   you run it; cloned in your home folder, the script folder is `/Users/<you>/Loom/siril/Loom` on macOS and
+   `~/Loom/siril/Loom` on Linux). Add the `siril/Loom` folder inside the clone to Siril's script folders (Preferences,
+   Scripts: add the full path to it on a new line, refresh, Apply). Run the script from the Scripts menu. It imports `loomsiril` from the clone it
    sits in. To update, `git pull` in the clone.
    Other ways, used first when they apply: the environment variable `LOOMSIRIL_SRC` set to a checkout before
    starting Siril, or the package installed into Siril's Python environment (`pip install .`). A copy of the
@@ -36,7 +38,7 @@ description; this section covers the script itself.
 ### Install
 
 1. Siril 1.4 with Python scripting.
-2. Add the clone's `Loom` folder to Siril's script folders, as above. `loom_preprocess.py` finds `loomsiril` in that clone.
+2. Add the clone's `siril/Loom` folder to Siril's script folders, as above. `loom_preprocess.py` finds `loomsiril` in that clone.
 
 ### Dependencies
 

@@ -7,7 +7,7 @@ Loom names them, plus a few keys the script reads itself.
 Run it with siril-cli:
 
 ```
-printf 'requires 1.4.0\npyscript /path/to/Loom-Siril/Loom/loom_preprocess.py --job /path/to/job.json\n' \
+printf 'requires 1.4.0\npyscript /path/to/clone/siril/Loom/loom_preprocess.py --job /path/to/job.json\n' \
   | siril-cli -d /path/to/workdir -s -
 ```
 

@@ -51,6 +51,11 @@ function run( options )
       [ "the Siril scripts and folder are named",
         out.includes( "siril/Loom" ) && out.includes( "loom_preprocess.py" ) && out.includes( "loom_fly_through.py" ) ],
       [ "Siril is said not to be in the zip or repository", /not part of the\s+attached zip or the update repository/.test( out ) ],
+      [ "the Siril path is explained location-neutrally",
+        out.includes( "folder where you run it" ) && out.includes( "/Users/<you>/Loom/siril/Loom" ) &&
+        !/~\/dev|~\/Dev/.test( out ) ],
+      [ "OSC cameras are said not to be supported",
+        out.includes( "mono cameras and filters" ) && /One-shot colour \(OSC\) cameras are not\s+supported yet/.test( out ) ],
       [ "README links point at the tag",
         out.includes( "https://github.com/fcarucci/Loom/blob/v1.2.3/pixinsight/README.md" ) &&
         out.includes( "https://github.com/fcarucci/Loom/blob/v1.2.3/siril/README.md" ) ],

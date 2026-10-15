@@ -9,6 +9,7 @@ version. This folder is the Siril port: its code is Python and it is released to
 
 ## Status
 
+- **Cameras.** Loom for Siril works with mono cameras and filters: it needs calibrated, stacked masters per filter (R, G, B, optionally L, H, S, O). One-shot colour (OSC) cameras are not supported yet.
 - Port of Loom v0.4.1 (`script/FlyThrough.js` and `script/lib/*.js`) to Python
   with numpy. The maths are pinned against recorded output of the JavaScript;
   [docs/PARITY.md](docs/PARITY.md) lists what is ported, vectorised, replaced or
@@ -319,8 +320,11 @@ folder.
    git clone https://github.com/fcarucci/Loom
    ```
 
-2. In Siril, open Preferences, Scripts. Add the clone's `Loom` folder (for example `~/dev/Loom/siril/Loom`) on a
-   new line of the script folders, click the refresh button, then Apply. Siril names the submenu after the folder:
+   This creates a folder named `Loom` in the folder where you run it. Cloned in your home folder, the script folder
+   is `/Users/<you>/Loom/siril/Loom` on macOS and `~/Loom/siril/Loom` on Linux.
+
+2. In Siril, open Preferences, Scripts. Add the `siril/Loom` folder inside the clone (the full path to wherever you
+   cloned it, for example `/Users/<you>/Loom/siril/Loom`) on a new line of the script folders, click the refresh button, then Apply. Siril names the submenu after the folder:
    `loom_preprocess.py` (the pipeline) and `loom_fly_through.py` (Fly-Through) appear under Scripts, Loom.
 3. Run one of them. The script finds the `loomsiril` package in the clone it sits in, so no environment variable
    is needed. On first run it installs `numpy`, `scipy` and `tifffile` into Siril's Python environment; that step
