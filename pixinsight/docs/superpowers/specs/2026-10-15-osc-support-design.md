@@ -1,7 +1,7 @@
 # Loom: one-shot colour (OSC) masters — design
 
 **Date:** 2026-10-15
-**Status:** revision 2, after adversarial review round 1
+**Status:** revision 3, after adversarial review rounds 1 and 2
 
 ## What this is for
 
@@ -48,21 +48,34 @@ still without reading pixels); a file or view with three channels is a colour
 candidate and is never mapped to a mono slot. A file with any other channel
 count than 1 or 3 is refused with its path and count.
 
-**Kind detection.** A new `Util.oscFilterInfo( filterValue )` normalises like
+**Kind detection.** A colour master's kind says what its planes contain. Only
+two kinds are supported: `broadband`, and `dualband`, which means specifically a
+filter passing Hα (and, for quad-band, SII) in red and OIII (with Hβ) in green and
+blue. A new `Util.oscFilterInfo( filterValue )` normalises like
 `Util.channelFromFilter` (lowercase, punctuation and spacing removed) and returns
-`{ kind, name, haNm, oiiiNm }` or null:
+`{ kind, name, confident, haNm, oiiiNm }` or null. It looks names up in this
+order:
 
-| kind | filters (matched by token) | passbands |
-|---|---|---|
-| `broadband` | uvir, ircut, lpro, cls, and an absent or empty `FILTER` | — |
-| `dualband` | lextreme, lultimate, lenhance, alpt, nbz, duo, dual, tri, triad, quad | per filter, from a table in `Util` (e.g. L-eXtreme 7 nm / 7 nm; L-Ultimate 3 nm / 3 nm; L-Enhance 10 nm / 24 nm); unknown entries use the run's narrowband bandwidth |
+1. **Known models**, matched on the full normalised name: for example L-eXtreme,
+   L-Ultimate, L-Enhance, ALP-T Hα/OIII variants, NBZ. Each entry states its line
+   pair and passbands (L-eXtreme 7 nm / 7 nm; L-Ultimate 3 nm / 3 nm; and so on).
+   An entry whose line pair is not Hα/OIII (for example the ALP-T SII/Hβ variant)
+   has `kind: "unsupported"`, and a run with it is refused with "this filter
+   passes SII and Hβ; only Hα/OIII dual-band filters are supported".
+2. **Broadband names**: uvir, ircut, lpro, cls, and an absent or empty `FILTER`
+   give `broadband` with `confident: true`.
+3. **Family aliases** (duo, dual, tri, triad, quad, alpt, and similar) give
+   `dualband` with `confident: false`: the family name alone does not establish
+   the line pair.
 
-Unknown names return null.
+Anything else returns null.
 
 **Override for every colour master.** The masters list shows every colour master
-with a kind control (Broadband / Dual-band), preset to the detected kind or
-empty when detection returned null; a run with an empty kind is blocked with
-"choose Broadband or Dual-band for <file>". The user's choice always wins over
+with a kind control: **Broadband** or **Dual-band Hα + OIII**. It is preset to
+the detected kind when detection is confident, and left empty when detection is
+not confident or returned null; a run with an empty kind is blocked with
+"choose Broadband or Dual-band Hα + OIII for <file>". A filter whose model is
+known to be unsupported cannot be overridden. The user's choice always wins over
 detection. It is remembered keyed by the normalised filter name when the master
 has one, and by the master's path when it has none, so one choice for an
 unlabelled file never applies to another unlabelled file. A "detected" link
@@ -122,26 +135,23 @@ and `OSCNB`, plus `config.oscKinds` (the effective kind of each) and
 **Dual-band (`OSCNB`):**
 
 - `H` is plane 0.
-- `O` combines planes 1 and 2. Plane 2 is first brought to plane 1's scale with
-  PixInsight's LinearFit (reference: plane 1; default rejection limits), so a
-  difference in throughput or scaling between the two is removed. Then
-  `O = ( 2 * G + B' ) / 3`. The 2:1 weights follow the sensor's photosites: a
-  Bayer cell has two green and one blue, and the debayered planes do not carry
-  independent noise, so a per-plane noise estimate is not used for weighting.
-  This is a fixed, documented heuristic, not an optimal estimator.
-- If LinearFit fails or returns a non-finite or non-positive slope, `O` is plane
-  1 alone, with a warning that names the master.
-- Hβ, which falls in blue, is carried into `O`. No crosstalk subtraction.
+- `O` is plane 1 (green) alone. Green and blue see different mixtures of OIII and
+  Hβ through the sensor's Bayer filters, so the two planes are not proportional
+  to each other in general, and no fixed or fitted combination is valid for every
+  scene. Green carries two of a Bayer cell's four photosites and, on the usual
+  sensors, a strong response at 500.7 nm. Blue is not used. Combining green and
+  blue is left for a later design with a physically justified model.
+- Hβ in green is carried into `O`. No crosstalk subtraction.
 
 **Validation in two steps.**
 
 - *Preflight* reads headers only: three channels of one size for a colour input.
 - *First load* checks the pixels: a plane whose maximum equals its minimum
-  (constant, including all zero) is refused, naming the plane. The result is
-  written to the cache beside the derived channels (`<group key>.osc.json`: the
-  validation result, the LinearFit slope and offset, and the plane statistics
-  used), so a run that hits the cache neither reopens the master nor loses the
-  logged values: they are read from that file and logged again.
+  (constant, including all zero) is refused, naming the plane. The result and
+  the plane statistics (minimum, maximum, median per plane) are written to a
+  sidecar in the cache directory, `<Cache.hash( group identity + "|validate" )>.osc.json`,
+  so a run that hits the cache neither reopens the master nor loses the logged
+  values: they are read from that file and logged again.
 
 **Loading stays lazy.** `Pipeline.loadChannels` creates each colour group as
 lazy channels that share one loader: the master is opened at most once per
@@ -149,13 +159,16 @@ run, the first time a sibling needs pixels, and not at all when every stage it
 feeds is a cache hit. The loader owns the master's window and releases it once
 every sibling has its working copy.
 
-**Identity.**
+**Identity and storage keys.** Identity strings are never used as file names.
+Every key that names something in the cache is `Cache.hash( identity )`, so it
+keeps the cache's hexadecimal-key convention and is a valid file name on every
+platform.
 
-- The group's source key: `Cache.fingerprintFile( path )` (or the view
-  fingerprint) plus `|osc:<kind>`.
-- Each sibling's source key: the group key plus its recipe: `|plane:0`,
-  `|plane:1`, `|plane:2` for broadband; `|plane:0` for `H`, and `|o:2g+lf(b)/3`
-  for `O`.
+- The group identity: `Cache.fingerprintFile( path )` (or the view fingerprint)
+  plus `|osc:<kind>`.
+- Each sibling's source key: `Cache.hash( group identity + recipe )`, the recipe
+  being `|plane:0`, `|plane:1`, `|plane:2` for broadband, and `|plane:0` for `H`
+  and `|plane:1` for `O`.
 - Each derived working image carries `FILTER` set to its channel and a
   `LOOMSRC` keyword: source file name and recipe.
 
@@ -216,10 +229,10 @@ each slightly differently and leave colour fringes. So:
   split again into the registered siblings. The temporary windows are registered
   with the run's window registry and released after the split.
 - **Cache.** The grouped registration's key is
-  `Cache.chainKey( hash( sibling keys in plane order ), "registerGroup",
+  `Cache.chainKey( Cache.hash( sibling keys in plane order ), "registerGroup",
   { ref: <reference key>, planes: <mapping> } )`, stored as the registered
-  three-channel image. Each registered sibling's key is that key plus
-  `|plane:<n>`. A change to any sibling's input changes the group key and
+  three-channel image. Each registered sibling's key is
+  `Cache.hash( group registration key + "|plane:<n>" )`. A change to any sibling's input changes the group key and
   re-registers the whole group (one transform drives all of them). A cache that
   holds the group image but not a sibling's split re-splits from it; a cache that
   lacks the group image re-registers.
@@ -228,10 +241,21 @@ each slightly differently and leave colour fringes. So:
 **Clean white balance.** `Pipeline.measureCleanWhiteBalance` registers the
 pre-correction R, G and B with `registerCleanChannel`, one at a time. For `OSC`
 it uses the same grouped rule: identity when the reference is the `OSC` group's
-`G` (the crop then applies as for the corrected channels), else one grouped
-registration of the three clean planes, cached under `cleanRegisterGroup` with
-the same key scheme. `Pipeline.cleanWhiteBalanceKey` adds the sensor curve names
-and the QE curve name to what it hashes, so changing the sensor re-measures.
+`G`, else one grouped registration of the three clean planes, cached under
+`cleanRegisterGroup` with the same key scheme.
+
+The reference view is already cropped to the common area when the clean branch
+runs (it is cropped in place), so clean registrations land in the cropped frame.
+Their keys therefore depend on the crop as well as on the reference: the
+`cleanRegisterGroup` parameters are `{ ref: <reference key>, crop:
+Pipeline.cropTag( common ), planes: <mapping> }`. With the identity case, the
+clean planes are cropped with the same `common` rectangle before measuring.
+
+`Pipeline.cleanWhiteBalanceKey` adds three things to what it hashes: the
+reference key, the sensor curve names and the QE curve name. Replacing the
+reference (a new L, say) with the crop unchanged, or changing the sensor,
+therefore measures again. The reference key is added for mono runs too, so their
+cached factors are measured once more after the upgrade.
 
 ## Mixed passbands
 
@@ -261,7 +285,7 @@ Stages on native pixels (gradient removal, MGC, aberration correction), star
 extraction, denoise, stretch and export run on derived channels as on mono
 ones. Derived channels keep the names `R`, `G`, `B`, `Ha`, `OIII`, so exports,
 PSB layers and the cache layout are unchanged. The run log adds one line per
-colour master: kind, filter, how it was split, the LinearFit values.
+colour master: kind, filter, how it was split, and the plane statistics.
 
 ## Dialog
 
@@ -298,7 +322,11 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
 
 **Unit (PixInsight, through the repo's PJSR test shim):**
 
-- `Util.oscFilterInfo`: known names, unknown names, punctuation, absent `FILTER`.
+- `Util.oscFilterInfo`: known models before family aliases; the ALP-T Hα/OIII and
+  SII/Hβ variants separately (supported, refused); family aliases not confident;
+  unknown names; punctuation; absent `FILTER`.
+- Storage keys: every generated cache basename (sibling keys, split keys, the
+  validation sidecar) is hexadecimal.
 - `Util.parseColourMasterName`: hyphenated filters, `_color` / `_RGB`, misleading
   names corrected by the header.
 - Discovery: colour candidates beside mono L and S winners; unnamed colour files;
@@ -308,15 +336,20 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
 - `Util.suppliedChannels` and every consumer listed above, including `OSCNB`
   alone (HOO built, SHO reported) and `OSCNB` + S.
 - Conflicts and validation.
-- The `O` combination: unequal plane scaling (result independent of B's scale),
-  LinearFit failure fallback, constant planes refused.
+- The split: `O` equals the green plane whatever the blue plane holds (synthetic
+  masters with independent Hβ and OIII structure, continuum and a background
+  gradient); constant planes refused.
 - Cache keys: sibling recipes, the group registration key, the clean
-  white-balance key changing with the sensor.
+  registration key changing with the crop, the clean white-balance key changing
+  with the reference and with the sensor.
 
 **End to end (PixInsight), synthetic masters with a known shift between them:**
 
 - siblings pixel-aligned after registration, in both the corrected and the clean
   white-balance branch;
+- a changed overlap (a dual-band master covering less of the field) re-registers
+  the clean group; a replacement L with an unchanged crop re-measures the white
+  balance;
 - counting opens of the master file: one on a cold run, none on a warm run, one
   when only a later stage is invalidated;
 - changing one sibling's input re-registers the group; deleting one sibling's
@@ -333,6 +366,8 @@ then mono and mono then OSC in one session, checking each call's arguments.
 
 - Undebayered CFA masters, and extraction from the Bayer pattern.
 - Crosstalk subtraction between Bayer channels.
+- Combining the green and blue planes into `O`.
+- Dual-band filters other than Hα/OIII (SII/Hβ and similar).
 - More than one colour master of a kind in one run.
 - A synthetic luminance from RGB.
 - Modelling a light-pollution filter's curve in calibration.
