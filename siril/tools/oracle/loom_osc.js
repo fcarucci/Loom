@@ -443,5 +443,58 @@ module.exports = function( js )
       catch ( e ) { return { throws: e.message }; }
    } );
 
+   // ---- the LOOMSRC texts of the exports: the colour master's file and planes -----------------------
+   constant( "OSC_LINE_NOTES", Pipeline.OSC_LINE_NOTES );
+
+   // The palette line of the run log, and what the palette sources of an export are built from.
+   const srcPaletteConfigs = [ { paths: { OSCNB: "/m/nb.xisf" } }, { paths: { OSC: "/m/rgb.xisf" } },
+                            { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } }, { views: { OSCNB: "NB_View" } },
+                            { paths: { H: "/m/h.xisf", O: "/m/o.xisf" } }, { paths: { OSCNB: "" } }, {}, null,
+                            { paths: { OSCNB: "/m/nb.xisf" }, palettes: [ "HOO" ] } ];
+   const srcPaletteInfos = [ { OSCNB: { name: "L-eXtreme" } }, { OSCNB: { name: "ALP-T Ha/OIII" } }, { OSCNB: {} },
+                          { OSCNB: { name: "" } }, { OSCNB: { name: 0 } }, { OSCNB: null }, {}, null,
+                          { OSCNB: { name: "Optolong L-eXtreme 2\"" } } ];
+   const srcPalettes = [ "HOO", "SHO", "HSO", "", null, "XYZ", "hoo", undefined ];
+   n = 0;
+   srcPaletteConfigs.forEach( c => srcPaletteInfos.forEach( i => srcPalettes.forEach( p =>
+      rec( "osc_palette_sources/" + ( n++ ), "osc_palette_sources", [ c, i, p ],
+           a => Pipeline.oscPaletteSources( a[0], a[1], a[2] ) ) ) ) );
+
+   // One channel record: its colour master's file and plane, or null for a mono or unnamed record.
+   const srcRecords = [
+      null, {}, { group: null, path: "/m/x.xisf", plane: 0 }, { group: "", path: "/m/x.xisf", plane: 0 },
+      { group: "OSC", path: "/m/rgb.xisf", plane: 0 }, { group: "OSC", path: "/m/rgb.xisf", plane: 2 },
+      { group: "OSCNB", path: "C:\\masters\\nb.xisf", plane: 1 }, { group: "OSC", path: "rgb.xisf", plane: 1 },
+      { group: "OSC", path: "/m/dir/", plane: 1 }, { group: "OSC", path: "", plane: 0 },
+      { group: "OSC", path: null, plane: 0 }, { group: "OSC", path: "/m/\u00dc/\u03a8 rgb.xisf", plane: 1 },
+      { group: "OSC", path: "/m/rgb.xisf" }, { group: "OSC", path: "/m/rgb.xisf", plane: null },
+      { group: "OSC", path: "/m/rgb.xisf", plane: 1.5 }, { group: 5, path: "/m/rgb.xisf", plane: 0 },
+      { group: "OSC", path: "a\\b/c.xisf", plane: 0 }, { group: "OSC", path: "/m/rgb.xisf", plane: true },
+      { group: "OSC", path: 12, plane: 0 }, { group: "OSC", path: "/m/rgb.xisf", plane: "2" }
+   ];
+   srcRecords.forEach( ( r, i ) =>
+      rec( "osc_channel_source/" + i, "osc_channel_source", [ r ], a => Pipeline.oscChannelSource( a[0] ) ) );
+
+   // The channel records of a run: a composite or palette names the masters its channels come from.
+   const srcChans = {
+      R: { group: "OSC", path: "/m/rgb.xisf", plane: 0 }, G: { group: "OSC", path: "/m/rgb.xisf", plane: 1 },
+      B: { group: "OSC", path: "/m/rgb.xisf", plane: 2 }, H: { group: "OSCNB", path: "/m/nb.xisf", plane: 0 },
+      O: { group: "OSCNB", path: "/m/nb.xisf", plane: 1 }, L: { group: null, path: "/m/l.xisf", plane: null },
+      S: { group: "OSCNB", path: "/n/other.xisf", plane: 0 }, X: { group: "OSC", path: "C:\\m\\rgb.xisf", plane: 0 },
+      Q: { group: "OSC", path: "/m/rgb.xisf", plane: null }, D: { group: "OSC", path: "/m/rgb.xisf", plane: 0 },
+      T: { group: "OSC", path: "/m/rgb.xisf", plane: "0" }, W: { group: "OSC", path: "/m/w.xisf", plane: 0 }
+   };
+   const srcKeySets = [ [ "R", "G", "B" ], [ "H", "O", "O" ], [ "S", "H", "O" ], [ "H", "S", "O" ], [ "L" ], [],
+                        [ "L", "R" ], [ "R", "L", "G" ], [ "Z" ], [ "R", "R", "G" ], [ "H", "H" ], [ "R", "H", "O", "G" ],
+                        [ "Q" ], [ "R", "D", "G" ], [ "X", "R" ], [ "S", "O" ], [ "R", "G", "B", "H", "O" ], [ "R", "Q" ],
+                        [ "Q", "Q" ], [ "R", "T" ], [ "R", "W", "G" ], [ "H", "O", "S", "R" ] ];
+   const srcPerPlane = [ false, true, null, 0, "yes" ];
+   n = 0;
+   srcKeySets.forEach( k => srcPerPlane.forEach( pp =>
+      rec( "osc_source_text/" + ( n++ ), "osc_source_text", [ srcChans, k, pp ],
+           a => Pipeline.oscSourceText( a[0], a[1], a[2] ) ) ) );
+   rec( "osc_source_text/no-channels", "osc_source_text", [ {}, [ "R", "G", "B" ], false ],
+        a => Pipeline.oscSourceText( a[0], a[1], a[2] ) );
+
    return cases;
 };

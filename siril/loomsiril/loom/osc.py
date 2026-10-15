@@ -20,7 +20,14 @@ from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 from loomsiril.jsmath import number_str
 from loomsiril.loom import cache
-from loomsiril.loom.channels import CHANNELS, channel_from_filter, is_autocrop_name, master_variant_rank
+from loomsiril.loom.channels import (
+    CHANNELS,
+    PALETTES,
+    channel_from_filter,
+    is_autocrop_name,
+    master_variant_rank,
+    palette_channels,
+)
 
 # ---------------------------------------------------------------------------
 # JavaScript semantics the rules rely on
@@ -691,6 +698,84 @@ def osc_control_state(config: Any) -> dict[str, Any]:
         "sensorRowVisible": has_osc,
         "rgbFilterRowsVisible": not has_osc,
     }
+
+
+# ---------------------------------------------------------------------------
+# LOOMSRC texts of the exports (Pipeline.js)
+# ---------------------------------------------------------------------------
+
+#: What each logical channel of a colour master really holds, for the run log (``Pipeline.OSC_LINE_NOTES``).
+OSC_LINE_NOTES: dict[str, str] = {"H": "Ha, plus SII for quad-band", "O": "OIII with H\u03b2"}
+
+
+def _file_name(path: Any) -> str:
+    """The last component of ``String(path)``, split on either separator."""
+    return re.split(r"[\\/]", _str(path))[-1]
+
+
+def osc_palette_sources(config: Any, infos: Any, palette: Any) -> str:
+    """``Pipeline.oscPaletteSources``: the sources line of a palette built from a dual-band colour master.
+
+    ``""`` when the run has no ``OSCNB`` master or the palette is not built from one. ``infos`` is keyed by colour
+    slot: ``{"OSCNB": {"name": ...}}``, the name being the filter's model name.
+    """
+    pal = _str(palette if _truthy(palette) else "HOO")
+    if "OSCNB" not in colour_supplied(config) or pal not in PALETTES:
+        return ""
+    info = _get(infos, "OSCNB")
+    name = _get(info, "name")
+    origin = "OSCNB" + (" " + _str(name) if _truthy(name) else "")
+    parts: list[str] = []
+    for ch in palette_channels(pal) or []:
+        note = OSC_LINE_NOTES.get(ch)
+        if not note:
+            return ""
+        parts.append(f"{ch} from {origin} ({note})")
+    return pal + ": " + ", ".join(parts)
+
+
+def osc_channel_source(chan: Any) -> Optional[str]:
+    """``Pipeline.oscChannelSource``: the colour master's file and plane a channel comes from; None for a mono one."""
+    if chan is None or not _truthy(_get(chan, "group")):
+        return None
+    return _file_name(_member(chan, "path")) + "|plane:" + _str(_member(chan, "plane"))
+
+
+def osc_source_text(chans: Mapping[str, Any], keys: Sequence[str], per_plane: Any) -> Optional[str]:
+    """``Pipeline.oscSourceText``: one value naming the source planes of a composite or a palette.
+
+    Only the channels ``keys`` of ``chans`` that come from a colour master count (None when none does). Per master the
+    planes are listed together ("OSC f planes 0,1,2") unless ``per_plane``, when each distinct plane is its own entry
+    ("OSCNB f plane 0; OSCNB f plane 1"). A missing plane joins as an empty entry, as in JavaScript's ``join``.
+    """
+    order: list[str] = []
+    by_master: dict[str, list[Any]] = {}
+    seen: set[str] = set()
+    for k in keys:
+        c = _get(chans, k)
+        if not _truthy(_get(c, "group")):
+            continue
+        head = _str(_get(c, "group")) + " " + _file_name(_member(c, "path"))
+        plane = _member(c, "plane")
+        ident = head + "|" + _str(plane)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        if head not in by_master:
+            by_master[head] = []
+            order.append(head)
+        by_master[head].append(plane)
+    if not order:
+        return None
+    parts: list[str] = []
+    for head in order:
+        planes = by_master[head]
+        if _truthy(per_plane):
+            parts.extend(f"{head} plane {_str(p)}" for p in planes)
+        else:
+            joined = ",".join("" if p is None or p is UNDEFINED else _str(p) for p in planes)
+            parts.append(head + (" plane " if len(planes) == 1 else " planes ") + joined)
+    return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------

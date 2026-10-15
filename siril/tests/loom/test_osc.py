@@ -1,5 +1,5 @@
 """OSC detection, colour-master selection, the remembered-kind key, the colour group's cache keys, registration
-plan, cache action, sensor checks and dialog state (loomsiril/loom/osc.py).
+plan, cache action, sensor checks, dialog state and the LOOMSRC texts of exports (loomsiril/loom/osc.py).
 
 The oracle replay checks every recorded case of tests/oracle/loom_osc.json against the port (floats to 1e-9
 relative, everything else exactly). The other tests pin what the oracle cannot: the Siril-only helpers and the
@@ -36,12 +36,17 @@ SKIPPED = {
     "oscRegisterGroup": "drives PixInsight windows and the PixInsight cache; Siril's twin lives with the registration stage",
     "cropCleanChannel": "crops a PixInsight view loaded from the cache; Siril's twin lives with the registration stage",
     "registrationReference": "reads PixInsight windows and keywords; Siril's twin lives with the registration stage",
+    "logPaletteSources": "writes the run log (Util.log); the line it logs is osc_palette_sources, ported",
+    "setSource": "sets LOOMSRC on a PixInsight result window; Siril stamps its exports through its own stages",
+    "stampSources": "stamps LOOMSRC on PixInsight result windows; the texts it stamps are ported as osc_source_text",
+    "loomSourceKeywords": "reads the keywords of a PixInsight window; the TIFF and PSB clones are PixInsight-only",
 }
 
 #: The functions this part of the port adds, with the fewest recorded cases each must keep.
 NEW_FUNCTIONS = {
     "osc_group_cache_action": 300, "osc_registration_plan": 250, "clean_registration_plan": 150,
     "osc_channel_groups": 15, "osc_sensor_problems": 500, "osc_control_state": 12,
+    "osc_palette_sources": 600, "osc_channel_source": 20, "osc_source_text": 100,
 }
 
 
@@ -248,3 +253,46 @@ def test_control_state_follows_the_colour_slots() -> None:
     assert nb["sensorRowVisible"] is False and nb["rgbFilterRowsVisible"] is True and nb["shoHsoEnabled"] is False
     mono = osc.osc_control_state({"paths": {"R": "/m/r.xisf"}})
     assert mono["monoEnabled"] is True and mono["monoReason"] == "" and mono["shoHsoReason"] == ""
+
+
+def test_the_palette_sources_line_names_the_master_and_both_lines() -> None:
+    nb = {"paths": {"OSCNB": "/m/nb.xisf"}}
+    assert osc.osc_palette_sources(nb, {"OSCNB": {"name": "L-eXtreme"}}, "HOO") == (
+        "HOO: H from OSCNB L-eXtreme (Ha, plus SII for quad-band), O from OSCNB L-eXtreme (OIII with H\u03b2)")
+    assert osc.osc_palette_sources(nb, {"OSCNB": {"name": "L-eXtreme"}}, None).startswith("HOO: ")
+    assert osc.osc_palette_sources(nb, {"OSCNB": {}}, "HOO").startswith("HOO: H from OSCNB (Ha")
+    assert osc.osc_palette_sources(nb, {"OSCNB": {"name": "L-eXtreme"}}, "SHO") == ""
+    assert osc.osc_palette_sources({"paths": {"OSC": "/m/rgb.xisf"}}, {}, "HOO") == ""
+    assert osc.osc_palette_sources({}, {}, "HOO") == ""
+
+
+def test_a_channel_names_its_masters_file_and_plane() -> None:
+    assert osc.osc_channel_source({"group": "OSC", "path": "C:\\masters\\rgb.xisf", "plane": 1}) == "rgb.xisf|plane:1"
+    assert osc.osc_channel_source({"group": "OSC", "path": "/m/rgb.xisf", "plane": 0}) == "rgb.xisf|plane:0"
+    assert osc.osc_channel_source({"group": None, "path": "/m/l.xisf", "plane": None}) is None
+    assert osc.osc_channel_source(None) is None
+
+
+def test_a_composite_or_palette_lists_the_planes_of_each_master() -> None:
+    chans = {
+        "R": {"group": "OSC", "path": "/m/rgb.xisf", "plane": 0}, "G": {"group": "OSC", "path": "/m/rgb.xisf", "plane": 1},
+        "B": {"group": "OSC", "path": "/m/rgb.xisf", "plane": 2}, "H": {"group": "OSCNB", "path": "/m/nb.xisf", "plane": 0},
+        "O": {"group": "OSCNB", "path": "/m/nb.xisf", "plane": 1}, "L": {"group": None, "path": "/m/l.xisf", "plane": None},
+    }
+    assert osc.osc_source_text(chans, ["R", "G", "B"], False) == "OSC rgb.xisf planes 0,1,2"
+    assert osc.osc_source_text(chans, ["R", "G", "B"], True) == \
+        "OSC rgb.xisf plane 0; OSC rgb.xisf plane 1; OSC rgb.xisf plane 2"
+    assert osc.osc_source_text(chans, ["H", "O", "O"], True) == "OSCNB nb.xisf plane 0; OSCNB nb.xisf plane 1"
+    assert osc.osc_source_text(chans, ["L"], False) is None
+    assert osc.osc_source_text(chans, [], False) is None
+
+
+def test_a_missing_plane_joins_as_an_empty_entry_as_javascript_does() -> None:
+    chans = {"Q": {"group": "OSC", "path": "/m/rgb.xisf", "plane": None}}
+    assert osc.osc_source_text(chans, ["Q"], False) == "OSC rgb.xisf plane "
+    assert osc.osc_source_text(chans, ["Q"], True) == "OSC rgb.xisf plane null"
+
+
+def test_the_source_helpers_that_touch_windows_are_not_ported() -> None:
+    for name in ("log_palette_sources", "set_source", "stamp_sources", "loom_source_keywords"):
+        assert not hasattr(osc, name), name

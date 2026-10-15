@@ -291,6 +291,9 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 | `osc.osc_channel_groups` | `lib/Pipeline.js:2891` | P | `tests/loom/test_osc.py` |
 | `osc.osc_sensor_problems` | `lib/Pipeline.js:327` | P | `tests/loom/test_osc.py` |
 | `osc.osc_control_state` | `lib/Util.js:771` | P | `tests/loom/test_osc.py` |
+| `osc.osc_palette_sources` | `lib/Pipeline.js:3537` | P | `tests/loom/test_osc.py` |
+| `osc.osc_channel_source` | `lib/Pipeline.js:3581` | P | `tests/loom/test_osc.py` |
+| `osc.osc_source_text` | `lib/Pipeline.js:3595` | P | `tests/loom/test_osc.py` |
 | `osc.colour_run` | - | S | `tests/loom/test_osc.py` |
 | `osc.js_config` | - | S | `tests/loom/test_osc.py` |
 
