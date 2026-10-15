@@ -1,7 +1,7 @@
 """The frame renderer: one Fly-Through frame from a scene (E5: loomsiril/frame.py).
 
 Ported from Loom ``script/lib/Render.js`` (v0.4.1): ``Render.frame`` (945-978),
-``Render.frameImage`` (1009-1039, without the logo: status D, see docs/parity/e5.md) and
+``Render.frameImage`` (1009-1039, the logo through :mod:`loomsiril.logo`) and
 ``Render.sceneFor`` (1593-1600). The stars layer's sprites are drawn by
 :mod:`loomsiril.sprites`; the resampling by :mod:`loomsiril.resample`; the glow and
 headroom by :mod:`loomsiril.bloom` and :mod:`loomsiril.scene`.
@@ -17,6 +17,7 @@ from typing import Mapping, Optional
 import numpy as np
 
 from loomsiril import geometry as G
+from loomsiril import logo as logo_mod
 from loomsiril.bloom import bloom, saturate_stars, stars_to_headroom
 from loomsiril.colour import OutputTransform, is_hdr
 from loomsiril.presets import needs_rotation, star_quality
@@ -41,7 +42,8 @@ class RenderOptions:
     the frame interval in clip seconds; ``duration`` the clip length in seconds; ``output`` the output
     transform (None: none); ``star_hdr`` the stars into HDR headroom; ``peak`` the HDR peak nits
     (None: HDR_PEAK_DEFAULT); ``t`` the frame's time (set by the frame, not by the caller);
-    ``K`` the backdrop zoom (set by the frame); ``coarse_mips`` the Medium mip rule (set by the frame).
+    ``K`` the backdrop zoom (set by the frame); ``coarse_mips`` the Medium mip rule (set by the frame);
+    ``logo`` the logo layer for this frame size (``logo.logo_layer``; None: no logo) and ``logo_delay`` its fade-in delay (s).
     """
 
     travel: float = 0.0
@@ -63,6 +65,8 @@ class RenderOptions:
     t: float = 0.0
     K: Optional[float] = None
     coarse_mips: bool = False
+    logo: Optional[logo_mod.LogoLayer] = None
+    logo_delay: float = 0.0
 
 
 def frame(sc: Scene, t: float, opts: RenderOptions, out_w: int, out_h: int, crop: Mapping[str, float]) -> list[np.ndarray]:
@@ -108,14 +112,13 @@ def frame(sc: Scene, t: float, opts: RenderOptions, out_w: int, out_h: int, crop
 
 def frame_image(S: list[np.ndarray], T: list[np.ndarray], opts: RenderOptions, target: FrameTarget,
                 clock: float) -> list[np.ndarray]:
-    """``Render.frameImage`` without the logo: the nebula S and the stars T screened together, through the output transform.
+    """``Render.frameImage``: the nebula S and the stars T screened together, the logo added (``opts.logo``, faded by ``logo_fade``), through the output transform.
 
     ``target`` is the full-size output frame (its ``out_w`` x ``out_h``); the channel count is len(S). Returns one
     float32 ``(out_h, out_w)`` plane per channel. The composite is in the image's own
     encoding; the output transform (when set) converts it to the video's colour space.
-    ``clock`` is unused without a logo and kept for the JS signature.
+    ``clock`` (0-1, the flight's clock) times ``opts.duration`` gives the seconds the logo's fade-in is measured in.
     """
-    del clock  # the logo (its fade) is not ported (docs/parity/e5.md)
     out_w, out_h = target.out_w, target.out_h
     hdr = opts.output is not None and is_hdr(opts.output.mode)
     out: list[np.ndarray] = []
@@ -124,6 +127,10 @@ def frame_image(S: list[np.ndarray], T: list[np.ndarray], opts: RenderOptions, t
         o, x = composite(S[c], T[c], hdr)
         out.append(o)
         excess.append(x)
+    if opts.logo is not None:
+        out = [np.ascontiguousarray(o).reshape(out_h, out_w) for o in out]
+        excess = [None if x is None else np.ascontiguousarray(x).reshape(out_h, out_w) for x in excess]
+        logo_mod.add_logo(opts.logo, out, excess, logo_mod.logo_fade(clock * (opts.duration or 0), opts.logo_delay or 0))
     if opts.output is not None:
         if len(S) >= 3:
             opts.output.apply(out[:3], excess[:3])

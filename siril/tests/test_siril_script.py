@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import stat
+import threading
 import sys
 import tempfile
 from pathlib import Path
@@ -77,6 +78,17 @@ def fake_pipeline(monkeypatch: pytest.MonkeyPatch):
         return mod.result
 
     mod.run = run
+    # the script settles the distance with the dialog's resolver before the layers: a canned answer, never the network
+    from loomsiril import fly_distance
+
+    mod.resolved = []
+
+    def resolve(target, kind="nebula", gaia_source="cache", typed=None, radius=None, **kw):
+        mod.resolved.append({"target": target, "kind": kind, "gaia": gaia_source, "radius": radius})
+        return fly_distance.DistanceResult(1500.0, "star", "illuminating star G 8.8, Gaia online")
+
+    mod.resolver = resolve
+    monkeypatch.setattr(fly_distance, "resolve", resolve)
     monkeypatch.setitem(sys.modules, "loomsiril.pipeline", mod)
     # ``from loomsiril import pipeline`` reads the package attribute first: tests/test_pipeline.py sets it when
     # the real module is imported earlier in the same run, so the fake must replace that attribute too.
@@ -156,13 +168,13 @@ def test_main_happy_path_calls_pipeline_with_the_right_job(stub, script, fake_pi
     values = _values(tmp_path, starless_path=starless_path, stars_path=stars_path)
     seen = {}
 
-    def dialog(options, starnet_available, target, siril=None):
-        seen.update(options=options, starnet=starnet_available, target=target, siril=siril)
+    def dialog(options, discover, target, siril=None, **kw):
+        seen.update(options=options, discover=discover, target=target, siril=siril)
         return values
 
     script.main(dialog=dialog)
 
-    assert seen["starnet"] is False and seen["siril"] is not None
+    assert callable(seen["discover"]) and seen["siril"] is not None
     assert seen["target"] is not None                       # the header centre goes to the dialog
     assert stub.STATE.installs and stub.STATE.installs[0][0] == ("numpy", "tifffile", "ttkthemes")
     assert len(fake_pipeline.calls) == 1
@@ -178,7 +190,7 @@ def test_main_happy_path_calls_pipeline_with_the_right_job(stub, script, fake_pi
     assert (job.duration, job.fps, job.presets, job.out_dir) == (4.0, 25, ["youtube_1080"], values["out_dir"])
     assert job.detections[0].y == pytest.approx(2.5)          # ypos 3.0 is the top-down row 2.5 (edge convention)
     # progress reached Siril, the result box names the frames and the ffmpeg command
-    assert stub.STATE.progress == [("rendering frames", 0.5)]
+    assert stub.STATE.progress[-1] == ("rendering frames", 1.0)      # the run's last state (done: 100 %)
     kind, text = stub.STATE.messages[-1]
     assert kind == "info" and "Frames written: 3" in text and "ffmpeg -framerate 25" in text
     # the options were saved (no arrays in them) and the connection was closed
@@ -260,8 +272,8 @@ def test_starnet_mode_without_starnet_is_refused(stub, script, fake_pipeline, tm
     monkeypatch.setenv("PATH", str(tmp_path))
     _, pixels, header_fits, _ = _field_and_header()
     _load_siril_image(stub, pixels, header_fits)
-    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="starnet"))
-    assert "StarNet is not installed" in stub.STATE.messages[-1][1]
+    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="extract"))
+    assert "No star-extraction tool is chosen" in stub.STATE.messages[-1][1]
     assert fake_pipeline.calls == []
 
 
@@ -295,15 +307,13 @@ def test_starnet_temporary_files_are_removed_in_every_case(stub, script, fake_pi
     root = tmp_path / "tmproot"
     root.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(root))
-    if case == "starnet_error":
-        monkeypatch.setenv("LOOMSIRIL_STARNET", _fake_cli_fail(tmp_path / "starnet2"))
-    else:
-        monkeypatch.setenv("LOOMSIRIL_STARNET", _fake_cli_copy(tmp_path / "starnet2"))
+    cli = _fake_cli_fail(tmp_path / "starnet2") if case == "starnet_error" else _fake_cli_copy(tmp_path / "starnet2")
     if case == "cancelled":
         fake_pipeline.result = SimpleNamespace(written=0, reused=0, cancelled=True, videos=[], commands=[], failed=[])
     _, pixels, header_fits, _ = _field_and_header()
     _load_siril_image(stub, pixels, header_fits)
-    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="starnet", starnet_licence=STARNET_LICENCE_REV))
+    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="extract", star_tool="starnet2", star_tool_path=cli,
+                                               starnet_licence=STARNET_LICENCE_REV))
     assert list(root.iterdir()) == []
     if case == "starnet_error":
         assert fake_pipeline.calls == [] and "StarNet exited" in stub.STATE.messages[-1][1]
@@ -312,10 +322,11 @@ def test_starnet_temporary_files_are_removed_in_every_case(stub, script, fake_pi
 
 
 def test_starnet_mode_runs_the_cli_and_splits(stub, script, fake_pipeline, tmp_path, monkeypatch):
-    monkeypatch.setenv("LOOMSIRIL_STARNET", _fake_cli_copy(tmp_path / "starnet2"))
+    cli = _fake_cli_copy(tmp_path / "starnet2")
     field, pixels, header_fits, _ = _field_and_header()
     _load_siril_image(stub, pixels, header_fits)
-    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="starnet", starnet_licence=STARNET_LICENCE_REV))
+    script.main(dialog=lambda *a, **k: _values(tmp_path, mode="extract", star_tool="starnet2", star_tool_path=cli,
+                                               starnet_licence=STARNET_LICENCE_REV))
     job = fake_pipeline.calls[0]
     image = pixels[::-1].astype(np.float32) / 65535            # the top-down image the script built
     assert np.allclose(job.starless[0], image, atol=2 / 65535)  # copy StarNet: starless = image ...
@@ -324,11 +335,12 @@ def test_starnet_mode_runs_the_cli_and_splits(stub, script, fake_pipeline, tmp_p
 
 def test_starnet_mode_without_the_licence_accepted_is_refused(stub, script, fake_pipeline, tmp_path, monkeypatch):
     """Without the current licence revision, StarNet never runs (the dialog gate is backed up here too)."""
-    monkeypatch.setenv("LOOMSIRIL_STARNET", _fake_cli_copy(tmp_path / "starnet2"))
+    cli = _fake_cli_copy(tmp_path / "starnet2")
     _, pixels, header_fits, _ = _field_and_header()
     _load_siril_image(stub, pixels, header_fits)
     for licence in (None, "2025-01-01"):
-        script.main(dialog=lambda *a, **k: _values(tmp_path, mode="starnet", starnet_licence=licence))
+        script.main(dialog=lambda *a, **k: _values(tmp_path, mode="extract", star_tool="starnet2", star_tool_path=cli,
+                                                   starnet_licence=licence))
         kind, text = stub.STATE.messages[-1]
         assert kind == "error" and "licence accepted" in text
     assert fake_pipeline.calls == []
@@ -336,7 +348,7 @@ def test_starnet_mode_without_the_licence_accepted_is_refused(stub, script, fake
 
 def test_licence_check_asks_only_for_a_new_revision(monkeypatch):
     asked = []
-    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary: asked.append(binary) or STARNET_LICENCE_REV)
+    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary, text=None: asked.append(binary) or STARNET_LICENCE_REV)
     assert starnet_licence.check(None, STARNET_LICENCE_REV, "x") == STARNET_LICENCE_REV and asked == []
     assert starnet_licence.check(None, None, "x") == STARNET_LICENCE_REV and asked == ["x"]
 
@@ -365,8 +377,9 @@ def test_licence_text_is_read_from_next_to_the_binary(tmp_path):
         starnet_licence.require({})
 
 
-def test_dialog_render_in_starnet_mode_needs_the_licence(stub, script, monkeypatch):
-    """_ok: declining keeps the dialog open with StarNet off; accepting remembers the revision in the values."""
+def test_dialog_render_in_starnet_mode_needs_the_licence(stub, script, monkeypatch, tmp_path):
+    """_ok: declining keeps the dialog open with StarNet off; accepting remembers the revision in the values. The
+    licence file is read on the worker, not on the Tk thread."""
     _fake_tkinter(monkeypatch)
     import tkinter as tk
 
@@ -375,16 +388,29 @@ def test_dialog_render_in_starnet_mode_needs_the_licence(stub, script, monkeypat
     msg.showinfo = msg.showerror = lambda *a, **k: shown.append(a[1])
     tk.messagebox = msg
     monkeypatch.setitem(sys.modules, "tkinter.messagebox", msg)
-    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), True, None)
-    dlg._mode.set("starnet")
-    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary: None)
+    from loomsiril import fly_tools
+
+    texts = []
+    monkeypatch.setattr(starnet_licence, "display_text", lambda binary: texts.append(threading.current_thread())
+                        or "the licence")
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({"out_dir": str(tmp_path)}), None, None)
+    dlg._on_discovered(fly_tools.Discovery([fly_tools.ExtractTool("starnet2", "StarNet2", "/x/starnet2")]))
+    dlg._mode.set("extract")
+    asked = []
+    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary, text=None: asked.append(text) or None)
+    _settle(dlg)
     dlg._ok()
-    assert dlg.result is None and dlg._mode.get() == "files"
+    _settle(dlg)
+    assert dlg.result is None and dlg._mode.get() == "files" and asked == ["the licence"]
     assert shown == ["StarNet mode stays off until its licence is accepted."]
-    dlg._mode.set("starnet")
-    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary: STARNET_LICENCE_REV)
+    assert texts and all(t is not threading.current_thread() for t in texts)
+    dlg._mode.set("extract")
+    monkeypatch.setattr(starnet_licence, "ask", lambda parent, binary, text=None: STARNET_LICENCE_REV)
+    _settle(dlg)
     dlg._ok()
-    assert dlg.result["mode"] == "starnet" and dlg.result["starnet_licence"] == STARNET_LICENCE_REV
+    _settle(dlg)
+    assert dlg.result["mode"] == "extract" and dlg.result["star_tool"] == "starnet2"
+    assert dlg.result["starnet_licence"] == STARNET_LICENCE_REV
 
 
 def test_licence_window_needs_the_tick_box_then_accept(stub, script):
@@ -432,7 +458,7 @@ def test_dialog_values_keep_saved_options_and_fill_the_rest(stub, script):
     """from_options is dict.get per field: a saved key wins (even as None), a missing key keeps its default."""
     v = script.DialogValues.from_options({"duration": 3.0, "ra": None, "presets": []})
     assert v.duration == 3.0 and v.ra is None and v.presets == []
-    assert v.fps == 30 and v.loop == "none" and v.video is False and v.distance is None
+    assert v.fps == 30 and v.loop == "none" and v.video is True and v.distance is None
     assert v.dec is script._FROM_TARGET                 # not saved: the dialog shows the target's Dec
 
 
@@ -444,34 +470,6 @@ def test_dialog_values_defaults_come_from_presets_and_the_working_folder(stub, s
     assert v.star_quality == presets.STAR_QUALITY_DEFAULT
     assert v.out_dir == str(Path(__file__).resolve().parent)
     assert v.starless_path == "" and v.target_type == "nebula" and v.dynamic == "sdr" and v.gaia == "cache"
-
-
-def test_run_pipeline_draws_progress_in_order_and_returns_the_result(stub, script):
-    """_run_pipeline: the worker's progress reaches Siril in order (done/total, 0.0 when total is 0), the result comes back,
-    and the pipeline is given an is_cancelled that answers False."""
-    seen = {}
-
-    class Pipeline:
-        @staticmethod
-        def run(job, progress, is_cancelled):
-            seen["job"], seen["cancelled"] = job, is_cancelled()
-            for stage, done, total in (("a", 0, 4), ("b", 2, 4), ("c", 4, 0)):
-                progress(stage, done, total)
-            return "result"
-
-    assert script._run_pipeline(Pipeline, "the job", stub.SirilInterface()) == "result"
-    assert seen == {"job": "the job", "cancelled": False}
-    assert stub.STATE.progress == [("a", 0.0), ("b", 0.5), ("c", 0.0)]
-
-
-def test_run_pipeline_reraises_the_worker_error(stub, script):
-    class Pipeline:
-        @staticmethod
-        def run(job, progress, is_cancelled):
-            raise ValueError("bad job")
-
-    with pytest.raises(ValueError, match="bad job"):
-        script._run_pipeline(Pipeline, None, stub.SirilInterface())
 
 
 def _tkinter():
@@ -491,7 +489,7 @@ def test_dialog_class_only_where_tk_works(stub, script):
     except tk.TclError:
         pytest.skip("no display: tkinter.Tk() does not work here")
     try:
-        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options({"duration": 3.0}), False,
+        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options({"duration": 3.0}), None,
                                    {"ra": 10.0, "dec": -5.0})
         from loomsiril import presets
 
@@ -508,12 +506,18 @@ class _FakeVar:
 
     def __init__(self, value: object = None) -> None:
         self._value = value
+        self._traces: list = []
 
     def get(self) -> object:
         return self._value
 
     def set(self, value: object) -> None:
         self._value = value
+        for callback in list(self._traces):
+            callback()
+
+    def trace_add(self, mode: str, callback: object) -> None:
+        self._traces.append(callback)
 
 
 class _FakeWidget:
@@ -524,11 +528,21 @@ class _FakeWidget:
         self.kw = kw
         self.grid_kw: dict | None = None
         self.children: list[_FakeWidget] = []
+        self.master = master
         if isinstance(master, _FakeWidget):
             master.children.append(self)
 
     def grid(self, **kw: object) -> None:
         self.grid_kw = kw
+
+    def place(self, **kw: object) -> None:
+        self.place_kw = kw
+
+    def place_forget(self) -> None:
+        self.place_kw = None
+
+    def focus_set(self) -> None:
+        pass
 
     def protocol(self, *args: object) -> None:
         pass
@@ -539,19 +553,111 @@ class _FakeWidget:
     def destroy(self) -> None:
         pass
 
+    def configure(self, **kw: object) -> None:
+        self.kw.update(kw)
+
+    def __setitem__(self, key: str, value: object) -> None:
+        self.kw[key] = value
+
+    def state(self, *args: object) -> None:
+        pass
+
+    def start(self, *args: object) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def grid_remove(self) -> None:
+        self.grid_kw = None
+
+    def after(self, ms: object, fn: object = None, *args: object) -> str:
+        """Records the callback instead of scheduling it: ``afters`` maps each pending id to (ms, fn)."""
+        self.afters = getattr(self, "afters", {})
+        self._after_seq = getattr(self, "_after_seq", 0) + 1
+        self.afters[f"after#{self._after_seq}"] = (ms, fn)
+        return f"after#{self._after_seq}"
+
+    def after_cancel(self, after_id: str) -> None:
+        getattr(self, "afters", {}).pop(after_id, None)
+
+    def bind(self, sequence: object = None, func: object = None, add: object = None) -> None:
+        self.bindings = getattr(self, "bindings", {})
+        self.bindings.setdefault(sequence, []).append(func)
+
+    def bind_all(self, sequence: object = None, func: object = None, add: object = None) -> None:
+        self.all_bindings = getattr(self, "all_bindings", {})
+        self.all_bindings.setdefault(sequence, []).append(func)
+
+    # what the scroll area asks of a Canvas, a Scrollbar and the screen (sizes are fixed numbers)
+    screen_height = 1000
+    req_height = 400
+    req_width = 300
+
+    def columnconfigure(self, *args: object, **kw: object) -> None:
+        pass
+
+    rowconfigure = columnconfigure
+
+    def update_idletasks(self) -> None:
+        pass
+
+    def winfo_screenheight(self) -> int:
+        return self.screen_height
+
+    def winfo_reqheight(self) -> int:
+        return self.req_height
+
+    def winfo_reqwidth(self) -> int:
+        return self.req_width
+
+    def create_window(self, *args: object, **kw: object) -> int:
+        return 1
+
+    def itemconfigure(self, *args: object, **kw: object) -> None:
+        pass
+
+    def bbox(self, *args: object) -> tuple:
+        return (0, 0, self.req_width, self.req_height)
+
+    def yview(self, *args: object) -> None:
+        pass
+
+    def set(self, *args: object) -> None:
+        pass
+
+    def invoke(self) -> None:
+        """A click on a button: runs its command."""
+        cmd = self.kw.get("command")
+        if cmd:
+            cmd()
+
+
+class _FakeStyle:
+    def lookup(self, *args: object) -> str:
+        return ""
+
 
 def _fake_tkinter(monkeypatch: pytest.MonkeyPatch) -> None:
     """tkinter and tkinter.ttk replaced by recording stand-ins: the dialog's layout is built with no display."""
     ttk = ModuleType("tkinter.ttk")
     tk = ModuleType("tkinter")
-    for name in ("Frame", "Label", "Entry", "Combobox", "Radiobutton", "Checkbutton", "Button"):
+    for name in ("Frame", "Label", "Entry", "Combobox", "Radiobutton", "Checkbutton", "Button", "Progressbar",
+                 "Scrollbar", "Spinbox", "Scale"):
         setattr(ttk, name, type(name, (_FakeWidget,), {}))
+    ttk.Style = _FakeStyle
+    tk.Canvas = type("Canvas", (_FakeWidget,), {})
     tk.Tk = type("Tk", (_FakeWidget,), {})
     tk.Toplevel = type("Toplevel", (_FakeWidget,), {})
-    tk.StringVar = tk.BooleanVar = _FakeVar
+    tk.StringVar = tk.BooleanVar = tk.DoubleVar = _FakeVar
     tk.ttk = ttk
     monkeypatch.setitem(sys.modules, "tkinter", tk)
     monkeypatch.setitem(sys.modules, "tkinter.ttk", ttk)
+
+
+#: Stands for the text of a label bound to a variable (a status line): it is dynamic, so the layout only records that
+#: the label is there. (Under real Tk, cget("text") of such a label is the variable's current value.)
+DYNAMIC = "<variable text>"
 
 
 def _fake_grid_rows(parent: _FakeWidget) -> list[tuple]:
@@ -559,7 +665,8 @@ def _fake_grid_rows(parent: _FakeWidget) -> list[tuple]:
     out: list[tuple] = []
     kids = [w for w in parent.children if w.grid_kw is not None]
     for w in sorted(kids, key=lambda w: (w.grid_kw["row"], w.grid_kw["column"])):
-        out.append((w.grid_kw["row"], w.grid_kw["column"], w.kind, w.kw.get("text")))
+        text = DYNAMIC if (w.kind == "Label" and "textvariable" in w.kw) else w.kw.get("text")
+        out.append((w.grid_kw["row"], w.grid_kw["column"], w.kind, text))
         out.extend(_fake_grid_rows(w))
     return out
 
@@ -570,7 +677,12 @@ def _real_grid_rows(parent: object) -> list[tuple]:
     kids = [w for w in parent.winfo_children() if w.grid_info()]
     for w in sorted(kids, key=lambda w: (w.grid_info()["row"], w.grid_info()["column"])):
         kind = w.winfo_class().removeprefix("T")
-        text = None if kind in ("Entry", "Combobox", "Frame") else w.cget("text")
+        if kind in ("Entry", "Combobox", "Frame", "Progressbar", "Spinbox", "Scale"):
+            text = None
+        elif str(w.cget("textvariable")):          # a status label: its text is the variable's, and changes
+            text = DYNAMIC
+        else:
+            text = w.cget("text") or None
         out.append((w.grid_info()["row"], w.grid_info()["column"], kind, text))
         out.extend(_real_grid_rows(w))
     return out
@@ -578,78 +690,143 @@ def _real_grid_rows(parent: object) -> list[tuple]:
 
 #: The dialog's layout (grid order; a frame's children follow the frame). The fake and the real tk must both show it.
 DIALOG_LAYOUT = [
-    (0, 0, "Radiobutton", "Run StarNet on the image"),
-    (0, 1, "Radiobutton", "Starless and stars files"),
-    (1, 0, "Label", "Starless file (TIFF/FITS)"),
-    (1, 1, "Entry", None),
-    (2, 0, "Label", "Stars file (TIFF/FITS)"),
+    (0, 0, "Label", "Input"),
+    (1, 0, "Radiobutton", "Extract stars from the image with:"),
+    (1, 1, "Combobox", None),
+    (1, 2, "Progressbar", None),
+    (2, 0, "Label", "Image file (TIFF/FITS)"),
     (2, 1, "Entry", None),
-    (3, 0, "Label", "Target RA (deg)"),
-    (3, 1, "Entry", None),
-    (4, 0, "Label", "Target Dec (deg)"),
-    (4, 1, "Entry", None),
-    (5, 0, "Label", "Target type"),
-    (5, 1, "Combobox", None),
-    (6, 0, "Label", "Distance (pc, blank = auto)"),
+    (2, 2, "Button", "Browse..."),
+    (3, 1, "Label", DYNAMIC),                              # the hint, or the Image file's size note
+    (4, 1, "Label", DYNAMIC),
+    (5, 0, "Radiobutton", "Starless and stars files"),
+    (6, 0, "Label", "Starless file (TIFF/FITS)"),
     (6, 1, "Entry", None),
-    (7, 0, "Label", "Duration (s)"),
+    (6, 2, "Button", "Browse..."),
+    (7, 0, "Label", "Stars file (TIFF/FITS)"),
     (7, 1, "Entry", None),
-    (8, 0, "Label", "Frames per second"),
-    (8, 1, "Combobox", None),
-    (9, 0, "Label", "Loop"),
-    (9, 1, "Combobox", None),
-    (10, 0, "Label", "Star quality"),
-    (10, 1, "Combobox", None),
-    (11, 0, "Label", "Dynamic range"),
+    (7, 2, "Button", "Browse..."),
+    (8, 0, "Label", "Target"),
+    (9, 0, "Label", "Target RA (deg)"),
+    (9, 1, "Entry", None),
+    (10, 0, "Label", "Target Dec (deg)"),
+    (10, 1, "Entry", None),
+    (11, 0, "Label", "Target type"),
     (11, 1, "Combobox", None),
-    (12, 0, "Label", "Gaia source"),
-    (12, 1, "Combobox", None),
-    (13, 0, "Label", "Object name"),
-    (13, 1, "Entry", None),
-    (14, 0, "Label", "Output folder"),
-    (14, 1, "Entry", None),
-    (15, 0, "Frame", None),
+    (12, 0, "Label", "Distance (pc, blank = auto)"),
+    (12, 1, "Entry", None),
+    (13, 1, "Label", DYNAMIC),
+    (14, 0, "Label", "Gaia source"),
+    (14, 1, "Combobox", None),
+    (15, 1, "Label", DYNAMIC),
+    (16, 0, "Label", "Clip"),
+    (17, 0, "Label", "Duration (s)"),
+    (17, 1, "Entry", None),
+    (18, 0, "Label", "Frames per second"),
+    (18, 1, "Combobox", None),
+    (19, 0, "Label", "Orientation"),
+    (19, 1, "Combobox", None),
+    (19, 2, "Label", DYNAMIC),
+    (20, 0, "Label", "Loop"),
+    (20, 1, "Combobox", None),
+    (20, 2, "Label", DYNAMIC),
+    (21, 0, "Label", "Star quality"),
+    (21, 1, "Combobox", None),
+    (22, 0, "Label", "Dynamic range"),
+    (22, 1, "Combobox", None),
+    (23, 0, "Frame", None),
     (0, 0, "Checkbutton", "Social 1080×1920"),
     (0, 1, "Checkbutton", "Social 1080×1080"),
     (1, 0, "Checkbutton", "YouTube 3840×2160"),
     (1, 1, "Checkbutton", "YouTube 1920×1080"),
     (2, 0, "Checkbutton", "Exhibition 3840×2160 (loop)"),
-    (16, 0, "Checkbutton", "Encode video (ffmpeg)"),
-    (17, 0, "Frame", None),
+    (24, 0, "Label", "Output"),
+    (25, 0, "Label", "Object name"),
+    (25, 1, "Entry", None),
+    (25, 2, "Button", "Find"),
+    (26, 0, "Label", "Output folder"),
+    (26, 1, "Entry", None),
+    (26, 2, "Button", "Browse..."),
+    (27, 0, "Checkbutton", "Encode video (ffmpeg)"),
+    (27, 1, "Label", DYNAMIC),
+    (28, 0, "Label", "Music"),
+    (28, 1, "Entry", None),
+    (28, 2, "Button", "Browse..."),
+    (29, 1, "Checkbutton", "Fade in/out"),
+    (29, 2, "Label", DYNAMIC),                             # why the music is greyed, or what is wrong with its file
+    (30, 0, "Button", "\u25b8 Video details"),               # the Advanced sections: collapsed, so no body frame
+    (30, 1, "Label", DYNAMIC),                             # why all its controls are greyed (empty while some apply)
+    (32, 0, "Button", "\u25b8 Logo"),
+    (32, 1, "Label", DYNAMIC),
+    (34, 0, "Button", "\u25b8 Stars and motion"),
+    (34, 1, "Label", DYNAMIC),
+    (36, 0, "Button", "\u25b8 HDR"),
+    (36, 1, "Label", DYNAMIC),
+]
+
+#: The footer, outside the scroll area: the reason line, the draft note and the buttons.
+FOOTER_LAYOUT = [
+    (0, 0, "Label", DYNAMIC),
+    (1, 0, "Label", "A draft is always SDR, 480 px, at a reduced frame rate."),
+    (2, 0, "Frame", None),
     (0, 0, "Button", "Cancel"),
     (0, 1, "Button", "Render"),
 ]
 
+#: The Stars-and-motion and HDR controls in values(): their defaults (engine units); Travel is None (automatic).
+FLY_OPTION_VALUES = {"travel": None, "easing": "smoothstep", "growth": 0.15, "backdrop_motion": 0.4, "brightening": True,
+                     "twinkle": 0.03, "bloom": 1.0, "motion_blur": True, "star_saturation": 1.0, "hdr_peak": 1000,
+                     "star_hdr": True, "hdr_transfer_social_vertical": "hlg", "hdr_transfer_social_square": "hlg",
+                     "hdr_transfer_youtube_4k": "hlg", "hdr_transfer_youtube_1080": "hlg", "hdr_transfer_exhibition": "pq"}
+
+#: The Video details controls in values(): no ffmpeg is known yet (blocked discovery), so no format is offered.
+VIDEO_OPTION_VALUES = {"ffmpeg_path": "", "format": None, "quality": "high"}
+
+#: The Logo controls in values(): no logo, Placement Off, Opacity 100 %, Fade in after 0 s (PixInsight's defaults).
+LOGO_OPTION_VALUES = {"logo_path": "", "logo_place": "off", "logo_opacity": 100, "logo_delay": 0}
+
 #: Two starting points: the defaults (with the target's RA and Dec), and every saved option set.
 DIALOG_CASES = [
     pytest.param(
-        {"duration": 3.0, "out_dir": "/w"}, False, {"ra": 10.0, "dec": -5.0},
-        {"mode": "files", "starless_path": "", "stars_path": "", "ra": "10.0", "dec": "-5.0",
-         "target_type": "nebula", "distance": "", "duration": "3.0", "fps": "30", "loop": "None",
-         "star_quality": "high", "dynamic": "sdr", "gaia": "cache", "object_name": "", "out_dir": "/w"},
-        ["youtube_1080"],
-        False,
-        {"mode": "files", "starless_path": "", "stars_path": "", "target": {"ra": 10.0, "dec": -5.0},
-         "target_type": "nebula", "distance": None, "duration": 3.0, "fps": 30, "loop": "none",
+        {"duration": 3.0, "out_dir": "/w"}, None, {"ra": 10.0, "dec": -5.0},
+        {"mode": "files", "image_path": "", "starless_path": "", "stars_path": "", "ra": "10.0", "dec": "-5.0",
+         "target_type": "nebula", "distance": "", "duration": "3.0", "fps": "30", "orientation": "Horizontal", "loop": "None",
          "star_quality": "high", "dynamic": "sdr", "gaia": "cache", "object_name": "", "out_dir": "/w",
-         "presets": ["youtube_1080"], "video": False},
+         "music_path": ""},
+        ["youtube_1080"],
+        True,
+        {"mode": "files", "starless_path": "", "stars_path": "", "star_tool": "", "star_tool_path": "", "image_path": "", "target": {"ra": 10.0, "dec": -5.0},
+         "target_type": "nebula", "distance": None, "duration": 3.0, "fps": 30, "orientation": "landscape", "loop": "none",
+         "star_quality": "high", "dynamic": "sdr", "gaia": "cache", "object_name": "", "out_dir": "/w",
+         "presets": ["youtube_1080"], "video": True,   # encode by default
+         "music_path": "", "music_fade": True, **FLY_OPTION_VALUES, **VIDEO_OPTION_VALUES, **LOGO_OPTION_VALUES},
         id="defaults"),
     pytest.param(
         {"starless_path": "/a.tif", "stars_path": "/b.tif", "ra": 83.8, "dec": -5.4, "distance": 12.5,
          "loop": "pingpong", "fps": 60, "presets": ["social_vertical", "exhibition"], "video": True,
          "dynamic": "hdr", "star_quality": "medium", "target_type": "galaxy", "gaia": "online",
-         "object_name": "M 42", "out_dir": "/w"}, True, None,
-        {"mode": "starnet", "starless_path": "/a.tif", "stars_path": "/b.tif", "ra": "83.8", "dec": "-5.4",
-         "target_type": "galaxy", "distance": "12.5", "duration": "8.0", "fps": "60", "loop": "Back and forth",
-         "star_quality": "medium", "dynamic": "hdr", "gaia": "online", "object_name": "M 42", "out_dir": "/w"},
+         "object_name": "M 42", "out_dir": "/w", "music_path": "/m/song.mp3", "music_fade": False}, None, None,
+        {"mode": "files", "image_path": "", "starless_path": "/a.tif", "stars_path": "/b.tif", "ra": "83.8", "dec": "-5.4",
+         "target_type": "galaxy", "distance": "12.5", "duration": "8.0", "fps": "60", "orientation": "Horizontal", "loop": "Back and forth",
+         "star_quality": "medium", "dynamic": "hdr", "gaia": "online", "object_name": "M 42", "out_dir": "/w",
+         "music_path": "/m/song.mp3"},
         ["social_vertical", "exhibition"],
         True,
-        {"mode": "starnet", "starless_path": "/a.tif", "stars_path": "/b.tif", "target": {"ra": 83.8, "dec": -5.4},
-         "target_type": "galaxy", "distance": 12.5, "duration": 8.0, "fps": 60, "loop": "pingpong",
+        {"mode": "files", "starless_path": "/a.tif", "stars_path": "/b.tif", "star_tool": "", "star_tool_path": "", "image_path": "", "target": {"ra": 83.8, "dec": -5.4},
+         "target_type": "galaxy", "distance": 12.5, "duration": 8.0, "fps": 60, "orientation": "landscape", "loop": "pingpong",
          "star_quality": "medium", "dynamic": "hdr", "gaia": "online", "object_name": "M 42", "out_dir": "/w",
-         "presets": ["social_vertical", "exhibition"], "video": True},
+         "presets": ["social_vertical", "exhibition"], "video": True,
+         "music_path": "/m/song.mp3", "music_fade": False, **FLY_OPTION_VALUES, **VIDEO_OPTION_VALUES, **LOGO_OPTION_VALUES},
         id="saved-options"),
 ]
+
+
+@pytest.fixture
+def blocked_discover():
+    """A discover() that does not return until the test is over: the dialog stays in its "looking" state."""
+    gate = threading.Event()
+    yield lambda: gate.wait(10)
+    gate.set()
 
 
 def _dialog_facts(dlg: object) -> tuple[dict, list, bool, dict]:
@@ -660,23 +837,24 @@ def _dialog_facts(dlg: object) -> tuple[dict, list, bool, dict]:
     return ({k: var.get() for k, var in dlg._vars.items()}, ticked, dlg._video.get(), dlg.values(presets))
 
 
-@pytest.mark.parametrize("options, starnet, target, want_vars, want_ticked, want_video, want_values", DIALOG_CASES)
+@pytest.mark.parametrize("options, discover, target, want_vars, want_ticked, want_video, want_values", DIALOG_CASES)
 def test_dialog_layout_and_values_are_characterized_without_a_display(
-        stub, script, monkeypatch, options, starnet, target, want_vars, want_ticked, want_video, want_values):
+        stub, script, monkeypatch, blocked_discover, options, discover, target, want_vars, want_ticked, want_video, want_values):
     """The dialog built on recording tk stand-ins: widget grid and texts, variables, values() result."""
     _fake_tkinter(monkeypatch)
     import tkinter as tk
 
-    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(options), starnet, target)
-    assert _fake_grid_rows(dlg.top.children[0]) == DIALOG_LAYOUT
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(options), blocked_discover, target)
+    assert _fake_grid_rows(dlg._frame) == DIALOG_LAYOUT
+    assert _fake_grid_rows(dlg._footer) == FOOTER_LAYOUT
     vars_, ticked, video, values = _dialog_facts(dlg)
     assert vars_ == want_vars
     assert ticked == want_ticked and video is want_video and values == want_values
 
 
-@pytest.mark.parametrize("options, starnet, target, want_vars, want_ticked, want_video, want_values", DIALOG_CASES)
+@pytest.mark.parametrize("options, discover, target, want_vars, want_ticked, want_video, want_values", DIALOG_CASES)
 def test_dialog_layout_and_values_under_a_real_display(
-        stub, script, options, starnet, target, want_vars, want_ticked, want_video, want_values):
+        stub, script, blocked_discover, options, discover, target, want_vars, want_ticked, want_video, want_values):
     """The same characterization on a real Tk window (skips where Tk cannot open one; CI runs it under Xvfb)."""
     tk = _tkinter()
     try:
@@ -684,9 +862,10 @@ def test_dialog_layout_and_values_under_a_real_display(
     except tk.TclError:
         pytest.skip("no display: tkinter.Tk() does not work here")
     try:
-        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options(options), starnet, target)
+        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options(options), blocked_discover, target)
         dlg.top.update_idletasks()
-        assert _real_grid_rows(dlg.top.winfo_children()[0]) == DIALOG_LAYOUT
+        assert _real_grid_rows(dlg._frame) == DIALOG_LAYOUT
+        assert _real_grid_rows(dlg._footer) == FOOTER_LAYOUT
         vars_, ticked, video, values = _dialog_facts(dlg)
         assert vars_ == want_vars
         assert ticked == want_ticked and video is want_video and values == want_values
@@ -749,3 +928,863 @@ def test_import_finds_the_checkout_the_script_sits_in(script, monkeypatch):
     monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p or ".").resolve() != REPO])
     assert script._import_loomsiril().__name__ == "loomsiril.siril_bridge"
     assert Path(sys.path[0]).resolve() == REPO
+
+
+# ---------------------------------------------------------------- Browse buttons, tool list, discovery thread
+
+def _fake_filedialog(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[dict]:
+    """tkinter.filedialog.askopenfilename replaced: returns ``answers`` in turn, records the options it was given."""
+    import tkinter as tk
+
+    calls: list[dict] = []
+    fd = ModuleType("tkinter.filedialog")
+
+    def ask(**kw):
+        calls.append(kw)
+        return answers.pop(0)
+
+    fd.askopenfilename = ask
+    tk.filedialog = fd
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", fd)
+    return calls
+
+
+def _settle(dlg) -> None:
+    """Runs the dialog's pending debounce and the disk-work jobs (validate, prepare) to the end, as Tk's loop would."""
+    dlg._cancel_after("debounce")
+    dlg._run_validation()
+    for job in list(dlg._jobs):
+        if job["thread"].name in ("loomsiril-validate", "loomsiril-prepare"):
+            job["thread"].join(5)
+            for key, (_ms, fn) in list(dlg.top.afters.items()):     # the timer "fires": it leaves Tk's queue
+                if fn is job["poll"]:
+                    del dlg.top.afters[key]
+            job["poll"]()
+
+
+def _buttons(dlg, text: str) -> list:
+    return [w for w in dlg._frame.children if w.kind == "Button" and w.kw.get("text") == text]
+
+
+def _tools(*ids: str):
+    from loomsiril import fly_tools
+
+    labels = dict(fly_tools.TOOL_IDS)
+    return fly_tools.Discovery([fly_tools.ExtractTool(i, labels[i], f"/opt/{i}") for i in ids])
+
+
+def test_browse_buttons_fill_the_boxes_and_share_the_last_folder(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    calls = _fake_filedialog(monkeypatch, ["/data/m42/starless.tif", "", "/data/m42/stars.fits"])
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), blocked_discover, None)
+    _image_btn, starless_btn, stars_btn, _folder_btn, _music_btn = _buttons(dlg, "Browse...")
+    starless_btn.kw["command"]()
+    assert dlg._vars["starless_path"].get() == "/data/m42/starless.tif"
+    stars_btn.kw["command"]()                                   # cancelled: the box stays as it was
+    assert dlg._vars["stars_path"].get() == ""
+    stars_btn.kw["command"]()
+    assert dlg._vars["stars_path"].get() == "/data/m42/stars.fits"
+    assert calls[1]["initialdir"] == "/data/m42"                # the second picker opens where the first one ended
+    patterns = " ".join(p for _label, p in calls[0]["filetypes"])
+    assert "*.tif" in patterns and "*.fits" in patterns and "xisf" not in patterns
+
+
+def test_tool_list_shows_only_the_tools_found_and_the_saved_choice_is_kept(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({"star_tool": "syqon-cli"}),
+                               blocked_discover, None)
+    assert dlg._radio.kw["state"] == "disabled" and dlg._mode.get() == "files"      # nothing offered while looking
+    dlg._on_discovered(_tools("starnet2", "syqon-cli"))
+    assert dlg._tool_box.kw["values"] == ["StarNet2", "SyQon Studio Axiom"]        # StarXTerminator: not found, not listed
+    assert dlg._tool.get() == "SyQon Studio Axiom" and dlg._radio.kw["state"] == "normal"
+    assert dlg._mode.get() == "extract"
+    values = dlg.values(__import__("loomsiril.presets", fromlist=["x"]))
+    assert values["star_tool"] == "syqon-cli" and values["star_tool_path"] == "/opt/syqon-cli"   # the chosen one runs
+
+
+def test_a_saved_tool_that_vanished_falls_back_to_the_first_and_says_so(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({"star_tool": "rcastro"}),
+                               blocked_discover, None)
+    dlg._on_discovered(_tools("starnet2", "syqon-cli"))
+    assert dlg._tool.get() == "StarNet2"
+    assert "StarXTerminator was not found; using StarNet2" in dlg._status.get()
+
+
+def test_no_tool_found_disables_the_option_with_a_reason_and_keeps_the_files(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+    from loomsiril import fly_tools
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), blocked_discover, None)
+    dlg._on_discovered(fly_tools.Discovery())
+    assert dlg._radio.kw["state"] == "disabled" and dlg._tool_box.kw["state"] == "disabled"
+    assert dlg._status.get() == "No star-extraction tool found: StarNet2, SyQon Studio or StarXTerminator"
+    assert dlg._mode.get() == "files"
+    assert dlg.values(__import__("loomsiril.presets", fromlist=["x"]))["mode"] == "files"
+
+
+def test_discovery_runs_on_a_worker_thread_and_the_dialog_does_not_wait(stub, script, monkeypatch):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    gate, ran_on = threading.Event(), []
+
+    def slow_discover():
+        ran_on.append(threading.current_thread())
+        gate.wait(10)
+        return _tools("starnet2")
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), slow_discover, None)
+    assert gate.is_set() is False and dlg._tools == []              # the constructor returned with the search running
+    job = next(j for j in dlg._jobs if j["thread"].name == "loomsiril-discover")
+    poll = job["poll"]                                                # the Tk thread only polls
+    poll()
+    assert dlg._tools == []
+    gate.set()
+    for _ in range(200):
+        poll()
+        if dlg._tools:
+            break
+        threading.Event().wait(0.01)
+    assert [t.id for t in dlg._tools] == ["starnet2"]
+    assert ran_on[0] is not threading.current_thread() and ran_on[0].name == "loomsiril-discover"
+
+
+def test_a_failing_discovery_is_a_status_line_not_a_crash(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), blocked_discover, None)
+    dlg._on_discovered(RuntimeError("boom"))
+    assert "boom" in dlg._status.get() and dlg._radio.kw["state"] == "disabled"
+
+
+def test_draft_button_hands_the_checked_values_to_the_draft_and_keeps_the_dialog_open(
+        stub, script, monkeypatch, blocked_discover, tmp_path):
+    tmp = tmp_path
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    got = []
+    msg = ModuleType("tkinter.messagebox")
+    msg.showinfo = msg.showerror = lambda *a, **k: got.append(("box", a))
+    tk.messagebox = msg
+    monkeypatch.setitem(sys.modules, "tkinter.messagebox", msg)
+    (tmp / "a.tif").write_text("x")
+    (tmp / "b.tif").write_text("x")
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(
+        {"out_dir": str(tmp), "starless_path": str(tmp / "a.tif"), "stars_path": str(tmp / "b.tif")}),
+        blocked_discover, None, lambda window, values: got.append((window, values)))
+    _settle(dlg)
+    (draft_btn,) = _buttons_in(dlg, "Draft")
+    draft_btn.kw["command"]()
+    assert dlg._acting and dlg._draft_btn.kw["state"] == "disabled"          # preparing: on a worker
+    _settle(dlg)
+    assert got and got[0][0] is dlg.top and got[0][1]["mode"] == "files" and got[0][1]["out_dir"] == str(tmp)
+    assert got[0][1]["image_stamp"] is None
+    assert dlg.result is None and dlg._closed is False and not dlg._acting
+
+
+def _buttons_in(dlg, text: str) -> list:
+    out = []
+
+    def walk(w):
+        for c in w.children:
+            if c.kind == "Button" and c.kw.get("text") == text:
+                out.append(c)
+            walk(c)
+
+    walk(dlg.top)
+    return out
+
+
+# ---------------------------------------------------------------- live greying, Image file, output folder
+
+def _states(dlg, group: str) -> set:
+    return {w.kw.get("state", "normal") for w, _on in dlg._w[group]}
+
+
+def _dialog(script, monkeypatch, discover, **options):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    msg = ModuleType("tkinter.messagebox")
+    shown: list = []
+    msg.showinfo = msg.showerror = lambda *a, **k: shown.append(a[1])
+    tk.messagebox = msg
+    monkeypatch.setitem(sys.modules, "tkinter.messagebox", msg)
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(options), discover, None)
+    return dlg, shown
+
+
+def test_changing_the_mode_greys_the_other_group_at_once(stub, script, monkeypatch, blocked_discover):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    dlg._on_discovered(_tools("starnet2"))
+    assert dlg._mode.get() == "extract"
+    assert _states(dlg, "extract") == {"normal", "readonly"} and _states(dlg, "files") == {"disabled"}
+    dlg._mode.set("files")                                   # a radio changed: no re-open, no explicit sync
+    assert _states(dlg, "extract") == {"disabled"} and _states(dlg, "files") == {"normal"}
+    # the Image file row (label, box, Browse) is part of the extract group, the two layer rows of the files group
+    assert len(dlg._w["extract"]) == 1 + 3 + 1 and len(dlg._w["files"]) == 6
+
+
+def test_without_a_tool_the_extract_group_stays_grey_with_the_reason(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import fly_tools
+
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    dlg._on_discovered(fly_tools.Discovery())
+    assert _states(dlg, "extract") == {"disabled"} and _states(dlg, "files") == {"normal"}
+    assert dlg._radio.kw["state"] == "disabled" and "No star-extraction tool found" in dlg._status.get()
+
+
+def test_render_and_draft_follow_the_inputs_live_with_a_reason(stub, script, monkeypatch, blocked_discover, tmp_path):
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({"out_dir": str(tmp_path)}),
+                               blocked_discover, None, lambda w, v: None)
+    assert dlg._render_btn.kw["state"] == "disabled" and dlg._draft_btn.kw["state"] == "disabled"
+    assert dlg._reason.get() == "Choose the starless file."
+    (tmp_path / "a.tif").write_text("x")
+    (tmp_path / "b.tif").write_text("x")
+    dlg._vars["starless_path"].set(str(tmp_path / "a.tif"))
+    assert dlg._reason.get() == "Choose the stars file."
+    dlg._vars["stars_path"].set(str(tmp_path / "b.tif"))
+    assert dlg._reason.get() == "Checking the files..."                       # the disk is asked on a worker
+    assert dlg._render_btn.kw["state"] == "disabled" and "debounce" in dlg._afters
+    _settle(dlg)
+    assert dlg._reason.get() == "" and dlg._render_btn.kw["state"] == "normal" and dlg._draft_btn.kw["state"] == "normal"
+    dlg._vars["stars_path"].set(str(tmp_path / "gone.tif"))
+    _settle(dlg)
+    assert "does not exist or cannot be read" in dlg._reason.get() and dlg._render_btn.kw["state"] == "disabled"
+
+
+def test_no_file_access_runs_on_the_tk_thread(stub, script, monkeypatch, blocked_discover, tmp_path):
+    """Typing, syncing and clicking Render do their disk work (checks, makedirs, licence text) on worker threads."""
+    from loomsiril import fly_checks
+
+    seen = []
+    real_validate, real_out = fly_checks.validate, fly_checks.check_out_dir
+    monkeypatch.setattr(fly_checks, "validate", lambda reqs: seen.append(("validate", threading.current_thread()))
+                        or real_validate(reqs))
+    monkeypatch.setattr(fly_checks, "check_out_dir", lambda *a, **k: seen.append(("out", threading.current_thread()))
+                        or real_out(*a, **k))
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path / "new"))
+    (tmp_path / "a.tif").write_text("x")
+    dlg._vars["starless_path"].set(str(tmp_path / "a.tif"))
+    dlg._vars["stars_path"].set(str(tmp_path / "a.tif"))
+    assert seen == [] or all(t is not threading.current_thread() for _n, t in seen)      # nothing so far, or elsewhere
+    _settle(dlg)
+    dlg._ok()
+    assert not (tmp_path / "new").exists()                      # makedirs has not run on this thread
+    _settle(dlg)
+    assert (tmp_path / "new").is_dir() and dlg.result is not None
+    assert seen and all(t is not threading.current_thread() for _n, t in seen)
+    assert {n for n, _t in seen} == {"validate", "out"}
+
+
+def test_extract_mode_without_a_tool_chosen_blocks_render(stub, script, monkeypatch, blocked_discover):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    dlg._mode.set("extract")
+    assert dlg._render_btn.kw["state"] == "disabled" and "Still looking" in dlg._reason.get()
+
+
+def test_video_is_greyed_with_a_reason_when_ffmpeg_is_missing(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import fly_tools
+
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover, video=True)
+    dlg._on_discovered(fly_tools.Discovery(ffmpeg=False))
+    assert _states(dlg, "video") == {"disabled"} and dlg._video.get() is False
+    assert "ffmpeg was not found" in dlg._video_note.get()
+    dlg2, _ = _dialog(script, monkeypatch, blocked_discover, video=True)
+    dlg2._on_discovered(fly_tools.Discovery(ffmpeg=True))
+    assert _states(dlg2, "video") == {"normal"} and dlg2._video.get() is True
+
+
+def test_loop_is_greyed_when_only_the_exhibition_preset_is_chosen(stub, script, monkeypatch, blocked_discover):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    assert _states(dlg, "loop") == {"normal", "readonly"}
+    for pid, var in dlg._presets.items():
+        var.set(pid == "exhibition")
+    assert _states(dlg, "loop") == {"disabled"} and "always loops" in dlg._loop_note.get()
+
+
+def test_an_image_file_that_does_not_exist_is_refused_with_a_message(stub, script, monkeypatch, blocked_discover,
+                                                                       tmp_path):
+    dlg, shown = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path))
+    dlg._on_discovered(_tools("starnet2"))
+    dlg._vars["image_path"].set(str(tmp_path / "missing.fits"))
+    _settle(dlg)
+    assert "The image file does not exist or cannot be read" in dlg._reason.get()
+    assert dlg._render_btn.kw["state"] == "disabled"
+    dlg._ok()                                                  # clicked anyway: a message, no crash, no result
+    _settle(dlg)
+    assert dlg.result is None and "The image file does not exist or cannot be read" in shown[-1]
+    (tmp_path / "m42.fits").write_text("x")
+    dlg._vars["image_path"].set(str(tmp_path / "m42.fits"))
+    _settle(dlg)
+    assert dlg._reason.get() == "" and dlg._render_btn.kw["state"] == "normal"
+    assert dlg.values(__import__("loomsiril.presets", fromlist=["x"]))["image_path"] == str(tmp_path / "m42.fits")
+
+
+def test_each_browse_button_fills_its_own_box(stub, script, monkeypatch, blocked_discover, tmp_path):
+    """Image, starless, stars and output-folder Browse...: each writes the picked path into its own variable and
+    nothing else, so a swapped or missing variable fails here."""
+    from loomsiril.loom import dialog as loom_dialog
+
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    picks = {"image": "/p/image.fits", "starless": "/p/starless.tif", "stars": "/q/stars.tif", "music": "/q/song.mp3"}
+    answers = list(picks.values())
+    _fake_filedialog(monkeypatch, answers)
+    monkeypatch.setattr(loom_dialog, "ask_folder", lambda title, initial="", parent=None: "/p/renders")
+    image_btn, starless_btn, stars_btn, folder_btn, music_btn = _buttons(dlg, "Browse...")
+    names = ("image_path", "starless_path", "stars_path", "out_dir", "music_path")
+    before = {n: dlg._vars[n].get() for n in names}
+    picked: set = set()
+    for button, name, want in ((image_btn, "image_path", "/p/image.fits"), (starless_btn, "starless_path",
+                                                                           "/p/starless.tif"),
+                               (stars_btn, "stars_path", "/q/stars.tif"), (folder_btn, "out_dir", "/p/renders"),
+                               (music_btn, "music_path", "/q/song.mp3")):
+        button.kw["command"]()
+        assert dlg._vars[name].get() == want
+        for other in names:
+            if other != name and other not in picked:
+                assert dlg._vars[other].get() == before[other]
+        picked.add(name)
+    assert {n: dlg._vars[n].get() for n in names} == {"image_path": "/p/image.fits",
+                                                      "starless_path": "/p/starless.tif",
+                                                      "stars_path": "/q/stars.tif", "out_dir": "/p/renders",
+                                                      "music_path": "/q/song.mp3"}
+
+
+def test_output_folder_browse_fills_the_box_and_a_bad_folder_is_refused(stub, script, monkeypatch, blocked_discover,
+                                                                        tmp_path):
+    from loomsiril.loom import dialog as loom_dialog
+
+    (tmp_path / "a.tif").write_text("x")
+    dlg, shown = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path),
+                         starless_path=str(tmp_path / "a.tif"), stars_path=str(tmp_path / "a.tif"))
+    asked = []
+    monkeypatch.setattr(loom_dialog, "ask_folder", lambda title, initial="", parent=None: asked.append(initial)
+                        or str(tmp_path / "renders"))
+    _buttons(dlg, "Browse...")[-2].kw["command"]()   # the output folder (the music one follows it)
+    assert asked == [str(tmp_path)]                          # it opens on the current value
+    assert dlg._vars["out_dir"].get() == str(tmp_path / "renders")
+    _settle(dlg)
+    dlg._ok()                                                # a missing folder is created (on the worker)
+    _settle(dlg)
+    assert dlg.result is not None and (tmp_path / "renders").is_dir()
+    dlg2, shown2 = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path / "a.tif" / "sub"),
+                           starless_path=str(tmp_path / "a.tif"), stars_path=str(tmp_path / "a.tif"))
+    _settle(dlg2)
+    dlg2._ok()
+    _settle(dlg2)
+    assert dlg2.result is None and "output folder" in shown2[-1].lower()
+
+
+def test_no_callback_is_left_pending_after_the_dialog_closes(stub, script, monkeypatch, blocked_discover):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    dlg._vars["starless_path"].set("/some/where.tif")             # a debounce is pending
+    assert dlg.top.afters and dlg._afters                         # the discovery poll and the debounce
+    dlg._cancel()
+    assert dlg.top.afters == {} and dlg._afters == {} and dlg._closed
+    dlg._vars["stars_path"].set("/other.tif")                     # a late change schedules nothing
+    assert dlg.top.afters == {}
+
+
+def test_destroying_the_window_from_outside_cancels_the_pending_callbacks_too(stub, script, monkeypatch,
+                                                                              blocked_discover):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover)
+    assert dlg.top.afters
+    dlg._on_destroy(SimpleNamespace(widget=dlg.top))              # what the <Destroy> binding calls
+    assert dlg.top.afters == {}
+
+
+# ---------------------------------------------------------------- stale results, focus-in, draft run lifetime
+
+def test_a_file_that_appears_after_a_negative_check_is_picked_up_on_focus_in(stub, script, monkeypatch,
+                                                                              blocked_discover, tmp_path):
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path),
+                     starless_path=str(tmp_path / "a.tif"), stars_path=str(tmp_path / "b.tif"))
+    _settle(dlg)
+    assert "does not exist or cannot be read" in dlg._reason.get()          # cached as not found
+    (tmp_path / "a.tif").write_text("x")
+    (tmp_path / "b.tif").write_text("x")
+    entry = next(w for w, _on in dlg._w["files"] if getattr(w, "bindings", None) and "<FocusIn>" in w.bindings)
+    entry.bindings["<FocusIn>"][0](None)                                     # the box got the focus: ask again
+    assert dlg._reason.get() == "Checking the files..." and "debounce" in dlg._afters
+    _settle(dlg)
+    assert dlg._reason.get() == "" and dlg._render_btn.kw["state"] == "normal"
+
+
+def test_a_stale_not_found_result_can_never_block_render_when_the_file_now_exists(
+        stub, script, monkeypatch, blocked_discover, tmp_path):
+    dlg, shown = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path),
+                         starless_path=str(tmp_path / "a.tif"), stars_path=str(tmp_path / "b.tif"))
+    _settle(dlg)
+    assert dlg._checks[("starless", str(tmp_path / "a.tif"))]                # a stale negative is cached
+    (tmp_path / "a.tif").write_text("x")
+    (tmp_path / "b.tif").write_text("x")
+    dlg._ok()                                                                # clicked: the worker looks again
+    _settle(dlg)
+    assert dlg.result is not None and shown == []
+    assert dlg.result["starless_path"] == str(tmp_path / "a.tif")
+
+
+def test_browsing_the_same_path_again_rechecks_it(stub, script, monkeypatch, blocked_discover, tmp_path):
+    (tmp_path / "a.tif").write_text("x")
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path),
+                     starless_path=str(tmp_path / "late.tif"), stars_path=str(tmp_path / "a.tif"))
+    _settle(dlg)
+    assert "late.tif" in dlg._reason.get()
+    (tmp_path / "late.tif").write_text("x")
+    _fake_filedialog(monkeypatch, [str(tmp_path / "late.tif")])               # the same value: no variable change
+    _buttons(dlg, "Browse...")[1].kw["command"]()
+    _settle(dlg)
+    assert dlg._reason.get() == ""
+
+
+def test_browse_folder_does_no_file_check_on_the_tk_thread(stub, script, monkeypatch, blocked_discover, tmp_path):
+    import os
+    from loomsiril.loom import dialog as loom_dialog
+
+    dlg, _ = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path))
+    monkeypatch.setattr(os.path, "isdir", lambda *a: pytest.fail("isdir on the Tk thread"))
+    monkeypatch.setattr(loom_dialog, "ask_folder", lambda title, initial="", parent=None: "")
+    _buttons(dlg, "Browse...")[-2].kw["command"]()   # the output folder (the music one follows it)
+
+
+def test_a_draft_run_is_closed_with_the_dialog_and_leaves_no_callback(stub, script, monkeypatch, blocked_discover,
+                                                                      tmp_path):
+    from loomsiril import draft as D
+    from loomsiril.fly_progress import FlyProgress
+
+    _fake_tkinter(monkeypatch)
+    import tkinter as tk
+
+    msg = ModuleType("tkinter.messagebox")
+    msg.showinfo = msg.showerror = lambda *a, **k: None
+    tk.messagebox = msg
+    monkeypatch.setitem(sys.modules, "tkinter.messagebox", msg)
+    (tmp_path / "a.tif").write_text("x")
+    gate, runs = threading.Event(), []
+
+    def draft_cb(window, values):
+        runs.append(D.show_draft(window, lambda p: gate.wait(5), {**values, "image_key": "k"}, FlyProgress(),
+                                 cache_dir=None))
+        return runs[-1]
+
+    dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(
+        {"out_dir": str(tmp_path), "starless_path": str(tmp_path / "a.tif"), "stars_path": str(tmp_path / "a.tif")}),
+        blocked_discover, None, draft_cb)
+    _settle(dlg)
+    dlg._draft()
+    _settle(dlg)
+    run = runs[0]
+    assert dlg._draft_runs == [run] and any("poll" in repr(fn) for _ms, fn in dlg.top.afters.values())
+    dlg._cancel()                                                            # the user closes the dialog
+    gate.set()
+    assert run.progress.cancel_event.is_set() and run.finished
+    assert dlg.top.afters == {} and dlg._draft_runs == []
+
+
+# --- the Stars-and-motion and HDR sections (rows generated from loomsiril.fly_options) --------------------------------------
+
+
+def _open_dialog(script, blocked_discover, options=None, target=None):
+    import tkinter as tk
+
+    return script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options(options or {}), blocked_discover, target)
+
+
+#: The two sections' rows, open: one per fly_options control, then Reset to defaults (the fake and the real tk agree).
+FLY_SECTION_LAYOUT = {
+    "motion": [
+        (0, 0, "Label", "Travel (pc)"), (0, 1, "Entry", None), (0, 2, "Label", DYNAMIC),
+        (1, 0, "Label", "Easing"), (1, 1, "Combobox", None),
+        (2, 0, "Label", "Growth"), (2, 1, "Entry", None),
+        (3, 0, "Label", "Nebula motion (%)"), (3, 1, "Spinbox", None),
+        (4, 0, "Checkbutton", "Brighten approaching stars"),
+        (5, 0, "Label", "Twinkle (%)"), (5, 1, "Spinbox", None),
+        (6, 0, "Label", "Bloom (%)"), (6, 1, "Spinbox", None),
+        (7, 0, "Checkbutton", "Motion blur"),
+        (8, 0, "Label", "Star colour"), (8, 1, "Scale", None), (8, 2, "Label", DYNAMIC),
+        (9, 1, "Button", "Reset to defaults")],
+    "hdr": [                                           # SDR, so every row is greyed and says why in column 3
+        (0, 0, "Label", "Peak (nits)"), (0, 1, "Spinbox", None), (0, 3, "Label", DYNAMIC),
+        (1, 0, "Checkbutton", "Stars into HDR headroom"), (1, 3, "Label", DYNAMIC),
+        (2, 0, "Label", "Transfer for Social 1080\u00d71920"), (2, 1, "Combobox", None), (2, 3, "Label", DYNAMIC),
+        (3, 0, "Label", "Transfer for Social 1080\u00d71080"), (3, 1, "Combobox", None), (3, 3, "Label", DYNAMIC),
+        (4, 0, "Label", "Transfer for YouTube 3840\u00d72160"), (4, 1, "Combobox", None), (4, 3, "Label", DYNAMIC),
+        (5, 0, "Label", "Transfer for YouTube 1920\u00d71080"), (5, 1, "Combobox", None), (5, 3, "Label", DYNAMIC),
+        (6, 0, "Label", "Transfer for Exhibition 3840\u00d72160 (loop)"), (6, 1, "Combobox", None), (6, 3, "Label", DYNAMIC),
+        (7, 1, "Button", "Reset to defaults")],
+}
+
+
+def _state(dlg, key):
+    """The state the widgets of control ``key`` were last given (None: never configured)."""
+    return {w.kw.get("state") for w, _on in dlg._w["opt:" + key]}
+
+
+def test_motion_and_hdr_rows_are_generated_from_the_table(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    for sid, layout in FLY_SECTION_LAYOUT.items():
+        dlg._toggle_section(sid, True)
+        assert _fake_grid_rows(dlg._sections[sid].frame) == layout
+    tips = [w for sid in FLY_SECTION_LAYOUT for w in dlg._sections[sid].frame.children
+            if "<Enter>" in getattr(w, "bindings", {})]
+    assert len(tips) == 29                                # a tip on each label and widget: 16 in motion, 13 in HDR
+    for w in tips:
+        for handler in w.bindings["<Enter>"] + w.bindings["<Leave>"]:
+            handler()                                       # no display: showing the tip is skipped, nothing raises
+
+
+def test_motion_and_hdr_rows_under_a_real_display(stub, script, blocked_discover):
+    tk = _tkinter()
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display: tkinter.Tk() does not work here")
+    try:
+        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options({}), blocked_discover, None)
+        for sid, layout in FLY_SECTION_LAYOUT.items():
+            dlg._toggle_section(sid, True)
+            dlg.top.update_idletasks()
+            assert _real_grid_rows(dlg._sections[sid].frame) == layout
+    finally:
+        root.destroy()
+
+
+def test_hdr_controls_are_grey_until_dynamic_range_is_hdr_and_say_why(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    for key in ("hdr_peak", "star_hdr", "hdr_transfer_youtube_1080"):
+        assert _state(dlg, key) == {"disabled"}
+    assert dlg._sections["hdr"].reason.get() == "Dynamic range is SDR: choose HDR to use this"
+    assert "disabled" not in {w.kw.get("state") for w, _ in dlg._w.get("opt:backdrop_motion", [])}
+    dlg._vars["dynamic"].set("hdr")
+    assert _state(dlg, "hdr_peak") == {"normal"} and _state(dlg, "star_hdr") == {"normal"}
+    assert _state(dlg, "hdr_transfer_youtube_1080") == {"normal", "readonly"}   # the ticked preset: label and combo
+    assert _state(dlg, "hdr_transfer_exhibition") == {"disabled"}             # not ticked
+    assert dlg._sections["hdr"].reason.get() == ""
+    dlg._vars["target_type"].set("galaxy")
+    assert _state(dlg, "backdrop_motion") == {"disabled"}
+    assert not dlg._model().disabled_reason("opt:hdr_peak") and "galaxy" in dlg._model().disabled_reason("opt:backdrop_motion")
+
+
+def test_typed_values_reach_values_and_the_job_options(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import fly_options, presets
+
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover, {"dynamic": "hdr", "presets": ["youtube_1080", "exhibition"]})
+    for key, text in (("bloom", "50"), ("twinkle", "5"), ("growth", "0.3"), ("travel", "12.5"), ("hdr_peak", "2000"),
+                      ("backdrop_motion", "80")):
+        dlg._ctl[key][0].set(text)
+    dlg._ctl["star_saturation"][0].set(150.0)
+    dlg._ctl["easing"][0].set("Linear")
+    dlg._ctl["brightening"][0].set(False)
+    dlg._ctl["hdr_transfer_exhibition"][0].set("HLG")
+    v = dlg.values(presets)
+    assert (v["bloom"], v["twinkle"], v["growth"], v["travel"], v["hdr_peak"], v["backdrop_motion"]) == (0.5, 0.05, 0.3, 12.5, 2000, 0.8)
+    assert (v["star_saturation"], v["easing"], v["brightening"], v["hdr_transfer_exhibition"]) == (1.5, "linear", False, "hlg")
+    opts = fly_options.options_from_values(v)
+    assert opts["bloom"] == 0.5 and opts["travel"] == 12.5 and opts["peak"] == 2000 and opts["easing"] == "linear"
+    assert opts["hdrTransfer"] == {"youtube_1080": "hlg", "exhibition": "hlg"} and opts["starHdr"] is True
+
+
+def test_a_bad_number_is_named_and_held_never_a_crash(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import presets
+
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._ctl["bloom"][0].set("abc")
+    dlg._ctl["hdr_peak"][0].set("99999")
+    with pytest.raises(ValueError, match="Bloom"):
+        dlg.values(presets)
+    dlg._ctl["growth"][0].set("")
+    got = dlg._control_values(lenient=True)                                    # the autosave: the rest is still kept
+    assert "bloom" not in got and "hdr_peak" not in got and "growth" not in got and got["twinkle"] == 0.03
+    dlg._ctl["bloom"][0].set("100")
+    with pytest.raises(ValueError, match="Growth"):
+        dlg.values(presets)
+    dlg._ctl["growth"][0].set("0.15")
+    with pytest.raises(ValueError, match=r"Peak \(nits\)"):
+        dlg.values(presets)
+
+
+def test_saved_values_come_back_and_reset_to_defaults_restores_them(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import presets
+
+    _fake_tkinter(monkeypatch)
+    saved = {"bloom": 0.5, "twinkle": 0.07, "easing": "linear", "motion_blur": False, "star_saturation": 1.2,
+             "hdr_peak": 2500, "star_hdr": False, "hdr_transfer_exhibition": "hlg", "growth": "junk"}
+    dlg = _open_dialog(script, blocked_discover, saved)
+    v = dlg.values(presets)
+    assert (v["bloom"], v["twinkle"], v["easing"], v["motion_blur"], v["hdr_peak"], v["star_hdr"]) == (0.5, 0.07, "linear", False, 2500, False)
+    assert v["hdr_transfer_exhibition"] == "hlg" and v["growth"] == 0.15           # a bad saved value is the default
+    dlg._ctl["travel"][0].set("30")
+    next(w for w in dlg._sections["motion"].frame.children if w.kw.get("text") == "Reset to defaults").invoke()
+    v = dlg.values(presets)
+    assert {k: v[k] for k in ("bloom", "twinkle", "easing", "motion_blur", "star_saturation", "travel")} == {
+        "bloom": 1.0, "twinkle": 0.03, "easing": "smoothstep", "motion_blur": True, "star_saturation": 1.0, "travel": None}
+    assert v["hdr_peak"] == 2500                                                   # the other section is untouched
+    next(w for w in dlg._sections["hdr"].frame.children if w.kw.get("text") == "Reset to defaults").invoke()
+    v = dlg.values(presets)
+    assert v["hdr_peak"] == 1000 and v["star_hdr"] is True and v["hdr_transfer_exhibition"] == "pq"
+
+
+def test_travel_note_follows_the_distance_and_the_typed_travel(stub, script, monkeypatch, blocked_discover):
+    from types import SimpleNamespace
+
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    assert dlg._travel_note.get() == "automatic"
+    dlg._dist_result = SimpleNamespace(distance=1000.0)
+    dlg._ctl["travel"][0].set("950")
+    assert dlg._travel_note.get() == "capped at 0.9 \u00d7 the distance"
+    dlg._ctl["travel"][0].set("")
+    assert dlg._travel_note.get() == "automatic: 200 pc"
+    dlg._ctl["travel"][0].set("x")
+    assert dlg._travel_note.get() == ""
+
+
+# ---- the Logo section ----------------------------------------------------------------------------------------------------
+
+#: The Logo section's rows, open: the file (with Browse... and its note), Placement, Opacity (with its percent), Fade in after.
+LOGO_SECTION_LAYOUT = [
+    (0, 0, "Label", "Logo file"), (0, 1, "Entry", None), (0, 2, "Button", "Browse..."),
+    (1, 1, "Label", DYNAMIC),
+    (2, 0, "Label", "Placement"), (2, 1, "Combobox", None), (2, 3, "Label", DYNAMIC),      # column 3: why the row is grey
+    (3, 0, "Label", "Opacity"), (3, 1, "Scale", None), (3, 2, "Label", DYNAMIC), (3, 3, "Label", DYNAMIC),
+    (4, 0, "Label", "Fade in after (s)"), (4, 1, "Spinbox", None), (4, 3, "Label", DYNAMIC),
+]
+
+
+def _logo_state(dlg):
+    return {key: {w.kw.get("state") for w, _on in dlg._w[group]} for key, group in (("place", "logo"), ("look", "logo_look"))}
+
+
+def test_logo_rows_are_laid_out(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._toggle_section("logo", True)
+    assert _fake_grid_rows(dlg._sections["logo"].frame) == LOGO_SECTION_LAYOUT
+
+
+def test_logo_rows_under_a_real_display(stub, script, blocked_discover):
+    tk = _tkinter()
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display: tkinter.Tk() does not work here")
+    try:
+        dlg = script.LoomFlyDialog(root, script.DialogValues.from_options({}), blocked_discover, None)
+        dlg._toggle_section("logo", True)
+        dlg.top.update_idletasks()
+        assert _real_grid_rows(dlg._sections["logo"].frame) == LOGO_SECTION_LAYOUT
+    finally:
+        root.destroy()
+
+
+def test_logo_defaults_are_pixinsights_and_the_rows_are_grey_with_a_reason(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import presets
+
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    v = dlg.values(presets)
+    assert (v["logo_path"], v["logo_place"], v["logo_opacity"], v["logo_delay"]) == ("", "off", 100, 0)
+    assert _logo_state(dlg) == {"place": {"disabled"}, "look": {"disabled"}}          # no file: all but the file's box are grey
+    m = dlg._model()
+    assert m.disabled_reason("logo") == m.disabled_reason("logo_look") == "needs a logo file"
+    assert "Browse" in dlg._logo_note.get()                                       # the grey line says what to do
+
+
+def test_logo_file_set_enables_placement_and_a_placed_logo_enables_opacity_and_fade(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._ctl["logo_path"][0].set("/l/logo.png")
+    assert _logo_state(dlg) == {"place": {"normal", "readonly"}, "look": {"disabled"}}
+    assert dlg._model().disabled_reason("logo_look") == "placement is Off"
+    dlg._ctl["logo_place"][0].set("Top left")
+    assert _logo_state(dlg) == {"place": {"normal", "readonly"}, "look": {"normal"}}
+    assert dlg._model().disabled_reason("logo_look") == ""
+    dlg._ctl["logo_path"][0].set("")
+    assert _logo_state(dlg) == {"place": {"disabled"}, "look": {"disabled"}}
+
+
+def test_logo_values_are_saved_keys_and_reach_the_job(stub, script, monkeypatch, blocked_discover, tmp_path):
+    import numpy as np
+
+    from loomsiril import presets, siril_bridge
+
+    _fake_tkinter(monkeypatch)
+    saved = {"logo_path": str(tmp_path / "l.png"), "logo_place": "bottom-mid", "logo_opacity": 40, "logo_delay": 7}
+    dlg = _open_dialog(script, blocked_discover, saved)
+    v = dlg.values(presets)
+    assert (v["logo_path"], v["logo_place"], v["logo_opacity"], v["logo_delay"]) == (saved["logo_path"], "bottom-mid", 40, 7)
+    assert dlg._ctl["logo_place"][0].get() == "Bottom middle"                            # the combo shows the label
+    for key in ("logo_path", "logo_place", "logo_opacity", "logo_delay"):
+        assert key in siril_bridge.OPTION_KEYS
+    assert "logo_path" in siril_bridge.PATH_KEYS
+    snap = dlg._snapshot()
+    assert (snap["logo_path"], snap["logo_place"], snap["logo_opacity"], snap["logo_delay"]) == (saved["logo_path"], "bottom-mid", 40, 7)
+    siril_bridge.save_options(snap, tmp_path)
+    assert siril_bridge.load_options(tmp_path)["logo_place"] == "bottom-mid"
+    planes = [np.zeros((6, 8), np.float32)]
+    header = {"CRVAL1": 10.0, "CRVAL2": 20.0, "CRPIX1": 4.0, "CRPIX2": 3.0, "CD1_1": -1e-3, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 1e-3}
+    job = siril_bridge.job_from_dialog(dict(v, starless=planes, stars=planes), planes, header, None)
+    assert (job.logo_path, job.logo_place, job.logo_opacity, job.logo_delay) == (saved["logo_path"], "bottom-mid", 0.4, 7.0)
+
+
+def test_a_bad_fade_is_named_and_held(stub, script, monkeypatch, blocked_discover):
+    from loomsiril import presets
+
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover, {"logo_delay": "junk"})
+    for bad in ("abc", "-1", "601", "1.5", ""):
+        dlg._ctl["logo_delay"][0].set(bad)
+        with pytest.raises(ValueError, match="Fade in after"):
+            dlg.values(presets)
+    assert "logo_delay" not in dlg._control_values(lenient=True)
+    dlg._ctl["logo_delay"][0].set("600")
+    assert dlg.values(presets)["logo_delay"] == 600
+
+
+def test_the_logo_file_is_checked_on_the_worker_and_a_missing_remembered_file_blocks_render(stub, script, monkeypatch, blocked_discover,
+                                                                                         tmp_path):
+    from loomsiril import fly_checks
+
+    _fake_tkinter(monkeypatch)
+    gone = str(tmp_path / "gone.png")
+    dlg = _open_dialog(script, blocked_discover, {"logo_path": gone, "logo_place": "center", "starless_path": "/a.tif",
+                                                  "stars_path": "/b.tif", "out_dir": str(tmp_path)})
+    assert dlg._ctl["logo_path"][0].get() == gone                                        # the box keeps it
+    assert ("logo", gone) in dlg._model().wanted_paths()
+    assert ("logo", gone) not in dlg._checks                                             # nothing was read on the Tk thread
+    result = fly_checks.validate([("logo", gone)])
+    assert "not there" in result[("logo", gone)]
+    dlg._checks.update(result)
+    dlg._sync()
+    assert dlg._logo_note.get() == result[("logo", gone)]
+    assert result[("logo", gone)] in dlg._model().reasons() and dlg._model().can_render() is False
+    # Off: the file is not used, so it does not block
+    dlg._ctl["logo_place"][0].set("Off")
+    assert ("logo", gone) not in dlg._model().wanted_paths()
+    assert result[("logo", gone)] not in dlg._model().reasons()
+
+
+def test_the_logo_check_reads_the_picture(tmp_path):
+    import numpy as np
+    import tifffile
+
+    from loomsiril import fly_checks
+
+    good = tmp_path / "ok.tif"
+    tifffile.imwrite(good, np.zeros((4, 4, 3), np.uint8), photometric="rgb")
+    jpg = tmp_path / "x.jpg"
+    jpg.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 30)
+    res = fly_checks.validate([("logo", str(good)), ("logo", str(jpg)), ("logo", str(tmp_path / "no.png"))])
+    assert res[("logo", str(good))] == ""
+    assert "PNG, TIFF or FITS" in res[("logo", str(jpg))] and "not there" in res[("logo", str(tmp_path / "no.png"))]
+
+
+def test_browsing_a_logo_places_it_bottom_right_when_the_placement_was_off(stub, script, monkeypatch, blocked_discover, tmp_path):
+    import tkinter as tk
+
+    _fake_tkinter(monkeypatch)
+    chosen = str(tmp_path / "pick.png")
+    tk.filedialog = type("FD", (), {"askopenfilename": staticmethod(lambda **kw: chosen)})
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", tk.filedialog)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._browse_logo()
+    assert dlg._ctl["logo_path"][0].get() == chosen and dlg._ctl["logo_place"][0].get() == "Bottom right"
+    dlg._ctl["logo_place"][0].set("Top left")                                            # a placement chosen is kept
+    dlg._ctl["logo_path"][0].set("")
+    dlg._browse_logo()
+    assert dlg._ctl["logo_place"][0].get() == "Top left"
+
+
+def test_with_placement_off_no_logo_value_keys_the_draft_or_the_frames(stub, script, monkeypatch, blocked_discover, tmp_path):
+    """Through the real dialog values(): an Off logo (whatever its file, opacity and fade) changes neither key nor options."""
+    from loomsiril import draft as D
+    from loomsiril import logo, presets
+    from loomsiril import pipeline as P
+
+    _fake_tkinter(monkeypatch)
+    f = tmp_path / "l.png"
+    f.write_bytes(b"x")
+    dlg = _open_dialog(script, blocked_discover, {"logo_path": str(f), "logo_place": "off", "logo_opacity": 30, "logo_delay": 9})
+    off = dlg.values(presets)
+    bare = _open_dialog(script, blocked_discover).values(presets)
+    assert (off["logo_path"], off["logo_place"]) == (str(f), "off")
+    extra = {"image_key": "k", "starless_path": str(f), "stars_path": str(f)}
+    assert D.draft_key({**off, **extra}) == D.draft_key({**bare, **extra})
+    assert "logo" not in D.draft_signature({**off, **extra}).lower()
+    opts = {**P._logo_opts(P.FlyJob(starless=[], stars=[], wcs={}, logo_path=str(f), logo_place="off", logo_opacity=0.3, logo_delay=9.0))}
+    logo.attach(opts)
+    assert not any(k.lower().startswith("logo") for k in opts)
+    # placed: the same values do key the draft
+    on = dict(off, logo_place="center")
+    assert D.draft_key({**on, **extra}) != D.draft_key({**bare, **extra})
+
+
+def test_logo_music_and_fade_rows_have_hover_tips(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._toggle_section("logo", True)
+
+    def tipped(widget):
+        return any(b for bs in getattr(widget, "bindings", {}).values() for b in bs)
+
+    for w, _on in dlg._w["logo"] + dlg._w["logo_look"] + dlg._w["music"]:
+        assert tipped(w), w.kind
+    frame = dlg._sections["logo"].frame
+    assert all(tipped(w) for w in frame.children if w.kind in ("Entry", "Button", "Scale", "Spinbox", "Combobox"))
+
+
+def _hints(dlg, sid):
+    """{row: text} of the grey reasons shown in column 3 of a section's rows (a removed one is not shown)."""
+    out = {}
+    for w in dlg._sections[sid].frame.children:
+        if w.kind == "Label" and w.grid_kw and w.grid_kw.get("column") == 3:
+            out[w.grid_kw["row"]] = w.kw["textvariable"].get()
+    return out
+
+
+def test_every_greyed_row_shows_its_reason_and_clears_it_when_enabled(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    for sid in ("motion", "hdr", "logo", "video"):
+        dlg._toggle_section(sid, True)
+    sdr = "Dynamic range is SDR: choose HDR to use this"
+    assert _hints(dlg, "hdr") == {0: sdr, 1: sdr, 2: sdr, 3: sdr, 4: sdr, 5: sdr, 6: sdr}
+    assert _hints(dlg, "motion") == {}                                      # nothing greyed
+    dlg._vars["dynamic"].set("hdr")
+    nt = "This output size is not ticked"
+    assert _hints(dlg, "hdr") == {2: nt, 3: nt, 4: nt, 6: nt}
+    dlg._vars["target_type"].set("galaxy")
+    assert _hints(dlg, "motion") == {3: "A galaxy is a fixed backdrop: it does not grow"}
+    dlg._vars["target_type"].set("nebula")
+    assert _hints(dlg, "motion") == {}
+    assert _hints(dlg, "logo") and all(_hints(dlg, "logo").values())        # Placement Off: its rows say why
+
+
+def test_video_rows_say_why_when_encode_is_off(stub, script, monkeypatch, blocked_discover):
+    _fake_tkinter(monkeypatch)
+    dlg = _open_dialog(script, blocked_discover)
+    dlg._toggle_section("video", True)
+    assert not any(_hints(dlg, "video").values())
+    dlg._video.set(False)
+    got = _hints(dlg, "video")
+    assert got and set(got.values()) == {"needs Encode video"}
+    dlg._video.set(True)
+    assert _hints(dlg, "video") == {}

@@ -17,12 +17,14 @@ import json
 import math
 import os
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from loomsiril import colour, encode, gaia, geometry, parallax, resample
+from loomsiril import colour, encode, fly_video, gaia, geometry, parallax, resample
+from loomsiril import logo as logo_mod
 from loomsiril import presets as preset_mod
 from loomsiril import scene as scene_mod
 from loomsiril import starlayer
@@ -37,6 +39,7 @@ from loomsiril.types import Placed, Scene
 __all__ = [
     "BuiltScene",
     "FlyJob",
+    "NoDistanceError",
     "Result",
     "SceneRequest",
     "build_scene",
@@ -55,6 +58,22 @@ ProgressFn = Callable[[str, int, int], None]
 
 #: Sky.GAIA_MAG_LIMIT: the magnitude limit of a field's Gaia sample.
 GAIA_MAG_LIMIT: float = 17.6
+
+#: The note when the Gaia cache held nothing for the target and the answer came from Gaia online.
+CACHE_EMPTY_NOTE = "Gaia: cache empty here, used online"
+
+#: The CLI's words for a render that found no distance (a GUI says its own: loomsiril.fly_progress.no_distance_text).
+NO_DISTANCE_CLI = "no distance found for the target (no cluster and no illuminating star): give --distance PC"
+
+
+class NoDistanceError(ValueError):
+    """No distance was typed, given or found. ``str()`` is the CLI text (give --distance PC); ``reason`` says why, in
+    plain language, for a GUI to word its own message."""
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__(NO_DISTANCE_CLI)
+        self.reason = reason
+
 
 #: The frame files take five digits (preset_mod.frame_path): a longer clip would collide.
 MAX_FRAMES: int = 100000
@@ -102,7 +121,9 @@ class FlyJob:
     ``starless``/``stars`` are (h, w) float32 planes in [0, 1], one per channel, top-down; ``wcs``
     the Fly.js wcs dict. ``target`` {"ra", "dec"}: None takes the image centre. ``target_type``
     "nebula" or "galaxy" (a galaxy is a fixed backdrop, D = inf). ``distance`` pc: None looks it up
-    (cluster, then illuminating star). ``gaia`` "cache", "online" or "tsv:PATH". ``options`` overrides
+    (cluster, then illuminating star). ``distance_source`` / ``distance_label``: where a given ``distance`` came from
+    ("typed" by default; the dialog passes the source and text of the distance it found and showed, so the render
+    uses that very value) . ``gaia`` "cache", "online" or "tsv:PATH". ``options`` overrides
     the render options by their JS names (camelCase or snake_case, e.g. ``backdrop_motion``).
     """
 
@@ -112,6 +133,8 @@ class FlyJob:
     target: Optional[dict] = None
     target_type: str = "nebula"
     distance: Optional[float] = None
+    distance_source: str = "typed"
+    distance_label: str = ""
     gaia: str = "cache"
     presets: list[str] = field(default_factory=lambda: ["youtube_1080"])
     duration: float = 8.0
@@ -122,13 +145,20 @@ class FlyJob:
     quality: str = "high"
     dynamic: str = "sdr"
     video: bool = False
+    music_path: str = ""
+    music_fade: bool = True
     ffmpeg: Optional[str] = None
+    format: Optional[str] = None   # the video format id (encode.VIDEO_FORMATS); None: H.264, or HEVC for HDR
     icc: Optional[bytes] = None
     detections: Optional[list] = None
     object_name: str = ""
     fwhm: Optional[float] = None
     options: dict = field(default_factory=dict)
     out_dir: str = "."
+    logo_path: str = ""            # the logo file drawn over every frame ("": none); PNG, TIFF or FITS (loomsiril.logo)
+    logo_place: str = "off"        # "off" or one of logo.LOGO_PLACES
+    logo_opacity: float = 1.0      # 0-1 (the dialog's slider is 0-100 %)
+    logo_delay: float = 0.0        # fade the logo in after this many seconds (over one second); 0: from the start
 
 
 @dataclass
@@ -144,8 +174,12 @@ class Result:
     failed: list[dict] = field(default_factory=list)
     distance: Optional[float] = None
     distance_source: str = ""
+    distance_label: str = ""
     counts: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    ms_per_mp: Optional[float] = None   # render speed measured on the frames drawn now (SDR-equivalent), for the dialog's estimate
+    render_ms: float = 0.0              # time spent drawing and writing the frames drawn now, and their megapixels
+    render_mp: float = 0.0
 
 
 @dataclass
@@ -454,6 +488,8 @@ def _render_options(po: Mapping[str, Any]) -> RenderOptions:
         output=po["output"],
         star_hdr=bool(po["starHdr"]),
         peak=po.get("peak"),
+        logo=po.get("logo"),
+        logo_delay=float(po.get("logoDelay") or 0.0),
     )
 
 
@@ -464,7 +500,8 @@ def _preset_options(opts: Mapping[str, Any], preset: str) -> dict[str, Any]:
     and a fresh output transform per preset so a PQ preset measures its own MaxCLL/MaxFALL.
     """
     hdr = opts.get("dynamic") == "hdr"
-    transfer = HDR_DEFAULT_TRANSFER.get(preset, "hlg") if hdr else "sdr"
+    chosen = (opts.get("hdrTransfer") or {}).get(preset)       # opts.hdrTransfer[id], else HDR_DEFAULT_TRANSFER (FlyThrough.js 225)
+    transfer = ((chosen if chosen in ("hlg", "pq") else None) or HDR_DEFAULT_TRANSFER.get(preset, "hlg")) if hdr else "sdr"
     peak = _or(opts.get("peak"), encode.HDR_PEAK_DEFAULT)
     out = dict(opts)
     out["transfer"] = transfer
@@ -517,6 +554,7 @@ def _preset_job(scene: Scene, spec: Mapping[str, Any], opts: Mapping[str, Any], 
     F = preset_mod.crossfade_frames(opts["duration"], opts["fps"]) if spec["crossfade"] else 0
     po = _preset_options(opts, spec["preset"])
     po["frameDt"] = preset_mod.frame_step(n, spec["pingPong"])
+    po["logo"] = logo_mod.layer_for(opts, spec["w"], spec["h"], scene.nc)   # the logo for this preset's frame size
     crop = preset_mod.preset_crop(ps.w, ps.h, ps.tp.x, ps.tp.y, spec["w"], spec["h"])
     video_name = encode.video_name(opts.get("objectName"), spec["id"], po["transfer"])
     return PresetRender(spec=spec, n=n, F=F, scene=ps, po=po, crop=crop,
@@ -554,8 +592,11 @@ def _render_frames(pr: PresetRender, res: Result, ctx: RunContext, total: int, r
         if ctx.is_cancelled():
             res.cancelled = True
             return
+        t0 = time.monotonic()
         planes = _frame_planes(pr, i, ro, cache)
         write_tiff16(path, planes, icc)            # write_tiff16 writes <path>.part and renames it
+        res.render_ms += (time.monotonic() - t0) * 1000.0
+        res.render_mp += pr.spec.get("w", 0) * pr.spec.get("h", 0) / 1e6
         res.written += 1
         ctx.progress("Rendering " + pr.spec["id"] + " frames", res.written + res.reused, total)
 
@@ -574,8 +615,22 @@ def _encode_args(pr: PresetRender, opts: Mapping[str, Any]) -> list[str]:
         stats = po["output"].stats
         hdr = {"transfer": transfer, "peak": _or(po.get("peak"), encode.HDR_PEAK_DEFAULT),
                "maxCll": stats["max_cll"], "maxFall": stats["max_fall"]}
-    fmt = "hevc" if hdr else "h264"
-    return encode.ffmpeg_args(pr.folder, opts["fps"], pr.out_base, fmt, opts.get("quality") or "high", hdr, None)
+    fmt = fly_video.encode_format(opts.get("format"), hdr is not None)   # opts.format || (hdr ? "hevc" : "h264")
+    return encode.ffmpeg_args(pr.folder, opts["fps"], pr.out_base, fmt, opts.get("quality") or "high", hdr,
+                              _audio(pr, opts))
+
+
+def _audio(pr: PresetRender, opts: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The music of a preset's video (FlyThrough.encodeArgs): ``{path, fade, duration, loop}`` or None without music.
+
+    The music lasts the clip (frames / fps); a looping preset (back and forth, or a crossfade; the Exhibition always
+    loops) gets its music crossfaded end into start (encode.loop_audio)."""
+    music = opts.get("music") or {}
+    path = str(music.get("path") or "").strip()
+    if not path:
+        return None
+    return {"path": path, "fade": bool(music.get("fade")), "duration": pr.n / opts["fps"],
+            "loop": bool(pr.spec["pingPong"] or pr.spec["crossfade"])}
 
 
 def _finish_preset(pr: PresetRender, res: Result, ctx: RunContext, opts: Mapping[str, Any]) -> None:
@@ -650,6 +705,8 @@ def render_final(req: FinalRender, ctx: RunContext) -> Result:
             _render_frames(pr, res, ctx, total, resume)
         if not res.cancelled:
             _finish_preset(pr, res, ctx, opts)
+    if res.render_mp > 0:   # FlyThrough.estimateMs: HDR measured ~1.3x SDR, so the speed kept is the SDR one
+        res.ms_per_mp = res.render_ms / res.render_mp / (fly_video.ESTIMATE_HDR_FACTOR if opts.get("dynamic") == "hdr" else 1)
     return res
 
 
@@ -691,12 +748,21 @@ def _validate(job: FlyJob) -> None:
     _gaia_kind(job.gaia)
 
 
+def _logo_opts(job: FlyJob) -> dict[str, Any]:
+    """The job's logo as render options (logoPath, logoPlace, logoOpacity, logoDelay); ``job.options`` (by either spelling) win."""
+    out: dict[str, Any] = {"logoPath": job.logo_path, "logoPlace": job.logo_place, "logoOpacity": job.logo_opacity,
+                           "logoDelay": job.logo_delay}
+    out.update({k: v for k, v in ((_camel(k), v) for k, v in job.options.items()) if k.startswith("logo")})
+    return out
+
+
 def _validate_job(job: FlyJob) -> None:
     """The shape checks: the starless and stars layers have the same channels and the same size."""
     if len(job.starless) != len(job.stars) or not job.starless:
         raise ValueError("the starless and stars layers need the same number of channels")
     if np.shape(job.starless[0]) != np.shape(job.stars[0]):
         raise ValueError("the starless and stars layers differ in size")
+    logo_mod.attach(_logo_opts(job))   # a missing or unreadable logo stops the run before Gaia, as it does in the dialog
 
 
 @dataclass(frozen=True)
@@ -734,28 +800,192 @@ def _working_inputs(job: FlyJob, notes: list[str]) -> dict[str, Any]:
     return wk
 
 
+@dataclass
+class SearchTrace:
+    """What one distance lookup looked at, kept so that "nothing found" can say why (see :func:`search_text`).
+
+    ``target`` the position searched round (FlyThrough.clusterDistance's ``target``); ``cluster_cone`` the radius (deg)
+    of the Gaia cone the cluster finder was given (3 x the cluster radius, Sky.clusterSources) and ``cluster_radius``
+    its inside radius; ``cluster_sources`` / ``light_sources`` the Gaia stars the two searches read (the field's own
+    sample and the small cone round the target)."""
+
+    target: Optional[Mapping[str, float]] = None
+    cluster_cone: float = 0.0
+    cluster_radius: float = 0.0
+    light_radius: float = 0.0
+    cluster_sources: Sequence[dict] = ()
+    light_sources: Sequence[dict] = ()
+
+
 def _cluster_for_target(job: FlyJob, target: Mapping[str, float], field_radius: float,
-                        ctx: RunContext) -> Optional[dict]:
+                        ctx: RunContext, trace: Optional[SearchTrace] = None) -> Optional[dict]:
     """Sky.clusterSources and Fly.findCluster: the ionising cluster of the target, or None (a reflection nebula)."""
     cluster_r = target.get("diameter")
     r = cluster_r / 120 if (cluster_r is not None and cluster_r > 0) else field_radius
+    cone = 3 * parallax.cluster_radius(r)
     # Sky.clusterSources: a sample of Gaia round the target, out to three cluster radii
-    cl_sources = _gaia_sources(job, gaia.GaiaQuery.from_centre(target, 3 * parallax.cluster_radius(r), GAIA_MAG_LIMIT), ctx)
+    cl_sources = _gaia_sources(job, gaia.GaiaQuery.from_centre(target, cone, GAIA_MAG_LIMIT), ctx)
+    if trace is not None:
+        trace.target, trace.cluster_cone, trace.cluster_radius = target, cone, parallax.cluster_radius(r)
+        trace.cluster_sources = cl_sources
     return cluster_distance(cl_sources, target, r)
 
 
 def _illuminator_for_target(job: FlyJob, sources: Sequence[dict], target: Mapping[str, float],
-                            ctx: RunContext) -> Optional[dict]:
+                            ctx: RunContext, trace: Optional[SearchTrace] = None) -> Optional[dict]:
     """The bright star that lights a reflection nebula: from the field's sample, else an online search round the target."""
     star = parallax.illuminator_distance(sources, target)
+    seen: list[dict] = list(sources)
     kind, _ = _gaia_kind(job.gaia)
     if star is None and kind != "tsv":
         online = _gaia_sources(job, gaia.GaiaQuery.from_centre(target, parallax.illuminator_radius(target),
                                                                parallax.ILLUMINATOR_MAX_G), ctx)
+        seen += online
         star = parallax.illuminator_distance(online, target)
         if star is not None and kind == "online":
             star["online"] = True
+    if trace is not None:
+        trace.target, trace.light_radius, trace.light_sources = target, parallax.illuminator_radius(target), seen
     return star
+
+
+def search_text(trace: SearchTrace, field_radius: float, where: str) -> str:
+    """Why nothing was found, with the numbers: what was searched where, how many Gaia stars, how many were usable.
+
+    "searched 1.35 deg round RA 334.8558, Dec +56.0278 (the image field is 0.93 deg): 116,639 Gaia sources (from Gaia online),
+    36,967 with a usable parallax: no cluster of >= 30 members (4,075 stars within 0.45 deg, 27,782 in the ring round
+    it) and no star brighter than G 10 with a good parallax within 0.1 deg of the target (the nearest, G 8.8, is
+    0.135 deg away)". ``where``: the source in words ("Gaia online", "the Gaia cache", "the Gaia cache and Gaia online", "the Gaia table")."""
+    t = trace.target
+    if t is None:
+        return "nothing was searched"
+    pos = f"RA {t['ra']:.4f}, Dec {t['dec']:+.4f}"
+    head = f"searched {trace.cluster_cone:.2f} deg round {pos} (the image field is {field_radius:.2f} deg)"
+    n = len(trace.cluster_sources)
+    if n == 0:
+        return f"{head}: {where} returned no stars there"
+    usable = sum(1 for s in trace.cluster_sources if parallax.usable_parallax(s) is not None)
+    samples = parallax.cluster_samples(trace.cluster_sources, t, trace.cluster_radius)
+    nearest = None
+    for s in list(trace.cluster_sources) + list(trace.light_sources):
+        g = s.get("G")
+        if g is not None and g < parallax.ILLUMINATOR_MAX_G and parallax.usable_parallax(s) is not None:
+            sep = separation(s, t)
+            if nearest is None or sep < nearest[1]:
+                nearest = (float(g), sep)
+    hint = f" (the nearest, G {nearest[0]:.1f}, is {nearest[1]:.3f} deg away)" if nearest else ""
+    return (f"{head}: {n:,} Gaia sources (from {where}), {usable:,} with a usable parallax: no cluster of >= "
+            f"{parallax.CLUSTER_MIN_MEMBERS} members ({len(samples['inside']):,} stars within {trace.cluster_radius:.2f} deg, "
+            f"{len(samples['field']):,} in the ring round it) and no star brighter than G {parallax.ILLUMINATOR_MAX_G:g} "
+            f"with a good parallax within {trace.light_radius:.2f} deg of the target{hint}")
+
+
+@dataclass(frozen=True)
+class DistanceFound:
+    """What FlyThrough.findDistance found: ``distance`` (pc, None when none), its ``source`` ("galaxy", "typed",
+    "cluster", "star"; "" when none), the ``cluster`` record or the illuminating ``star`` record that gave it, and
+    ``label``: the source in words (see :func:`distance_label`). ``note``: an extra fact to show (the Gaia cache was
+    empty and Gaia online answered); ``reason``: why none was found, in plain language, with what was searched
+    (:func:`search_text`); ``searched``: the :class:`SearchTrace` behind it."""
+
+    distance: Optional[float]
+    source: str
+    cluster: Optional[dict] = None
+    star: Optional[dict] = None
+    label: str = ""
+    note: str = ""
+    reason: str = ""
+    searched: Optional[SearchTrace] = None
+
+
+def distance_label(source: str, cluster: Optional[Mapping[str, Any]] = None, star: Optional[Mapping[str, Any]] = None,
+                   online: bool = False) -> str:
+    """FlyThrough.describeDistance, short: "cluster of 37 stars, Gaia", "illuminating star G 7.3, Gaia online",
+    "galaxy (fixed backdrop)", "typed"."""
+    where = "Gaia online" if online else "Gaia"
+    if source == "cluster" and cluster is not None:
+        n = cluster.get("members")
+        return f"cluster of {int(n)} stars, {where}" if n else f"star cluster, {where}"
+    if source == "star" and star is not None:
+        g = star.get("G")
+        names = "Gaia online" if online or star.get("online") else "Gaia"
+        return f"illuminating star G {g:.1f}, {names}" if isinstance(g, (int, float)) else f"illuminating star, {names}"
+    if source == "galaxy":
+        return "galaxy (fixed backdrop)"
+    return source
+
+
+def distance_text(distance: float, label: str) -> str:
+    """The distance as the dialog, the progress window and the final text say it: "Distance: ~1,950 pc (typed)"."""
+    if distance == float("inf"):
+        return f"Distance: {label}"
+    if label == "typed":
+        plain = f"{distance:.0f}" if distance == int(distance) else f"{distance:g}"
+        return f"Distance: {plain} pc (typed)"
+    return f"Distance: ~{distance:,.0f} pc ({label})"
+
+
+def gaia_failure(exc: Exception) -> str:
+    """Gaia not answering, in plain language."""
+    return f"Gaia could not be reached ({exc})"
+
+
+def _lookup(job: FlyJob, sources: Sequence[dict], target: Mapping[str, float], field_radius: float,
+            ctx: RunContext, trace: Optional[SearchTrace] = None) -> tuple[Optional[dict], Optional[dict]]:
+    """The target's cluster, else (a reflection nebula) the bright star that lights it: ``(cluster, star)``."""
+    cluster = _cluster_for_target(job, target, field_radius, ctx, trace)
+    if cluster is not None:
+        return cluster, None
+    return None, _illuminator_for_target(job, sources, target, ctx, trace)
+
+
+def _find_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str, float], field_radius: float,
+                   ctx: RunContext) -> DistanceFound:
+    """:func:`_resolve_distance` with the records and the label: the ONE lookup the CLI, the Draft, the Render and the
+    dialog's preview all use.
+
+    A galaxy is inf; a given ``job.distance`` wins; else the target's cluster, else the illuminating star, from the
+    job's Gaia source. With Gaia ``cache`` that finds nothing without having asked online (every cone was in the cache,
+    or in the cache's files), Gaia online is asked once (``note`` says so). A Gaia failure of that second ask is a
+    ``reason``, not an exception; a failure of the first is raised as before.
+    """
+    kind = _gaia_kind(job.gaia)[0]
+    if job.target_type == "galaxy":
+        return DistanceFound(float("inf"), "galaxy", label=distance_label("galaxy"))
+    if job.distance is not None and job.distance > 0:
+        return DistanceFound(float(job.distance), job.distance_source or "typed",
+                             label=job.distance_label or distance_label(job.distance_source or "typed"))
+    ctx.progress("Finding the nebula's distance from its star cluster", 3, 4)
+    fetched = [0]
+    real_fetch = ctx.fetch_text or gaia.fetch_text
+
+    def counting_fetch(url: str) -> str:
+        fetched[0] += 1
+        return real_fetch(url)
+
+    cctx = RunContext(ctx.progress, ctx.is_cancelled, counting_fetch)
+    trace = SearchTrace()
+    cluster, star = _lookup(job, sources, target, field_radius, cctx, trace)
+    used_online = kind == "online" or fetched[0] > 0        # a cache miss asks online by itself (gaia.sources)
+    tried = {"online": "Gaia online", "tsv": "the Gaia table"}.get(kind, "Gaia online" if used_online else "the Gaia cache")
+    note = ""
+    if cluster is None and star is None and kind == "cache" and fetched[0] == 0:
+        # every cone came from the local cache and it holds nothing useful here: ask Gaia online once
+        try:
+            trace = SearchTrace()
+            cluster, star = _lookup(replace(job, gaia="online"), sources, target, field_radius, cctx, trace)
+        except gaia.GaiaError as exc:
+            return DistanceFound(None, "", reason=f"the Gaia cache has nothing for this field and {gaia_failure(exc)}")
+        used_online, tried = True, "the Gaia cache and Gaia online"
+        note = CACHE_EMPTY_NOTE if (cluster is not None or star is not None) else ""
+    if cluster is not None:
+        return DistanceFound(float(cluster["distance"]), "cluster", cluster=cluster, note=note,
+                             label=distance_label("cluster", cluster, online=used_online))
+    if star is not None:
+        return DistanceFound(float(star["distance"]), "star", star=star, note=note,
+                             label=distance_label("star", star=star, online=used_online))
+    return DistanceFound(None, "", reason="no star cluster and no bright illuminating star found: "
+                                          + search_text(trace, field_radius, tried), searched=trace)
 
 
 def _resolve_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str, float], field_radius: float,
@@ -765,19 +995,8 @@ def _resolve_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str,
     Galaxy: inf. Else the job's typed distance. Else the target's cluster, else the bright star that lights a
     reflection nebula. Sources: "galaxy", "typed", "cluster", "star"; "" when D is None.
     """
-    if job.target_type == "galaxy":
-        return float("inf"), "galaxy", None
-    if job.distance is not None and job.distance > 0:
-        return float(job.distance), "typed", None
-    ctx.progress("Finding the nebula's distance from its star cluster", 3, 4)
-    cluster = _cluster_for_target(job, target, field_radius, ctx)
-    if cluster is not None:
-        return float(cluster["distance"]), "cluster", cluster
-    # no ionising cluster (a reflection nebula): the bright star that lights it
-    star = _illuminator_for_target(job, sources, target, ctx)
-    if star is not None:
-        return float(star["distance"]), "star", None
-    return None, "", None
+    found = _find_distance(job, sources, target, field_radius, ctx)
+    return found.distance, found.source, found.cluster
 
 
 def _render_opts(job: FlyJob, D: float, colour_info: Mapping[str, Any], notes: list[str]) -> dict[str, Any]:
@@ -805,12 +1024,17 @@ def _render_opts(job: FlyJob, D: float, colour_info: Mapping[str, Any], notes: l
         "peak": encode.HDR_PEAK_DEFAULT,
         "video": bool(job.video),
         "quality": job.quality,
+        "format": job.format,
+        "music": {"path": job.music_path, "fade": bool(job.music_fade)},
         "objectName": job.object_name,
         "colour": colour_info["colour"],
     })
     for k, v in job.options.items():
-        opts[_camel(k)] = v
+        if _camel(k) != "travel":            # a typed travel was capped above: the capped one stays (FlyThrough.js 1915)
+            opts[_camel(k)] = v
     opts["colourKey"] = hashlib.sha256(job.icc or b"srgb").hexdigest()[:16]
+    opts.update(_logo_opts(job))
+    logo_mod.attach(opts)       # the logo file read once (logoImage); its path, time and size key the frames (logoStamp)
     return opts
 
 
@@ -838,12 +1062,15 @@ def run(job: FlyJob, progress: Optional[ProgressFn] = None, is_cancelled: Option
     ctx.progress("Looking up the stars and their distances in Gaia", 2, 4)
     sources = _gaia_sources(job, gaia.GaiaQuery.from_centre(field_centre, field_radius, GAIA_MAG_LIMIT), ctx)
 
-    D, distance_source, _cluster = _resolve_distance(job, sources, target, field_radius, ctx)
+    found = _find_distance(job, sources, target, field_radius, ctx)
+    D, distance_source = found.distance, found.source
     if D is None:
         # FlyThrough.findDistance leaves D null and Dialog.prepareScene refuses to render without it
-        raise ValueError("no distance found for the target (no cluster and no illuminating star): give --distance PC")
+        raise NoDistanceError(found.reason)
+    ctx.progress(distance_text(D, found.label), 3, 4)
     if ctx.is_cancelled():
-        return Result(cancelled=True, distance=D, distance_source=distance_source, notes=notes)
+        return Result(cancelled=True, distance=D, distance_source=distance_source, distance_label=found.label,
+                      notes=notes)
 
     ctx.progress("Removing the stars and building the scene", 0, 0)
     built = build_scene(SceneRequest(starless, stars, project, sources, field_centre, D, fwhm, detections),
@@ -859,10 +1086,17 @@ def run(job: FlyJob, progress: Optional[ProgressFn] = None, is_cancelled: Option
     if ffmpeg is None:
         opts["video"] = False
     opts["ffmpeg"] = ffmpeg
+    if ffmpeg is not None and opts.get("video") and opts.get("format"):
+        offered = [f["id"] for f in fly_video.formats_for(fly_video.probe(ffmpeg), job.dynamic == "hdr")]
+        if offered and opts["format"] not in offered:
+            notes.append(f"this ffmpeg cannot encode {fly_video.format_label(opts['format']) or opts['format']}: "
+                         f"{fly_video.format_label(fly_video.encode_format(None, job.dynamic == 'hdr'))} instead")
+            opts["format"] = None
 
     res = render_final(FinalRender(built.scene, job.presets, opts, job.out_dir), ctx)
     res.distance = D
     res.distance_source = distance_source
+    res.distance_label = found.label
     res.counts = built.counts
     res.notes = notes + res.notes
     return res

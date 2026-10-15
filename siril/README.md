@@ -33,6 +33,199 @@ drift past the camera faster than distant ones. It renders 16-bit TIFF frames
 with an sRGB or HDR output transform and, when ffmpeg is on the PATH, encodes
 them to a video.
 
+A **Draft** shows the clip before the full render: 480 px on the long side, a
+reduced frame rate (`presets.draft_plan`), always SDR, from the same scene and
+frame pipeline as the render. It plays in its own window (play/pause, scrub,
+loop) and is kept in `<Siril config dir>/loomsiril-fly-drafts`, so an unchanged
+draw opens at once. The code is `loomsiril/draft.py`; the Fly-Through dialog's
+Draft button calls `draft.show_draft`. Tested with fakes and, where Tk has a
+display, with real Tk; it has not been run inside Siril.
+
+**Dialog.** Four groups, and what does not apply is greyed at once as you change a radio button or tick box.
+*Input*: either "Extract stars from the image with:" (a drop-down of the tools found, an optional **Image file
+(TIFF/FITS)** with Browse..., empty meaning the image open in Siril) or "Starless and stars files" (a Browse... button
+next to each box). Both layer pickers and the image picker open in the last folder used. The image file is read with
+the same TIFF/FITS reader as the layers and may be **the same field at another pixel size** (an export smaller than the
+open image, say): when its aspect ratio equals the open image's (within 0.5 %) it is resampled onto the open image's
+pixel grid on the worker thread (Catmull-Rom when enlarging, an area filter when shrinking) before the stars are
+extracted, and a grey line under the box says so ("Image file 2000 x 1222 is the same field as the open image
+(11799 x 7211): it is resampled to that size"). A file of another shape, or with another channel count (mono onto
+colour or colour onto mono: nothing is converted), is refused with a message that says what to do. The plate solution
+and the stars' positions still come from the image open in Siril, and RA/Dec stay as typed (a file is not
+plate-solved by this script). The progress window of a run that fails shows the error, "Stopped" and empty bars with
+"Failed at: <stage>" (a cancelled run says "Cancelled"), not a bar left at its last percent. Nothing of this has been
+run inside Siril. *Target*, *Clip* and *Output* (object name, output folder with a Browse... folder picker, ffmpeg video).
+Greyed: the files boxes in extract mode and the tool/image row in files mode; the whole extract group when no tool is
+found; "Encode video" when ffmpeg is not found; Loop when only the Exhibition preset is ticked (it always loops).
+Render and Draft stay disabled, with a one-line grey reason, while an input is missing or unreadable, no output size
+is ticked, or the output folder cannot be created or written to.
+
+**Orientation** (Clip, after Frames per second): Horizontal or Vertical, as in the PixInsight dialog. Vertical turns the
+YouTube and Exhibition presets portrait (1080x1920, 2160x3840); the Social ones keep their shape, and a vertical image
+is turned for a horizontal preset, never cut. The output-size boxes show the frame each preset renders at in the chosen
+orientation and change as you change it. It starts on the image's own orientation (Vertical for a taller-than-wide
+image, else Horizontal; the Image file's size is used when one is set), a grey note says so ("follows the image:
+portrait"), a choice you make stays until the image changes, and it is not remembered between runs. It reaches Render and
+Draft as the job's `orientation` (`landscape` or `portrait`), and the Draft's cache key follows the frame, so a preset
+whose frame does not change (the Social ones) keeps its draft. Tested with fakes; not run inside Siril.
+
+**Music** (Output, under "Encode video"), as in the PixInsight dialog: a text box with a Browse... button (audio files:
+mp3, m4a, aac, wav, flac, ogg, opus; it opens in the last folder used) and a **Fade in/out** box (on by default, as in
+PixInsight; the music fades over 2 s, at most a quarter of a short clip). It is greyed, with a grey reason, unless
+"Encode video" is ticked and ffmpeg is found. The file is checked (exists, readable) on the dialog's validation worker,
+never on the Tk thread; a remembered file that has gone stays in its box, the reason is shown, and Render and Draft are
+blocked until you fix or clear it (an empty box means no music). The path and the Fade box are remembered between
+runs. The music reaches the job as `music_path` and `music_fade` and the ffmpeg arguments as `encode.ffmpeg_args(...,
+audio=...)`: it is looped if it is shorter than the clip and cut to the clip's length (`-shortest`); a looping preset
+(Back and forth, Crossfade, or the Exhibition) gets its music crossfaded end into start (`encode.loop_audio`) instead of
+a fade. AAC in MP4 and MOV, Opus in WebM. The arguments are tested against the ones PixInsight's `Fly.ffmpegArgs` makes
+for the same inputs (`tests/oracle/encode.json`); ffmpeg was not run with music in the tests, and nothing of this has
+been run inside Siril. The command-line interface has no music option.
+
+**Video details** (the first Advanced section), as the Video group of the PixInsight dialog (`FlyThrough.js` buildVideo):
+an **ffmpeg** box with Browse... (empty: the ffmpeg found on this machine; a typed one is used for the encode and for the
+probe, and the validation worker runs `ffmpeg -version` on it: a path that is not ffmpeg is reported and blocks Render
+while Encode video is ticked, never silently replaced by another binary); a **Format** drop-down listing only the formats
+that ffmpeg can encode among MP4 H.264, MP4 H.265/HEVC, MOV ProRes 422 HQ and WebM VP9 (`ffmpeg -encoders`, run once per
+binary on a worker and cached by path, size and modification time; H.264 is not offered for HDR; the default is HEVC for
+a 4K-wide video, else H.264; a format you chose or saved stays while it is offered); **Quality** High or Standard (the
+CRF of each codec: `Fly.codecArgs`); a **Clear rendered frames...** button that, after counting and asking, deletes only
+Loom's own `frame_NNNNN.tif` files, half-written frames and frame records in the output folder's preset folders (never a
+video or any other file; a grey line says how many there are); and a grey **Estimated render: about N min** line from the
+presets, duration, fps, HDR, orientation and loop (`FlyThrough.estimateMs`; HDR counts 1.3 times SDR). The estimate needs a
+speed: PixInsight times one frame once the scene is built, Siril uses the speed measured on your last render (kept as
+`ms_per_mp`), so the line stays empty until you have rendered once. Format and Quality are greyed, with the reason, unless
+Encode video is ticked and an ffmpeg is found; picking a working ffmpeg when none was found ticks Encode video, as
+PixInsight's Browse does. They reach the job as `format`, `quality` and `ffmpeg`; a format the ffmpeg cannot encode falls
+back to the default with a note. They change only the encode, so frames are reused and the Draft cache key is unchanged.
+Each row has a hover tip (adapted from the PixInsight tooltips). Tested with a fake ffmpeg script (it prints a version and
+an encoder list) and fake widgets. Not seen or run: the hover tips and the section's look were never seen on a real display,
+and no real ffmpeg encode ran with a chosen format, quality or ffmpeg path, nor did Clear rendered frames run on a real
+render's folder; nothing ran inside Siril.
+
+**Logo** (the second Advanced section), as the Logo box of the PixInsight dialog (`FlyThrough.js` 1399-1426): a **Logo file**
+box with Browse..., **Placement** (Off, Center, Top left, Top middle, Top right, Bottom left, Bottom middle, Bottom right;
+default Off), **Opacity** (a 0-100 % slider, default 100) and **Fade in after (s)** (0-600, default 0). The logo is drawn
+as in `Render.logoLayer` / `addLogo` (`loomsiril/logo.py`): its long side is 20 % of the frame's short side, 4 % of the short
+side from the edges (or centred), its own transparency kept and scaled by the opacity, area-averaged to its size, and added
+to the frame's composite before the output transform (so it takes the same colour conversion as the picture, and in HDR it
+also covers the star light above white); with a delay it is hidden until that second and then fades in over one second. A
+Draft draws it at the draft's size with the same code. Choosing a file with Browse... while Placement is Off puts it at the
+bottom right (`FlyThrough.useLogo`). Placement is greyed, with the reason, until a file is set, and Opacity and Fade until
+it is also placed. The file is opened on the validation worker, never on the Tk thread; a remembered file that has gone keeps
+its box, says why under it, and blocks Render and Draft while the placement is not Off. The file types are **PNG** (any
+colour type and depth, with its transparency), **TIFF** and **FITS**, read without any extra package: PixInsight reads any
+format it has a reader for, so a **JPEG (or other) logo is refused with a message** here; convert it to PNG. The logo's file
+(path, modification time and size), placement, opacity and fade are in the frame signature and the Draft cache key, so
+changing the logo renders again and an unchanged one reuses the frames (PixInsight keys the path only). The four options are
+remembered (`logo_path`, `logo_place`, `logo_opacity`, `logo_delay`) and reach the job as `FlyJob.logo_*`. The maths (placement,
+fade, the layer and the blend) are checked against PixInsight's JavaScript recordings (`tests/oracle/logo.json`); the readers
+and the dialog are tested with small synthetic files and fake widgets (and real Tk where a display exists); the logo readers
+were only tried on synthetic files, no real ffmpeg encode with a logo was run, the hover tips and the look were not seen on a real
+display, and none of it was run inside Siril. With placement Off no logo value reaches the options, the frame signature or the Draft
+key.
+
+**Scrolling and Advanced sections.** The form is in a scroll area (scrollbar, mouse wheel on macOS, Windows and Linux,
+Tab scrolls the focused control into view) and the window is at most 85 % of the screen high, so it fits a laptop; the
+reason line, the draft note and the Draft, Render and Cancel buttons stay at the bottom, always visible. After Output come
+four collapsed sections, each a flat header button (`▸ Video details`, `▸ Logo`, `▸ Stars and motion`, `▸ HDR`) that
+Space or Enter opens (`▾`). Which ones you left open is remembered between runs (the `sections` option). When every
+control of a section is greyed, its header says why in grey (for example "needs Encode video"); a greyed parent still
+greys its children. Tested with fake widgets (and real Tk where a display exists); not run inside Siril, so the wheel
+over drop-downs and the window size on a real laptop screen are unchecked.
+
+**Stars and motion and HDR sections.** The two sections hold every control PixInsight's dialog has for them, built from one
+table (`loomsiril/fly_options.py`, each default and range cited to `FlyThrough.js`): Travel (pc; empty is automatic: 0.2 of
+the distance, 200 pc for a galaxy, with a grey note when a typed one is capped at 0.9 of the distance), Easing (Smooth or
+Linear), Growth (0.15), Nebula motion (0 to 100 %, 40), Brighten approaching stars, Twinkle (0 to 10 %, 3), Bloom (0 to
+200 %, 100), Motion blur, Star colour (0 to 200 %, 100) and, in HDR, Peak (nits, 400 to 4000 in steps of 100, 1000), Stars
+into HDR headroom and an HLG or PQ transfer for each output size. Hover a control for its tip. The HDR controls are greyed
+(and the HDR header says why) while Dynamic range is SDR, a transfer is also greyed for an output size that is not ticked,
+and Nebula motion is greyed for a galaxy (a fixed backdrop; PixInsight leaves it on). A number that does not parse or is out
+of range is held and named when you click Render or Draft, as the other boxes do. Each section has **Reset to defaults**.
+Every value is remembered (Travel is not: it belongs to the image), reaches the render as a `FlyJob.options` entry, and is
+part of the frame signature, so changing one re-renders the frames and an equal value reuses them; in SDR the HDR-only
+values are left out so they never re-render an SDR clip. Draft uses the same values (its cache key follows the ones that
+change its SDR picture, not Peak, star HDR or the transfers). Differences from PixInsight: the per-preset transfer now
+reaches the Siril renderer (it always used each preset's default before), Growth is limited to 0 to 1 (PixInsight takes
+any number), and Travel is empty-for-automatic rather than filled in. Tested with fake widgets, the pipeline and the
+frame signature (defaults against the engine's, and against `Fly.js` where its sources are checked out); nothing of this
+has been run inside Siril.
+
+**Finding the object by name (online).** The Siril port follows Loom 0.4.2/0.5.0. When the dialog opens, and
+after you pick an Image file, a worker thread asks [CDS Sesame](https://cds.unistra.fr/cgi-bin/Sesame) (SIMBAD, NED,
+VizieR) what the names in the Image file's name and folders, the open image's OBJECT keyword and the open image's own
+file name might be (`loomsiril/skyname.py`: catalogue-looking words such as `Sh2-132` first, then two-word runs, then
+single words, at most 6 requests, 8 s each). A result is accepted **only if it lies inside the plate-solved field**.
+When one is found and **Object name** is empty, the box is filled (what you typed or saved is never overwritten), the
+Target RA/Dec follow if you had not edited them (the distance is then looked up round that object, as in Loom; also
+when the box already holds that same object's name, as the options remember it from an earlier run), and a
+grey line under Target says where it came from, for example "Found: Sh2-132 (from the file name via CDS Sesame)".
+You can also type a name in **Object name** and press Enter or **Find**: it is resolved the same way and refused,
+with the reason, when it is outside the field. No network means no result and a grey "Name lookup needs the network";
+answers are kept for the session (a failed request is not, so a retry works). No object name is written in the code.
+**The distance, found for you.** Under the Distance box a grey line says what the render will use, found by a
+worker thread whenever the target changes (the image centre on open, an object found by name, an edit of RA, Dec,
+Target type or Gaia source): "Finding the distance...", then for example "Distance: ~1,950 pc (cluster of 37 stars,
+Gaia)", or "No distance found: <reason>. Type one (pc)." The value is also the box's grey placeholder and is never
+written into it: an empty box stays "auto", and a distance you type wins ("Distance: 2000 pc (typed)"). It is the
+render's own lookup (`loomsiril/fly_distance.py`): a galaxy is a fixed backdrop; else the target's ionising cluster
+from Gaia, else the bright star that lights it. With Gaia "cache" and a cache that has nothing for the field it asks
+Gaia online once when the network is up ("Gaia: cache empty here, used online"), and says so when it is not (that
+fallback is in the shared lookup, so the CLI, Draft and Render do it too). Draft and Render get the distance shown, so
+they do not find another; when it is not valid at the click (the lookup was still running, or a box changed since) the
+render's worker finds it first, with the same lookup and before the star tool runs, and shows "Finding the distance..."
+in the progress window. The Siril console says "Loom Fly-Through: distance 4562 pc (illuminating star G 8.8, Gaia
+online)" at render start, the progress and the final text name it, and when none can be found it stops at once:
+"No distance found for this target (<reason>). Type a distance in pc in the Distance box and press Render again."
+(the CLI keeps "give --distance PC"). When none is found the grey line says what was searched, for example "No distance
+found: no star cluster and no bright illuminating star found: searched 1.35 deg round RA 334.8558, Dec +56.0278 (the
+image field is 0.93 deg): 116,639 Gaia sources (from Gaia online), 36,967 with a usable parallax: no cluster of >= 30
+members (...) and no star brighter than G 10 with a good parallax within 0.10 deg of the target (the nearest, G 8.0, is
+0.106 deg away). Type one (pc)." The search is Loom's, number for number (`Fly.findCluster` in a cone of 3 x
+min(radius, 0.45 deg) round the **target**, then `Fly.illuminatorDistance`: G < 10 within max(0.1 deg, diameter/120) of
+the target; Gaia DR3 at VizieR, G < 17.6, no row limit in the way), so what decides it is the target's position: the
+Sesame position of Sh2-132 (334.7875, 56.0791) has a G 8.8 star with a good parallax 0.072 deg away (about 4,562 pc),
+the image centre (334.8558, 56.0278) has none within 0.1 deg, in Loom's JavaScript as in this port. Not run inside
+Siril; Gaia was stubbed in the tests (`tests/test_distance_parity.py`, against `tests/oracle/distance.json` recorded
+from Loom's JavaScript on a frozen copy of the live Gaia rows). Checked live once, by hand, outside Siril, with the
+real header of the Sh2-132 image (11799 x 7211, field radius 0.927 deg): both targets above, the same answers.
+
+The dialog's and the progress window's titles carry the image's file
+name. Differences from PixInsight: Siril has no NGC/IC catalogue in this port (Sesame knows NGC and IC too) and no
+`Image<number>` views, so `view_id_from_path` and `image_title` are ported and tested but nothing calls them. Tested
+with a stubbed fetch only: the suite has no network, and nothing was run inside Siril's UI. One live Sesame request
+(Sh2-132) answered and parsed correctly when made by hand.
+
+The tool drop-down lists only the tools found on this machine, through Loom's resolver: StarNet2 (its licence is shown
+and accepted first), SyQon Studio (Axiom, `syqon-cli`) and StarXTerminator (RC-Astro CLI; without a licence it is not
+listed, and a refusal at run time is reported as such). The search (and the ffmpeg check) and the extraction run on
+worker threads. If no tool is found the option is disabled with a one-line reason and the files mode stays. The last
+tool chosen is saved with the other options, and so are the Image, Starless and Stars file paths, the mode (extract or files) and the folder the Browse... buttons last used (they are saved a moment after each change and when the window closes; an empty box saves no path; a remembered file that has gone stays in its box with the "does not exist or cannot be read" reason and Render and Draft stay greyed until it is fixed or cleared); a saved tool that has vanished is replaced by the
+first found, and the dialog says so.
+
+**Progress.** Render opens a progress window with two bars: the current stage (n of N with its percent, elapsed and
+estimated time left, or a moving bar while a stage reports no count) and the whole run, a weighted percent that only goes
+up (extraction 15, Gaia 5, scene 5, render 70, encode 10, narrowed to the phases that run) and reaches 100 only when the
+run succeeds. It covers the star extraction, the Gaia lookup, the frames and the ffmpeg encode. Cancel stops between
+frames or steps and says so; Close then shows what was written and where, or the error. The run is on a worker thread;
+the window only reads a queue.
+
+**Nothing slow on the Tk thread.** Looking for tools and ffmpeg, checking that the files exist and the output folder is
+writable (250 ms after the last change, again when a box gets the focus, after Browse, and when Render or Draft is
+clicked; Render and Draft say "Checking the files..." until it answers), creating the output folder, reading the StarNet
+licence file, the draft's file stamp and cache key, the extraction, the Gaia lookup and the render all run on worker
+threads. The Tk thread only parses the typed values and reads queues. The dialog, the progress window and the draft run
+cancel their pending timer callbacks when they close, and a draft still running stops with the dialog.
+
+Tested with fakes only: a fake resolver or a resolver over stand-in executables, stand-in tkinter widgets with an
+`after` recorder, a fake master for the draft, a stand-in sirilpy; the enable/disable rules are pure
+(`loomsiril/fly_model.py`, no file access) and tested without Tk. The script's draft closure is also run against the real
+`loomsiril/draft.py` on a synthetic scene (cache key from the dialog's options, second call a cache hit). Some tests
+(the dialog layout, parts of the draft player) use real Tk and run only where Tk has a display; there they open real
+windows. No real StarNet2, SyQon or RC-Astro tool was run, the dialog and progress windows were not looked at by hand,
+and none of this has been run inside Siril.
+
 ## Loom: masters to finished plates
 
 `Loom/loom_preprocess.py` is a second Siril script in this repository. It takes calibrated, stacked masters, one file per
@@ -213,6 +406,10 @@ never pushed.
 
 Star removal in "Run StarNet" mode uses StarNet2, a separate program by StarNet Astro.
 Loom never bundles, downloads for users or redistributes it.
+
+- Minimum version: **2.6.2**. Older builds cannot read FITS, which Loom and the Fly-Through use to hand StarNet2 its
+  image. An older (or unreadable) `starnet2 --version` is refused with a warning, shown in the Tools section and in
+  the Fly-Through tool line, and StarNet2 is not offered until it is updated.
 
 - Official download: https://download.starnetastro.com/starnet2_linux_2.6.2-0242_ORT_x64_cli.zip
   (sha256 `066a7683f0321ae8400d3bc1023a48747ac228e1d14e76b5d39c4e48cbce4920`). Documentation:

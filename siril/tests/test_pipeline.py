@@ -542,3 +542,28 @@ def test_negative_crval1_field_runs_and_queries_the_wrapped_centre(tmp_path: Pat
     for u in urls:
         ra = float(urllib.parse.unquote(u).split("CIRCLE('ICRS',")[1].split(",")[0])
         assert 0.0 <= ra < 360.0
+
+
+# ---- the music under the video (the dialog's Music row) -------------------------------------------------------
+
+def test_a_job_with_music_gives_the_ffmpeg_command_with_the_audio(tmp_path: Path, field: Any) -> None:
+    """No ffmpeg is run: without one the exact command is returned; the music is its second input, cut to the clip."""
+    job = _job(tmp_path, field, music_path="/m/song.mp3", music_fade=True)
+    res = P.run(job)
+    folder, video = str(tmp_path / "out" / PRESET), str(tmp_path / "out" / encode.video_name("", PRESET, "sdr"))
+    audio = {"path": "/m/song.mp3", "fade": True, "duration": 3 / 10, "loop": False}
+    args = encode.ffmpeg_args(folder, 10, video, "h264", "high", None, audio)
+    assert res.commands == [encode.command_line("ffmpeg", args, encode.platform_name(sys.platform))]
+    assert "-stream_loop -1 -i /m/song.mp3" in res.commands[0] and "afade=t=in:st=0:d=0.075" in res.commands[0]
+    assert "-shortest" in res.commands[0]
+
+
+def test_a_looping_clip_gives_the_music_crossfaded_end_into_start(tmp_path: Path, field: Any) -> None:
+    job = _job(tmp_path, field, music_path="/m/song.mp3", loop="pingpong")
+    res = P.run(job)
+    assert "amix=inputs=2" in res.commands[0] and "afade=t=in:st=0:d=0.075" not in res.commands[0]
+    clip = presets.frame_count(0.3, 10, True) / 10                 # there and back: the clip's own length
+    audio = {"path": "/m/song.mp3", "fade": True, "duration": clip, "loop": True}
+    args = encode.ffmpeg_args(str(tmp_path / "out" / PRESET), 10, str(tmp_path / "out" / encode.video_name("", PRESET, "sdr")),
+                              "h264", "high", None, audio)
+    assert res.commands == [encode.command_line("ffmpeg", args, encode.platform_name(sys.platform))]

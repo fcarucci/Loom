@@ -1,5 +1,6 @@
 # JS inventory for the parity check (test_pr8_parity.py); do not edit by hand.
-# Made from the read-only Loom v0.4.1 script/ directory with:
+# Made from the read-only Loom script/ directory (v0.4.1, extended with the 0.4.2 name-resolver functions; the
+# Fly-Through files are unchanged from v0.4.2 to v0.5.0) with:
 #   grep -ohE '^(Fly|Render|Sky)\.\w+ =' lib/{Fly,Render,Sky}.js; grep -ohE '^FlyThrough\.\w+ =' FlyThrough.js
 # then stripped of ' =' and sorted (LC_ALL=C sort -u). One qualified JS name per line.
 Fly.AUDIO_FADE
@@ -48,6 +49,8 @@ Fly.LOGO_SIZE
 Fly.MATCH_RADIUS
 Fly.MATCH_SEARCH
 Fly.MODEL_BLEND
+Fly.NAME_QUERY_MAX
+Fly.NAME_RESOLVER_URL
 Fly.OBJECT_ALIASES
 Fly.OBJECT_MIN_SCORE
 Fly.OBJECT_STOPWORDS
@@ -136,6 +139,7 @@ Fly.hlgFromDisplay
 Fly.illuminatorDistance
 Fly.illuminatorRadius
 Fly.imageCacheKey
+Fly.imageTitle
 Fly.isBlend
 Fly.isFragment
 Fly.isFrameFile
@@ -160,6 +164,7 @@ Fly.messierHits
 Fly.modelWeight
 Fly.moved
 Fly.nameHits
+Fly.nameQueries
 Fly.nameScore
 Fly.needsRotation
 Fly.objectFromFileName
@@ -174,6 +179,7 @@ Fly.parseAngle
 Fly.parseGaiaCsv
 Fly.parseIccColour
 Fly.parseNgcIc
+Fly.parseSesame
 Fly.pickTarget
 Fly.pixelScale
 Fly.placeStars
@@ -217,6 +223,7 @@ Fly.twinkle
 Fly.usableParallax
 Fly.vec
 Fly.videoName
+Fly.viewIdFromPath
 Fly.withinReach
 Fly.workingScale
 Fly.x265Hdr10
@@ -442,6 +449,7 @@ Sky.keywordNumber
 Sky.keywordWcs
 Sky.modelAt
 Sky.modelSums
+Sky.namedInField
 Sky.ngcIcMissingWarned
 Sky.noiseSigma
 Sky.now
@@ -462,6 +470,8 @@ Sky.regionDir
 Sky.remember
 Sky.requireSources
 Sky.resetGaia
+Sky.resolveName
+Sky.resolvedNames
 Sky.ringStart
 Sky.ringStats
 Sky.scaledWcs

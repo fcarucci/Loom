@@ -490,6 +490,7 @@ Conventions that differ from the JavaScript on purpose:
 | `tools.specs.ToolSpec` | - | S | - |
 | `tools.specs.exit_zero` | - | S | `tests/loom/tools/test_resolver.py` |
 | `tools.specs.exit_zero_with_output` | - | S | `tests/loom/tools/test_resolver.py` |
+| `tools.specs.starnet_check` | - | S | `tests/loom/tools/test_resolver.py` |
 | `tools.specs.rc_astro_json` | - | R | `tests/loom/tools/test_resolver.py` |
 | `tools.specs.graxpert_text_check` | - | R | `tests/loom/tools/test_resolver.py` |
 

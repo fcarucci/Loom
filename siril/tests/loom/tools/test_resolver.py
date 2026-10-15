@@ -29,6 +29,7 @@ from loomsiril.loom.tools.specs import (
     exit_zero_with_output,
     graxpert_text_check,
     rc_astro_json,
+    starnet_check,
 )
 from loomsiril.loom.tools.store import ToolStore
 
@@ -474,7 +475,47 @@ def test_starnet_with_empty_output_is_not_offered(tmp_path: Path, store: ToolSto
     prober = FakeProber(answers={"starnet2": ProbeResult(0, "")})
     assert sim_resolver("linux", root, store=store, prober=prober).resolve("starnet2") is None
     found = sim_resolver("linux", root, store=store).resolve("starnet2")
-    assert found is not None and found.version == "starnet2 1.0"
+    assert found is not None and found.version == "starnet2 version: 2.6.2"
+
+
+@pytest.mark.parametrize("output, accepted", [
+    ("starnet2 version: 2.6.2\n", True),
+    ("starnet2 version: 2.6.3\n", True),
+    ("StarNet++ v2.10.0\n", True),
+    ("starnet2 version: 2.5.2\n", False),
+    ("starnet2 version: 2.6.1\n", False),
+    ("starnet2 1.0\n", False),
+    ("starnet2 (unversioned build)\n", False),
+])
+def test_starnet_older_than_the_minimum_version_is_rejected(tmp_path: Path, store: ToolStore, output: str,
+                                                            accepted: bool) -> None:
+    root = make_tree(tmp_path, "linux", {"/opt/vendor/bin/starnet2": "exe"})
+    prober = FakeProber(answers={"starnet2": ProbeResult(0, output)})
+    resolver = sim_resolver("linux", root, store=store, prober=prober)
+    found = resolver.resolve("starnet2")
+    if accepted:
+        assert found is not None and resolver.rejection("starnet2") is None
+    else:
+        assert found is None and "starnet2" not in resolver.resolve_all(["starnet2"]) if hasattr(
+            resolver, "resolve_all") else found is None
+        reason = resolver.rejection("starnet2") or ""
+        assert "Loom needs 2.6.2 or newer" in reason and "cannot read FITS" in reason
+
+
+def test_starnet_2_5_2_reason_names_the_version(tmp_path: Path, store: ToolStore) -> None:
+    root = make_tree(tmp_path, "linux", {"/opt/vendor/bin/starnet2": "exe"})
+    prober = FakeProber(answers={"starnet2": ProbeResult(0, "starnet2 version: 2.5.2\n")})
+    resolver = sim_resolver("linux", root, store=store, prober=prober)
+    assert resolver.resolve("starnet2") is None
+    assert resolver.rejection("starnet2") == ("StarNet2 2.5.2 is too old: Loom needs 2.6.2 or newer "
+                                              "(older builds cannot read FITS)")
+
+
+def test_a_remembered_old_starnet_is_probed_again_and_rejected(tmp_path: Path, store: ToolStore) -> None:
+    root = make_tree(tmp_path, "linux", {"/opt/vendor/bin/starnet2": "exe"})
+    assert sim_resolver("linux", root, store=store).resolve("starnet2") is not None   # remembered at 2.6.2
+    old = FakeProber(answers={"starnet2": ProbeResult(0, "starnet2 version: 2.5.2\n")})
+    assert sim_resolver("linux", root, store=store, prober=old).resolve("starnet2") is None
 
 
 def test_exit_zero_probe() -> None:
@@ -670,3 +711,9 @@ def test_unreadable_siril_script_settings_are_skipped(tmp_path: Path, store: Too
     root = make_tree(tmp_path, "darwin", {f"{config}/BlurXTerminator/settings.json": ("file", "not json"),
                                           f"{config}/NoiseXTerminator/settings.json": ("file", '{"exe": ""}')})
     assert sim_resolver("darwin", root, store=store, siril_config_dir=config).resolve("rcastro") is None
+
+
+def test_starnet_check_directly() -> None:
+    assert starnet_check(ProbeResult(0, "starnet2 version: 2.6.2\n")).passed
+    assert not starnet_check(ProbeResult(0, "starnet2 version: 2.5.2\n")).passed
+    assert not starnet_check(ProbeResult(1, "")).passed

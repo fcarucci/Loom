@@ -597,6 +597,26 @@ def test_tool_rows_show_not_found_with_the_reason() -> None:
     assert rows["starnet2"].status == "not found"
 
 
+OLD_STARNET = ("StarNet2 2.5.2 is too old: Loom needs 2.6.2 or newer (older builds cannot read FITS)")
+
+
+def test_an_old_starnet_shows_its_warning_in_the_tools_row_and_is_not_offered() -> None:
+    results = {t: found(t) for t in dl.TOOL_LABELS if t != "starnet2"}
+    model = dl.DialogModel.from_config(config(starTool="none"), {k: v for k, v in results.items()},
+                                       resolver=FakeResolver(results=results, reasons={"starnet2": OLD_STARNET}))
+    row = {r.tool_id: r for r in model.tool_rows()}["starnet2"]
+    assert row.path is None and row.status == f"not found ({OLD_STARNET})"
+    assert lv.STAR_TOOL_STARNET not in [v for v, _ in model.choices(dl.GROUP_STAR)]
+
+
+def test_a_saved_starnet_choice_falls_back_when_starnet_is_too_old() -> None:
+    results = {t: found(t) for t in dl.TOOL_LABELS if t != "starnet2"}
+    model = dl.DialogModel.from_config(config(starTool=lv.STAR_TOOL_STARNET), results,
+                                       resolver=FakeResolver(results=results, reasons={"starnet2": OLD_STARNET}))
+    assert model.get("starTool") == "none"
+    assert "StarNet2 is no longer available; set to none" in model.take_notices()
+
+
 # ---- masters ------------------------------------------------------------------------------------------------------
 
 

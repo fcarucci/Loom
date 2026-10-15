@@ -72,6 +72,23 @@ def starnet_binary() -> str | None:
     return None
 
 
+def starnet_skip_reason() -> str | None:
+    """Why the real-binary StarNet2 tests cannot run here (absent, or older than MIN_STARNET_VERSION), else None."""
+    import subprocess
+
+    from loomsiril.starnet_version import starnet_version_problem
+
+    exe = starnet_binary()
+    if exe is None:
+        return "starnet not available"
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "starnet not available (it did not run)"
+    problem = starnet_version_problem((proc.stdout or "").strip().splitlines()[0] if proc.stdout.strip() else "")
+    return f"starnet: {problem}" if problem else None
+
+
 def siril_binary() -> str | None:
     """siril-cli on PATH, if any."""
     return shutil.which("siril-cli")
@@ -81,7 +98,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     """Skip tests whose tool is absent, with a reason that names the tool."""
     absent = {
         "siril": siril_binary() is None,
-        "starnet": starnet_binary() is None,
+        "starnet": starnet_skip_reason(),
         "ffmpeg": shutil.which("ffmpeg") is None,
         # timing budgets run only where asked (the Docker gate), never on a shared dev box
         "perf": os.environ.get("LOOMSIRIL_PERF") != "1",
@@ -91,7 +108,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         for marker, missing in absent.items():
             if missing and item.get_closest_marker(marker) is not None:  # not item.keywords: it holds folder names too
-                item.add_marker(pytest.mark.skip(reason=f"{marker} not available"))
+                item.add_marker(pytest.mark.skip(reason=missing if isinstance(missing, str) else f"{marker} not available"))
 
 
 @pytest.fixture

@@ -56,7 +56,7 @@ def _asymmetric_field(w: int = 96, h: int = 64):
 _FAKE_PREAMBLE = (
     "import sys\n"
     "if sys.argv[1:] == ['--version']:\n"
-    "    print('StarNet2 fake 0.0'); sys.exit(0)\n"
+    "    print('starnet2 version: 2.6.2'); sys.exit(0)\n"
     "args = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n"
     "inp, out = args['--input'], args['--output']\n"
     "from loomsiril import io_fits\n"
@@ -306,7 +306,7 @@ def test_starnet_version_broken_binary_is_a_clear_error(tmp_path):
     broken.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('no weights'); sys.exit(7)\n",
                       encoding="utf-8")
     broken.chmod(broken.stat().st_mode | stat.S_IXUSR)
-    assert sb.starnet_version(binary) == "StarNet2 fake 0.0"
+    assert sb.starnet_version(binary) == "starnet2 version: 2.6.2"
     with pytest.raises(sb.StarnetError, match="--version.*7.*no weights"):
         sb.starnet_version(str(broken))
     with pytest.raises(sb.StarnetError, match="--version"):
@@ -377,6 +377,14 @@ def test_run_starnet_removes_its_fits_files_on_success_and_on_error(tmp_path):
     with pytest.raises(sb.StarnetError):
         sb.run_starnet(bad, [np.zeros((4, 4), dtype=np.float32)], tmp_path / "work")
     assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_run_starnet_refuses_a_starnet_older_than_the_minimum(tmp_path):
+    old = tmp_path / "old"
+    old.write_text(f"#!{sys.executable}\nprint('starnet2 version: 2.5.2')\n", encoding="utf-8")
+    old.chmod(old.stat().st_mode | stat.S_IXUSR)
+    with pytest.raises(sb.StarnetError, match="2.5.2 is too old: Loom needs 2.6.2 or newer"):
+        sb.run_starnet(str(old), [np.zeros((4, 4), dtype=np.float32)], tmp_path / "work")
 
 
 def test_run_starnet_default_temp_folder_is_removed(tmp_path, monkeypatch):
@@ -533,13 +541,20 @@ def fake_pipeline(monkeypatch):
         quality: str = "high"
         dynamic: str = "sdr"
         video: bool = False
+        music_path: str = ""
+        music_fade: bool = True
         ffmpeg: object = None
+        format: object = None
         icc: object = None
         detections: object = None
         object_name: str = ""
         fwhm: object = None
         options: dict = field(default_factory=dict)
         out_dir: str = "."
+        logo_path: str = ""
+        logo_place: str = "off"
+        logo_opacity: float = 1.0
+        logo_delay: float = 0.0
 
     mod.FlyJob = FlyJob
     monkeypatch.setitem(sys.modules, "loomsiril.pipeline", mod)
@@ -555,6 +570,7 @@ def test_job_from_dialog_builds_the_frozen_flyjob(fake_pipeline):
         "starless": starless, "stars": stars, "target": None, "target_type": "galaxy",
         "distance": None, "gaia": "cache", "presets": ["social_vertical"], "duration": 6.0, "fps": 25,
         "loop": "pingpong", "star_quality": "medium", "dynamic": "hdr", "video": True, "out_dir": "/x",
+        "music_path": "/m/a.mp3", "music_fade": False,
     }
     job = sb.job_from_dialog(values, [disp], header_top, b"icc")
     assert isinstance(job, fake_pipeline.FlyJob)
@@ -564,6 +580,7 @@ def test_job_from_dialog_builds_the_frozen_flyjob(fake_pipeline):
     assert (job.target_type, job.presets, job.duration, job.fps, job.loop) == ("galaxy", ["social_vertical"], 6.0, 25, "pingpong")
     assert (job.star_quality, job.dynamic, job.video, job.out_dir, job.icc) == ("medium", "hdr", True, "/x", b"icc")
     assert job.distance is None and job.detections is None
+    assert (job.music_path, job.music_fade) == ("/m/a.mp3", False)
 
 
 def test_job_from_dialog_splits_stars_when_only_starless_given(fake_pipeline):

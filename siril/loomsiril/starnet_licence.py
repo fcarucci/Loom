@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["STARNET_DOCS_URL", "STARNET_LICENCE_REV", "accepted", "ask", "check", "licence_text", "require"]
+__all__ = ["display_text", "STARNET_DOCS_URL", "STARNET_LICENCE_REV", "accepted", "ask", "check", "licence_text", "require"]
 
 #: The licence revision in the StarNet2 zip (LICENSE.txt). A new revision asks for acceptance again.
 STARNET_LICENCE_REV = "2026-09-07"
@@ -45,17 +45,24 @@ def accepted(values: Mapping[str, Any]) -> bool:
 def require(values: Mapping[str, Any]) -> None:
     """Raise ValueError (shown in a box) unless the StarNet licence is accepted: StarNet mode stays off without it."""
     if not accepted(values):
-        raise ValueError("StarNet needs its licence accepted first: choose Run StarNet in the dialog and accept it.")
+        raise ValueError("StarNet needs its licence accepted first: choose StarNet2 in the dialog and accept it.")
 
 
-def check(parent: Any, accepted_rev: Optional[str], binary: Any) -> Optional[str]:
+def display_text(binary: Any) -> str:
+    """The text the licence window shows: the licence file (a disk read: call it off the Tk thread) or a pointer to it."""
+    return licence_text(binary) or (
+        f"{LICENCE_FILE} was not found next to the StarNet2 binary. Read the licence at {STARNET_DOCS_URL} "
+        "before you accept.")
+
+
+def check(parent: Any, accepted_rev: Optional[str], binary: Any, text: Optional[str] = None) -> Optional[str]:
     """The licence revision for a StarNet run: the saved one when it is current, else asked now.
 
     Returns None when the user declines; StarNet mode then stays off (a box says so).
     """
     if accepted_rev == STARNET_LICENCE_REV:
         return accepted_rev
-    rev = ask(parent, binary)
+    rev = ask(parent, binary) if text is None else ask(parent, binary, text)
     if rev is None:
         from tkinter import messagebox
 
@@ -63,7 +70,7 @@ def check(parent: Any, accepted_rev: Optional[str], binary: Any) -> Optional[str
     return rev
 
 
-def ask(parent: Any, binary: Any) -> Optional[str]:
+def ask(parent: Any, binary: Any, text: Optional[str] = None) -> Optional[str]:
     """A modal window with the full licence and an acceptance tick box. Returns the accepted revision, or None.
 
     Accept stays disabled until the box is ticked; Decline, the close button or closing the window return None.
@@ -71,9 +78,8 @@ def ask(parent: Any, binary: Any) -> Optional[str]:
     import tkinter as tk
     from tkinter import ttk
 
-    text = licence_text(binary) or (
-        f"{LICENCE_FILE} was not found next to the StarNet2 binary. Read the licence at {STARNET_DOCS_URL} "
-        "before you accept.")
+    if text is None:
+        text = display_text(binary)
     result: dict[str, Optional[str]] = {"rev": None}
     win = tk.Toplevel(parent)
     win.title("StarNet2 licence")

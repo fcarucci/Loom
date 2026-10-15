@@ -183,7 +183,10 @@ def test_model_prefers_resources_then_beside_exe(tmp_path: Path) -> None:
     assert sl.starless_model_path(exe, "linux") == str(beside)
 
 
-def test_missing_model_raises(tmp_path: Path) -> None:
+def test_missing_model_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Hermetic: the system-wide fallback (/Applications/SyQonStarless.app) exists on machines that have SyQon
+    # installed, so it is pointed at a path that cannot exist.
+    monkeypatch.setattr(sl, "_STARLESS_MODEL_FALLBACK", str(tmp_path / "no-such-app" / "axiom3.mlmodelc"))
     exe = make_fake(tmp_path / "bin", "SyQonStarless", write_files={})
     with pytest.raises(sl.ModelNotFound, match="SyQon Starless model not found"):
         sl.starless(exe, _ctx(tmp_path), _plate(tmp_path, _synthetic(1)), tmp_path / "out.fits")

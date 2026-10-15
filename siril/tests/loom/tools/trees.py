@@ -105,6 +105,8 @@ class FakeProber:
             return self._answers[spec.id]
         if spec.id == "rcastro":
             return ProbeResult(returncode=0, stdout=json.dumps(RC_ASTRO_LICENSED))
+        if spec.id == "starnet2":
+            return ProbeResult(returncode=0, stdout="starnet2 version: 2.6.2\n")
         return ProbeResult(returncode=0, stdout=f"{spec.id} 1.0\n")
 
 

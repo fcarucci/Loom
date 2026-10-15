@@ -21,14 +21,16 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 import numpy as np
 
-from loomsiril import core, io_fits, io_tiff, presets
+from loomsiril import core, fly_options, io_fits, io_tiff, presets
 from loomsiril import wcs as wcs_mod
+from loomsiril.starnet_version import starnet_version_problem
 from loomsiril.types import Detection
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; the pipeline is imported lazily (E6 may not be merged yet)
@@ -52,6 +54,7 @@ __all__ = [
     "save_options",
     "split_stars",
     "starnet_args",
+    "header_object",
     "target_from_header",
     "top_down_header",
     "top_down_wcs",
@@ -76,10 +79,23 @@ OPTIONS_NAME = "loomsiril-fly.json"
 
 #: Dialog keys that are kept between runs (never arrays, never files). ``starnet_licence`` is the licence revision the
 #: user accepted (see loomsiril.starnet_licence); it is remembered so the acceptance is asked once per revision.
+#: ``orientation`` is not kept: the dialog derives it from the image (a portrait image defaults to Vertical).
 OPTION_KEYS: tuple[str, ...] = (
     "target_type", "distance", "presets", "duration", "fps", "loop", "star_quality", "dynamic",
-    "orientation", "gaia", "video", "out_dir", "object_name", "starnet_licence",
+    "gaia", "video", "out_dir", "object_name", "starnet_licence", "star_tool",
+    "mode", "image_path", "starless_path", "stars_path", "last_folder", "music_path", "music_fade",
+    "format", "quality", "ffmpeg_path", "ms_per_mp",
+    "logo_path", "logo_place", "logo_opacity", "logo_delay",      # the logo layer (loomsiril.logo); opacity in percent
+    "sections",                                               # the ids of the Advanced sections left open (a list)
+    *fly_options.saved_keys(),                                # Stars and motion and HDR (loomsiril.fly_options)
 )
+
+#: The remembered file paths and the Browse... folder: text only, and an empty one is never written (an empty Image
+#: file box means "the image open in Siril", not a path to remember).
+PATH_KEYS: tuple[str, ...] = ("image_path", "starless_path", "stars_path", "last_folder", "music_path", "ffmpeg_path", "logo_path")
+
+#: Guards the read-modify-write of the options file (the dialog's autosave thread and the final save share it).
+_OPTIONS_LOCK = threading.Lock()
 
 
 class StarnetError(RuntimeError):
@@ -174,6 +190,14 @@ def top_down_header(header: Mapping[str, Any], height: int) -> dict[str, Any]:
     return out
 
 
+def header_object(header: Mapping[str, Any]) -> str:
+    """The image's OBJECT keyword (``FlyThrough.headerObject``; Siril has no XISF property), quotes and blanks off, or ""."""
+    for key, value in header.items():
+        if str(key).strip().upper() == "OBJECT" and value is not None:
+            return str(value).strip().strip("'").strip()
+    return ""
+
+
 def target_from_header(header: Mapping[str, Any]) -> Optional[dict[str, float]]:
     """The header centre ``{ra, dec}`` (presets.header_centre, Fly.headerCentre), or None. Row order does not matter."""
     return presets.header_centre(header)
@@ -257,7 +281,9 @@ def run_starnet(binary: Any, image_planes: Sequence[np.ndarray], tmp_dir: Any = 
     if tmp_dir is None:
         with tempfile.TemporaryDirectory(prefix="loomsiril-starnet-") as tmp:
             return run_starnet(binary, image_planes, tmp, timeout)
-    starnet_version(binary)                                     # a clear error first, before any work is done
+    problem = starnet_version_problem(starnet_version(binary))  # a clear error first, before any work is done
+    if problem:
+        raise StarnetError(problem)
     tmp = Path(os.fspath(tmp_dir)).resolve()
     tmp.mkdir(parents=True, exist_ok=True)
     inp, out = tmp / "starnet_in.fits", tmp / "starnet_out.fits"
@@ -335,13 +361,31 @@ def bridge_image(pixeldata: Any, header: Mapping[str, Any], psf_stars: Optional[
     )
 
 
+def _given_distance(values: Mapping[str, Any]) -> dict[str, Any]:
+    """The FlyJob's distance fields: the typed distance, else the one the dialog found and showed (``found_distance``,
+    with its source), so the render uses that value; empty (the job looks it up) when neither is there."""
+    typed = values.get("distance")
+    if typed is None and values.get("found_distance") is not None:
+        return {"distance": float(values["found_distance"]), "distance_source": values.get("found_source") or "star",
+                "distance_label": values.get("found_label") or ""}
+    return {"distance": typed}
+
+
+def _logo_fields(values: Mapping[str, Any]) -> dict[str, Any]:
+    """The FlyJob's logo fields from the dialog values (``logo_opacity`` is the slider's percent, the job's a fraction)."""
+    from loomsiril.logo import logo_settings
+
+    s = logo_settings(values)
+    return {"logo_path": s["path"], "logo_place": s["place"], "logo_opacity": s["opacity"], "logo_delay": s["delay"]}
+
+
 def job_from_dialog(values: Mapping[str, Any], planes: Sequence[np.ndarray], header: Mapping[str, Any],
                     icc: Optional[bytes]) -> "FlyJob":
     """The pipeline's FlyJob from the dialog values.
 
     ``values`` carries ``starless`` (required; a list of top-down planes), optionally ``stars`` (else derived with
     split_stars from ``planes``), ``detections``, and the dialog keys (target, target_type, distance, gaia, presets,
-    duration, fps, loop, orientation, star_quality, quality, dynamic, video, object_name, fwhm, options, out_dir).
+    duration, fps, loop, orientation, star_quality, quality, dynamic, video, music_path, music_fade, object_name, fwhm, options, out_dir).
     ``planes`` is the top-down image; ``header`` is the top-down header (see :func:`top_down_header`).
     """
     from loomsiril.pipeline import FlyJob  # lazy: the pipeline is merged separately (E6)
@@ -361,7 +405,7 @@ def job_from_dialog(values: Mapping[str, Any], planes: Sequence[np.ndarray], hea
         wcs=wcs,
         target=values.get("target") or target_from_header(header),
         target_type=values.get("target_type", "nebula"),
-        distance=values.get("distance"),
+        **_given_distance(values),
         gaia=values.get("gaia", "cache"),
         presets=list(values.get("presets") or ["youtube_1080"]),
         duration=float(values.get("duration", 8.0)),
@@ -370,14 +414,19 @@ def job_from_dialog(values: Mapping[str, Any], planes: Sequence[np.ndarray], hea
         orientation=values.get("orientation", "landscape"),
         star_quality=values.get("star_quality", "high"),
         quality=values.get("quality", "high"),
+        format=values.get("format") or None,
+        ffmpeg=os.path.expanduser(str(values.get("ffmpeg_path") or "").strip()) or None,
         dynamic=values.get("dynamic", "sdr"),
         video=bool(values.get("video", False)),
+        music_path=str(values.get("music_path") or "").strip() if values.get("video") else "",
+        music_fade=bool(values.get("music_fade", True)),
         icc=icc,
         detections=values.get("detections"),
         object_name=values.get("object_name", ""),
         fwhm=values.get("fwhm"),
-        options=dict(values.get("options") or {}),
+        options={**fly_options.options_from_values(values), **dict(values.get("options") or {})},
         out_dir=values.get("out_dir", "."),
+        **_logo_fields(values),
     )
 
 
@@ -387,15 +436,23 @@ def options_path(config_dir: Any) -> Path:
 
 
 def save_options(values: Mapping[str, Any], config_dir: Any) -> Path:
-    """Write the non-array dialog values as JSON (atomic: a .part file renamed into place). Returns the path."""
+    """Write the non-array dialog values as JSON (atomic: a .part file renamed into place). Returns the path.
+
+    The values are merged over what the file holds, so a partial save keeps the other keys. A path key (PATH_KEYS) that
+    is empty is removed from the file: an empty box is not a remembered path. Safe to call from several threads."""
     import json
 
     path = options_path(config_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {k: values[k] for k in OPTION_KEYS if k in values}
-    part = path.with_name(path.name + ".part")
-    part.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(part, path)
+    with _OPTIONS_LOCK:
+        data = load_options(config_dir)
+        data.update({k: values[k] for k in OPTION_KEYS if k in values})
+        for key in PATH_KEYS:
+            if not str(data.get(key) or "").strip():
+                data.pop(key, None)
+        part = path.with_name(path.name + ".part")
+        part.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(part, path)
     return path
 
 
@@ -409,4 +466,7 @@ def load_options(config_dir: Any) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: data[k] for k in OPTION_KEYS if k in data}
+    out = {k: data[k] for k in OPTION_KEYS if k in data and (k not in PATH_KEYS or isinstance(data[k], str))}
+    if "sections" in out and not (isinstance(out["sections"], list) and all(isinstance(x, str) for x in out["sections"])):
+        del out["sections"]                                   # the open Advanced sections: a list of ids, else none
+    return out

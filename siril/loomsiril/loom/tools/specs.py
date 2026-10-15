@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
+from loomsiril.starnet_version import starnet_version_problem
+
 PLATFORMS: tuple[str, ...] = ("darwin", "win32", "linux")
 
 
@@ -92,6 +94,16 @@ def exit_zero_with_output(result: ProbeResult) -> Verdict:
     if not first:
         return refused("the tool printed no version")
     return passed(first, "exit 0")
+
+
+def starnet_check(result: ProbeResult) -> Verdict:
+    """Pass when StarNet2 answered ``--version`` with a version at or above MIN_STARNET_VERSION (older builds cannot
+    read FITS); otherwise the refusal carries the warning the dialog, preflight and Fly-Through show."""
+    verdict = exit_zero_with_output(result)
+    if not verdict.passed:
+        return verdict
+    problem = starnet_version_problem(verdict.version)
+    return refused(problem) if problem else verdict
 
 
 UNLICENSED_RC_ASTRO = "RC-Astro CLI is not licensed on this computer"
@@ -218,7 +230,8 @@ TOOLS: dict[str, ToolSpec] = {
             "linux": ("starnet2", "starnet++"),
         },
         env_var="LOOMSIRIL_STARNET",
-        probe=Probe(argv=("--version",), timeout=20.0, check=exit_zero_with_output),
+        probe=Probe(argv=("--version",), timeout=20.0, check=starnet_check),
+        always_probe=True,   # a remembered pre-2.6.2 record must not outlive the version rule
     ),
     "graxpert-ai": ToolSpec(
         id="graxpert-ai",

@@ -1,6 +1,6 @@
 # Parity: Loom Fly-Through (JavaScript) -> loomsiril (Python)
 
-Source: Loom v0.4.1 (https://github.com/fcarucci/Loom), `script/FlyThrough.js`, `script/lib/Fly.js`,
+Source: Loom v0.4.1, plus the 0.4.2 name resolver (commit a8252c3; unchanged up to v0.5.0) (https://github.com/fcarucci/Loom), `script/FlyThrough.js`, `script/lib/Fly.js`,
 `script/lib/Render.js`, `script/lib/Sky.js`, read-only. Oracle: Loom's `script/selftest.js` groups and the golden
 numbers recorded by `tools/record_oracle.js` (one recorder per module in `tools/oracle/`) into `tests/oracle/*.json`;
 the Python tests replay them at the JS tolerances.
@@ -719,7 +719,7 @@ Python equivalent, D = not ported (reason given).
 | Render.frame | frame.frame(sc, t, opts, out_w, out_h, crop) | P | test_frame.py::test_frame_matches_js_oracle, ::test_frame_zero_equals_screen_of_scene, ::test_frame_zero_equals_screen_of_scene_three_channels, ::test_frame_pq_matches_js_oracle (E9a: PQ frames at t 0, 1) |
 | Render.frameImage | frame.frame_image (without the logo; output transform when set) | P | test_frame.py::test_frame_image_without_output_is_the_composite |
 | Render.sceneFor | frame.scene_for (turned copy kept in sc.cache["turned"]) | P | test_frame.py::test_scene_for_turns_once_and_keeps_the_turned_copy |
-| Render.logoLayer, Render.addLogo, Fly.logoRect, logoFade (the logo) | not ported: status D, plan 7.4 | D | - |
+| Render.logoLayer, Render.addLogo, Fly.logoRect, logoFade (the logo) | logo.logo_layer, logo.add_logo, logo.logo_rect, logo.logo_fade; frame_image paints it before the output transform | P | test_logo.py (oracle logo.json), ::test_frame_image_paints_the_logo_where_it_goes_and_nowhere_else |
 
 ### Defaults of RenderOptions
 
@@ -844,8 +844,11 @@ Status: P = ported, V = vectorised port, R = replaced by a Python equivalent, D 
 | Fly.defaultTravel / clampTravel | parallax.default_travel / clamp_travel (E1a) | P | test_pipeline.py::test_portrait_turns_a_landscape_preset_into_its_own_folder |
 | Dialog defaults (1282-1380) | pipeline.DIALOG_DEFAULTS, cli defaults | P | test_cli.py::test_argument_errors_exit_2 |
 | FlyThrough.paintLayer (1-bit preview bitmap) | -- | D: preview painting, not part of a frame file | -- |
-| FlyThrough.readLogo / Render.logoLayer | -- | D: logo overlay, a PixInsight file read (plan 7.7 logo not in v1) | -- |
-| FlyThrough.draftOptions / draft preview / measureSpeed / estimateMs | -- | D: the draft preview (plan 7.2) | -- |
+| FlyThrough.readLogo (FlyThrough.js:198) | logo.read_logo (PNG, TIFF, FITS; read once, off the Tk thread) | R (a pure-Python reader instead of PixInsight's file formats) | test_logo.py::test_png_*, test_tiff_*, test_fits_is_read_top_down |
+| Render.logoLayer / Render.addLogo / Fly.logoRect / Fly.logoFade (Render.js:579, 629; Fly.js:1226, 1220) | logo.logo_layer / logo.add_logo / logo.logo_rect / logo.logo_fade | P | test_logo.py::test_logo_layer_matches_the_js, test_add_logo_matches_the_js, test_logo_rect_matches_the_js, test_logo_fade_matches_the_js (tests/oracle/logo.json) |
+| FlyThrough.draftOptions / draft preview | draft.py (the Draft button) | P (own module, tested in test_draft.py) | test_draft.py |
+| FlyThrough.estimateMs (FlyThrough.js:719) / refreshEstimate (2006) | fly_video.estimate_ms / fly_video.estimate_text | P | test_fly_video.py::test_estimate_ms_is_frames_times_megapixels_times_speed, test_estimate_text_rounds_like_the_js_and_is_blank_without_a_measurement |
+| FlyThrough.measureSpeed (FlyThrough.js:707) | pipeline.Result.ms_per_mp (the speed of the frames a render drew, kept as the `ms_per_mp` option) | R (no separate 1920x1080 timing frame) | test_fly_video.py::test_a_render_measures_its_speed_for_the_estimate |
 | FlyThrough.solveUnsolved / solveByHints / Sky.solveBlind | -- | D: plate solving (plan 7.5); the CLI takes the WCS as a file | -- |
 | FlyThrough.stageOf (JS progress wrapper) | progress callback argument of pipeline.run | R | test_pipeline.py::test_cancel_after_two_frames_keeps_them_and_makes_no_video |
 
@@ -1235,6 +1238,134 @@ Status: P = ported, V = vectorised port, R = replaced by a Python equivalent, D 
 | Fly.spriteOwnership | `assign.sprite_ownership` (5 params, JS-shaped, kept) | P | test_sprite_ownership_matches_js |
 
 
+## Task N: skyname.py (Loom 0.4.2: objects outside NGC/IC found by name, online)
+
+Port of commit a8252c3 (`Fly.js`, `Sky.js`, `FlyThrough.js`). `git diff v0.4.1 v0.4.4` of the Fly-Through files shows
+nothing else changed. The Siril port has no NGC/IC catalogue, so the names go to CDS Sesame only (it knows NGC and IC
+too); `named_in_field` keeps a `local` hook for the catalogue-first step. Tests: `tests/test_skyname.py` (the JS
+selftest checks with the same inputs and values) and `tests/test_fly_names.py` (the dialog, no window, no network).
+The lookup was only ever run against a stub, never against the live service from the suite (the suite blocks sockets).
+
+| JS | Python | Status | Test |
+|---|---|---|---|
+| Fly.NAME_RESOLVER_URL | loomsiril.skyname.NAME_RESOLVER_URL | P | tests/test_skyname.py::test_the_url_is_sesames_and_the_name_is_encoded |
+| Fly.NAME_QUERY_MAX | loomsiril.skyname.NAME_QUERY_MAX | P | tests/test_skyname.py::test_name_queries_folders_follow_the_file_and_the_cap_holds |
+| Fly.parseSesame | loomsiril.skyname.parse_sesame (JS parseFloat prefix rule) | P | tests/test_skyname.py::test_parse_sesame_id_and_position, test_parse_sesame_an_unknown_name |
+| Fly.nameQueries | loomsiril.skyname.name_queries | P | tests/test_skyname.py::test_name_queries_catalogue_like_word_first_then_the_names_words |
+| Fly.viewIdFromPath | loomsiril.skyname.view_id_from_path (no caller: Siril views have no ids) | P | tests/test_skyname.py::test_view_id_from_path |
+| Fly.imageTitle | loomsiril.skyname.image_title (no caller: Siril has no Image<number> views; the dialog and progress window title use the file name, fly_model.window_title) | P | tests/test_skyname.py::test_image_title_the_files_name_for_image_number_else_the_view_id |
+| Sky.fetchText (the `what` label) | loomsiril.skyname.fetch_text(url, what): urllib, 8 s limit, None on any failure | R | tests/test_skyname.py::test_fetch_text_returns_none_on_any_failure |
+| Sky.resolvedNames | loomsiril.skyname.resolved_names (a failed request is NOT kept, unlike the JS) | R | tests/test_skyname.py::test_offline_is_no_answer_and_is_not_kept, test_resolve_name_a_name_is_asked_once_the_answer_kept |
+| Sky.resolveName | loomsiril.skyname.resolve_name | P | tests/test_skyname.py::test_resolve_name_unknown_is_none_and_the_miss_is_kept |
+| Sky.namedInField | loomsiril.skyname.named_in_field (optional `local` catalogue hook) | P | tests/test_skyname.py::test_named_in_field_the_resolved_object_in_the_field, test_named_in_field_one_outside_the_field_is_not_the_target, test_named_in_field_names_the_target_from_the_users_path_not_the_working_copys |
+| Sky.field | loomsiril.skyname.sky_field(wcs, width, height) | P | tests/test_skyname.py::test_sky_field_is_the_middle_and_the_farthest_corner |
+| FlyThrough.headerObject | loomsiril.siril_bridge.header_object (the OBJECT keyword; no XISF property in Siril) | R | tests/test_skyname.py::test_bridge_header_object |
+| FlyThrough.identify (`choices.imagePath`, target = typed or picked or named) | loomsiril.fly_dialog.LoomFlyDialog._start_names / _on_named (a hit becomes the target RA, Dec only while the boxes are untouched and Object name is empty or names that same object) | R | tests/test_fly_names.py::test_opening_with_a_named_file_asks_a_worker_and_fills_an_empty_object_name |
+| (Object box, `lookUpObject` + `Sky.resolveName`) | loomsiril.fly_dialog.LoomFlyDialog._find_typed, skyname.check_typed (Siril also refuses a name outside the solved field) | R | tests/test_fly_names.py::test_find_resolves_a_typed_name_inside_the_field_and_fills_the_target, test_find_refuses_a_name_outside_the_field_with_the_reason |
+| (new, no JS) | loomsiril.skyname.find_named, NameContext, NameResult, check_typed; fly_model.name_sources, found_note, outside_note, window_title, OFFLINE_NOTE | S | tests/test_skyname.py, tests/test_fly_names.py |
+
+Distance is unchanged: it is the Gaia-based automatic one (the target's cluster, else the bright star that lights it)
+that Loom also takes from `id.target`; the found object only moves the target RA, Dec the distance is looked up round
+(`FlyThrough.findDistance`), as in Loom. No catalogue distance is invented.
+
+## The distance shown in the dialog (Siril-only)
+
+Loom shows the distance after Analyse (`FlyThrough.showDistance`, `describeDistance`); the Siril dialog finds it as
+soon as the target is known and shows it in a grey line and as the Distance box's placeholder. The lookup is the
+render's own (`FlyThrough.findDistance`), so both agree. Tested with a stubbed Gaia (`tests/test_fly_distance.py`).
+
+Distance parity with Loom on a real field (Sh2-132): `tools/oracle/distance.js` runs `Fly.findCluster`,
+`Fly.clusterSamples`, `Fly.illuminatorDistance`, `Fly.gaiaOnlineUrl` and `Sky.field`'s rule on the frozen Gaia rows
+`tests/fixtures/sh2-132-gaia.json.gz` for the image centre and the Sesame position and records `tests/oracle/distance.json`;
+`tests/test_distance_parity.py` replays it through `fly_distance.resolve` / `pipeline._find_distance` (query URLs byte
+for byte, the cone radii, the limits, cluster and lighting-star results, the counts the failure line prints). When
+nothing is found, `pipeline.search_text` words what was searched (Siril-only).
+
+| JS | Python | Status | Test |
+|---|---|---|---|
+| FlyThrough.findDistance | loomsiril.pipeline._find_distance (records and label; `_resolve_distance` keeps its 3-tuple), DistanceFound | P | tests/test_pipeline.py::test_distance_cluster_found_is_used, tests/test_fly_distance.py::test_the_cluster_comes_from_the_same_lookup_the_render_uses |
+| FlyThrough.describeDistance | loomsiril.pipeline.distance_label, distance_text ("cluster of 37 stars, Gaia", "illuminating star G 7.0, Gaia online", "galaxy (fixed backdrop)", "typed") | R | tests/test_fly_distance.py::test_the_render_uses_the_dialogs_distance_and_names_its_source |
+| FlyThrough.showDistance (`distanceEdit`, `distanceNote`) | loomsiril.fly_distance.resolve, immediate, parse_typed, DistanceResult, CACHE_EMPTY_NOTE, DEFAULT_FIELD_RADIUS (no JS: the dialog resolves it on a worker; cache-empty falls back to online) | R | tests/test_fly_distance.py |
+| (Distance box and note) | loomsiril.fly_model.distance_line, distance_hint, FINDING_DISTANCE; fly_dialog.LoomFlyDialog._start_distance, _apply_distance, _found_distance; siril_bridge._given_distance (`found_distance` reaches the job) | R | tests/test_fly_distance.py::test_draft_and_render_options_carry_the_distance_the_dialog_found |
+
+Unlike Loom, a Gaia "cache" with no data for the field asks Gaia online once and says so; the box is never filled in
+(the placeholder shows the value), so an empty box stays "auto".
+
+## Video details (fly_video.py; Fly-Through parity job)
+
+The Video group of the PixInsight dialog (`FlyThrough.js` 1473-1523) and the Fly.js / Render.js code behind it. Tests:
+`tests/test_fly_video.py` (functions, fake ffmpeg script, no real encode) and `tests/test_fly_video_dialog.py` (the section on
+fake widgets). Nothing here was run inside Siril, on a real display, or with a real ffmpeg encode.
+
+| JS | Python | Status | Test |
+|---|---|---|---|
+| Fly.availableFormats via Render.ffmpegEncoders (FlyThrough.js:940, 1512-1516) | fly_video.probe (`-version` and `-encoders` once per binary, cached by real path, size and mtime), fly_video.formats_for, fly_video.FfmpegProbe | R (a cache the JS lacks; the format filter is encode.available_formats) | test_fly_video.py::test_probe_lists_what_this_ffmpeg_can_encode, ::test_probe_runs_encoders_once_per_binary_and_again_when_the_binary_changes, ::test_probe_of_a_binary_that_is_not_ffmpeg_or_missing_offers_nothing |
+| Render.isWorkingFfmpeg (Render.js:1405-1410), browseFfmpeg (FlyThrough.js:1495) | fly_video.validate_ffmpeg (with the reason), fly_checks.validate kind `ffmpeg` (worker) | R (a typed path, checked on the validation worker, not an OpenFileDialog) | test_fly_video.py::test_validate_runs_version_and_says_why_not, test_fly_video_dialog.py::test_the_validation_worker_runs_the_typed_ffmpeg |
+| FlyThrough.refreshFormats (1512-1523), Fly.defaultFormat | fly_video.choose_format, fly_video.widest_side, fly_video.format_label | P (extra: a saved or chosen format is kept while offered; the JS always resets to the default) | test_fly_video.py::test_choose_format_keeps_the_saved_one_else_the_default, ::test_widest_side_follows_the_orientation |
+| FlyThrough.encodeArgs (FlyThrough.js:250-259: `opts.format \|\| (hdr ? "hevc" : "h264")`, `opts.quality \|\| "high"`) | fly_video.encode_format, fly_video.quality_id, pipeline._encode_args, FlyJob.format | P (H.264 is never used for HDR; a format this ffmpeg cannot encode falls back with a note: Siril-only) | test_fly_video.py::test_the_encode_format_is_opts_format_or_h264_and_hevc_for_hdr, ::test_a_render_encodes_with_the_chosen_format_and_quality, ::test_a_format_this_ffmpeg_cannot_encode_falls_back_with_a_note |
+| qualityCombo High / Standard (1484-1485) | fly_video.QUALITIES | P | test_fly_video.py::test_quality_ids |
+| FlyThrough.estimateMs (719) | fly_video.estimate_ms, fly_video.ESTIMATE_HDR_FACTOR | P | test_fly_video.py::test_estimate_ms_is_frames_times_megapixels_times_speed |
+| FlyThrough.refreshEstimate (2006-2012) | fly_video.estimate_text | P (empty until a speed is measured, as the JS) | test_fly_video.py::test_estimate_text_rounds_like_the_js_and_is_blank_without_a_measurement |
+| FlyThrough.measureSpeed (707) | fly_video.ms_per_mp, pipeline.Result.ms_per_mp, loom_fly_through.remember_speed | R (the speed of the frames the last render drew, SDR-normalised, kept as `ms_per_mp`; no 1920x1080 timing frame) | test_fly_video.py::test_ms_per_mp, ::test_a_render_measures_its_speed_for_the_estimate, test_fly_video_dialog.py::test_the_render_speed_is_kept_and_starts_the_next_estimate |
+| FlyThrough.clearFrames (281) | fly_video.clear_frames (calls pipeline.clear_frames; none for a missing folder) | P | test_fly_video.py::test_clear_frames_deletes_only_loom_frames_and_records_and_counts_them, ::test_clear_frames_on_no_folder_is_zero |
+| clearRenderedFrames texts (1718-1730) | fly_video.confirm_text, counted_text, cleared_text, nothing_text | P | test_fly_video.py::test_the_clear_texts, test_fly_video_dialog.py::test_clear_rendered_frames_confirms_deletes_only_ours_and_counts |
+| buildVideo controls and tooltips (1473-1492) | fly_dialog.LoomFlyDialog._build_video, fly_model groups `encode`, FlyDialogModel.ffmpeg_ok, ffmpeg_path | R (a section of the Siril dialog; hover tips adapted from the JS tooltips) | test_fly_video_dialog.py (section, formats, greying, ffmpeg checks, tips) |
+| (none) | fly_video.forget_probes | extra: empties the probe cache (the suite) | test_fly_video.py (autouse fixture) |
+
+## Logo layer (logo.py; Fly-Through parity job)
+
+The Logo box of the PixInsight dialog (`FlyThrough.js` 1399-1426) and the Fly.js / Render.js code behind it. Tests:
+`tests/test_logo.py` (maths against `tests/oracle/logo.json`, readers on synthetic PNG/TIFF/FITS, frame, signatures, Draft)
+and the logo tests in `tests/test_siril_script.py` (the section on fake widgets, and real Tk where a display exists). Nothing
+here was run inside Siril, with a real ffmpeg encode, or on a real display (the hover tips and the look were not seen).
+
+| JS | Python | Status | Test |
+|---|---|---|---|
+| Fly.LOGO_PLACES, LOGO_SIZE, LOGO_MARGIN (Fly.js:1215-1217) | logo.LOGO_PLACES, LOGO_SIZE, LOGO_MARGIN | P | test_logo.py::test_the_constants_are_the_js |
+| Fly.logoFade (1220) | logo.logo_fade | P | test_logo.py::test_logo_fade_matches_the_js |
+| Fly.logoRect (1226) | logo.logo_rect | P | test_logo.py::test_logo_rect_matches_the_js |
+| Render.logoLayer, Render.fitPlane (Render.js:575-598) | logo.logo_layer (fit_plane from resample) | P | test_logo.py::test_logo_layer_matches_the_js |
+| Render.addLogo (628-641), its call in Render.frameImage (1020) | logo.add_logo, frame.frame_image (before the output transform) | P (the rectangle is clipped to the frame; the JS never meets one outside) | test_logo.py::test_add_logo_matches_the_js, ::test_the_logo_goes_in_before_the_output_transform |
+| FlyThrough.readLogo (197-212: any PixInsight file format) | logo.read_logo (PNG, TIFF, FITS by content) | R (JPEG and other formats are refused with a message; PixInsight reads whatever it has a reader for) | test_logo.py::test_png_*, ::test_tiff_*, ::test_fits_is_read_top_down, ::test_the_errors_say_what_is_wrong |
+| FlyThrough.presetJob (138), draftOptions (528) | pipeline._preset_job, draft.render_draft (logo layer at the frame or draft size) | P | test_logo.py::test_the_final_frames_have_the_logo_and_reuse_follows_it, ::test_the_draft_has_the_logo_at_its_size_and_fades_it_in |
+| Fly.frameSignature (logoPath, logoPlace, logoOpacity, logoDelay in; logoImage out) | logo.attach (logoStamp: path, mtime, size), logo.file_stamp, draft.draft_signature | R (stricter: the file's mtime and size key it; with placement Off no logo value is in the options, signature or draft key) | test_logo.py::test_the_frame_signature_follows_the_logo, ::test_the_draft_key_follows_the_logo; test_siril_script.py::test_with_placement_off_no_logo_value_keys_the_draft_or_the_frames |
+| FlyThrough.useLogo (2137) | fly_dialog.LoomFlyDialog._browse_logo | P | test_siril_script.py::test_browsing_a_logo_places_it_bottom_right_when_the_placement_was_off |
+| buildLogo controls and tooltips (1399-1426) | fly_dialog.LoomFlyDialog._build_logo, fly_model groups `logo` and `logo_look`, FlyDialogModel.logo_note, fly_checks.check_logo (kind `logo`, on the worker), siril_bridge `logo_*` keys, FlyJob.logo_*, logo.logo_settings, place_id, place_label | R (a section of the Siril dialog; hover tips adapted from the JS tooltips; the file is read on the validation worker) | test_siril_script.py logo tests |
+| (none) | logo.attach, logo.layer_for, logo.is_on | extra: the options' logo read once, its layer for a frame size, and whether one is drawn | test_logo.py |
+
+## Stars and motion and HDR (fly_options.py, fly_option_rows.py, fly_tooltip.py; Fly-Through parity job)
+
+The Stars and motion and HDR rows of the PixInsight dialog (`FlyThrough.js` `buildMotion` 1281-1338 and the HDR part of `buildOutput`
+1340-1400) as one table, the rows built from it, and a hover tip. Tests: `tests/test_fly_options.py` (table, parsing, engine
+defaults, job options, frame signature, Draft key, the JS constants and tooltips when the PixInsight sources are checked out),
+`tests/test_siril_script.py` (rows on fake widgets and real Tk where a display exists, greying and the grey reason in each row,
+typed and bad values, Reset to defaults, tips bound) and `tests/test_fly_sections.py` (the section API the rows use). Nothing here was
+run inside Siril, and the tips were never shown on a real display.
+
+| JS | Python | Status | Test |
+|---|---|---|---|
+| travelEdit, travelNote (1284-1289, 1913-1917), Fly.defaultTravel, clampTravel | fly_options.OPTIONS (`travel`), fly_options.travel_note, pipeline._render_opts (typed travel capped at 0.9 D) | R (empty means automatic, shown as "automatic: N pc", where PixInsight fills the box; not remembered, as in the JS) | test_fly_options.py::test_travel_note_names_the_cap_and_the_automatic_travel, ::test_a_typed_travel_above_the_cap_is_capped_and_the_note_is_true |
+| easingCombo (1290-1292) | fly_options.OPTIONS (`easing`) | P | test_fly_options.py::test_defaults_are_the_engines, ::test_parse_accepts |
+| growthEdit, Fly.GROWTH_DEFAULT (1293; Fly.js:240) | fly_options.OPTIONS (`growth`) | R (limited to 0 to 1; the JS takes any number) | test_fly_options.py::test_defaults_and_ranges_are_the_js, ::test_parse_rejects_naming_the_control |
+| nebulaSpin, Fly.BACKDROP_MOTION_DEFAULT (1294-1299; Fly.js:58) | fly_options.OPTIONS (`backdropMotion`) | R (greyed for a galaxy, where the JS leaves it on: its backdrop is fixed) | test_fly_options.py::test_defaults_and_ranges_are_the_js, ::test_nebula_motion_is_grey_for_a_galaxy |
+| brightCheck (1300-1302) | fly_options.OPTIONS (`brightening`) | P | test_fly_options.py::test_the_values_reach_the_renderer |
+| twinkleSpin, Fly.TWINKLE_DEFAULT (1303-1307; Fly.js:210) | fly_options.OPTIONS (`twinkle`) | P | test_fly_options.py::test_defaults_and_ranges_are_the_js |
+| saturationSlider, saturationLabel (1308-1315) | fly_options.OPTIONS (`starSaturation`), fly_option_rows (slider and its "100%" label) | P | test_fly_options.py::test_defaults_and_ranges_are_the_js, ::test_format_value |
+| bloomSpin (1316-1319) | fly_options.OPTIONS (`bloom`) | P | test_fly_options.py::test_defaults_and_ranges_are_the_js |
+| blurCheck (1320-1323) | fly_options.OPTIONS (`motionBlur`) | P | test_fly_options.py::test_the_values_reach_the_renderer |
+| peakSpin, Fly.HDR_PEAK_DEFAULT (1388-1391; Fly.js:1506) | fly_options.OPTIONS (`peak`) | P | test_fly_options.py::test_defaults_and_ranges_are_the_js |
+| starHdrCheck (1393-1397) | fly_options.OPTIONS (`starHdr`) | P | test_fly_options.py::test_the_values_reach_the_renderer |
+| transferCombos, Fly.HDR_DEFAULT_TRANSFER, presetOptions (1370-1380; Fly.js:1508; FlyThrough.js:225) | fly_options.OPTIONS (`hdrTransfer`, one per output size), fly_options.transfer_default, pipeline._preset_options (honours `hdrTransfer`) | P (the Siril renderer used each preset's default before this job) | test_fly_options.py::test_per_preset_transfer_reaches_the_preset_options, ::test_defaults_and_ranges_are_the_js |
+| refreshHdr (1462-1467) | fly_options.reason, fly_options.enabled, fly_options.Context, fly_model.FlyDialogModel (`opt:<key>` groups, `dynamic`, `target_type`) | R (greyed with a reason in the row, where the JS hides the transfer combos) | test_fly_options.py::test_hdr_controls_are_grey_in_sdr_with_a_reason, test_siril_script.py::test_every_greyed_row_shows_its_reason_and_clears_it_when_enabled |
+| tooltips (1289, 1297, 1306, 1312, 1318, 1323, 1391, 1396, 1378) | fly_options.Option.tooltip, fly_tooltip.Tooltip, fly_tooltip.DELAY_MS | R (the text is the JS's; Growth, Easing and Brighten, which have none in the JS, got one; shown by a small window under the pointer) | test_fly_options.py::test_tooltips_are_the_js_tooltips, test_siril_script.py::test_motion_and_hdr_rows_are_generated_from_the_table |
+| options() (1766-1790), optionControls (2043-2062) | fly_options.job_options, fly_options.options_from_values, fly_options.saved_keys, fly_options.load_values, siril_bridge.job_from_dialog, OPTION_KEYS | R (HDR-only values are left out in SDR; Travel is not remembered) | test_fly_options.py::test_job_options_in_sdr_leave_out_the_hdr_only_ones, ::test_job_from_dialog_carries_the_controls_into_the_job_options, ::test_the_saved_keys_are_all_kept_between_runs, ::test_load_values_falls_back_to_the_default_for_a_bad_saved_value |
+| Fly.frameSignature, draftOptions | presets.frame_signature, draft.draft_signature (`hdr_peak`, `hdr_transfer_*` are not in the draft's key: a draft is SDR) | P | test_fly_options.py::test_changing_a_value_changes_the_signature_and_an_equal_one_does_not, ::test_draft_key_follows_the_picture_options_only |
+| (none) | fly_options.OPTIONS, SECTIONS, Option, OptionError | extra: the table, its section titles, one control, the error a bad value raises (names the control) | test_fly_options.py::test_table_is_consistent |
+| (none) | fly_options.options_in, by_saved, defaults | extra: a section's controls, a control by its saved key, the defaults by saved key (Reset to defaults) | test_fly_options.py::test_table_is_consistent, ::test_load_values_falls_back_to_the_default_for_a_bad_saved_value |
+| (none) | fly_options.parse, shown, format_value, problems | extra: widget value to engine value, back, the text a control shows, the messages of every bad value | test_fly_options.py::test_parse_accepts, ::test_parse_rejects_naming_the_control, ::test_problems_names_every_bad_value_and_never_raises, ::test_format_value |
+| (none) | fly_option_rows.build, reset_section, update_notes | extra: the rows of a section from the table, its Reset to defaults, the grey note beside Travel | test_siril_script.py::test_motion_and_hdr_rows_are_generated_from_the_table, ::test_saved_values_come_back_and_reset_to_defaults_restores_them, ::test_travel_note_follows_the_distance_and_the_typed_travel |
+| (none) | fly_tooltip.Tooltip | extra: a hover tip bound to a widget (Tk has none); never raises | test_siril_script.py::test_motion_and_hdr_rows_are_generated_from_the_table (bindings run) |
+
 ## Not ported, and why
 
 1. **PixInsight-only accelerations** (`Render.bloom`/`composite`/`blend`/`starsToHeadroom`/`blurImage`/`box3Kernel`/
@@ -1243,18 +1374,20 @@ Status: P = ported, V = vectorised port, R = replaced by a Python equivalent, D 
    interpreter (`anyLit`, `reachTests`, `reachTest`, `darkReach`, `darkMaps`, `darkMap`, `darkRow`, `nearLight`,
    `patchReach`, `rayDistance`, `SKIP_DARK`) only skip zero contributions; a numpy bounds test does the same job.
    (`footprintPays` IS ported: it changes the result, see the E5 rows.)
-2. **PJSR user interface**: `FlyThrough.Dialog`, `Player`, `renderDraft`, `draftOptions`, `measureSpeed`,
-   `estimateMs`, `PREVIEW_EVERY`, `Render.dueFrame`, `paintLayer`, `still`, `STILL_LONG`, `describeTarget`,
+2. **PJSR user interface**: `FlyThrough.Dialog`, `Player`, `PREVIEW_EVERY`, `Render.dueFrame`, `paintLayer`, `still`, `STILL_LONG`, `describeTarget`,
    `blindObject`, `describeDistance`: the Siril script has its own small tkinter dialog
-   (`Loom/loom_fly_through.py`).
+   (`Loom/loom_fly_through.py`). Not in this list any more: `estimateMs` (`fly_video.estimate_ms`), `measureSpeed`
+   (replaced by the measured `ms_per_mp` of the last render: a documented deviation, see the Video details section) and
+   `renderDraft` / `draftOptions` (`draft.render_draft`, `draft.draft_spec`, `draft.draft_plan_for`; the draft's options come from
+   `pipeline._render_opts` with the dialog's values, SDR, 480 px: ported, with the draft's own signature and cache).
 3. **NGC/IC object lookup** (`Fly.parseNgcIc`, `OBJECT_ALIASES`, `OBJECT_STOPWORDS`, `OBJECT_MIN_SCORE`,
    `objectWords`, `levenshtein`, `nameScore`, `messierHits`, `nameHits`, `aliasHits`, `findObject`, `pickTarget`,
    `targetType`, `objectFromFileName`, `objectFromPath`, `FILE_NAME_SCORE`, `Sky.readNgcIc`, `NGC_IC_RELATIVE`,
    `NGC_IC_CANDIDATES`, `installDir`, `ngcIcMissingWarned`, `FlyThrough.identify`, `headerObject`, `findDistance`,
    `stageOf`): needs PixInsight's NGC-IC catalogue file. v1 takes `--target ra,dec` / `--target-pixel` (or the header
    centre) with `--type` and `--distance` or the Gaia cluster/illuminator finder.
-4. **Logo overlay** (`Fly.LOGO_PLACES`, `LOGO_SIZE`, `LOGO_MARGIN`, `logoFade`, `logoRect`, `Render.logoLayer`,
-   `addLogo`, `FlyThrough.readLogo`, `LOGO_SETTING`, `LOGO_PLACE_SETTING`): cosmetic, needs PNG-with-alpha reading.
+4. **Logo overlay**: ported since the Fly-Through parity job (`logo.py`: `read_logo`, `logo_layer`, `add_logo`, `logo_rect`, `logo_fade`; rows in the Task E5 and E6 tables above). The remembered file and placement
+   (`FlyThrough.LOGO_SETTING`, `FlyThrough.LOGO_PLACE_SETTING`) are the saved options `logo_path` and `logo_place`.
 5. **Image cache and settings** (`Fly.CACHE_FORMAT`, `hashKey`, `imageCacheKey`, `cacheToPrune`,
    `Render.packScene`, `unpackScene`, `Sky.writeArrays`, `readArrays`, `FlyThrough.CACHE_KEEP`, `cacheRoot`,
    `cacheDir`, `saveWork`, `loadWork`, `starsName`, `saveBuilt`, `loadBuilt`, `saveDraft`, `loadDraft`, `touch`,
