@@ -16,6 +16,14 @@ cd pixinsight && ci/release.sh <version> --key-dir <folder> [--push]
 
 Before running it, merge the work to `main` and describe it under `## [Unreleased]` in `CHANGELOG.md`.
 
+Standing rules:
+
+- Releases are ALWAYS made by the release script with `--push`: `cd pixinsight && ci/release.sh <version> --key-dir <folder> --push`. Never run it without `--push` and hand-push the tag or branch.
+- Make sure CI on `main` is green and the tree is clean on `main` BEFORE starting. The script pushes `main` and the tag at its end, and a tag push triggers the publishing run and cannot be taken back.
+- One `v*` tag releases both the PixInsight scripts and the Siril port.
+- If ssh to `github.com:22` is blocked, set `GIT_SSH_COMMAND='ssh -o Hostname=ssh.github.com -o Port=443'` for the script (ssh over 443).
+- The script's last push, to a remote named `github`, failing is harmless when `origin` is GitHub.
+
 It then:
 
 1. checks it is on a clean `main` and the tag is new;
