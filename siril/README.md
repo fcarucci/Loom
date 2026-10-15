@@ -456,6 +456,7 @@ Loom never bundles, downloads for users or redistributes it.
   biased high by star light), and a three-channel frame with an exactly-zero border of
   about a quarter of the width or more loses some stars near 5 sigma. See
   [docs/PARITY.md](docs/PARITY.md).
+- Star finding runs Siril's star finder (`findstar`); Loom keeps your star-finder focal length and pixel size, but its other settings (sigma, radius, roundness, profile, relax, amplitude range, convergence) are reset to Siril's defaults for the session.
 
 ## Performance
 
