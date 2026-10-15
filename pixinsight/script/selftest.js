@@ -22034,6 +22034,27 @@ function runPipeTests()
                                          show: function() { throw new Error( "shown" ); } } ),
                 true );
    } )();
+   } if ( testGroup( "osc.kindkey" ) ) {
+   ( function()
+   {
+      // A remembered kind choice is keyed by the filter model that detection
+      // uses: a brand and a size do not change the key, a blank filter keys on
+      // its path exactly as given.
+      check( "osc.kindkey: a branded, sized filter and its model share a key",
+             Util.oscKindKey( "Optolong Duo 2\"", "/m/a" ), Util.oscKindKey( "Duo", "/m/b" ) );
+      check( "osc.kindkey: the shared key is the model's", Util.oscKindKey( "Optolong Duo 2\"", "/m/a" ), "filter:duo" );
+      check( "osc.kindkey: a model with spaces and a size is keyed by its model",
+             Util.oscKindKey( "Antlia ALP-T Ha/OIII 5nm", "/m/a" ), "filter:alpthaoiii5nm" );
+      check( "osc.kindkey: a brand alone is kept", Util.oscKindKey( "Optolong", "/m/a" ), "filter:optolong" );
+      check( "osc.kindkey: a blank filter keys on the path", Util.oscKindKey( "", "/m/a" ), "path:/m/a" );
+      check( "osc.kindkey: an absent filter keys on the path", Util.oscKindKey( null, "/m/a" ), "path:/m/a" );
+      check( "osc.kindkey: two blank-filter paths have different keys",
+             Util.oscKindKey( "", "/m/a" ) != Util.oscKindKey( "", "/m/b" ), true );
+      check( "osc.kindkey: paths differing only in case have different keys",
+             Util.oscKindKey( "", "/m/A.xisf" ) != Util.oscKindKey( "", "/m/a.xisf" ), true );
+      check( "osc.kindkey: a choice for a branded model applies to the plain model",
+             Util.effectiveOscKind( "OSCNB", "IDAS Duo 1.25in", "/m/x", { "filter:duo": "dualband" } ).source, "choice" );
+   } )();
    } if ( testGroup( "osc.config" ) ) {
    ( function()
    {

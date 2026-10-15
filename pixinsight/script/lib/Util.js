@@ -725,12 +725,14 @@ Util.colourMixProblem = function( config )
 };
 
 /*
- * The key a remembered kind choice is stored under: the normalised FILTER
- * name, or the file path (an open view's id) when there is no filter name.
+ * The key a remembered kind choice is stored under: the model name that
+ * detection uses (a brand and a size are dropped), so one choice covers every
+ * spelling of a model. A blank filter is keyed by the path exactly as given
+ * (an open view's id): never resolved or case-folded.
  */
 Util.oscKindKey = function( filterValue, path )
 {
-   var f = Util.normaliseFilter( filterValue );
+   var f = Util.normaliseFilter( Util.oscModelName( filterValue ) );
    return f.length > 0 ? "filter:" + f : "path:" + path;
 };
 
