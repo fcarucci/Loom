@@ -32,6 +32,7 @@ def _full_options(folder: Path) -> O.FrameSelectorOptions:
         k=1.75,
         gating={"psfSNR": True, "fwhm": False, "eccentricity": True, "stars": False},
         limits={"fwhm": {"hi": 3.5}, "psfSNR": {"lo": 12.0, "hi": 80.0}},
+        weights={"psfSNR": 0.6, "fwhm": 0.2, "eccentricity": 0.15, "stars": 0.05},
         source_folder="/data/night/lights",
         destination_folder="/data/night/kept",
         darks_folder="/data/darks",
@@ -50,6 +51,7 @@ def test_round_trip_keeps_every_field(tmp_path: Path) -> None:
     assert loaded.k == 1.75
     assert loaded.gating == options.gating
     assert loaded.limits == options.limits
+    assert loaded.weights == options.weights
     assert loaded.source_folder == "/data/night/lights"
     assert loaded.destination_folder == "/data/night/kept"
     assert loaded.darks_folder == "/data/darks"
@@ -100,6 +102,7 @@ def test_one_bad_field_is_dropped_and_the_rest_kept(tmp_path: Path) -> None:
         "Loom/importDarksFolder": "/darks",
         "Loom/importMasterFlatsOnly": True,
         "FrameSelector": {
+            "version": 1,
             "preset": "bogus",
             "k": "2.2",
             "gating": {"fwhm": "yes", "psfSNR": True, "unknownMetric": True, "stars": False},
@@ -128,7 +131,7 @@ def test_one_bad_field_is_dropped_and_the_rest_kept(tmp_path: Path) -> None:
 
 
 def test_non_finite_and_non_positive_numbers_are_dropped(tmp_path: Path) -> None:
-    raw = {"FrameSelector": {"k": -1.0, "limits": {"fwhm": {"hi": True, "lo": 1e400}}}}
+    raw = {"FrameSelector": {"version": 1, "k": -1.0, "limits": {"fwhm": {"hi": True, "lo": 1e400}}}}
     _file(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
 
     loaded = O.load(_store(tmp_path))
@@ -282,3 +285,70 @@ def test_remember_from_state_then_save_and_load_agree(tmp_path: Path) -> None:
     O.save(_store(tmp_path), remembered)
 
     assert O.load(_store(tmp_path)) == remembered
+
+
+def test_tuned_weight_survives_a_new_run(tmp_path: Path) -> None:
+    channel = O.settings_for_new_channel(O.FrameSelectorOptions())
+    channel["weights"]["fwhm"] = 0.45
+    channel["weights"]["stars"] = 0.0
+    O.save(_store(tmp_path), O.remember_from_state(O.FrameSelectorOptions(), channel))
+
+    again = O.settings_for_new_channel(O.load(_store(tmp_path)))
+
+    assert again["weights"]["fwhm"] == 0.45
+    assert again["weights"]["stars"] == 0.0
+    assert again["weights"]["psfSNR"] == frames.DEFAULT_WEIGHTS["psfSNR"]
+    assert again["weights"] is not O.load(_store(tmp_path)).weights
+
+
+def test_bad_weights_are_dropped_one_by_one(tmp_path: Path) -> None:
+    raw = {"FrameSelector": {"version": 1, "weights": {
+        "psfSNR": True, "fwhm": "0.4", "eccentricity": 0.25, "stars": 1e400, "bogus": 0.9}}}
+    _file(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = O.load(_store(tmp_path))
+
+    assert loaded.weights == {"psfSNR": frames.DEFAULT_WEIGHTS["psfSNR"],
+                              "fwhm": frames.DEFAULT_WEIGHTS["fwhm"],
+                              "eccentricity": 0.25,
+                              "stars": frames.DEFAULT_WEIGHTS["stars"]}
+
+
+def test_nan_weight_in_the_file_is_dropped(tmp_path: Path) -> None:
+    _file(tmp_path).write_text('{"FrameSelector": {"version": 1, "weights": {"fwhm": NaN}}}', encoding="utf-8")
+
+    assert O.load(_store(tmp_path)).weights["fwhm"] == frames.DEFAULT_WEIGHTS["fwhm"]
+
+
+def test_save_writes_version_one(tmp_path: Path) -> None:
+    O.save(_store(tmp_path), O.FrameSelectorOptions())
+
+    raw = json.loads(_file(tmp_path).read_text(encoding="utf-8"))
+    assert raw["FrameSelector"]["version"] == 1
+
+
+@pytest.mark.parametrize("stored", [
+    {"preset": "strict", "k": 1.0},
+    {"version": 2, "preset": "strict", "k": 1.0},
+    {"version": "1", "preset": "strict", "k": 1.0},
+    {"version": True, "preset": "strict", "k": 1.0},
+])
+def test_other_or_unknown_version_reads_as_defaults_with_a_warning(
+        tmp_path: Path, stored: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
+    raw = {"Loom/importDarksFolder": "/darks", "FrameSelector": stored}
+    _file(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger=O.__name__):
+        loaded = O.load(_store(tmp_path))
+
+    assert loaded == O.FrameSelectorOptions(darks_folder="/darks")
+    assert any("another version" in r.getMessage() for r in caplog.records)
+
+
+def test_no_section_reads_as_defaults_without_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    _file(tmp_path).write_text("{}", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger=O.__name__):
+        assert O.load(_store(tmp_path)) == O.FrameSelectorOptions()
+
+    assert not caplog.records

@@ -8,17 +8,23 @@ Ported from ``pixinsight/script/lib/MasterFlat.js`` lines 55-77 (``MasterFlat.lo
 (``Frames.applyPreset``). The dialog's use of these is ``FrameSelector.js`` 3573-3575 (``setMasterFlatSettings``, which
 saves the darks folder and the master-flats box) and 5051-5053 (the remembered values read when the dialog starts).
 
-Deviation from the JavaScript, by owner decision: PixInsight remembers only the darks folder and the master-flats box
-(the two ``Loom/...`` Settings keys). This port remembers, between runs, the preset, k, the criteria (the gating of
-each metric and its typed limits), the source and destination folders, the darks folder and the master-flats box.
-Weights are not remembered: a new channel starts from the defaults, as it does in the JavaScript.
+Deviation from the JavaScript: this port deliberately remembers more than the JavaScript does. PixInsight remembers
+only the darks folder and the master-flats box (the two ``Loom/...`` Settings keys). This port also remembers, between
+runs, the source and destination folders, the preset, k, the weights of the score and the criteria (the gating of each
+metric and its typed limits).
+
+A second deviation: the preset and k are remembered once, for the whole session of folders, and applied to every new
+channel. PixInsight keeps them per channel for the length of the session, so a channel's preset and k are lost when the
+dialog closes. Here the last values chosen are what every new channel starts with; a channel's own k still counts as
+edited only when it was edited by hand (kEdited), as in the JavaScript.
 
 Storage: :class:`OptionsStore` is a JSON file, ``loomsiril-frame-selector.json`` in the Siril configuration folder
 (``siril.get_siril_configdir()``, as loomsiril-fly-drafts is kept). The darks folder and the master-flats box are
 stored under the same keys as the PixInsight Settings (``Loom/importDarksFolder``, ``Loom/importMasterFlatsOnly``), so
 :mod:`loomsiril.master_flat` reads and writes them through the store unchanged. The rest is one object under the key
-``FrameSelector``. A missing, unreadable or corrupt file reads as the defaults; a bad value is dropped on its own and
-the rest is kept. Writes are atomic (a temporary file in the same folder, then ``os.replace``); a failed write logs a
+``FrameSelector``, which carries ``"version": 1``. A missing, unreadable or corrupt file reads as the defaults; an object
+of another or unknown version (including one without a version) reads as the defaults with a warning; a bad value is
+dropped on its own and the rest is kept. Writes are atomic (a temporary file in the same folder, then ``os.replace``); a failed write logs a
 warning and does not raise.
 
 Names are the JS names in snake_case. Keys in the stored object follow the JS camelCase (``sourceFolder``), and the
@@ -48,6 +54,8 @@ _log = logging.getLogger(__name__)
 FILE_NAME = "loomsiril-frame-selector.json"
 SECTION = "FrameSelector"
 
+FORMAT_VERSION = 1
+
 DATA_TYPE_STRING = mf.DATA_TYPE_STRING
 DATA_TYPE_BOOLEAN = mf.DATA_TYPE_BOOLEAN
 
@@ -73,6 +81,22 @@ def _clean_k(v: Any) -> Optional[float]:
     """k as remembered: a positive finite number, or None for the preset's own k."""
     f = _finite_number(v)
     return f if f is not None and f > 0 else None
+
+
+def _clean_weights(v: Any) -> dict[str, float]:
+    """The score weights: every metric, each a finite number; a bad or missing one is the default."""
+    out = dict(frames.DEFAULT_WEIGHTS)
+    if isinstance(v, dict):
+        for metric, w in v.items():
+            if metric in frames.METRICS:
+                f = _finite_number(w)
+                if f is not None:
+                    out[metric] = f
+    return {m: out[m] for m in frames.METRICS}
+
+
+def _known_version(v: Any) -> bool:
+    return type(v) is int and v == FORMAT_VERSION
 
 
 def _clean_gating(v: Any) -> dict[str, bool]:
@@ -186,6 +210,7 @@ class FrameSelectorOptions:
     k: Optional[float] = None
     gating: dict[str, bool] = field(default_factory=lambda: dict(frames.DEFAULT_GATING))
     limits: dict[str, Band] = field(default_factory=dict)
+    weights: dict[str, float] = field(default_factory=lambda: dict(frames.DEFAULT_WEIGHTS))
     source_folder: str = ""
     destination_folder: str = ""
     darks_folder: str = ""
@@ -195,7 +220,10 @@ class FrameSelectorOptions:
 def load(store: OptionsStore) -> FrameSelectorOptions:
     """Reads the remembered options. Any value of the wrong type, or an unknown metric, is dropped on its own."""
     raw = store.read_value(SECTION)
-    if not isinstance(raw, dict):
+    if raw is None:
+        raw = {}
+    elif not isinstance(raw, dict) or not _known_version(raw.get("version")):
+        _log.warning("Frame Selector options were written by another version; using the defaults")
         raw = {}
     remembered = mf.load_settings(store)
     return FrameSelectorOptions(
@@ -203,6 +231,7 @@ def load(store: OptionsStore) -> FrameSelectorOptions:
         k=_clean_k(raw.get("k")),
         gating=_clean_gating(raw.get("gating")),
         limits=_clean_limits(raw.get("limits")),
+        weights=_clean_weights(raw.get("weights")),
         source_folder=_clean_text(raw.get("sourceFolder")),
         destination_folder=_clean_text(raw.get("destinationFolder")),
         darks_folder=remembered["darksFolder"],
@@ -213,10 +242,12 @@ def load(store: OptionsStore) -> FrameSelectorOptions:
 def save(store: OptionsStore, options: FrameSelectorOptions) -> None:
     """Writes the options; values are cleaned the way :func:`load` reads them, so a save and a load agree."""
     store.write_value(SECTION, {
+        "version": FORMAT_VERSION,
         "preset": _clean_preset(options.preset),
         "k": _clean_k(options.k),
         "gating": _clean_gating(options.gating),
         "limits": _clean_limits(options.limits),
+        "weights": _clean_weights(options.weights),
         "sourceFolder": _clean_text(options.source_folder),
         "destinationFolder": _clean_text(options.destination_folder),
     })
@@ -237,6 +268,7 @@ def settings_for_new_channel(options: FrameSelectorOptions) -> dict[str, Any]:
         settings["kEdited"] = True
     settings["gating"] = _clean_gating(options.gating)
     settings["limits"] = {m: dict(band) for m, band in _clean_limits(options.limits).items()}
+    settings["weights"] = _clean_weights(options.weights)
     return settings
 
 
@@ -251,7 +283,7 @@ def remember_from_state(
 ) -> FrameSelectorOptions:
     """What the dialog remembers on close, as a new options object. ``settings`` is the current channel's settings.
 
-    The preset, the criteria and the limits come from the channel. k is kept only when the channel's k was edited by
+    The preset, the criteria, the limits and the weights come from the channel. k is kept only when the channel's k was edited by
     hand (kEdited); otherwise the preset decides it next time. A folder or the master-flats box that is passed as None
     keeps the value in ``options``. Nothing is written: :func:`save` does that.
     """
@@ -261,6 +293,7 @@ def remember_from_state(
         k=_clean_k(settings.get("k")) if settings.get("kEdited") else None,
         gating=_clean_gating(settings.get("gating")),
         limits=_clean_limits(settings.get("limits")),
+        weights=_clean_weights(settings.get("weights")),
         source_folder=options.source_folder if source_folder is None else _clean_text(source_folder),
         destination_folder=(options.destination_folder if destination_folder is None
                             else _clean_text(destination_folder)),
