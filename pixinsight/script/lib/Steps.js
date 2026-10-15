@@ -2897,6 +2897,9 @@ Steps.exportTiff16 = function( window, dir, name )
                   window, Util.freeWindowId( Steps.syqonSanitizeFileName( name ) + "_export" ) );
    try
    {
+      var srcKw = Util.loomSourceKeywords( window );
+      if ( srcKw.length > 0 )
+         clone.keywords = srcKw;
       clone.setSampleFormat( 16, false );
       clone.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                     false/*strict*/, false/*verifyOverwrite*/ );
@@ -4128,6 +4131,9 @@ Steps.exportPsb = function( results, dir, name )
       var c = Steps.syqonCloneWindowForProcessing(
                  entry.window, Util.freeWindowId(
                     Steps.syqonSanitizeFileName( entry.name ) + "_psb" ) );
+      var srcKw = Util.loomSourceKeywords( entry.window );
+      if ( srcKw.length > 0 )
+         c.keywords = srcKw;
       c.setSampleFormat( 16, false );
       clones.push( c );
       entry.window = c;

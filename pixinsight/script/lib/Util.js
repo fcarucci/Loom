@@ -324,6 +324,20 @@ Util.powerShellFile = function( script, args )
 };
 
 /*
+ * The LOOMSRC keywords of a window, as an array: empty for a window without
+ * one (every mono result) or one that cannot be read. Exports copy only these
+ * onto the throwaway clone they save, so a mono file gains no keyword.
+ */
+Util.loomSourceKeywords = function( window )
+{
+   try
+   {
+      return ( window.keywords || [] ).filter( function( k ) { return k.name == "LOOMSRC"; } );
+   }
+   catch ( e ) { return []; }
+};
+
+/*
  * PJSR's File API speaks forward slashes on every platform, including
  * Windows: File.homeDirectory and CoreApplication.baseDirPath come back
  * as C:/Users/... and C:/Program Files/PixInsight, and File.exists

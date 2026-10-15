@@ -1737,6 +1737,7 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
    var map = Util.PALETTES[pal];
    var pId = Util.freeWindowId( pal );
    Util.log( "palette", pal + ": R=" + map[0] + " G=" + map[1] + " B=" + map[2] );
+   Pipeline.logPaletteSources( pal, chans, config );
 
    /*
     * The palette is a cached chain, exactly like the RGB composite.
@@ -3521,6 +3522,155 @@ Pipeline.retainResults = function( results, chans, rgb, paletteWins, reg )
 };
 
 /*
+ * What each logical channel of a colour master really holds, for the run log.
+ * Hbeta rides in the OIII band and, on a quad-band filter, SII rides in the
+ * Ha band: neither is a single line.
+ */
+Pipeline.OSC_LINE_NOTES = { H: "Ha, plus SII for quad-band", O: "OIII with H\u03b2" };
+
+/*
+ * The log line that says where a palette built from a dual-band colour master
+ * gets its channels, or "" when the run has no such master (a mono palette,
+ * or an RGB colour master, which builds no palette). `infos` is keyed by
+ * colour slot: { OSCNB: { name } }, name being the filter's model name.
+ */
+Pipeline.oscPaletteSources = function( config, infos, palette )
+{
+   var pal = palette || "HOO";
+   if ( Util.colourSupplied( config ).indexOf( "OSCNB" ) < 0 || !Util.PALETTES[pal] )
+      return "";
+   var info = infos && infos.OSCNB;
+   var from = "OSCNB" + ( info && info.name ? " " + info.name : "" );
+   var parts = [];
+   var need = Util.paletteChannels( pal );
+   for ( var i = 0; i < need.length; ++i )
+   {
+      if ( !Pipeline.OSC_LINE_NOTES[need[i]] )
+         return "";
+      parts.push( need[i] + " from " + from + " (" + Pipeline.OSC_LINE_NOTES[need[i]] + ")" );
+   }
+   return pal + ": " + parts.join( ", " );
+};
+
+/*
+ * Logs the sources line once for a palette whose channels come from a colour
+ * master, from the channel records the palette is built from. Returns the line
+ * ("" and nothing logged for a mono palette).
+ */
+Pipeline.logPaletteSources = function( palette, chans, config )
+{
+   var map = Util.PALETTES[palette] || [];
+   var from = null;
+   for ( var i = 0; i < map.length; ++i )
+      if ( chans[map[i]] && chans[map[i]].group == "OSCNB" )
+         from = chans[map[i]];
+   if ( from == null )
+      return "";
+   var fi = Util.oscFilterInfo( from.filter );
+   var line = Pipeline.oscPaletteSources( config, { OSCNB: { name: fi ? fi.name : "" } }, palette );
+   if ( line.length > 0 )
+      Util.log( "palette", line );
+   return line;
+};
+
+/*
+ * Provenance of the final exports. The values name the colour master FILE and
+ * its planes as the configuration holds them, never a working window, a work
+ * folder or a cache key, whatever stage the pixels came through.
+ */
+Pipeline.oscChannelSource = function( chan )
+{
+   if ( chan == null || !chan.group )
+      return null;
+   return String( chan.path ).split( /[\\\/]/ ).pop() + "|plane:" + chan.plane;
+};
+
+/*
+ * One value naming the source planes of a composite or a palette, from the
+ * channels `keys` of `chans` that come from a colour master (null when none
+ * does). Per master the planes are listed together ("OSC f planes 0,1,2")
+ * unless `perPlane`, when each distinct plane is its own entry
+ * ("OSCNB f plane 0; OSCNB f plane 1").
+ */
+Pipeline.oscSourceText = function( chans, keys, perPlane )
+{
+   var order = [], byMaster = {}, seen = {};
+   keys.forEach( function( k )
+   {
+      var c = chans[k];
+      if ( !c || !c.group )
+         return;
+      var head = c.group + " " + String( c.path ).split( /[\\\/]/ ).pop();
+      var id = head + "|" + c.plane;
+      if ( seen[id] )
+         return;
+      seen[id] = true;
+      if ( !byMaster[head] )
+      {
+         byMaster[head] = [];
+         order.push( head );
+      }
+      byMaster[head].push( c.plane );
+   } );
+   if ( order.length == 0 )
+      return null;
+   var parts = [];
+   order.forEach( function( head )
+   {
+      var planes = byMaster[head];
+      if ( perPlane )
+         planes.forEach( function( p ) { parts.push( head + " plane " + p ); } );
+      else
+         parts.push( head + ( planes.length == 1 ? " plane " : " planes " ) + planes.join( "," ) );
+   } );
+   return parts.join( "; " );
+};
+
+// Sets LOOMSRC on a result window, replacing any earlier value; other keywords are kept.
+Pipeline.setSource = function( win, value )
+{
+   if ( value == null || !Pipeline.windowIsUsable( win ) )
+      return;
+   try
+   {
+      var kws = ( win.keywords || [] ).filter( function( k ) { return k.name != "LOOMSRC"; } );
+      kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( value ), "colour master and planes" ) );
+      win.keywords = kws;
+   }
+   catch ( e ) { Util.warn( "output", "could not record the source of " + win.mainView.id + ": " + e ); }
+};
+
+/*
+ * Stamps LOOMSRC on every result that comes from a colour master: each
+ * channel with its starless, stars and linear companions, the RGB composite,
+ * and every palette. A mono result is not touched, so a mono run's outputs
+ * are what they were.
+ */
+Pipeline.stampSources = function( results, chans )
+{
+   function stamp( name, value ) { if ( results[name] ) Pipeline.setSource( results[name], value ); }
+   Object.keys( chans ).forEach( function( k )
+   {
+      var v = Pipeline.oscChannelSource( chans[k] );
+      [ "", "_starless", "_stars", "_linear" ].forEach( function( sfx ) { stamp( k + sfx, v ); } );
+   } );
+   function allColour( keys ) { return keys.every( function( k ) { return chans[k] && chans[k].group; } ); }
+   if ( allColour( [ "R", "G", "B" ] ) )
+   {
+      var rgb = Pipeline.oscSourceText( chans, [ "R", "G", "B" ], false );
+      [ "RGB", "RGB_starless", "RGB_stars", "RGB_linear" ].forEach( function( n ) { stamp( n, rgb ); } );
+   }
+   Object.keys( Util.PALETTES ).forEach( function( p )
+   {
+      var map = Util.PALETTES[p];
+      if ( !allColour( map ) )
+         return;
+      var v = Pipeline.oscSourceText( chans, map, true );
+      [ "", "_starless", "_stars", "_linear" ].forEach( function( sfx ) { stamp( p + sfx, v ); } );
+   } );
+};
+
+/*
  * Name and keep the surviving channel plates. A split channel is
  * published as two frames and the unsplit one is not kept.
  */
@@ -3787,6 +3937,9 @@ Pipeline.run = function( config )
        * composites already carry the RGB working space; the mono plates
        * carried nothing at all and opened untagged.
        */
+      // Colour results name their master file and planes; mono ones are left alone.
+      Pipeline.stampSources( results, chans );
+
       for ( var rk in results )
          if ( results[rk] && Pipeline.windowIsUsable( results[rk] ) )
             Steps.assignProfile( results[rk], rk );
