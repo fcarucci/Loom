@@ -22106,6 +22106,10 @@ function runPipeTests()
    } )();
    } if ( testGroup( "osc.register" ) ) {
    ( function() {
+   // The node harness has no FITSKeyword; a plain record stands in for the group's checks.
+   var shimmedKeyword = typeof FITSKeyword == "undefined";
+   if ( shimmedKeyword )
+      global.FITSKeyword = function( n, v, c ) { this.name = n; this.value = v; this.comment = c; };
    var groups = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
    var both = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H", "O" ], groups );
    check( "reference is OSC G", both.ref, "G" );
@@ -22212,6 +22216,129 @@ function runPipeTests()
       Pipeline.registrationQuality = realQuality;
       Steps.register = realRegister; Steps.combinePlanes = realCombine; Steps.extractPlane = realExtract;
    }
+   // The grouped registration against a fake cache: every path, with its provenance and window ids.
+   ( function()
+   {
+      var real = { lookup: Cache.lookup, load: Cache.load, store: Cache.store, exists: Util.windowIdExists,
+                   register: Steps.register, combine: Steps.combinePlanes, extract: Steps.extractPlane };
+      var live = [], cached = {}, failLoad = {};
+      var st;
+      function win( id, kws )
+      {
+         var w = { keywords: kws || [] };
+         w.mainView = { id: id, window: w };
+         w.forceClose = function() { st.closed.push( w.mainView.id ); live.splice( live.indexOf( w ), 1 ); };
+         live.push( w );
+         return w;
+      }
+      function kw( n, v ) { return { name: n, value: v }; }
+      function newChans()
+      {
+         var c = {};
+         [ [ "G", "OSC", 1 ], [ "H", "OSCNB", 0 ], [ "O", "OSCNB", 1 ] ].forEach( function( d )
+         {
+            var w = win( d[0] + "_work", [ kw( "FILTER", "'x'" ) ] );
+            c[d[0]] = { key: d[0], window: w, view: w.mainView, group: d[1], plane: d[2],
+                        sourceKey: "s" + d[0], currentKey: "cur" + d[0], path: "/m/" + d[1] + ".xisf" };
+         } );
+         return c;
+      }
+      var groupKey = Pipeline.oscGroupRegisterKey( "registerGroup", [ "curH", "curO" ], { ref: "curG", planes: "H,O,O" } );
+      var splitH = Pipeline.oscRegisteredSiblingKey( groupKey, 0 ), splitO = Pipeline.oscRegisteredSiblingKey( groupKey, 1 );
+      function run( config )
+      {
+         live.length = 0;   // the previous run's windows are gone
+         st = { calls: [], closed: [], stores: [], loads: [] };
+         var chans = newChans();
+         Pipeline.registerToReference( chans, config, { add: function( w ) { return w; }, forget: function() {} } );
+         st.chans = chans;
+         return st;
+      }
+      function calls( what ) { return st.calls.filter( function( c ) { return c.indexOf( what ) == 0; } ).length; }
+      function provenance( chans )
+      {
+         return [ "H", "O" ].map( function( k )
+         {
+            return [ Util.keywordValue( chans[k].window.keywords, "FILTER" ),
+                     /^OSCNB\.xisf\|plane:\d$/.test( Util.keywordValue( chans[k].window.keywords, "LOOMSRC" ) ),
+                     Util.keywordValue( chans[k].window.keywords, "LOOMSRC" ).slice( -7 ) ];
+         } );
+      }
+      var wantProv = [ [ "Ha", true, "plane:0" ], [ "OIII", true, "plane:1" ] ];
+      try
+      {
+         Util.windowIdExists = function( id ) { return live.some( function( w ) { return w.mainView.id == id; } ); };
+         Cache.lookup = function( key ) { return cached[key] ? "/c/" + key : null; };
+         Cache.load = function( key, id )
+         {
+            st.loads.push( key );
+            return cached[key] && !failLoad[key] ? win( id, [ kw( "FILTER", "'group'" ), kw( "LOOMSRC", "'tmp|plane:0'" ) ] ) : null;
+         };
+         Cache.store = function( key ) { st.stores.push( key ); cached[key] = true; return "/c/" + key; };
+         Steps.combinePlanes = function( views, id ) { st.calls.push( "combine" ); return win( id, [ kw( "FILTER", "'Ha'" ) ] ); };
+         Steps.register = function() { st.calls.push( "register" ); return win( "registered", [ kw( "FILTER", "'Ha'" ) ] ); };
+         Steps.extractPlane = function( v, plane, id ) { st.calls.push( "extract" + plane ); return win( id,
+            [ kw( "FILTER", "'Ha'" ), kw( "LOOMSRC", "'tmp|plane:" + plane + "'" ) ] ); };
+         var on = { useCache: true, ignoreCache: false };
+
+         var r = run( on );
+         check( "cold: registered once and split twice", [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 1, 1, 2 ] );
+         check( "cold: the group image and both splits stored", st.stores, [ groupKey, splitH, splitO ] );
+         check( "cold: H and O carry their own FILTER and LOOMSRC", provenance( r.chans ), wantProv );
+         check( "cold: the temporary windows are closed",
+                [ r.closed.indexOf( "register_group" ) >= 0, r.closed.indexOf( "registered" ) >= 0 ], [ true, true ] );
+         check( "cold: members take working ids and split keys",
+                [ r.chans.H.window.mainView.id, r.chans.O.window.mainView.id, r.chans.H.currentKey, r.chans.O.currentKey ],
+                [ "H_work", "O_work", splitH, splitO ] );
+         check( "cold: no window is left but the members'",
+                live.filter( function( w ) { return /register/.test( w.mainView.id ); } ).length, 0 );
+
+         r = run( on );
+         check( "warm: nothing registered, combined or split", [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 0, 0, 0 ] );
+         check( "warm: the splits are loaded, the group image is not", r.loads, [ splitH, splitO ] );
+         check( "warm: nothing stored", r.stores, [] );
+         check( "warm: provenance and ids as on a cold run",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+
+         delete cached[splitO];
+         r = run( on );
+         check( "one split missing: no registration, two splits made",
+                [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 0, 0, 2 ] );
+         check( "one split missing: the group image is loaded once", r.loads, [ groupKey ] );
+         check( "one split missing: the splits are stored again", r.stores, [ splitH, splitO ] );
+         check( "one split missing: provenance and ids",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+         check( "one split missing: the loaded group image is closed",
+                r.closed.indexOf( "register_group" ) >= 0, true );
+
+         failLoad[splitO] = true;
+         r = run( on );
+         check( "a split that will not load falls back to splitting",
+                [ calls( "register" ), calls( "extract" ) ], [ 0, 2 ] );
+         check( "a split that will not load: loads tried", r.loads, [ splitH, splitO, groupKey ] );
+         check( "a split that will not load: provenance and ids",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+         delete failLoad[splitO];
+
+         r = run( { useCache: true, ignoreCache: true } );
+         check( "ignore cache: registers although everything is cached", calls( "register" ), 1 );
+         check( "ignore cache: nothing is read", r.loads, [] );
+         check( "ignore cache: results are written", r.stores, [ groupKey, splitH, splitO ] );
+         check( "ignore cache: temporary windows closed",
+                [ r.closed.indexOf( "register_group" ) >= 0, r.closed.indexOf( "registered" ) >= 0 ], [ true, true ] );
+
+         r = run( { useCache: false } );
+         check( "cache off: registers, reads and writes nothing", [ calls( "register" ), r.loads, r.stores ], [ 1, [], [] ] );
+      }
+      finally
+      {
+         Cache.lookup = real.lookup; Cache.load = real.load; Cache.store = real.store; Util.windowIdExists = real.exists;
+         Steps.register = real.register; Steps.combinePlanes = real.combine; Steps.extractPlane = real.extract;
+      }
+   } )();
    // a mono run still measures
    var measured = 0;
    Pipeline.registrationQuality = function() { measured++; return {}; };
@@ -22224,6 +22351,8 @@ function runPipeTests()
    catch ( e ) { /* the registrations themselves need PixInsight */ }
    finally { Pipeline.registrationQuality = realQuality; }
    check( "mono run still reads quality", measured, 1 );
+   if ( shimmedKeyword )
+      delete global.FITSKeyword;
 
    if ( IN_PIXINSIGHT )
    {
@@ -22269,7 +22398,6 @@ function runPipeTests()
                   sourceKey: "reg_" + key, currentKey: "reg_" + key, path: "/m/" + key + ".xisf" };
       }
       var preg = new Util.Registry();
-      var pair = null;
       try
       {
          var pc = { R: chan( "R", "OSC", 0, field( "reg_r", 0, 0 ) ), G: chan( "G", "OSC", 1, field( "reg_g", 0, 0 ) ),

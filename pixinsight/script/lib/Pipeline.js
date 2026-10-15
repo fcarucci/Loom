@@ -2860,6 +2860,19 @@ Pipeline.oscChannelGroups = function( chans )
 };
 
 /*
+ * `keywords` with FILTER and LOOMSRC set for one member of a colour master:
+ * the channel name, and the master's file name with the plane, as
+ * Steps.extractPlane writes them for the unregistered plane.
+ */
+Pipeline.oscSplitKeywords = function( keywords, filterName, fileName, plane )
+{
+   var kws = ( keywords || [] ).filter( function( k ) { return k.name != "FILTER" && k.name != "LOOMSRC"; } );
+   kws.push( new FITSKeyword( "FILTER", "'" + filterName + "'", "channel of the colour master" ) );
+   kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( fileName + "|plane:" + plane ), "colour master and plane" ) );
+   return kws;
+};
+
+/*
  * Registers one colour group onto the reference as a single image, so its
  * siblings share one transform. The siblings are combined in plane order,
  * registered with one Steps.register call, and split again; the group image
@@ -2868,7 +2881,7 @@ Pipeline.oscChannelGroups = function( chans )
  * ignored reads nothing but writes. The members' views and currentKey are
  * replaced by the registered splits.
  */
-Pipeline.oscRegisterGroup = function( chans, entry, refKey, refView, refFingerprint, config, reg )
+Pipeline.oscRegisterGroup = function( chans, entry, refView, refFingerprint, config, reg )
 {
    var members = entry.members;
    var names = { R: "R", G: "G", B: "B", H: "Ha", O: "OIII" };
@@ -2887,14 +2900,28 @@ Pipeline.oscRegisterGroup = function( chans, entry, refKey, refView, refFingerpr
       try { w.forceClose(); }
       catch ( e ) { Util.warn( "register", "could not close " + w.mainView.id + ": " + e ); }
    }
-   // Replace each member's window with its registered split.
+   // Replace each member's window with its registered split, which takes
+   // the member's own FILTER and LOOMSRC (the group image has one header)
+   // and the working id the old window held.
    function adopt( wins )
    {
       members.forEach( function( k, i )
       {
          var ch = chans[k];
          if ( ch.window != null )
+         {
             release( ch.window );
+            ch.window = null;
+         }
+      } );
+      members.forEach( function( k, i )
+      {
+         var ch = chans[k];
+         var want = k + "_work";
+         wins[i].keywords = Pipeline.oscSplitKeywords( wins[i].keywords, names[k],
+                                                       ch.path.split( /[\\/]/ ).pop(), ch.plane );
+         if ( wins[i].mainView.id != want )
+            wins[i].mainView.id = Util.freeWindowId( want );
          ch.window = wins[i];
          ch.view = wins[i].mainView;
          ch.currentKey = splitKeys[i];
@@ -2905,6 +2932,8 @@ Pipeline.oscRegisterGroup = function( chans, entry, refKey, refView, refFingerpr
       return members.map( function( k, i )
       {
          var w = claim( Steps.extractPlane( groupWin.mainView, i, Util.freeWindowId( k + "_work" ), names[k] ) );
+         w.keywords = Pipeline.oscSplitKeywords( w.keywords, names[k],
+                                                 chans[k].path.split( /[\\/]/ ).pop(), chans[k].plane );
          if ( write )
             Cache.store( splitKeys[i], w, { channel: k, stage: "registerGroup",
                                             params: { plane: i, planes: entry.planes.join( "," ) } } );
@@ -3031,7 +3060,7 @@ Pipeline.registerToReference = function( chans, config, reg )
       plan.identity.forEach( function( k ) { skip[k] = true; } );
       plan.groups.forEach( function( entry )
       {
-         Pipeline.oscRegisterGroup( chans, entry, refKey, refView, refFingerprint, config, reg );
+         Pipeline.oscRegisterGroup( chans, entry, refView, refFingerprint, config, reg );
          entry.members.forEach( function( k ) { skip[k] = true; } );
          Pipeline.checkAbort( "registered " + entry.slot );
       } );
