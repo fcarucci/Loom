@@ -230,8 +230,18 @@ def square_rect(x: float, y: float, r: float, w: int, h: int) -> Rect:
 
 
 def js_round(v: float) -> float:
-    """JS ``Math.round``: halves round toward +infinity (Python's ``round`` rounds halves to even)."""
-    return math.floor(v + 0.5)
+    """JS ``Math.round``: halves round toward +infinity (Python's ``round`` rounds halves to even).
+
+    Computed as ``floor(v)`` plus one when the fraction is at least a half, so that
+    ``0.49999999999999994`` stays 0 (``floor(v + 0.5)`` rounds the sum up to 1.0) and large
+    doubles are not disturbed by an addition. Finite input returns a Python int, as ``math.floor``
+    does; NaN and +/-Infinity pass through as JS returns them. JS gives -0 for -0.5 and -0.0;
+    this returns 0, which every caller prints or uses as 0.
+    """
+    if not math.isfinite(v):
+        return v
+    f = math.floor(v)
+    return f + 1 if v - f >= 0.5 else f
 
 
 def screen(starless: np.ndarray, stars: np.ndarray) -> np.ndarray:
