@@ -730,14 +730,32 @@ Util.OSC_FILTERS = [
    { match: "alpthaoiii5nm",name: "ALP-T Ha/OIII",   kind: "dualband",    haNm: 5,   oiiiNm: 5 },
    { match: "alptsiihb",    name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
    { match: "alptsiihbeta", name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
-   { match: "nbz",          name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 }
+   // NBZ-II: the published retailer bandwidths are 10 nm Ha and 8 nm OIII.
+   { match: "nbzii",         name: "NBZ-II",          kind: "dualband",    haNm: 10,  oiiiNm: 8 },
+   // NBZ and NBZex: the published retailer bandwidths are 12 nm Ha and 12 nm OIII.
+   { match: "nbz",            name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 },
+   { match: "nbzex",          name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 }
 ];
 Util.OSC_BROADBAND = [ "uvir", "uvircut", "ircut", "uvirblock", "lpro", "cls", "clsccd", "lrgb" ];
 Util.OSC_FAMILIES  = [ "duo", "dual", "dualband", "tri", "triad", "quad", "alpt" ];
 
+/*
+ * The model part of a filter name: a leading brand and a trailing size are
+ * not part of the model, so "Optolong L-eXtreme 2\"" names L-eXtreme. A brand
+ * on its own is kept, so that it is not read as a broadband filter.
+ */
+Util.oscModelName = function( value )
+{
+   if ( value == null )
+      return "";
+   return String( value ).trim()
+      .replace( /\s*\d+(\.\d+)?\s*("|''|mm|in)$/i, "" )
+      .replace( /^(optolong|antlia|idas)[\s_-]+(?=\S)/i, "" );
+};
+
 Util.oscFilterInfo = function( filterValue )
 {
-   var f = Util.normaliseFilter( filterValue );
+   var f = Util.normaliseFilter( Util.oscModelName( filterValue ) );
    for ( var i = 0; i < Util.OSC_FILTERS.length; ++i )
       if ( Util.OSC_FILTERS[i].match == f )
       {
@@ -745,6 +763,11 @@ Util.oscFilterInfo = function( filterValue )
          return { kind: m.kind, name: m.name, confident: m.kind != "unsupported",
                   haNm: m.haNm, oiiiNm: m.oiiiNm };
       }
+   // Any ALP-T name that mentions SII or Hb is the unsupported line pair,
+   // whatever else it says (a size, a spacing, a 5nm suffix).
+   if ( /^alpt.*(sii|hb)/.test( f ) )
+      return { kind: "unsupported", name: String( filterValue ).trim(), confident: false,
+               haNm: null, oiiiNm: null };
    if ( f.length == 0 || Util.OSC_BROADBAND.indexOf( f ) >= 0 )
       return { kind: "broadband", name: f.length == 0 ? "" : String( filterValue ).trim(),
                confident: true, haNm: null, oiiiNm: null };

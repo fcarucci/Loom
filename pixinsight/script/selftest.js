@@ -21553,6 +21553,24 @@ function runPipeTests()
       check( "normaliseFilter", Util.normaliseFilter( " L-eXtreme 2\" " ), "lextreme2" );
       check( "oscFilterInfo unsupported is not confident", Util.oscFilterInfo( "ALP-T SII/Hb" ).confident, false );
       check( "oscFilterInfo known model beats family prefix", Util.oscFilterInfo( "ALP-T Ha/OIII" ).confident, true );
+      // Spelling variants of the SII/Hb line pair are unsupported, however they are written.
+      check( "oscFilterInfo ALP-T SII/Hb 5nm unsupported", Util.oscFilterInfo( "ALP-T SII/Hb 5nm" ).kind, "unsupported" );
+      check( "oscFilterInfo ALP-T SIIHb unsupported", Util.oscFilterInfo( "ALP-T SIIHb" ).kind, "unsupported" );
+      // A leading brand and a trailing size are not part of the model name.
+      check( "oscFilterInfo brand and 2in size", Util.oscFilterInfo( "Optolong L-eXtreme 2\"" ).name, "L-eXtreme" );
+      check( "oscFilterInfo brand and 2in size kind", Util.oscFilterInfo( "Optolong L-eXtreme 2\"" ).confident, true );
+      check( "oscFilterInfo Antlia 1.25in size", Util.oscFilterInfo( "Antlia L-Ultimate 1.25\"" ).name, "L-Ultimate" );
+      check( "oscFilterInfo IDAS 50mm size", Util.oscFilterInfo( "IDAS L-eNhance 50mm" ).name, "L-eNhance" );
+      check( "oscFilterInfo bare model 36mm size", Util.oscFilterInfo( "L-eXtreme 36mm" ).name, "L-eXtreme" );
+      check( "oscFilterInfo brand alone is unknown", Util.oscFilterInfo( "Optolong" ), null );
+      // NBZ-II has its own passbands; NBZ and NBZex are 12 nm / 12 nm.
+      check( "oscFilterInfo NBZ-II passbands",
+             [ Util.oscFilterInfo( "NBZ-II" ).kind, Util.oscFilterInfo( "NBZ-II" ).haNm, Util.oscFilterInfo( "NBZ-II" ).oiiiNm ],
+             [ "dualband", 10, 8 ] );
+      check( "oscFilterInfo NBZ passbands",
+             [ Util.oscFilterInfo( "NBZ" ).haNm, Util.oscFilterInfo( "NBZ" ).oiiiNm ], [ 12, 12 ] );
+      check( "oscFilterInfo NBZex passbands",
+             [ Util.oscFilterInfo( "NBZex" ).haNm, Util.oscFilterInfo( "NBZex" ).oiiiNm ], [ 12, 12 ] );
    } )();
 
    } if ( testGroup( "coreversion" ) ) {
