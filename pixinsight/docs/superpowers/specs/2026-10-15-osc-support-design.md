@@ -219,9 +219,8 @@ says so.
 into the sensor curves, so a broadband filter in front (UV/IR, L-Pro, CLS) is not
 part of the calibration. UV/IR cut filters pass the band the sensor curves cover,
 so this is close. For a light-pollution filter (L-Pro, CLS and similar) the run
-goes ahead and both the log and the closing summary say colour calibration does
-not model that filter. **Owner decision needed:** accept this warning-only
-behaviour (the default in this revision), or refuse such runs.
+goes ahead normally; the run log notes that colour calibration does not model
+that filter. Such runs are never refused.
 
 **Missing curves.** A sensor name that is not in `filters.xspd` is a preflight
 problem naming the missing curve, as a missing mono filter is today.
