@@ -340,7 +340,10 @@ in `siril/loomsiril/loom/` with a parity-table row each. Siril-specific points:
   SPCC stage) and to the clean white-balance key. Changing any one of them
   re-runs colour calibration, with sharpening on or off.
 - **Narrowband SPCC** passes per-channel bandwidths (`-rbw`, `-gbw`, `-bbw`),
-  which its command already supports.
+  which its command already supports. After a broadband call in the same Siril
+  session it also repeats that call's complete set of names; as the first `spcc`
+  of a session it takes none. So, as in PixInsight, the sensor choice is needed
+  only when `OSC` is supplied: an `OSCNB`-only run sends no SPCC names.
 
 ## Testing
 
