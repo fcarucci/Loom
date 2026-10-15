@@ -745,3 +745,34 @@ def test_frames_under_a_symlinked_root_are_reported_by_their_resolved_path(
     result = C.export_approved(frames, str(inside), None, home=str(tmp_path / "home"))
     assert result["refused"] == ("the output folder contains the frames being copied ("
                                  + os.path.realpath(str(folder)) + ")")
+
+
+def _stat_with_inode_zero(paths: set[str]) -> Any:
+    """os.stat, except that the given paths report st_ino 0 as some network and FUSE mounts do."""
+    real_stat = os.stat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        st = real_stat(path, *args, **kwargs)
+        if os.fspath(path) in paths:
+            fields = list(st)
+            fields[1] = 0  # st_ino
+            return os.stat_result(fields)
+        return st
+
+    return stat
+
+
+def test_outputs_on_a_file_system_without_inode_numbers_are_all_reported_written(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    one = tmp_path / "one.fit"
+    two = tmp_path / "two.fit"
+    one.write_bytes(b"1")
+    two.write_bytes(b"2")
+    mapping = {"a": str(one), "b": str(two)}
+    monkeypatch.setattr(C.os, "stat", _stat_with_inode_zero(set(mapping.values())))
+    result: dict[str, Any] = {"outcomes": {}, "written": 0, "failed": 0}
+
+    C.confirm_written(["a", "b"], {"mapping": mapping}, result)
+
+    assert result["outcomes"] == {"a": "written", "b": "written"}
+    assert (result["written"], result["failed"]) == (2, 0)

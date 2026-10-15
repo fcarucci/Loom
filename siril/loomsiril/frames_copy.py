@@ -326,11 +326,16 @@ def confirm_written(written: list[str], m: dict[str, Any], result: dict[str, Any
     this run produced. Outputs are written in order, so when two of them are one file on disk (same device and inode:
     a file system that folds case or otherwise aliases names) only the last one survives; the earlier ones are
     "missing"."""
-    last: dict[tuple[int, int], str] = {}
+    last: dict[tuple[Any, ...], str] = {}
     for s in written:
         try:
             st = os.stat(m["mapping"][s])
         except OSError:
+            continue
+        if st.st_ino == 0:
+            # Some network and FUSE mounts do not report inodes; without one the outputs cannot be told apart
+            # by identity, so each is taken as its own file.
+            last[(st.st_dev, 0, s)] = s
             continue
         last[(st.st_dev, st.st_ino)] = s
     survivors = set(last.values())
@@ -395,8 +400,9 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
     """Write the approved frames into ``destination``, emptying it first.
 
     Refused before anything is removed when two frames would share an output name (case-folded where names fold
-    case, or where the output folder's file system folds case), when the destination is a source folder, or when it is, or contains, a source folder, the filesystem root
-    or the home folder, on the JS string rules and on resolved paths (see the module docstring). The checks run again
+    case, or where the output folder's file system folds case), when the destination is a source folder, or when it
+    is, or contains, a source folder, the filesystem root or the home folder, on the JS string rules and on resolved
+    paths (see the module docstring). The checks run again
     just before the emptying. If the folder cannot be fully emptied nothing is copied. ``outcomes`` says per frame
     whether it was "written" or is "missing"; a failure part way keeps the outputs already written as "written".
     """
