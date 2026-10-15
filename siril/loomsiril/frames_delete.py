@@ -17,6 +17,10 @@ is loomsiril.frames_cache.file_identity (FrameSelector.js 653). The rules, all f
 * A removal error is recorded as "failed".
 * A verdict is never recomputed here, and only manifest entries are touched: kept frames are left as they are.
 
+Beyond the JavaScript, for an irreversible deletion: the log is created exclusively (an existing log is never
+overwritten; a new name is chosen instead), made durable with fsync before the first removal, and file names that are
+not UTF-8 are written back as their original bytes.
+
 Dict keys keep the JS camelCase (``logPath``, ``autoVerdict``) so a manifest reads the same on both sides.
 """
 
@@ -38,6 +42,10 @@ Log = Optional[Callable[[str], None]]
 _log = logging.getLogger("loomsiril.frames_delete")
 
 LOG_FOLDER = os.path.join("Siril", "Loom-frame-selector")
+_MAX_LOG_ATTEMPTS = 1000
+_ENCODING = "utf-8"
+# File names are bytes on Linux; a name that is not UTF-8 is written back as the same bytes, not refused.
+_ERRORS = "surrogateescape"
 
 
 def log_dir(home: Optional[str] = None) -> str:
@@ -60,29 +68,71 @@ def _iso_from_ms(ms: int) -> str:
     return _iso_utc(base)
 
 
-def log_path(folder: str, when: datetime) -> str:
-    """``deleted-<ISO time with : and . replaced by ->.log`` inside ``folder`` (FrameSelector.js 1348-1349)."""
-    return os.path.join(folder, "deleted-" + _iso_utc(when).replace(":", "-").replace(".", "-") + ".log")
+def log_path(folder: str, when: datetime, attempt: int = 1) -> str:
+    """``deleted-<ISO time with : and . replaced by ->.log`` inside ``folder`` (FrameSelector.js 1348-1349).
+
+    Attempt 2 and later add ``-<attempt>`` before the extension, so an existing log is never chosen again.
+    """
+    stem = "deleted-" + _iso_utc(when).replace(":", "-").replace(".", "-")
+    suffix = "" if attempt == 1 else f"-{attempt}"
+    return os.path.join(folder, stem + suffix + ".log")
+
+
+def _js_text(v: Optional[str]) -> str:
+    """A string field as JavaScript concatenation prints it: null becomes "null"."""
+    return "null" if v is None else v
+
+
+def _report(log: Log, level: str, message: str) -> None:
+    """Route a diagnostic to ``log`` when given, else to the module logger at ``level``."""
+    if log is not None:
+        log(message)
+    else:
+        getattr(_log, level)(message)
+
+
+def _fsync_folder(folder: str) -> None:
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_new_text(path: str, text: str) -> None:
+    """Create ``path`` exclusively (mode "x") and make the text and its directory entry durable."""
+    with open(path, "x", encoding=_ENCODING, errors=_ERRORS, newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    _fsync_folder(os.path.dirname(path) or ".")
+
+
+def _remove(path: str) -> None:
+    os.remove(path)
 
 
 def write_manifest_log(manifest: Manifest, path: str, log: Log = None) -> bool:
     """Write the header and one line per entry, before anything is removed (FrameSelector.js 1279-1307).
 
     Each entry line is ``path TAB digest TAB verdict TAB reasons``, where the verdict is the override when one was
-    chosen (so the record says who chose it) and the automatic verdict otherwise. Returns False, and reports, when
-    the file cannot be written.
+    chosen (so the record says who chose it) and the automatic verdict otherwise. The file is created exclusively and
+    is durable (fsync-ed, and its folder fsync-ed) when this returns True. An existing file at ``path`` raises
+    FileExistsError for the caller to handle by choosing another name. Any other failure is reported and returns False.
     """
+    lines = ["# Loom Frame Selector",
+             "# built " + _iso_from_ms(manifest["created"]),
+             f"# {len(manifest['entries'])} frame(s) condemned"]
+    for e in manifest["entries"]:
+        lines.append("\t".join([e["path"], _js_text(e["digest"]), e["override"] or e["autoVerdict"],
+                                "; ".join(e["reasons"])]))
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        lines = ["# Loom Frame Selector",
-                 "# built " + _iso_from_ms(manifest["created"]),
-                 f"# {len(manifest['entries'])} frame(s) condemned"]
-        for e in manifest["entries"]:
-            lines.append("\t".join([e["path"], _js_text(e["digest"]), e["override"] or e["autoVerdict"],
-                                    "; ".join(e["reasons"])]))
-        _write_text(path, "\n".join(lines) + "\n")
+        _write_new_text(path, "\n".join(lines) + "\n")
         return True
-    except OSError as ex:
+    except FileExistsError:
+        raise
+    except Exception as ex:  # noqa: BLE001 - any failure to record means nothing is deleted
         _report(log, "error", f"could not write the deletion log: {ex}")
         return False
 
@@ -97,42 +147,20 @@ def append_outcome(path: str, manifest: Manifest, file_path: str, log: Log = Non
         if entry is None:
             return False
         line = "\t".join([entry["outcome"], entry["path"], _js_text(entry["digest"]), entry["detail"]]) + "\n"
-        with open(path, "a", encoding="utf-8", newline="\n") as f:
+        with open(path, "a", encoding=_ENCODING, errors=_ERRORS, newline="\n") as f:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
         return True
-    except OSError as ex:
+    except Exception as ex:  # noqa: BLE001 - an unrecorded removal is worse than a stopped run
         _report(log, "error", f"could not append to the journal: {ex}")
         return False
-
-
-def _js_text(v: Optional[str]) -> str:
-    """A string field as JavaScript concatenation prints it: null becomes "null"."""
-    return "null" if v is None else v
-
-
-def _write_text(path: str, text: str) -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-
-
-def _remove(path: str) -> None:
-    os.remove(path)
-
-
-def _report(log: Log, level: str, message: str) -> None:
-    """Route a diagnostic to ``log`` when given, else to the module logger at ``level``."""
-    if log is not None:
-        log(message)
-    else:
-        getattr(_log, level)(message)
 
 
 def execute(manifest: Manifest, on_progress: Optional[Callable[[int, int, str], Any]] = None, *,
             home: Optional[str] = None, now: Optional[datetime] = None, log: Log = None) -> dict[str, Any]:
     """Execute a manifest (FrameSelector.js 1350-1418). Never recomputes a verdict; never touches a file whose identity
-    has changed since it was measured.
+    has changed since it was measured, and only pending entries are acted on (a resumed manifest is not re-run).
 
     ``on_progress(done, total, path)`` is called before each pending file. ``home`` defaults to the user's home
     folder, ``now`` to the current time (UTC) and names the log, ``log`` receives diagnostics (default: the module
@@ -145,8 +173,17 @@ def execute(manifest: Manifest, on_progress: Optional[Callable[[int, int, str], 
         return result
 
     folder = log_dir(home)
-    path = log_path(folder, now if now is not None else datetime.now(timezone.utc))
-    if not write_manifest_log(manifest, path, log):
+    when = now if now is not None else datetime.now(timezone.utc)
+    path: Optional[str] = None
+    for attempt in range(1, _MAX_LOG_ATTEMPTS + 1):
+        candidate = log_path(folder, when, attempt)
+        try:
+            written = write_manifest_log(manifest, candidate, log)
+        except FileExistsError:
+            continue
+        path = candidate if written else None
+        break
+    if path is None:
         _report(log, "error", "nothing deleted: the log could not be written")
         return result
     result["logPath"] = path
@@ -163,6 +200,7 @@ def execute(manifest: Manifest, on_progress: Optional[Callable[[int, int, str], 
             _report(log, "warning", f"skipped {e['path']}: it changed since measurement")
             result["skipped"] += 1
             if not append_outcome(path, manifest, e["path"], log):
+                _report(log, "error", "stopping: the journal could not be appended")
                 result["stopped"] = True
                 return result
             continue
@@ -170,7 +208,7 @@ def execute(manifest: Manifest, on_progress: Optional[Callable[[int, int, str], 
             _remove(e["path"])
             frames.record_outcome(manifest, e["path"], "deleted", "")
             result["deleted"] += 1
-        except OSError as ex:
+        except Exception as ex:  # noqa: BLE001 - a removal error is recorded, the run goes on
             frames.record_outcome(manifest, e["path"], "failed", str(ex))
             result["failed"] += 1
         # Journalled one entry at a time, before moving on: a run interrupted midway keeps the record of what died.

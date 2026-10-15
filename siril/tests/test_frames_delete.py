@@ -240,3 +240,119 @@ def test_nothing_pending_writes_no_log(frames_in: dict[str, str], home: str) -> 
 
 def test_log_dir_is_under_the_home_folder(home: str) -> None:
     assert D.log_dir(home) == os.path.join(home, "Siril", "Loom-frame-selector")
+
+
+def test_same_time_twice_never_overwrites_the_first_log(frames_in: dict[str, str], home: str,
+                                                        tmp_path: Path) -> None:
+    first = D.execute(_manifest(_rejected_rows(frames_in)), home=home, now=NOW, log=lambda _m: None)
+    first_bytes = Path(first["logPath"]).read_bytes()
+    second_frames = {n: _write(tmp_path / ("again-" + n), n.encode() * 3) for n in ["a.fit", "b.fit", "c.fit"]}
+    rows = [_row(second_frames[n], F.REJECTED) for n in ["a.fit", "b.fit", "c.fit"]]
+    second = D.execute(_manifest(rows), home=home, now=NOW, log=lambda _m: None)
+    assert second["deleted"] == 3
+    assert second["logPath"] != first["logPath"]
+    assert second["logPath"].endswith("deleted-2026-10-15T10-52-11-123Z-2.log")
+    assert Path(first["logPath"]).read_bytes() == first_bytes
+    assert "frame(s) condemned" in Path(second["logPath"]).read_text(encoding="utf-8")
+
+
+def test_non_utf8_file_name_is_written_back_as_its_bytes(tmp_path: Path, home: str) -> None:
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    name = os.fsdecode(b"caf\xe9-light.fit")
+    path = os.path.join(str(folder), name)
+    Path(path).write_bytes(b"x" * 40)
+    rows = [_row(path, F.REJECTED)]
+    messages: list[str] = []
+    result = D.execute(_manifest(rows), home=home, now=NOW, log=messages.append)
+    assert result["deleted"] == 1 and result["stopped"] is False
+    assert not os.path.exists(path)
+    raw = Path(result["logPath"]).read_bytes()
+    assert os.fsencode(path) in raw
+    assert all("could not" not in m for m in messages)
+
+
+def test_unencodable_file_name_deletes_nothing(frames_in: dict[str, str], home: str,
+                                               tmp_path: Path) -> None:
+    lone = os.path.join(str(tmp_path / "frames"), "\ud800lone.fit")
+    rows = [_row(frames_in["a.fit"], F.REJECTED), {**_row(frames_in["b.fit"], F.REJECTED), "path": lone}]
+    messages: list[str] = []
+    result = D.execute(_manifest(rows), home=home, now=NOW, log=messages.append)
+    assert result["deleted"] == 0 and result["logPath"] is None
+    assert os.path.exists(frames_in["a.fit"]) and os.path.exists(frames_in["b.fit"])
+    assert any("could not write the deletion log" in m for m in messages)
+
+
+def test_symlink_frame_removes_the_link_and_keeps_the_target(tmp_path: Path, home: str) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = _write(outside / "real.fit", b"real frame" * 9)
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    link = str(folder / "link.fit")
+    os.symlink(target, link)
+    result = D.execute(_manifest([_row(link, F.REJECTED)]), home=home, now=NOW, log=lambda _m: None)
+    assert result["deleted"] == 1
+    assert not os.path.lexists(link)
+    assert os.path.exists(target) and Path(target).read_bytes() == b"real frame" * 9
+
+
+def test_journal_failing_mid_run_on_a_read_only_log_stops_it(frames_in: dict[str, str], home: str) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root writes read-only files")
+    holder: dict[str, str] = {}
+    original_remove = D._remove
+
+    def remove_then_lock(path: str) -> None:
+        original_remove(path)
+        if "log" not in holder:
+            holder["log"] = os.path.join(home, "Siril", "Loom-frame-selector")
+            log = [os.path.join(holder["log"], n) for n in os.listdir(holder["log"])][0]
+            os.chmod(log, 0o400)
+
+    D._remove = remove_then_lock  # type: ignore[assignment]
+    try:
+        manifest = _manifest(_rejected_rows(frames_in))
+        result = D.execute(manifest, home=home, now=NOW, log=lambda _m: None)
+    finally:
+        D._remove = original_remove
+        for n in os.listdir(holder["log"]):
+            os.chmod(os.path.join(holder["log"], n), 0o600)
+    assert result["stopped"] is True and result["deleted"] == 1
+    assert not os.path.exists(frames_in["a.fit"])
+    assert os.path.exists(frames_in["b.fit"]) and os.path.exists(frames_in["c.fit"])
+    assert [e["outcome"] for e in manifest["entries"]] == ["deleted", None, None]
+
+
+def test_journal_failure_in_the_skip_branch_stops_the_run(frames_in: dict[str, str], home: str,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    original = D.append_outcome
+
+    def fail_on_skip(path: str, manifest: dict[str, Any], file_path: str, log: Any = None) -> bool:
+        entry = next(e for e in manifest["entries"] if e["path"] == file_path)
+        if entry["outcome"] == "skipped":
+            return False
+        return original(path, manifest, file_path, log)
+
+    monkeypatch.setattr(D, "append_outcome", fail_on_skip)
+    manifest = _manifest(_rejected_rows(frames_in))
+    Path(frames_in["a.fit"]).write_bytes(b"changed bytes here")
+    result = D.execute(manifest, home=home, now=NOW, log=lambda _m: None)
+    assert result["stopped"] is True
+    assert result["skipped"] == 1 and result["deleted"] == 0
+    assert os.path.exists(frames_in["a.fit"]) and os.path.exists(frames_in["b.fit"])
+    assert os.path.exists(frames_in["c.fit"])
+
+
+def test_resumed_manifest_acts_only_on_pending_entries(frames_in: dict[str, str], home: str) -> None:
+    manifest = _manifest(_rejected_rows(frames_in))
+    F.record_outcome(manifest, frames_in["a.fit"], "deleted", "")  # already done in an earlier run
+    F.record_outcome(manifest, frames_in["b.fit"], "failed", "denied")  # already failed; not retried
+    result = D.execute(manifest, home=home, now=NOW, log=lambda _m: None)
+    assert result["deleted"] == 1 and result["failed"] == 0 and result["skipped"] == 0
+    assert os.path.exists(frames_in["a.fit"]) and os.path.exists(frames_in["b.fit"])
+    assert not os.path.exists(frames_in["c.fit"])
+    assert [e["outcome"] for e in manifest["entries"]] == ["deleted", "failed", "deleted"]
+    lines = _lines(result["logPath"])
+    assert lines[2] == "# 3 frame(s) condemned"
+    assert lines[-1].startswith(f"deleted\t{frames_in['c.fit']}\t")
