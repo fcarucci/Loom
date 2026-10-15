@@ -8,14 +8,23 @@ output, so every figure below is one Siril wrote or one Siril fitted. No star fi
 Route, for one batch of up to 8 frames of one channel:
 
 1. The work directory is emptied. Input ``i`` (1-based, in batch order) becomes the link ``fs_<i:05d>.fit`` to the
-   source file. A source that is not FITS (``.fit .fits .fts``, optionally ``.fz``, any case) is loaded through
-   sirilpy and written there as a FITS file of the same name instead.
-2. Siril's working directory is remembered, Siril enters the work directory, ``setfindstar reset`` fixes the star
-   finder, ``register fs_ -2pass`` writes the sequence file ``fs_.seq`` and one star list per image in
-   ``cache/``. Siril is always sent back to the remembered directory, also after a failure.
-3. ``fs_.seq`` is read: its ``S`` count must equal the batch size and its ``I`` indices must be exactly 1..n.
-   Results are matched to inputs by our own index, never by position in a listing.
+   absolute source path. A source that is not FITS (``.fit .fits .fts``, optionally ``.fz``, any case) is read
+   with ``siril.load_image_from_file(path, with_pixels=True)``, whose pixels are its ``data``, and written there
+   as a FITS file of the same name. That call does not change the image open in Siril. A source without pixels
+   is a problem for the whole batch.
+2. Siril's working directory and its star-finder focal length and pixel size are read. Siril enters the work
+   directory, ``setfindstar reset`` resets the star finder, and ``register fs_ -2pass`` writes the sequence file
+   ``fs_.seq`` and one star list per image in ``cache/``. Afterwards Siril is sent back to the remembered
+   directory and the focal length and pixel size are set again (``setfindstar -focal=... -pixelsize=...``). The
+   other star-finder settings (sigma, radius, roundness, profile, relax, magnitude limits, convergence) cannot be
+   read from Siril: they are reset for the batch and not restored, and each batch logs that. A failure to send
+   Siril back is logged, not raised, so it does not hide the result.
+3. ``fs_.seq`` is read: its ``S`` count must equal the batch size, its ``I`` indices must be exactly 1..n, and the
+   registration layer must hold exactly n rows, so rows cannot shift. Results are matched to inputs by our own
+   index, never by position in a listing. Siril caps the star count at ``max_stars`` (2000 after the reset).
 4. The work directory is deleted. It holds links only; they are removed, never followed.
+
+Not safe to run concurrently against one Siril: the working directory and the star-finder settings are global.
 
 Mapping from the Frame Selector fields to the Siril figures (Siril 1.4.4):
 
@@ -24,19 +33,21 @@ field          Siril figure
 =============  ==============================================================================================
 fwhm           ``R`` line fwhm (px) of the registration layer
 eccentricity   sqrt(1 - roundness^2), roundness = ``R`` line roundness (minor / major FWHM)
-stars          ``R`` line nbstars (Siril caps the count at its ``maxstars`` setting)
-psfSNR         median over the star list of A (fitted peak) divided by the ``M`` line bgnoise
-psfFlux        median over the star list of 10^(-0.4 mag) (Siril's fitted Gaussian flux)
-background     ``M`` line median (image median)
-noise          ``M`` line bgnoise (background noise, same units as the background)
+stars          ``R`` line nbstars (capped at Siril's max_stars)
+psfSNR         median over the star list of A (fitted peak) divided by the ``M`` line bgnoise (a ratio, unscaled)
+psfFlux        median over the star list of 10^(-0.4 mag) (Siril's fitted Gaussian flux), divided by normValue
+background     ``M`` line median, divided by normValue
+noise          ``M`` line bgnoise, divided by normValue
 snrWeight      none (Siril has no SNR estimate); always None
 altitude       supplied by the caller (from the FITS header)
 =============  ==============================================================================================
 
+Units: the ``M`` line normValue is the scale Siril reads the frame on (65535 for 16-bit data; the float scale for
+float data). Dividing background, noise and psfFlux by it puts 16-bit, float and XISF frames of one channel on
+the same 0..1 scale. A frame without a usable normValue gets None for those three.
+
 A frame whose ``R`` line is all zero (registration failed, too few stars) is measured again with
 ``siril.analyse_image_from_file(path)`` for fwhm, roundness and star count. A frame with neither is unmeasurable.
-
-Loading a non-FITS source with sirilpy makes it the image open in Siril; that side effect is Siril's, not hidden.
 """
 
 from __future__ import annotations
@@ -57,6 +68,10 @@ from loomsiril.siril_bridge import planes_from_pixeldata
 MEASURE_CONFIG = "setfindstar reset; register fs_ -2pass"  # goes into the cache key elsewhere
 SEQ = "fs_"
 
+RESET_NOTE = ("setfindstar reset: sigma, radius, roundness, profile, relax, magnitude limits and convergence are "
+              "reset for this batch and not restored (Siril does not report them); focal length and pixel size "
+              "are restored")
+
 _MISSING = -999999.0
 _R_FIELDS = ("fwhm", "wfwhm", "roundness", "quality", "background", "nbstars")
 _M_FIELDS = ("total", "ngoodpix", "mean", "median", "sigma", "avgDev", "mad", "sqrtbwmv", "location", "scale",
@@ -68,13 +83,17 @@ _R_KEY = re.compile(r"^R(\d+)$")
 _M_KEY = re.compile(r"^M(\d+)-(\d+)$")
 
 
+class _CommandFailed(RuntimeError):
+    """A Siril command that raised or returned False."""
+
+
+class _BatchError(RuntimeError):
+    """A problem that abandons the whole batch; the message is the problem."""
+
+
 def link_name(i: int) -> str:
     """The work-directory name of input ``i`` (1-based): ``fs_00001.fit`` for 1."""
     return f"{SEQ}{i:05d}.fit"
-
-
-def _number(text: str) -> float:
-    return float(text)
 
 
 def _missing_or(value: float) -> Optional[float]:
@@ -84,7 +103,7 @@ def _missing_or(value: float) -> Optional[float]:
 def parse_seq(text: str) -> dict[str, Any]:
     """A Siril 1.4.4 sequence file. Keys: the S fields (``name``, ``start``, ``count``, ...), ``layers`` (the L
     line), ``included`` ({index: 0/1}, index 1-based), ``sizes`` ({index: (w, h)} for variable-size sequences),
-    ``R`` ({layer: [row, ...]} in index order; a row has the R fields and ``H`` is left out) and ``M``
+    ``R`` ({layer: [row, ...]} in index order; a row has the R fields, the H matrix is left out) and ``M``
     ({(layer, index0): {field: value or None}}; -999999 is None)."""
     seq: dict[str, Any] = {"name": None, "layers": None, "included": {}, "sizes": {}, "R": {}, "M": {}}
     for s_field in _S_FIELDS:
@@ -114,11 +133,13 @@ def parse_seq(text: str) -> dict[str, Any]:
                 seq["sizes"][index] = (int(w), int(h))
         elif _R_KEY.match(key):
             layer = int(_R_KEY.match(key).group(1))
-            vals = [_number(v) for v in parts[1:7]]
+            vals = [float(v) for v in parts[1:7]]
+            if len(vals) != len(_R_FIELDS):
+                raise ValueError(f"bad R line: {line!r}")
             seq["R"].setdefault(layer, []).append(dict(zip(_R_FIELDS, vals)) | {"nbstars": int(vals[5])})
         elif _M_KEY.match(key):
             layer, index0 = (int(g) for g in _M_KEY.match(key).groups())
-            vals = [_missing_or(_number(v)) for v in parts[1:1 + len(_M_FIELDS)]]
+            vals = [_missing_or(float(v)) for v in parts[1:1 + len(_M_FIELDS)]]
             if len(vals) != len(_M_FIELDS):
                 raise ValueError(f"bad M line: {line!r}")
             seq["M"][(layer, index0)] = dict(zip(_M_FIELDS, vals))
@@ -175,6 +196,9 @@ def batch_problem(seq: dict[str, Any], n: int) -> Optional[str]:
     for index in sorted(included):
         if not 1 <= index <= n:
             return f"sequence has image index {index} outside 1..{n}"
+    layer = registration_layer(seq)
+    if layer is not None and len(seq["R"][layer]) != n:
+        return f"sequence has {len(seq['R'][layer])} registration rows for layer {layer}, batch has {n}"
     return None
 
 
@@ -202,9 +226,16 @@ def _fallback_usable(fb: Any) -> bool:
     return fb is not None and _finite(_get(fb, "fwhm")) and _get(fb, "fwhm") > 0
 
 
+def _scaled(value: Optional[float], scale: Optional[float]) -> Optional[float]:
+    return value / scale if value is not None and scale is not None else None
+
+
 def metrics_from_siril(r: Optional[Mapping[str, Any]], m: Optional[Mapping[str, Any]], stars: list[dict[str, Any]],
                        fallback: Any, altitude: Optional[float]) -> Optional[dict[str, Any]]:
-    """The stored metrics of one frame (keys: ``frames.STORED_KEYS``), or None when the frame is unmeasurable."""
+    """The stored metrics of one frame (keys: ``frames.STORED_KEYS``), or None when the frame is unmeasurable.
+
+    background, noise and psfFlux are divided by the M line's normValue (see the module docstring); psfSNR is a
+    ratio of the raw star peak to the raw background noise."""
     if _r_usable(r):
         source: Any = r
     elif _fallback_usable(fallback):
@@ -217,21 +248,24 @@ def metrics_from_siril(r: Optional[Mapping[str, Any]], m: Optional[Mapping[str, 
     nb = _get(source, "nbstars")
     star_count = int(nb) if _finite(nb) else None
 
-    background = m.get("median") if m is not None else None
-    noise = m.get("bgnoise") if m is not None else None
+    raw_background = m.get("median") if m is not None else None
+    raw_noise = m.get("bgnoise") if m is not None else None
+    norm = m.get("normValue") if m is not None else None
+    scale = norm if _finite(norm) and norm > 0 else None
 
     psf_snr = None
-    if stars and _finite(noise) and noise > 0:
+    if stars and _finite(raw_noise) and raw_noise > 0:
         peaks = [s["A"] for s in stars if _finite(s.get("A"))]
         if peaks:
-            psf_snr = median([a / noise for a in peaks])
+            psf_snr = median([a / raw_noise for a in peaks])
     psf_flux = None
     mags = [s["mag"] for s in stars if _finite(s.get("mag"))]
     if mags:
-        psf_flux = median([10 ** (-0.4 * mag) for mag in mags])
+        psf_flux = _scaled(median([10 ** (-0.4 * mag) for mag in mags]), scale)
 
-    out = {"fwhm": fwhm, "eccentricity": ecc, "noise": noise, "stars": star_count, "psfSNR": psf_snr,
-           "background": background, "snrWeight": None, "altitude": altitude, "psfFlux": psf_flux}
+    out = {"fwhm": fwhm, "eccentricity": ecc, "noise": _scaled(raw_noise, scale), "stars": star_count,
+           "psfSNR": psf_snr, "background": _scaled(raw_background, scale), "snrWeight": None,
+           "altitude": altitude, "psfFlux": psf_flux}
     return {k: out[k] for k in STORED_KEYS}
 
 
@@ -239,25 +273,8 @@ def _is_fits(path: str) -> bool:
     return _FITS_NAME.search(os.path.basename(path)) is not None
 
 
-def _attr(obj: Any, names: tuple[str, ...]) -> Any:
-    for name in names:
-        value = _get(obj, name)
-        if value is not None:
-            return value
-    return None
-
-
-def _load_pixels(siril: Any, path: str) -> Any:
-    """Pixels of a non-FITS source as sirilpy gives them (bottom-up, as Siril holds them)."""
-    loaded = siril.load_image_from_file(path, with_pixels=True)
-    pixels = loaded if hasattr(loaded, "shape") else _attr(loaded, ("pixeldata", "data"))
-    if pixels is None:
-        pixels = siril.get_image_pixeldata()
-    return pixels
-
-
 def _cmd(siril: Any, text: str) -> None:
-    """One Siril command; any exception from ``cmd`` is a failed command."""
+    """One Siril command; any exception from ``cmd`` (or a False return) is a failed command."""
     try:
         if siril.cmd(text) is False:
             raise RuntimeError("Siril reported that the command failed")
@@ -265,18 +282,32 @@ def _cmd(siril: Any, text: str) -> None:
         raise _CommandFailed(f"{text}: {exc}") from exc
 
 
-class _CommandFailed(RuntimeError):
-    pass
+def _read_prefs(siril: Any) -> dict[str, Any]:
+    """The star-finder focal length and pixel size, as Siril stores them (what ``setfindstar reset`` may change)."""
+    return {"focal_length": siril.get_siril_config("starfinder", "focal_length"),
+            "pixel_size": siril.get_siril_config("starfinder", "pixel_size")}
 
 
-def _link_inputs(siril: Any, paths: list[str], work_dir: str) -> None:
-    for i, path in enumerate(paths, start=1):
+def _restore_text(prefs: Mapping[str, Any]) -> Optional[str]:
+    parts = []
+    if prefs.get("focal_length") is not None:
+        parts.append(f"-focal={float(prefs['focal_length'])!r}")
+    if prefs.get("pixel_size") is not None:
+        parts.append(f"-pixelsize={float(prefs['pixel_size'])!r}")
+    return command_text("setfindstar", *parts) if parts else None
+
+
+def _link_inputs(siril: Any, abs_paths: list[str], work_dir: str) -> None:
+    for i, path in enumerate(abs_paths, start=1):
         dst = os.path.join(work_dir, link_name(i))
         if _is_fits(path):
             os.symlink(path, dst)
-        else:
-            planes = planes_from_pixeldata(_load_pixels(siril, path))
-            write_fits(dst, planes)
+            continue
+        loaded = siril.load_image_from_file(path, with_pixels=True)
+        data = _get(loaded, "data") if loaded is not None else None
+        if data is None:
+            raise _BatchError(f"no pixels for {path}")
+        write_fits(dst, planes_from_pixeldata(data))
 
 
 def _read_seq(work_dir: str, n: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -300,57 +331,83 @@ def _read_stars(work_dir: str, i: int) -> list[dict[str, Any]]:
         return parse_star_list(fh.read())
 
 
+def _leave(siril: Any, wd0: Optional[str], prefs: Optional[Mapping[str, Any]], note: Callable[[str], None]) -> None:
+    """Send Siril back to its directory and restore its focal length and pixel size. Failures are logged only."""
+    if wd0 is not None:
+        try:
+            _cmd(siril, command_text("cd", quote_path(wd0)))
+        except Exception as exc:
+            note(f"cannot return Siril to {wd0}: {exc}")
+    if prefs is not None:
+        text = _restore_text(prefs)
+        if text is not None:
+            try:
+                _cmd(siril, text)
+            except Exception as exc:
+                note(f"cannot restore star-finder settings: {exc}")
+
+
 def measure_batch(siril: Any, paths: list[str], work_dir: str,
                   altitude_of: Optional[Callable[[str], Optional[float]]] = None,
                   log: Optional[Callable[[str], None]] = None) -> tuple[dict[str, Optional[dict[str, Any]]],
                                                                         Optional[str]]:
     """Measure one batch of up to 8 frames of one channel through Siril's registration.
 
-    Returns ``(results, problem)``: ``results`` maps each input path to its metrics (None when unmeasurable);
-    ``problem`` is None, or the reason the batch was abandoned (then ``results`` is empty). A failed register
-    leaves every frame to the fallback alone. Nothing is printed; ``log`` gets the failed steps."""
+    Returns ``(results, problem)``: ``results`` maps each input path (as given) to its metrics, None when
+    unmeasurable; ``problem`` is None, or the reason the batch was abandoned (then ``results`` is empty). A failed
+    register leaves every frame to the fallback alone. Nothing is printed; ``log`` gets the notes and the failed
+    steps. Not safe to run concurrently against one Siril."""
+    note = log or (lambda _text: None)
     seen: set[str] = set()
     for p in paths:
-        if p in seen:
+        key = os.path.abspath(p)
+        if key in seen:
             return {}, f"duplicate path: {p}"
-        seen.add(p)
-    note = log or (lambda _text: None)
+        seen.add(key)
     n = len(paths)
+    abs_paths = [os.path.abspath(p) for p in paths]
+    work_dir = os.path.abspath(work_dir)
 
     if os.path.lexists(work_dir):
         shutil.rmtree(work_dir)
     os.makedirs(work_dir)
     try:
         try:
-            _link_inputs(siril, paths, work_dir)
+            _link_inputs(siril, abs_paths, work_dir)
+        except _BatchError as exc:
+            return {}, str(exc)
         except Exception as exc:
             return {}, f"cannot prepare the batch: {exc}"
 
-        wd0 = siril.get_siril_wd()
         seq: Optional[dict[str, Any]] = None
+        wd0: Optional[str] = None
+        prefs: Optional[dict[str, Any]] = None
         try:
+            wd0 = siril.get_siril_wd()
+            prefs = _read_prefs(siril)
             _cmd(siril, command_text("cd", quote_path(work_dir)))
             _cmd(siril, command_text("setfindstar", "reset"))
+            note(RESET_NOTE)
             try:
-                _cmd(siril, command_text("register", f"{SEQ}", "-2pass"))
+                _cmd(siril, command_text("register", SEQ, "-2pass"))
+            except _CommandFailed as exc:
+                note(f"register failed, fallback only: {exc}")
+            else:
                 seq, problem = _read_seq(work_dir, n)
                 if problem is not None:
                     return {}, problem
-            except _CommandFailed as exc:
-                note(f"register failed, fallback only: {exc}")
-        except _CommandFailed as exc:
+        except Exception as exc:
             return {}, f"cannot run Siril commands: {exc}"
         finally:
-            _cmd(siril, command_text("cd", quote_path(wd0)))
+            _leave(siril, wd0, prefs, note)
 
         layer = registration_layer(seq) if seq is not None else None
         results: dict[str, Optional[dict[str, Any]]] = {}
-        for i, path in enumerate(paths, start=1):
+        for i, (path, abs_path) in enumerate(zip(paths, abs_paths), start=1):
             r = None
             m = None
             if seq is not None and layer is not None:
-                rows = seq["R"][layer]
-                r = rows[i - 1] if i - 1 < len(rows) else None
+                r = seq["R"][layer][i - 1]
                 m = seq["M"].get((layer, i - 1))
             try:
                 stars = _read_stars(work_dir, i)
@@ -359,7 +416,7 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
             fallback = None
             if not _r_usable(r):
                 try:
-                    fallback = siril.analyse_image_from_file(path)
+                    fallback = siril.analyse_image_from_file(abs_path)
                 except Exception as exc:
                     note(f"analyse failed for {path}: {exc}")
             altitude = altitude_of(path) if altitude_of is not None else None

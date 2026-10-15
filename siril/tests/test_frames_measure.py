@@ -13,6 +13,7 @@ import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import numpy as np
 import pytest
@@ -197,11 +198,11 @@ def test_metrics_normal_frame_keys_and_values() -> None:
     assert out["fwhm"] == pytest.approx(3.07018)
     assert out["eccentricity"] == pytest.approx(math.sqrt(1 - 0.986754 ** 2))
     assert out["stars"] == 117
-    assert out["background"] == pytest.approx(MONO_A_MEDIAN)
-    assert out["noise"] == pytest.approx(MONO_A_BGNOISE)
+    assert out["background"] == pytest.approx(MONO_A_MEDIAN / 65535)
+    assert out["noise"] == pytest.approx(MONO_A_BGNOISE / 65535)
     assert out["psfSNR"] == pytest.approx(STAR_A_IMG1[1] / MONO_A_BGNOISE)
     flux = sorted(10 ** (-0.4 * m_) for m_ in STAR_MAG_IMG1)[1]
-    assert out["psfFlux"] == pytest.approx(flux)
+    assert out["psfFlux"] == pytest.approx(flux / 65535)
     assert out["snrWeight"] is None
     assert out["altitude"] == 61.5
     assert frames.frame_valid(out)
@@ -242,7 +243,7 @@ def test_metrics_missing_m_line_gives_no_background_or_snr() -> None:
     seq = _mono()
     out = fm.metrics_from_siril(seq["R"][0][0], None, _stars(), None, None)
     assert out["background"] is None and out["noise"] is None and out["psfSNR"] is None
-    assert out["psfFlux"] is not None
+    assert out["psfFlux"] is None  # no M line, so no normValue to scale by
 
 
 # ---- measure_batch against a stub (no Siril) -------------------------------------------------------------------
@@ -253,31 +254,55 @@ class CommandError(Exception):
 
 class FakeSiril:
     """Records every command. ``cd`` changes the directory it reports; ``register`` writes the fixture sequence
-    and two star lists into the current directory, as Siril would for a batch of 12."""
+    and two star lists into the current directory, as Siril would for a batch of 12. Switches make each Siril call
+    fail on request."""
 
-    def __init__(self, wd: str, register_error: bool = False) -> None:
+    def __init__(self, wd: str, register_error: bool = False, config_error: bool = False,
+                 config: Optional[dict] = None) -> None:
         self.wd = wd
         self.cwd = wd
         self.register_error = register_error
+        self.config_error = config_error
+        self.config = config if config is not None else {"focal_length": 600.0, "pixel_size": 3.76}
+        self.fail_cd_back = False
+        self.wd_error = False
+        self.load_data = True
         self.commands: list[str] = []
         self.links_during_register: dict[str, str] = {}
         self.loaded: list[str] = []
         self.analysed: list[str] = []
         self.pixels = None
+        self.seen_at_register: dict[str, object] = {}
 
     def get_siril_wd(self) -> str:
+        if self.wd_error:
+            raise CommandError("no working directory")
         return self.wd
+
+    def get_siril_config(self, section: str, key: str):
+        if self.config_error:
+            raise CommandError("configuration key not found")
+        return self.config[key]
 
     def cmd(self, text: str) -> bool:
         self.commands.append(text)
         if text.startswith('cd "'):
-            self.cwd = text[len('cd "'):-1]
+            target = text[len('cd "'):-1]
+            if self.fail_cd_back and target == self.wd:
+                raise CommandError("cd refused")
+            self.cwd = target
             return True
         if text == "register fs_ -2pass":
             for name in sorted(os.listdir(self.cwd)):
                 full = os.path.join(self.cwd, name)
                 if name.startswith("fs_") and os.path.islink(full):
                     self.links_during_register[name] = os.readlink(full)
+            if os.path.isfile(os.path.join(self.cwd, "fs_00012.fit")):
+                from loomsiril.io_fits import read_fits
+                planes = read_fits(os.path.join(self.cwd, "fs_00012.fit"))[0]
+                self.seen_at_register["fs_00012_regular"] = not os.path.islink(os.path.join(self.cwd, "fs_00012.fit"))
+                self.seen_at_register["fs_00012_shape"] = planes[0].shape
+                self.seen_at_register["fs_00012_max"] = float(np.max(planes[0]))
             if self.register_error:
                 raise CommandError("register failed")
             shutil.copy(FIXTURES / "mono.seq", os.path.join(self.cwd, "fs_.seq"))
@@ -290,12 +315,12 @@ class FakeSiril:
         self.analysed.append(path)
         return SimpleNamespace(fwhm=2.89, roundness=0.989, nbstars=10, wfwhm=0.0)
 
-    def load_image_from_file(self, path: str, with_pixels: bool = True) -> SimpleNamespace:
+    def load_image_from_file(self, path: str, with_pixels: bool = True):
         self.loaded.append(path)
-        return SimpleNamespace(pixeldata=self.pixels)
+        return SimpleNamespace(data=self.pixels) if self.load_data else None
 
     def get_image_pixeldata(self):
-        return self.pixels
+        raise AssertionError("the open image must not be read")
 
 
 def _names(n: int) -> list[str]:
@@ -316,7 +341,7 @@ def test_measure_batch_keys_by_path_in_any_order(tmp_path) -> None:
     assert results[order[0]]["stars"] == 117
     seq = _mono()
     assert results[order[5]]["fwhm"] == pytest.approx(seq["R"][0][5]["fwhm"])
-    assert results[order[5]]["background"] == pytest.approx(seq["M"][(0, 5)]["median"])
+    assert results[order[5]]["background"] == pytest.approx(seq["M"][(0, 5)]["median"] / 65535)
 
 
 def test_measure_batch_links_point_at_sources_during_register(tmp_path) -> None:
@@ -336,7 +361,8 @@ def test_measure_batch_command_text_and_cd_restored(tmp_path) -> None:
     assert siril.commands[0] == f'cd "{tmp_path / "work"}"'
     assert siril.commands[1] == "setfindstar reset"
     assert siril.commands[2] == "register fs_ -2pass"
-    assert siril.commands[-1] == f'cd "{wd0}"'
+    assert siril.commands[-2] == f'cd "{wd0}"'
+    assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
     assert siril.cwd == wd0
 
 
@@ -348,7 +374,7 @@ def test_measure_batch_cd_restored_when_register_raises(tmp_path) -> None:
     results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
     assert problem is None
     assert siril.cwd == wd0
-    assert siril.commands[-1] == f'cd "{wd0}"'
+    assert siril.commands[-2] == f'cd "{wd0}"'
     # no sequence and no star lists: every frame has only the fallback, which this stub gives for each
     assert all(results[n] is not None and results[n]["stars"] == 10 for n in names)
     assert all(results[n]["background"] is None for n in names)
@@ -400,22 +426,25 @@ def test_measure_batch_non_fits_source_is_loaded_and_written(tmp_path) -> None:
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
-    siril.pixels = np.arange(30 * 40, dtype=np.uint16).reshape(30, 40)
-    seen_work: dict[str, bool] = {}
-    original_register = siril.cmd
-
-    def watching_cmd(text: str) -> bool:
-        if text == "register fs_ -2pass":
-            seen_work["fs_00012.fit_is_file"] = os.path.isfile(os.path.join(siril.cwd, "fs_00012.fit")) and not \
-                os.path.islink(os.path.join(siril.cwd, "fs_00012.fit"))
-        return original_register(text)
-
-    siril.cmd = watching_cmd
+    siril.pixels = np.full((30, 40), 65535, dtype=np.uint16)
     results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
     assert problem is None
     assert siril.loaded == ["/frames/light_12.xisf"]
-    assert seen_work == {"fs_00012.fit_is_file": True}
+    assert siril.seen_at_register == {"fs_00012_regular": True, "fs_00012_shape": (30, 40),
+                                      "fs_00012_max": pytest.approx(1.0)}
     assert results["/frames/light_12.xisf"]["fwhm"] == pytest.approx(2.89)
+
+
+def test_measure_batch_source_without_pixels_is_a_batch_problem(tmp_path) -> None:
+    names = _names(11) + ["/frames/light_12.xisf"]
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    siril.load_data = False
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
+    assert results == {}
+    assert problem == "no pixels for /frames/light_12.xisf"
+    assert siril.commands == []
 
 
 def test_measure_batch_log_gets_failed_register(tmp_path) -> None:
@@ -425,6 +454,112 @@ def test_measure_batch_log_gets_failed_register(tmp_path) -> None:
     notes: list[str] = []
     fm.measure_batch(FakeSiril(wd0, register_error=True), names, str(tmp_path / "work"), log=notes.append)
     assert any("register failed" in n for n in notes)
+
+
+def test_units_16bit_and_float_frames_agree() -> None:
+    seq = _mono()
+    r, m16 = seq["R"][0][0], seq["M"][(0, 0)]
+    stars16 = _stars()
+    out16 = fm.metrics_from_siril(r, m16, stars16, None, None)
+    # the same frame read as float: values divided by 65535 and normValue 1; a magnitude is 2.5 log10(65535) fainter
+    shift = 2.5 * math.log10(65535)
+    m_float = dict(m16, median=m16["median"] / 65535, bgnoise=m16["bgnoise"] / 65535, normValue=1.0)
+    stars_float = [dict(s, A=s["A"] / 65535, mag=s["mag"] + shift) for s in stars16]
+    out_float = fm.metrics_from_siril(r, m_float, stars_float, None, None)
+    for key in ("background", "noise", "psfFlux", "psfSNR"):
+        assert out_float[key] == pytest.approx(out16[key], rel=1e-9), key
+    assert out16["background"] == pytest.approx(MONO_A_MEDIAN / 65535)
+
+
+def test_metrics_without_normvalue_gives_no_scaled_figures() -> None:
+    seq = _mono()
+    m = dict(seq["M"][(0, 0)], normValue=None)
+    out = fm.metrics_from_siril(seq["R"][0][0], m, _stars(), None, None)
+    assert out["background"] is None and out["noise"] is None and out["psfFlux"] is None
+    assert out["psfSNR"] == pytest.approx(STAR_A_IMG1[1] / MONO_A_BGNOISE)
+
+
+def test_batch_problem_registration_rows_must_match() -> None:
+    seq = _mono()
+    seq["R"][0] = seq["R"][0][:11]
+    assert "11 registration rows" in fm.batch_problem(seq, 12)
+
+
+def test_measure_batch_restores_focal_length_and_pixel_size(tmp_path) -> None:
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    notes: list[str] = []
+    siril = FakeSiril(wd0)
+    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"), log=notes.append)
+    assert problem is None and results
+    assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
+    assert any("sigma" in n and "not restored" in n for n in notes)
+
+
+def test_measure_batch_missing_pixel_size_is_not_restored(tmp_path) -> None:
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0, config={"focal_length": None, "pixel_size": 3.76})
+    fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    assert siril.commands[-1] == "setfindstar -pixelsize=3.76"
+
+
+def test_measure_batch_unreadable_settings_abandon_batch(tmp_path) -> None:
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0, config_error=True)
+    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    assert results == {}
+    assert problem.startswith("cannot run Siril commands")
+    assert "register fs_ -2pass" not in siril.commands
+    assert not any(c.startswith("setfindstar reset") for c in siril.commands)
+
+
+def test_measure_batch_cd_back_failure_is_logged_not_masking(tmp_path) -> None:
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    notes: list[str] = []
+    siril = FakeSiril(wd0)
+    siril.fail_cd_back = True
+    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"), log=notes.append)
+    assert problem is None
+    assert results[_names(12)[0]]["fwhm"] == pytest.approx(3.07018)
+    assert any(n.startswith("cannot return Siril") for n in notes)
+
+
+def test_measure_batch_quote_error_is_a_problem(tmp_path) -> None:
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    work = tmp_path / 'bad"name'
+    siril = FakeSiril(wd0)
+    results, problem = fm.measure_batch(siril, _names(12), str(work))
+    assert results == {}
+    assert problem.startswith("cannot run Siril commands")
+    assert "register fs_ -2pass" not in siril.commands
+    assert not work.exists()
+
+
+def test_measure_batch_working_directory_error_is_a_problem(tmp_path) -> None:
+    siril = FakeSiril(str(tmp_path))
+    siril.wd_error = True
+    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    assert results == {}
+    assert problem.startswith("cannot run Siril commands")
+    assert siril.commands == []
+
+
+def test_measure_batch_relative_paths_become_absolute(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    rel = [f"frames/light_{k:02d}.fit" for k in range(1, 13)]
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    results, problem = fm.measure_batch(siril, rel, str(tmp_path / "work"))
+    assert problem is None
+    assert set(results) == set(rel)
+    assert siril.links_during_register == {
+        fm.link_name(i): os.path.abspath(rel[i - 1]) for i in range(1, 13)}
+    assert siril.analysed == [os.path.abspath(rel[11])]
 
 
 # ---- real Siril (skipped locally, runs in the Siril image) -----------------------------------------------------
@@ -473,6 +608,13 @@ from loomsiril.frames_measure import measure_batch
 base = sys.argv[1]
 siril = s.SirilInterface()
 siril.connect()
+
+
+def prefs():
+    return [siril.get_siril_config("starfinder", "focal_length"), siril.get_siril_config("starfinder", "pixel_size")]
+
+
+before = prefs()
 names_a = ["f%02d" % i for i in range(1, 9)]
 names_b = ["f09", "f10", "f11", "f12", "f01", "f02", "f03", "f04"]
 for label, names in (("a", names_a), ("b", names_b)):
@@ -484,6 +626,7 @@ for label, names in (("a", names_a), ("b", names_b)):
     for name, p in zip(names, paths):
         m = results[p]
         print("m." + name + "=" + json.dumps(m))
+print("prefs=" + json.dumps([before, prefs()], default=str))
 '''
 
 
@@ -506,3 +649,5 @@ def test_measure_batch_in_siril_separates_the_frames(tmp_path) -> None:
     assert got["f11"]["psfFlux"] < 0.75 * median_flux
     assert got["f11"]["background"] > 1.05 * median_bg
     assert got["f12"] is not None and got["f12"]["stars"] < 20
+    before, after = run.value("prefs")
+    assert before == after
