@@ -22,10 +22,10 @@ Storage: :class:`OptionsStore` is a JSON file, ``loomsiril-frame-selector.json``
 (``siril.get_siril_configdir()``, as loomsiril-fly-drafts is kept). The darks folder and the master-flats box are
 stored under the same keys as the PixInsight Settings (``Loom/importDarksFolder``, ``Loom/importMasterFlatsOnly``), so
 :mod:`loomsiril.master_flat` reads and writes them through the store unchanged. The rest is one object under the key
-``FrameSelector``, which carries ``"version": 1``. A missing, unreadable or corrupt file reads as the defaults; an object
-of another or unknown version (including one without a version) reads as the defaults with a warning; a bad value is
-dropped on its own and the rest is kept. Writes are atomic (a temporary file in the same folder, then ``os.replace``); a failed write logs a
-warning and does not raise.
+``FrameSelector``, which carries ``"version": 1``. A missing, unreadable or corrupt file reads as the defaults; an
+object of another or unknown version (including one without a version) reads as the defaults with a warning; a bad
+value is dropped on its own and the rest is kept. Writes are atomic (a temporary file in the same folder, then
+``os.replace``); a failed write logs a warning and does not raise.
 
 Names are the JS names in snake_case. Keys in the stored object follow the JS camelCase (``sourceFolder``), and the
 criteria keep the metric names of :mod:`loomsiril.frames` (``psfSNR``, ``fwhm``, ``eccentricity``, ``stars``).
@@ -283,9 +283,9 @@ def remember_from_state(
 ) -> FrameSelectorOptions:
     """What the dialog remembers on close, as a new options object. ``settings`` is the current channel's settings.
 
-    The preset, the criteria, the limits and the weights come from the channel. k is kept only when the channel's k was edited by
-    hand (kEdited); otherwise the preset decides it next time. A folder or the master-flats box that is passed as None
-    keeps the value in ``options``. Nothing is written: :func:`save` does that.
+    The preset, the criteria, the limits and the weights come from the channel. k is kept only when the channel's k was
+    edited by hand (kEdited); otherwise the preset decides it next time. A folder or the master-flats box that is passed
+    as None keeps the value in ``options``. Nothing is written: :func:`save` does that.
     """
     return replace(
         options,

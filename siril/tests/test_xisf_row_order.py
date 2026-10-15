@@ -133,7 +133,6 @@ report("preview", siril.load_image_from_file(path, with_pixels=True, preview=Tru
 
 
 @pytest.mark.siril
-@pytest.mark.siril
 def test_siril_returns_xisf_rows_in_order(tmp_path: Path) -> None:
     path = write_xisf(tmp_path / "probe.xisf")
     run = run_pyscript(_SIRIL_SCRIPT, tmp_path, args=[str(path)]).check()

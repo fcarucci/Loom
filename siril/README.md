@@ -309,6 +309,110 @@ records and the run logs (`logs/loom-run-<stamp>.log`). Its default location is 
 `$XDG_DATA_HOME/loomsiril/cache` (or `~/.local/share/loomsiril/cache`) elsewhere. Set `cacheDir` to use another
 folder.
 
+## Frame Selector
+
+`Loom/loom_frame_selector.py` is a third Siril script in this repository. It is the Siril port of the Loom Frame
+Selector: it measures every light subframe in a folder, groups the frames by `FILTER`, works out where the line falls
+for each channel on that night, and deletes the frames below it or copies the rest to another folder. It can also read
+a night straight off an ASIAIR card and turn its flats into master flats. The numbers come from Siril itself (see
+"Differences from the PixInsight Frame Selector" below), not from PixInsight.
+
+Requirements: Siril 1.4 with Python scripting, and the Install steps below (the script sits next to the other Loom
+scripts and needs no extra setup). It has not been run inside Siril's own user interface: the logic is tested with a
+stand-in for the Siril API and, for the parts that need Siril, against headless `siril-cli` 1.4.4 in the Docker image.
+
+### Using it
+
+1. Run **Scripts, Loom, loom_frame_selector.py**. If an ASIAIR card is mounted the script offers it first (see below);
+   decline and it asks for a folder instead. Reading the folder can be stopped, and a read writes nothing but the cache.
+2. Frames are grouped by their raw `FILTER` string, one channel per filter. Frames with no readable filter are shown but
+   never rejected automatically. A channel whose frames differ in exposure, binning, geometry or calibration state is
+   flagged as not comparable; that is a warning, and Run still acts on it. Formats are those Siril reads: FITS
+   (including compressed `.fz`) and XISF.
+3. Each channel has a **preset**: Lenient, Balanced or Strict, which set `k`, the width of the cut in normalised MADs, to
+   3.0, 2.5 or 2.0. `k` can be edited, and each channel has an on/off switch. Below 10 valid measurements in a channel
+   the cut does not run. All the measurements rank the frames (PSF SNR most heavily), but by default only FWHM,
+   eccentricity and star count reject; PSF SNR can be turned on per channel.
+4. Each criterion (`FWHM <=`, `ecc <=`, `stars >=`, `PSF SNR >=`) has a tick box and a limit. An untouched limit is
+   automatic: greyed and in italics, it shows the cut `k` gives on this night. Type a number to replace it for that
+   metric only (clear it to go back to automatic); it stays when the preset or `k` changes. Untick a criterion to switch
+   it off. The dialog shows how many frames Run will keep.
+5. Review: the **table** (one row per frame, named by what differs, the full path as its tooltip, a red cross on frames
+   Run leaves out and the rejecting measurement in red), the **plot** of the channel's measurement in frame order with the
+   keep band (click a point to select its row), the **filmstrip** of thumbnails (selected one highlighted, rejected ones
+   crossed, a chooser for how many are shown, grey tiles not read yet, `!` for unreadable), and a **1:1 preview**
+   (double click for the whole frame, drag, scroll bars or arrow keys, Shift for a page; the view stays put when the
+   frame changes). **Override** a verdict with Space or the button under the preview: it survives a change of `k`, is
+   counted separately and logged, and lasts for the session.
+6. **Anomaly tags** mark frames that look wrong against the rest of their channel: A (altitude), F (focus), S (seeing),
+   T (tracking), C (cloud), D (dropped). They follow the PixInsight rules and thresholds, are advisory, never change a
+   verdict, and show on the preview, as letters on the filmstrip and in the summary line.
+7. **Run** either deletes in place or copies:
+   - Delete in place is the default and the only irreversible action. A confirmation gives the exact count per channel,
+     and the list is written to a log before any file is removed; if the log cannot be written nothing is deleted. A
+     frame that changed since it was measured (checked by content digest), vanished or became unreadable is skipped and
+     reported. Kept frames are left exactly as they are.
+   - Copy to another folder writes the approved frames there as FITS and leaves the originals alone. The destination
+     folder is emptied first, without asking, hidden files and subfolders included (a symbolic link is removed, never
+     followed); if anything in it cannot be removed, nothing is copied. Run refuses a destination that is or contains a
+     source folder, its parent, the filesystem root or your home folder. A channel switched off is not copied.
+
+### Importing from an ASIAIR
+
+The script recognises an ASIAIR card by its `Plan/Light` or `Autorun/Light` folders, whatever the volume is called, and
+offers it before the folder chooser. Cancel stops the card read. Every target is listed with its last three nights:
+frames, filters, and flats filter by filter, a filter with no flats in red. A night is one target in one session, and a
+session ends at a gap of more than four hours. Flats are matched to a night as a whole batch, by filter and binning, and
+by camera and rotation where both state them.
+
+Review the night as usual, then Run. Choose a destination: nothing is ever written to the ASIAIR, and a folder named
+`Light` or `Flat` means its parent. Approved lights go to `<destination>/Light` and the night's flats to
+`<destination>/Flat`, as FITS; two frames that would get the same name are refused rather than overwritten. Each written
+file is reopened and checked (content digest, geometry and the required header keywords); one that fails is deleted and
+reported. The review is then locked, so the night cannot be imported twice. Darks and bias frames are not imported.
+
+**Master flats instead of raw flats.** Set a darks folder and tick **Combine flats to masters** (both are remembered)
+and the night's flats become one master per filter instead of being kept. Darks on the card itself (`Plan/Dark` or
+`Autorun/Dark`) are preferred when they suit, and then no darks folder is needed. A dark suits a flat when its exposure
+is within 1 %, its temperature within 3 degC (a frame with no temperature never matches), and binning and gain agree
+where both state them. A master dark is preferred; otherwise at least two raw darks are integrated and the result is
+cached. The calibrated flats are integrated with multiplicative normalisation and rejection suited to the count, using
+Siril's own calibration and stacking, and written to `<destination>/Flat/masterFlat_<filter>.fit` (`_bin1` or `_bin2` is
+added when a filter was shot at two binnings; a master from an earlier import is never overwritten, the new one takes
+`_2`). The master is checked before the raw flat copies are deleted, and only those copies are deleted. A filter with no
+matching dark, fewer than two flats, or a failed master keeps its raw flats, and the closing message says which and why.
+Cancel is checked between steps. Every import writes a log with the copies and any failures and, for master flats, the
+flats read, the darks found and the plan for each filter; its path is shown in the final message.
+
+### What is remembered, and where
+
+- Options are saved in one file in Siril's configuration folder (`loomsiril-frame-selector.json`): the source and
+  destination folders, the darks folder, the Combine flats box, the preset, `k`, the score weights, and the criteria with
+  any typed limits.
+- Measurements and file digests are cached in the Loom cache folder (the same one the Loom pipeline uses; set `cacheDir`
+  to move it), so reopening a folder is quick and a changed frame is measured again. Previews, the work folders of a
+  measurement or a master flat, and cached master darks are kept there too.
+- Deletion logs are written to `~/Siril/Loom-frame-selector/` before any file is removed. Import logs go to the system
+  temporary folder, in `Loom-import-logs`.
+
+### Differences from the PixInsight Frame Selector
+
+[docs/frame-selector-parity.md](docs/frame-selector-parity.md) lists every PixInsight function with the Python function
+that ports it and every deviation with its reason. In short:
+
+- **Measurements come from Siril** (its star registration and image statistics, the numbers its Plot tab shows), not
+  from SubframeSelector. PSF SNR becomes the median star amplitude over the background noise; eccentricity is
+  derived from Siril's roundness; the SNR estimate is dropped; the star count is capped near 2000 by Siril.
+- **Altitude comes from the header** (`AIRMASS`, `CENTALT`, `OBJCTALT`, else computed from the coordinates, time and site).
+- **Copies and imports are FITS**, not XISF, and an import is verified by digest. Master flats are built by Siril and
+  named `.fit`; Siril has no "equalize fluxes" normalisation, so rejection is not flux-equalised.
+- **Delete in place does not convert the kept frames** to another format.
+- **More options are remembered**, and the preset and `k` are remembered across runs.
+- **The deletion log folder** is `~/Siril/Loom-frame-selector/`, and the script needs Siril 1.4 instead of a PixInsight
+  core version.
+- The star finder's settings are reset for each measurement and, apart from the focal length and pixel size, not
+  restored afterwards.
+
 ## Install
 
 ### In Siril 1.4 (Python scripting)

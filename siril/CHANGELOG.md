@@ -5,6 +5,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Frame Selector for Siril (`Loom/loom_frame_selector.py`, Scripts, Loom), the port of the PixInsight Frame Selector. It
+  reads a folder of light subframes (FITS, compressed FITS, XISF), groups them by `FILTER`, measures each frame with
+  Siril itself (star registration and image statistics, the numbers Siril's Plot tab shows) and ranks and rejects them
+  as PixInsight does: per-channel normalisation, the Lenient, Balanced and Strict presets (`k` 3.0, 2.5, 2.0), editable
+  limits that override one metric and survive preset changes, no cut below 10 measurements, and the default rejecting
+  and non-rejecting criteria. The review window has the frame table, the measurement plot with the keep band, a
+  filmstrip, a 1:1 preview, per-frame overrides and the A, F, S, T, C, D anomaly tags. Run deletes in place (the list
+  is logged before any file is removed, a frame changed since measurement is skipped) or copies the approved frames to
+  another folder as FITS, emptying it first with PixInsight's safety refusals plus resolved-path checks.
+- Frame Selector: ASIAIR import. An ASIAIR card is recognised by its `Plan/Light` or `Autorun/Light` folders and offered
+  before the folder chooser; targets are listed with their last three nights, sessions split at a gap over four hours,
+  flats matched per night by filter and binning. Lights and flats are copied to `Light` and `Flat` under the chosen
+  destination, each file checked after writing, and the review is locked afterwards.
+- Frame Selector: master flats from the imported flats, built with Siril's own calibration and stacking, using darks from
+  the card or a darks folder (exposure within 1 %, temperature within 3 degC), named `masterFlat_<filter>.fit`, checked
+  before the raw flat copies are deleted, with a per-filter fallback to raw flats and an import log.
+- Frame Selector options are remembered between runs: folders, darks folder, Combine flats to masters, preset, `k`,
+  score weights and criteria. Measurements and file digests are cached, so reopening a folder is quick.
+- `docs/frame-selector-parity.md`: every PixInsight Frame Selector function with the Python function that ports it, and
+  every deviation with its reason.
+
+### Differences from the PixInsight Frame Selector
+
+- Measurements come from Siril, not SubframeSelector: PSF SNR is the median star amplitude over the background noise,
+  eccentricity is derived from Siril's roundness, the SNR estimate is dropped, the star count is capped near 2000 by
+  Siril, and the altitude is read from the header or computed from the coordinates.
+- Copies, imports and master flats are FITS, not XISF; Siril has no "equalize fluxes" normalisation for master flats.
+- Delete in place leaves the kept frames as they are. The deletion log is in `~/Siril/Loom-frame-selector/`.
+
 ## [0.5.1] — 2026-10-15
 
 Experimental, as 0.5.0. The Fly-Through dialog was reworked: see the entries below.

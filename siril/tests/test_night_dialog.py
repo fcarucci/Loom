@@ -288,10 +288,6 @@ def test_hand_built_flats_follow_the_session() -> None:
 
 # ---- the guards: each one must change an outcome ----------------------------------------------------------
 
-def _mismatches(keys: list[str]) -> list[str]:
-    return [k for k in keys if _replay(k) is not None]
-
-
 def test_recent_default_matters(monkeypatch: pytest.MonkeyPatch) -> None:
     keys = ["recent_nights/default_three_newest_first", "recent_nights/zero_falls_back_to_recent"]
     assert _mismatches(keys) == []
