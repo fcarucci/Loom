@@ -1,4 +1,4 @@
-# Test image for Loom-Siril: the full pytest suite (ffmpeg, Siril AppImage, StarNet2 CLI when present).
+# Test image for Loom for Siril: the full pytest suite (ffmpeg, Siril AppImage, StarNet2 CLI when present).
 # Built and run on a Docker host (see docker/run-tests.sh); the image is never pushed.
 #   docker build -f docker/Dockerfile -t loomsiril-test:e8 .
 #   docker run --rm loomsiril-test:e8

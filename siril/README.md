@@ -1,4 +1,4 @@
-# Loom-Siril
+# Loom for Siril
 
 Loom's tools for [Siril](https://siril.org), starting with **Fly-Through**:
 a push-in video of a finished astrophoto whose stars move at their real Gaia
@@ -338,7 +338,7 @@ not pull this one.
 ### Command line
 
 ```
-pip install git+https://github.com/fcarucci/Loom-Siril
+pip install "git+https://github.com/fcarucci/Loom.git#subdirectory=siril"
 python -m loomsiril --help
 ```
 
