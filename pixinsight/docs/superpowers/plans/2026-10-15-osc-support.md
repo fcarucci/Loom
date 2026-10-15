@@ -1012,7 +1012,7 @@ Every SPCC call site dispatches on the mode: the composite runner (`_spcc_rgb_ru
 - Test: `tests/loom/test_dialog.py` (new tests)
 
 **Interfaces:**
-- Consumes: `osc.control_state`, Task 15 config keys.
+- Consumes: `osc.control_state`, Task 15 config keys. In Siril the sensor row is visible for any colour run (Task 17): the dialog uses `osc.control_state( config )` with `sensorRowVisible` overridden to true whenever a colour master is selected, and a test pins that difference.
 - Produces: masters list rows for `OSC` / `OSCNB` with a kind control and a "detected" reset; greyed mono boxes and SHO/HSO with reasons; a "Sensor colour filters" row (sensor, front filter, low-pass filter, filled from the names Siril's SPCC accepts) while `OSC` is used; values saved like the existing options. ttk widgets, as the existing dialog uses.
 
 - [ ] **Step 1: Failing tests** in the existing dialog test style (model-level tests that run without a display; Tk tests skip without one). **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: dialog controls for colour masters".
