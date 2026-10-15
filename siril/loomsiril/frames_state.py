@@ -27,8 +27,8 @@ Functions, JS name to Python name, with the JS lines:
 * ``Dialog.destinationText`` (3337-3350) -> :func:`destination_text`. Text only. After a delete in place the kept
   frames are not converted to XISF, so the text does not say they are (the JS clause for that is left out).
 * ``Dialog.allPaths`` (3354-3363) -> :func:`all_paths`
-* ``Dialog.destinationIsSource`` (3370-3372) -> :func:`destination_is_source`; ``Frames.destinationIsSource``
-  (lib/Frames.js 1512-1520) is :func:`loomsiril.frames_files.destination_is_source`.
+* ``Dialog.destinationIsSource`` (3370-3372) -> :func:`destination_is_source`, which resolves both folders
+  (``Frames.destinationIsSource``, lib/Frames.js 1512-1520, compares them as written; see that function's docstring).
 * ``Dialog.copyingOut`` (3433-3435) -> :func:`copying_out`
 * ``Dialog.approvedPaths`` (3439-3452) -> :func:`approved_paths`
 * ``Dialog.importing`` (3606-3608) -> :func:`importing`
@@ -50,6 +50,7 @@ filter name, or None) and ``state`` explicitly. ``recompute_all`` changes the ch
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -244,8 +245,22 @@ def all_paths(state: State) -> list[str]:
 
 
 def destination_is_source(state: State) -> bool:
-    """The chosen folder is where the frames already are (FrameSelector.js 3370-3372). Compared as written."""
-    return frames_files.destination_is_source(all_paths(state), state["destination"])
+    """The chosen folder is where the frames already are (FrameSelector.js 3370-3372).
+
+    Compared by where the folders really are: each side is resolved with ``os.path.realpath`` (so ``..``, a
+    trailing slash and a symbolic link all resolve) and case-folded with ``os.path.normcase``. The JavaScript
+    compares the text as written; this is deliberately stricter, so a destination that is the source folder under
+    another spelling still counts as the source and is never copied onto. None is never the source.
+    """
+    dest = state["destination"]
+    if dest is None:
+        return False
+    target = _folder_key(dest)
+    return any(_folder_key(frames_files.extract_directory(p)) == target for p in all_paths(state))
+
+
+def _folder_key(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
 
 
 def copying_out(state: State) -> bool:

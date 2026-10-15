@@ -314,11 +314,28 @@ def test_no_destination_is_neither_the_source_nor_a_copy() -> None:
     assert FS.copying_out(st) is False
 
 
-def test_a_trailing_slash_is_another_folder_as_written_and_so_a_copy() -> None:
-    st = _state(_scan({"L": _channel("L", folder="/night")}), folder="/night")
-    st["destination"] = "/night/"
-    assert FS.destination_is_source(st) is False
-    assert FS.copying_out(st) is True
+def test_a_trailing_slash_dot_dot_or_a_symlink_to_the_source_is_still_the_source(tmp_path: Path) -> None:
+    night = tmp_path / "night"
+    night.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(night, target_is_directory=True)
+    for spelling in [str(night) + "/", str(night / "sub" / ".."), str(link), str(night) + "//"]:
+        st = _state(_scan({"L": _channel("L", folder=str(night))}), folder=str(night))
+        st["destination"] = spelling
+        assert FS.destination_is_source(st) is True, spelling
+        assert FS.copying_out(st) is False, spelling
+
+
+def test_a_destination_that_really_is_another_folder_is_a_copy(tmp_path: Path) -> None:
+    night = tmp_path / "night"
+    other = tmp_path / "other"
+    night.mkdir()
+    other.mkdir()
+    st = _state(_scan({"L": _channel("L", folder=str(night))}), folder=str(night))
+    for spelling in [str(other), str(other) + "/", str(night / ".." / "other")]:
+        st["destination"] = spelling
+        assert FS.destination_is_source(st) is False, spelling
+        assert FS.copying_out(st) is True, spelling
 
 
 def test_all_paths_lists_every_frame_of_every_channel_whatever_its_verdict() -> None:
