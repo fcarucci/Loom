@@ -111,6 +111,9 @@ Conventions that differ from the JavaScript on purpose:
 | `colour_load.plane_statistics` | `Steps.planeStats` | S | `tests/loom/test_colour_load.py` |
 | `colour_load.is_plain_fits` | - | S | `tests/loom/test_colour_load.py` |
 
+`ColourGroupLoader` writes the `LOOMSRC` keyword of a plate differently from Loom when the master's name is long (see
+[Deviations](#deviations)).
+
 ## loomsiril/loom/config.py
 
 | Function | JavaScript (Loom) | Status | Test |
@@ -637,6 +640,7 @@ Python function in the last column, and the reason is under [Deviations](#deviat
 These are the places where the port does not do what Loom does, or does it another way. Each is tested or
 documented where it is implemented.
 
+- `LOOMSRC` of a colour plate: `io_fits` has no CONTINUE long strings, so a value longer than the 68 characters a card holds (measured after doubling apostrophes) keeps the end of the master's name behind `...`; the filter, suffix, extension and `|plane:n` survive. PixInsight writes the full name.
 - SPFC dropped (Spectrophotometric Flux Calibration): it needs Gaia XP spectra, which are not available offline.
 - MGC replaced by Siril subsky degree 2 when the gradient tool is none (never on H, S or O): each broadband channel runs `subsky 2` with 20 samples and tolerance 1.0 in place of Loom's gradient correction.
 - MultiscaleAdaptiveStretch replaced by Siril GHS (autoghs, D 4.5, fixed values); saved configurations migrate to it.
