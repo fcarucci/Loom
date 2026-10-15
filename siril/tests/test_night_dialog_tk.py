@@ -100,16 +100,17 @@ def test_describe_marks_only_the_missing_filter_and_reads_the_flats() -> None:
     text = "".join(s for s, _ in segments)
     assert text == ("M42 — 2026-08-11, 4 frames in L, Ha.\n"
                     "2 flats in this observing session: L: 1 flat, Ha: 1 flat.")
-    assert not any(missing for _, missing in segments)
+    assert segments[0] == ("M42", "bold")
+    assert not any(tag == "missing" for _, tag in segments)
 
     night2 = survey["nights"][2]                 # 2026-08-10: session 2 has only L
     segs2 = T.describe(survey, night2)
-    assert ("Ha: no flats", True) in segs2
-    assert [s for s, m in segs2 if m] == ["Ha: no flats"]
+    assert ("Ha: no flats", "missing") in segs2
+    assert [s for s, tag in segs2 if tag == "missing"] == ["Ha: no flats"]
 
 
 def test_describe_without_a_night_says_to_select_one() -> None:
-    assert T.describe(_survey(), None) == [("Select a night.", False)]
+    assert T.describe(_survey(), None) == [("Select a night.", "")]
 
 
 # ---- Tk: the picker on a hidden root --------------------------------------------------------------------------------
@@ -159,6 +160,46 @@ def test_selecting_a_night_and_ok_returns_it(tk_root: Any) -> None:
     assert dlg.result is not None
     assert (dlg.result["target"], dlg.result["date"]) == ("M42", "2026-08-10")
     assert dlg.result is dlg._nights["t0n1"]
+
+
+def _double_click(widget: Any, x: int, y: int) -> None:
+    """Two quick presses of button 1 at one spot: Tk matches them as <Double-1> (a generated <Double-1> is refused)."""
+    widget.event_generate("<ButtonPress-1>", x=x, y=y)
+    widget.event_generate("<ButtonRelease-1>", x=x, y=y)
+    widget.event_generate("<ButtonPress-1>", x=x, y=y)     # the second press is the double click: nothing after it
+
+
+def test_double_click_on_a_night_is_ok(tk_root: Any) -> None:
+    dlg = _picker(tk_root)
+    _select(dlg, "t0n1")
+    dlg.top.update()
+    x, y, w, h = dlg.tree.bbox("t0n1")
+    _double_click(dlg.tree, x + w // 2, y + h // 2)
+    dlg.top.update()
+    assert dlg.result is not None and dlg.result["date"] == "2026-08-10"
+
+
+def test_double_click_on_a_target_is_not_ok(tk_root: Any) -> None:
+    dlg = _picker(tk_root)
+    dlg.top.update()
+    x, y, w, h = dlg.tree.bbox("t0")
+    _double_click(dlg.tree, x + w // 2, y + h // 2)
+    dlg.top.update()
+    assert dlg.result is None
+    dlg._cancel()
+
+
+def test_escape_is_cancel(tk_root: Any) -> None:
+    dlg = _picker(tk_root)
+    _select(dlg, "t0n0")
+    dlg.top.update()
+    dlg.top.focus_force()
+    dlg.tree.focus_set()
+    dlg.top.update()
+    dlg.tree.event_generate("<Escape>")
+    dlg.top.update()
+    assert dlg.result is None
+    assert not dlg.top.winfo_exists()
 
 
 def test_cancel_returns_none(tk_root: Any) -> None:

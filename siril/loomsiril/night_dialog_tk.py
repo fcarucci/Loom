@@ -47,7 +47,8 @@ MISSING_COLOUR = "#ff5555"
 SELECT_A_NIGHT = "Select a night."
 
 Night = dict[str, Any]
-Segment = tuple[str, bool]
+#: A piece of the detail text and its tag: "" plain, "bold" the target, "missing" a filter with no flats.
+Segment = tuple[str, str]
 
 
 def _filter_matches(survey: D.Survey, night: Night) -> list[dict[str, Any]]:
@@ -102,25 +103,25 @@ def tree_rows(survey: D.Survey) -> list[dict[str, Any]]:
 
 
 def describe(survey: D.Survey, night: Optional[Night]) -> list[Segment]:
-    """The detail text for the chosen night, as (text, missing) segments (NightDialog.js 262-280).
+    """The detail text for the chosen night, as (text, tag) segments (NightDialog.js 262-280).
 
-    With no night, the text is "Select a night.". A missing filter's segment is flagged so the window can draw it in
-    red; the other segments are plain.
+    With no night, the text is "Select a night.". The target name is tagged "bold" (the JS bolds it), and a filter
+    with no flats is tagged "missing" so the window draws it in red; the other segments are untagged.
     """
     if night is None:
-        return [(SELECT_A_NIGHT, False)]
+        return [(SELECT_A_NIGHT, "")]
     flats = D.flats_for_night(survey, night)
-    head = (js_string(night["target"]) + " — " + js_string(night["date"]) + ", " + js_string(night["count"])
+    head = (" \u2014 " + js_string(night["date"]) + ", " + js_string(night["count"])
             + " frames in " + ", ".join(night["filters"]) + ".\n")
-    segments: list[Segment] = [(head, False)]
+    segments: list[Segment] = [(js_string(night["target"]), "bold"), (head, "")]
     n = len(flats)
-    segments.append((str(n) + " flat" + ("" if n == 1 else "s") + " in this observing session: ", False))
+    segments.append((str(n) + " flat" + ("" if n == 1 else "s") + " in this observing session: ", ""))
     summary = D.flat_summary(_filter_matches(survey, night))
     for i, s in enumerate(summary):
         if i:
-            segments.append((", ", False))
-        segments.append((s["text"], s["strength"] == "missing"))
-    segments.append((".", False))
+            segments.append((", ", ""))
+        segments.append((s["text"], "missing" if s["strength"] == "missing" else ""))
+    segments.append((".", ""))
     return segments
 
 
@@ -136,6 +137,19 @@ def pick_night(survey: D.Survey, card_root: str, siril: Any = None,
         return dlg.result
     finally:
         close_root(root)
+
+
+def _bold_font(font: Any) -> Any:
+    """The detail font in bold: the theme's font with its weight set to bold; the plain font when that cannot be made."""
+    import tkinter.font as tkfont
+
+    try:
+        base = tkfont.nametofont(font) if isinstance(font, str) else font
+        bold = tkfont.Font(font=base)
+        bold.configure(weight="bold")
+        return bold
+    except Exception:  # an unnamed or unusual font: the text stays plain
+        return font
 
 
 class NightDialog:
@@ -189,8 +203,16 @@ class NightDialog:
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", self._on_double_click)
 
-        self.detail = tk.Text(frame, height=4, wrap="word", relief="sunken", borderwidth=1)
+        #: The detail box takes Siril's colours and font from the theme (as frames_ui.py does for its canvas), so it
+        #: does not show white under a dark theme.
+        style = ttk.Style()
+        background = style.lookup("TFrame", "background") or None
+        foreground = style.lookup("TLabel", "foreground") or None
+        font = style.lookup("TLabel", "font") or "TkDefaultFont"
+        self.detail = tk.Text(frame, height=4, wrap="word", relief="sunken", borderwidth=1, background=background,
+                              foreground=foreground, font=font)
         self.detail.tag_configure("missing", foreground=MISSING_COLOUR)
+        self.detail.tag_configure("bold", font=_bold_font(font))
         self.detail.pack(fill="x", pady=(6, 0))
 
         buttons = ttk.Frame(frame)
@@ -227,8 +249,8 @@ class NightDialog:
         self.ok_button.state(["!disabled"] if self.selected_night is not None else ["disabled"])
         self.detail.configure(state="normal")
         self.detail.delete("1.0", "end")
-        for text, missing in describe(self.survey, self.selected_night):
-            self.detail.insert("end", text, ("missing",) if missing else ())
+        for text, tag in describe(self.survey, self.selected_night):
+            self.detail.insert("end", text, (tag,) if tag else ())
         self.detail.configure(state="disabled")
 
     def _on_select(self, _event: Any = None) -> None:
