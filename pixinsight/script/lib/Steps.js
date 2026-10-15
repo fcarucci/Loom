@@ -2421,6 +2421,55 @@ Steps.extractPlane = function( view, plane, newId, filterName )
    return w;
 };
 
+/*
+ * A three-channel 32-bit float window whose channel i is the image of
+ * views[i] (the same view may appear twice). The planes must have one size.
+ * Keywords and the astrometric solution come from the first view.
+ */
+Steps.combinePlanes = function( views, newId )
+{
+   var w0 = views[0].image.width, h0 = views[0].image.height;
+   for ( var i = 1; i < views.length; ++i )
+      if ( views[i].image.width != w0 || views[i].image.height != h0 )
+         throw new Error( "combinePlanes: the planes differ in size" );
+
+   var w = new ImageWindow( w0, h0, 3, 32, true, true, newId );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   var dst = w.mainView.image;
+   try
+   {
+      for ( var c = 0; c < 3; ++c )
+      {
+         var src = views[c].image;
+         var saved = src.selectedChannel;
+         try
+         {
+            src.selectedChannel = 0;
+            dst.selectedChannel = c;
+            dst.apply( src );   // replaces the selected channel
+         }
+         finally { src.selectedChannel = saved; }
+      }
+   }
+   finally
+   {
+      dst.resetSelections();
+      w.mainView.endProcess();
+   }
+   var first = views[0].window;
+   w.keywords = first.keywords;
+   try
+   {
+      if ( first.hasAstrometricSolution )
+         w.copyAstrometricSolution( first );
+   }
+   catch ( e )
+   {
+      Util.warn( "register", "combined planes - could not copy astrometric solution: " + e );
+   }
+   return w;
+};
+
 /* ---------------------------------------------------------------------------
  * Sharpening: aberration correction, star reduction, detail.
  *

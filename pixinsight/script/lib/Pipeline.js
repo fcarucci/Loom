@@ -2660,6 +2660,59 @@ Pipeline.bestMeasuredChannel = function( ranked, quality )
 };
 
 /*
+ * How the channels of a colour run are registered. `groups` maps a colour
+ * slot to its members ( { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } );
+ * only members in `present` count. The reference is OSC's G, else OSCNB's H;
+ * its own group is already on the reference grid (identity). Any other group
+ * is one entry: its members and the planes of the temporary image that is
+ * registered in one go (R,G,B for OSC; H,O,O for OSCNB, whose third plane
+ * repeats O). Channels outside every group are listed under mono.
+ */
+Pipeline.oscRegistrationPlan = function( present, groups )
+{
+   var slots = [ "OSC", "OSCNB" ];
+   var used = {}, byslot = {};
+   slots.forEach( function( slot )
+   {
+      var members = ( groups && groups[slot] || [] ).filter( function( k ) { return present.indexOf( k ) >= 0; } );
+      if ( members.length > 0 )
+      {
+         byslot[slot] = members;
+         members.forEach( function( k ) { used[k] = true; } );
+      }
+   } );
+   var refSlot = byslot.OSC ? "OSC" : byslot.OSCNB ? "OSCNB" : null;
+   var plan = { ref: null, identity: [], groups: [],
+                mono: present.filter( function( k ) { return !used[k]; } ) };
+   if ( refSlot == null )
+      return plan;
+   plan.ref = refSlot == "OSC" ? "G" : "H";
+   plan.identity = byslot[refSlot].slice();
+   slots.forEach( function( slot )
+   {
+      if ( !byslot[slot] || slot == refSlot )
+         return;
+      plan.groups.push( { slot: slot, members: byslot[slot].slice(),
+                          planes: slot == "OSC" ? [ "R", "G", "B" ] : [ "H", "O", "O" ] } );
+   } );
+   return plan;
+};
+
+/*
+ * What a grouped registration does given the cache: "register" (combine,
+ * register, store, split), "split" (the group image is cached but a split
+ * is not: split it again) or "load" (every split is cached). With the cache
+ * off or ignored nothing is read, so it always registers. `policy` is
+ * { useCache, ignoreCache } from the configuration.
+ */
+Pipeline.oscGroupCacheAction = function( groupCached, splitsCached, policy )
+{
+   if ( !policy.useCache || policy.ignoreCache || !groupCached )
+      return "register";
+   return splitsCached.every( function( c ) { return !!c; } ) ? "load" : "split";
+};
+
+/*
  * The channel every other channel is registered to.
  *
  * `present` lists the channel keys in the run; `quality` maps a key to
@@ -2694,9 +2747,15 @@ Pipeline.bestMeasuredChannel = function( ranked, quality )
  * REGISTRATION_FALLBACK_ORDER, never by object or argument order, so the
  * same inputs always give the same reference and the same cache keys.
  */
-Pipeline.registrationReference = function( present, quality )
+Pipeline.registrationReference = function( present, quality, groups )
 {
    quality = quality || {};
+   if ( groups )
+   {
+      var plan = Pipeline.oscRegistrationPlan( present, groups );
+      if ( plan.ref != null )
+         return { key: plan.ref, reason: "colour group reference" };
+   }
    if ( present.indexOf( "L" ) >= 0 )
       return { key: "L", reason: "L is present, and L is always the reference" };
 
@@ -2781,14 +2840,160 @@ Pipeline.compositeInstrument = function( chans, refKey )
    return ( refKey && chans[refKey] ) ? chans[refKey].instrume : null;
 };
 
+/*
+ * The colour groups of a run, from the channels' own `group` fields: a map
+ * of slot to members in plane order, or null when no channel has one.
+ */
+Pipeline.oscChannelGroups = function( chans )
+{
+   var groups = null;
+   Object.keys( Pipeline.OSC_RECIPES ).forEach( function( slot )
+   {
+      var members = Util.COLOUR_MEMBERS[slot].filter( function( k ) { return chans[k] && chans[k].group == slot; } );
+      if ( members.length > 0 )
+      {
+         groups = groups || {};
+         groups[slot] = members;
+      }
+   } );
+   return groups;
+};
+
+/*
+ * Registers one colour group onto the reference as a single image, so its
+ * siblings share one transform. The siblings are combined in plane order,
+ * registered with one Steps.register call, and split again; the group image
+ * is what the cache keeps (authoritative), each split under a key derived
+ * from it. The cache policy is the run's: off reads and writes nothing,
+ * ignored reads nothing but writes. The members' views and currentKey are
+ * replaced by the registered splits.
+ */
+Pipeline.oscRegisterGroup = function( chans, entry, refKey, refView, refFingerprint, config, reg )
+{
+   var members = entry.members;
+   var names = { R: "R", G: "G", B: "B", H: "Ha", O: "OIII" };
+   var key = Pipeline.oscGroupRegisterKey( "registerGroup",
+                members.map( function( k ) { return chans[k].currentKey; } ),
+                { ref: refFingerprint, planes: entry.planes.join( "," ) } );
+   var splitKeys = members.map( function( k, i ) { return Pipeline.oscRegisteredSiblingKey( key, i ); } );
+   var policy = { useCache: !!config.useCache, ignoreCache: !!config.ignoreCache };
+   var write = policy.useCache;
+   var label = members.join( "/" );
+
+   function claim( w ) { return reg.add( w ); }
+   function release( w )
+   {
+      reg.forget( w );
+      try { w.forceClose(); }
+      catch ( e ) { Util.warn( "register", "could not close " + w.mainView.id + ": " + e ); }
+   }
+   // Replace each member's window with its registered split.
+   function adopt( wins )
+   {
+      members.forEach( function( k, i )
+      {
+         var ch = chans[k];
+         if ( ch.window != null )
+            release( ch.window );
+         ch.window = wins[i];
+         ch.view = wins[i].mainView;
+         ch.currentKey = splitKeys[i];
+      } );
+   }
+   function splitFrom( groupWin )
+   {
+      return members.map( function( k, i )
+      {
+         var w = claim( Steps.extractPlane( groupWin.mainView, i, Util.freeWindowId( k + "_work" ), names[k] ) );
+         if ( write )
+            Cache.store( splitKeys[i], w, { channel: k, stage: "registerGroup",
+                                            params: { plane: i, planes: entry.planes.join( "," ) } } );
+         return w;
+      } );
+   }
+
+   var action = policy.useCache && !policy.ignoreCache
+              ? Pipeline.oscGroupCacheAction( Cache.lookup( key ) != null,
+                                              splitKeys.map( function( s ) { return Cache.lookup( s ) != null; } ),
+                                              policy )
+              : "register";
+
+   if ( action == "load" )
+   {
+      var loaded = [];
+      for ( var i = 0; i < members.length; ++i )
+      {
+         var w = Cache.load( splitKeys[i], Util.freeWindowId( members[i] + "_work" ) );
+         if ( w == null ) break;
+         loaded.push( claim( w ) );
+      }
+      if ( loaded.length == members.length )
+      {
+         Util.log( "cache", label + " registerGroup HIT" );
+         adopt( loaded );
+         return;
+      }
+      loaded.forEach( release );
+      action = "split";
+   }
+   if ( action == "split" )
+   {
+      var cachedGroup = Cache.load( key, Util.freeWindowId( "register_group" ) );
+      if ( cachedGroup != null )
+      {
+         claim( cachedGroup );
+         Util.log( "cache", label + " registerGroup HIT (split again)" );
+         var parts;
+         try { parts = splitFrom( cachedGroup ); }
+         finally { release( cachedGroup ); }
+         adopt( parts );
+         return;
+      }
+   }
+
+   Util.log( "cache", label + " registerGroup MISS" );
+   var views = entry.planes.map( function( k ) { return Pipeline.ensureLoaded( chans[k] ).view; } );
+   var combined = claim( Steps.combinePlanes( views, Util.freeWindowId( "register_group" ) ) );
+   var registered = null, parts2;
+   try
+   {
+      registered = claim( Steps.register( combined.mainView, refView ) );
+      if ( write )
+         Cache.store( key, registered, { channel: label, stage: "registerGroup",
+                                         params: { ref: refFingerprint, planes: entry.planes.join( "," ) } } );
+      // The old working copies go first so the splits can take their ids.
+      members.forEach( function( k )
+      {
+         if ( chans[k].window != null )
+         {
+            release( chans[k].window );
+            chans[k].window = null;
+         }
+      } );
+      parts2 = splitFrom( registered );
+   }
+   finally
+   {
+      release( combined );
+      if ( registered != null )
+         release( registered );
+   }
+   adopt( parts2 );
+};
+
 Pipeline.registerToReference = function( chans, config, reg )
 {
    var present = [];
    for ( var p = 0; p < Util.CHANNELS.length; ++p )
       if ( chans[Util.CHANNELS[p]] )
          present.push( Util.CHANNELS[p] );
+   // Colour groups first: their reference needs no star measurements, and a
+   // colour master's siblings share a path that registrationQuality reads.
+   var groups = Pipeline.oscChannelGroups( chans );
+   var plan = groups ? Pipeline.oscRegistrationPlan( present, groups ) : null;
    var choice = Pipeline.registrationReference( present,
-                                                Pipeline.registrationQuality( chans ) );
+                                                groups ? {} : Pipeline.registrationQuality( chans ),
+                                                groups );
    var refKey = choice.key;
    if ( refKey == null )
       throw new Error( "No channels to register." );
@@ -2820,10 +3025,21 @@ Pipeline.registerToReference = function( chans, config, reg )
     * is exactly what it always was, so existing caches stay valid.
     */
    var refFingerprint = chans[refKey].currentKey;
+   var skip = {};
+   if ( plan )
+   {
+      plan.identity.forEach( function( k ) { skip[k] = true; } );
+      plan.groups.forEach( function( entry )
+      {
+         Pipeline.oscRegisterGroup( chans, entry, refKey, refView, refFingerprint, config, reg );
+         entry.members.forEach( function( k ) { skip[k] = true; } );
+         Pipeline.checkAbort( "registered " + entry.slot );
+      } );
+   }
    for ( var c = 0; c < Util.CHANNELS.length; ++c )
    {
       var ck = Util.CHANNELS[c];
-      if ( ck == refKey || !chans[ck] ) continue;
+      if ( ck == refKey || !chans[ck] || skip[ck] ) continue;
       /*
        * Swap the channel over to its registered window; the original
        * working copy is finished with. Without this the pipeline would

@@ -1071,7 +1071,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 336 );
+      check( "Steps: the member count", Object.keys( have ).length, 337 );
    }
 
    /*
@@ -22101,6 +22101,195 @@ function runPipeTests()
       {
          if ( out != null ) out.forceClose();
          src.forceClose();
+      }
+   }
+   } )();
+   } if ( testGroup( "osc.register" ) ) {
+   ( function() {
+   var groups = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+   var both = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H", "O" ], groups );
+   check( "reference is OSC G", both.ref, "G" );
+   check( "reference group is identity", both.identity, [ "R", "G", "B" ] );
+   check( "OSCNB registered as one image (H, O, O)",
+          both.groups, [ { slot: "OSCNB", members: [ "H", "O" ], planes: [ "H", "O", "O" ] } ] );
+   check( "no mono channels in a colour plan", both.mono, [] );
+   var nbOnly = Pipeline.oscRegistrationPlan( [ "H", "O" ], { OSCNB: [ "H", "O" ] } );
+   check( "OSCNB alone: reference H", nbOnly.ref, "H" );
+   check( "OSCNB alone: identity members", nbOnly.identity, [ "H", "O" ] );
+   check( "OSCNB alone: no grouped registration", nbOnly.groups, [] );
+   var rgbOnly = Pipeline.oscRegistrationPlan( [ "R", "G", "B" ], { OSC: [ "R", "G", "B" ] } );
+   check( "OSC alone: reference G, nothing to register", [ rgbOnly.ref, rgbOnly.groups ], [ "G", [] ] );
+   var otherWay = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H", "O" ], groups );
+   check( "plan is repeatable", otherWay, both );
+   check( "OSC beside mono: the mono keys are listed",
+          Pipeline.oscRegistrationPlan( [ "L", "R", "G", "B" ], { OSC: [ "R", "G", "B" ] } ).mono, [ "L" ] );
+   check( "registrationReference with colour groups ignores quality",
+          Pipeline.registrationReference( [ "R", "G", "B", "H", "O" ], { H: { fwhm: 1 }, G: { fwhm: 9 } },
+                                          groups ), { key: "G", reason: "colour group reference" } );
+   check( "registrationReference: OSCNB alone gives H",
+          Pipeline.registrationReference( [ "H", "O" ], { O: { fwhm: 1, stars: 9000 } },
+                                          { OSCNB: [ "H", "O" ] } ).key, "H" );
+   // a mono run chooses as it always did (same inputs as pipeline.reference)
+   var sharp = { R: { fwhm: 3.4, stars: 2400 }, G: { fwhm: 3.0, stars: 2600 }, B: { fwhm: 3.9, stars: 1900 } };
+   check( "mono reference unchanged without groups",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp ).key, "G" );
+   check( "mono reference unchanged with empty groups",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp, {} ).key, "G" );
+   check( "mono reference unchanged with empty member lists",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp, { OSC: [], OSCNB: [] } ).key, "G" );
+   check( "L stays the mono reference",
+          Pipeline.registrationReference( [ "L", "R", "G", "B" ], sharp ).key, "L" );
+
+   var on = { useCache: true, ignoreCache: false };
+   check( "cache action: group missing registers",
+          Pipeline.oscGroupCacheAction( false, [ true, true, true ], on ), "register" );
+   check( "cache action: a split missing re-splits",
+          Pipeline.oscGroupCacheAction( true, [ true, false, true ], on ), "split" );
+   check( "cache action: everything cached loads",
+          Pipeline.oscGroupCacheAction( true, [ true, true, true ], on ), "load" );
+   check( "cache action: cache off always registers",
+          [ [ true, [ true, true ] ], [ true, [ false, true ] ], [ false, [ false ] ] ].map( function( a )
+          { return Pipeline.oscGroupCacheAction( a[0], a[1], { useCache: false } ); } ),
+          [ "register", "register", "register" ] );
+   check( "cache action: ignore cache always registers",
+          [ [ true, [ true, true ] ], [ true, [ false, true ] ], [ false, [ false ] ] ].map( function( a )
+          { return Pipeline.oscGroupCacheAction( a[0], a[1], { useCache: true, ignoreCache: true } ); } ),
+          [ "register", "register", "register" ] );
+
+   // The reference is chosen before any quality measurement.
+   var realQuality = Pipeline.registrationQuality;
+   var realRegister = Steps.register, realCombine = Steps.combinePlanes, realExtract = Steps.extractPlane;
+   var qualityCalls = 0;
+   Pipeline.registrationQuality = function() { qualityCalls++; throw new Error( "quality must not be read" ); };
+   try
+   {
+      var log = [];
+      var closed = [];
+      function fakeWin( id )
+      {
+         var w = { id: id, forceClose: function() { closed.push( id ); }, keywords: [] };
+         w.mainView = { id: id, window: w };
+         return w;
+      }
+      Steps.combinePlanes = function( views, id )
+      {
+         log.push( "combine " + views.map( function( v ) { return v.id; } ).join( "+" ) );
+         return fakeWin( id );
+      };
+      Steps.register = function( view, ref ) { log.push( "register " + view.id + " -> " + ref.id ); return fakeWin( "registered" ); };
+      Steps.extractPlane = function( view, plane, id ) { log.push( "split " + plane ); return fakeWin( id ); };
+      var regd = { added: [], add: function( w ) { this.added.push( w ); return w; }, forget: function() {} };
+      function colourChan( key, group, plane )
+      {
+         var w = fakeWin( key + "_w" );
+         return { key: key, window: w, view: w.mainView, group: group, plane: plane,
+                  sourceKey: "src" + key, currentKey: "cur" + key, path: "/m/" + group + ".xisf" };
+      }
+      var chans = { R: colourChan( "R", "OSC", 0 ), G: colourChan( "G", "OSC", 1 ), B: colourChan( "B", "OSC", 2 ),
+                    H: colourChan( "H", "OSCNB", 0 ), O: colourChan( "O", "OSCNB", 1 ) };
+      var refId = chans.G.view.id;
+      var res = Pipeline.registerToReference( chans, { useCache: false }, regd );
+      check( "colour run: quality never measured", qualityCalls, 0 );
+      check( "colour run: G is the reference", res.refKey, "G" );
+      check( "colour run: the reference is not resampled", chans.G.view.id, refId );
+      check( "colour run: exactly one registration call",
+             log.filter( function( l ) { return l.indexOf( "register" ) == 0; } ).length, 1 );
+      check( "colour run: planes combined in H, O, O order", log[0], "combine H_w+O_w+O_w" );
+      check( "colour run: split into the two members", log.filter( function( l ) { return l.indexOf( "split" ) == 0; } ),
+             [ "split 0", "split 1" ] );
+      var expectKey = Pipeline.oscGroupRegisterKey( "registerGroup", [ "curH", "curO" ],
+                                                    { ref: "curG", planes: "H,O,O" } );
+      check( "colour run: members take their split keys",
+             [ chans.H.currentKey, chans.O.currentKey ],
+             [ Pipeline.oscRegisteredSiblingKey( expectKey, 0 ), Pipeline.oscRegisteredSiblingKey( expectKey, 1 ) ] );
+      check( "colour run: identity members keep their keys",
+             [ chans.R.currentKey, chans.G.currentKey, chans.B.currentKey ], [ "curR", "curG", "curB" ] );
+      check( "colour run: the temporary and the old windows are closed",
+             closed.indexOf( "H_w" ) >= 0 && closed.indexOf( "O_w" ) >= 0, true );
+   }
+   finally
+   {
+      Pipeline.registrationQuality = realQuality;
+      Steps.register = realRegister; Steps.combinePlanes = realCombine; Steps.extractPlane = realExtract;
+   }
+   // a mono run still measures
+   var measured = 0;
+   Pipeline.registrationQuality = function() { measured++; return {}; };
+   try
+   {
+      var monoChans = { R: { key: "R", currentKey: "kR", view: { id: "R" }, window: {} },
+                        G: { key: "G", currentKey: "kG", view: { id: "G" }, window: {} } };
+      Pipeline.registerToReference( monoChans, { useCache: false }, { add: function( w ) { return w; }, forget: function() {} } );
+   }
+   catch ( e ) { /* the registrations themselves need PixInsight */ }
+   finally { Pipeline.registrationQuality = realQuality; }
+   check( "mono run still reads quality", measured, 1 );
+
+   if ( IN_PIXINSIGHT )
+   {
+      // Steps.combinePlanes and a shifted OSCNB pair registered against an OSC G.
+      var W = 256, H = 256, stars = [ [ 40, 50 ], [ 90, 200 ], [ 150, 80 ], [ 200, 150 ], [ 120, 120 ],
+                                      [ 60, 140 ], [ 180, 40 ], [ 220, 220 ], [ 30, 210 ], [ 140, 180 ] ];
+      var made = [];
+      function field( id, dx, dy )
+      {
+         var w = new ImageWindow( W, H, 1, 32, true, false, id );
+         made.push( w );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         var im = w.mainView.image;
+         for ( var y = 0; y < H; ++y )
+            for ( var x = 0; x < W; ++x )
+            {
+               var v = 0.02;
+               for ( var s = 0; s < stars.length; ++s )
+               {
+                  var ex = x - ( stars[s][0] + dx ), ey = y - ( stars[s][1] + dy );
+                  if ( Math.abs( ex ) < 12 && Math.abs( ey ) < 12 )
+                     v += 0.8 * Math.exp( -( ex * ex + ey * ey ) / ( 2 * 2.2 * 2.2 ) );
+               }
+               im.setSample( v, x, y, 0 );
+            }
+         w.mainView.endProcess();
+         return w;
+      }
+      function centroid( view, sx, sy )
+      {
+         var im = view.image, sum = 0, cx = 0, cy = 0;
+         for ( var y = Math.round( sy ) - 8; y <= Math.round( sy ) + 8; ++y )
+            for ( var x = Math.round( sx ) - 8; x <= Math.round( sx ) + 8; ++x )
+            {
+               var v = Math.max( 0, im.sample( x, y, 0 ) - 0.03 );
+               sum += v; cx += v * x; cy += v * y;
+            }
+         return [ cx / sum, cy / sum ];
+      }
+      function chan( key, group, plane, w )
+      {
+         return { key: key, window: w, view: w.mainView, group: group, plane: plane,
+                  sourceKey: "reg_" + key, currentKey: "reg_" + key, path: "/m/" + key + ".xisf" };
+      }
+      var preg = new Util.Registry();
+      var pair = null;
+      try
+      {
+         var pc = { R: chan( "R", "OSC", 0, field( "reg_r", 0, 0 ) ), G: chan( "G", "OSC", 1, field( "reg_g", 0, 0 ) ),
+                    B: chan( "B", "OSC", 2, field( "reg_b", 0, 0 ) ),
+                    H: chan( "H", "OSCNB", 0, field( "reg_h", 3, 2 ) ), O: chan( "O", "OSCNB", 1, field( "reg_o", 3, 2 ) ) };
+         Pipeline.registerToReference( pc, { useCache: false }, preg );
+         var worst = 0, worstG = 0;
+         stars.forEach( function( s )
+         {
+            var g = centroid( pc.G.view, s[0], s[1] ), h = centroid( pc.H.view, s[0], s[1] ), o = centroid( pc.O.view, s[0], s[1] );
+            worst = Math.max( worst, Math.hypot( h[0] - o[0], h[1] - o[1] ) );
+            worstG = Math.max( worstG, Math.hypot( h[0] - g[0], h[1] - g[1] ), Math.hypot( o[0] - g[0], o[1] - g[1] ) );
+         } );
+         check( "H and O share one transform (centroids within 0.05 px)", worst < 0.05, true );
+         check( "H and O sit on G (centroids within 0.2 px)", worstG < 0.2, true );
+      }
+      finally
+      {
+         preg.closeAll();
+         made.forEach( function( w ) { try { w.forceClose(); } catch ( e ) {} } );
       }
    }
    } )();
