@@ -1,0 +1,6 @@
+# 12 stars found using the following parameters:
+# sigma=1.00 roundness=0.50 radius=5 relax=0 profile=0 minbeta=1.5 max_stars=2000 layer=0 minA=0.00 maxA=0.00 maxR=1.00
+# star#	layer	B	A	beta	X	Y	FWHMx [px]	FWHMy [px]	FWHMx ["]	FWHMy ["]	angle	RMSE	mag	Sat	Profile	RA	Dec
+1	0	5567.622203	44628.807826	     -1.00	    201.70	    164.72	      2.99	      2.99	     -1.00	     -1.00	-0.91	 2.589e+02	    -14.14	1	Gaussian	9990000000.000000	9990000000.000000
+2	0	5736.516197	30875.455604	     -1.00	    303.39	     74.43	      3.03	      3.01	     -1.00	     -1.00	-2.81	 2.609e+02	    -13.76	0	Gaussian	9990000000.000000	9990000000.000000
+3	0	5447.044770	31172.391829	     -1.00	    126.14	     89.07	      3.03	      2.96	     -1.00	     -1.00	-7.07	 2.566e+02	    -13.75	0	Gaussian	9990000000.000000	9990000000.000000
