@@ -1,11 +1,11 @@
 """Master flats: the decision part of ``pixinsight/script/lib/MasterFlat.js``, lines 1-447, ported.
 
-Covered, by JS line range: the constants (28-41); the settings store protocol and load, save and ``active``
-(43-89; the PixInsight ``Settings`` binding of 47-52 is replaced by the :class:`SettingsStore` the caller passes in);
-``number`` and ``describe`` (91-127); the dark classification by IMAGETYP and by name (128-147); ``darksOf``
-(149-165); the darks on the card (167-288: ``cardDarks``, ``cardDarkMatch``, ``readCardDarks``, ``darkSourceOf``,
-``cardDarksUi``); matching (290-384: ``sameExposure``, ``compatible``, ``darkSuits``, ``chooseDark``); ``rawGroupKey``
-(386-394); names and rejection (396-434); the dark cache path (436-445).
+Covered, by JS line range: the constants (28-41); the settings store protocol, load, save and ``active``
+(43-90; the PixInsight ``Settings`` binding of 47-52 is replaced by the :class:`SettingsStore` the caller passes in);
+``number`` and ``describe`` (91-122); the dark classification by IMAGETYP and by name, and ``darksOf`` (123-165);
+the darks on the card (167-285: ``cardDarks``, ``cardDarkMatch``, ``readCardDarks``, ``darkSourceOf``,
+``cardDarksUi``); matching (286-391: ``sameExposure``, ``compatible``, ``darkSuits``, ``chooseDark``, ``rawGroupKey``);
+names and rejection, the integration specs and the dark cache path (392-443).
 
 Pure: no file, no display, no Siril call. Header reads take the reader as an argument, ``read_header(path)``
 returning an object with ``info`` (None when unreadable) and ``keyword(name)``; the card's file size and time are
@@ -58,8 +58,10 @@ DATA_TYPE_BOOLEAN = "DataType_Boolean"
 DATA_TYPE_STRING = "DataType_String"
 
 # JS String.prototype.trim: WhiteSpace and LineTerminator code points.
-_JS_WHITESPACE = "\t\n\x0b\x0c\r              " \
-                 "    　﻿"
+_JS_WHITESPACE = (
+    "\t\n\x0b\x0c\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 
 # A file in the darks folder: the image extensions (MasterFlat.js IMAGE_EXTENSION, JS `$` is the end of input).
 IMAGE_EXTENSION = re.compile(r"\.(xisf|fits?|fts)\Z", re.IGNORECASE | re.ASCII)
@@ -117,7 +119,7 @@ def _cmp_utf16(a: str, b: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Settings (MasterFlat.js 43-86)
+# Settings (MasterFlat.js 43-90)
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +153,7 @@ def active(darks_folder: Any = None, only_master_flats: Any = None, card_darks_f
 
 
 # ---------------------------------------------------------------------------
-# Describing frames (MasterFlat.js 100-124)
+# Describing frames (MasterFlat.js 91-166)
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +189,7 @@ def describe(path: Any, keyword: Callable[[str], Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Dark classification (MasterFlat.js 126-143)
+# Dark classification (MasterFlat.js 123-165)
 # ---------------------------------------------------------------------------
 
 
@@ -225,7 +227,7 @@ def darks_of(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Darks on the ASIAIR card (MasterFlat.js 145-206)
+# Darks on the ASIAIR card (MasterFlat.js 167-285)
 # ---------------------------------------------------------------------------
 
 
@@ -319,7 +321,7 @@ def card_darks_ui(found: Any, darks_folder: Any, only_master_flats: Any, editabl
 
 
 # ---------------------------------------------------------------------------
-# Matching (MasterFlat.js 208-277)
+# Matching (MasterFlat.js 286-391)
 # ---------------------------------------------------------------------------
 
 
@@ -423,7 +425,7 @@ def choose_dark(flat: dict[str, Any], darks: list[dict[str, Any]]) -> Optional[d
 
 
 # ---------------------------------------------------------------------------
-# Names and rejection (MasterFlat.js 279-322)
+# Names and rejection (MasterFlat.js 392-443)
 # ---------------------------------------------------------------------------
 
 

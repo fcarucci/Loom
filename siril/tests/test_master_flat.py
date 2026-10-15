@@ -14,11 +14,14 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
+import re
 from typing import Any, Callable
 
 import pytest
 
 from loomsiril import master_flat as mf
+from loomsiril.loom.cache import iso_ms
 from conftest import ORACLE_DIR
 
 PATH = ORACLE_DIR / "fs_master_flat.json"
@@ -185,3 +188,15 @@ def test_image_extension_is_end_anchored_and_case_blind() -> None:
     assert mf.IMAGE_EXTENSION.search("d.fts")
     assert not mf.IMAGE_EXTENSION.search("a.xisf.txt")
     assert not mf.IMAGE_EXTENSION.search("e.fz")
+
+
+def test_file_info_of_reads_a_real_file(tmp_path) -> None:
+    f = tmp_path / "dark_one.fit"
+    f.write_bytes(b"x" * 1234)
+    os.utime(f, (1700000000.0, 1700000000.0))
+    size, modified = mf.file_info_of(str(f))
+    assert size == 1234
+    assert modified == "2023-11-14T22:13:20.000Z"
+    assert modified == iso_ms(os.stat(f).st_mtime)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", modified)
+    assert mf.file_info_of(str(tmp_path / "gone.fit")) == (None, None)
