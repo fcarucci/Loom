@@ -15,10 +15,23 @@ Ported from ``pixinsight/script/FrameSelector.js``:
 - ``exportRefusal`` (4187-4195) is :func:`export_refusal`.
 - ``confirmWritten`` (4201-4211) is :func:`confirm_written`.
 
-The pure rules (output names and their collisions, the refusal for an output folder that is or contains a source
-folder, the home folder or the filesystem root) are in :mod:`loomsiril.frames_files` and are called from there, not
-copied. Output names: a FITS source keeps its own name (``.fit``, ``.fits``, ``.fts``, optionally ``.fz``); any other
-source is written as ``.fit``. A FITS source is copied with its modification time kept.
+The JS string rules (output names and their collisions, a destination that is or contains a source folder, the home
+folder or the filesystem root) are in :mod:`loomsiril.frames_files` and run first, unchanged. On top of them this
+module adds a safety layer that works on resolved paths, because the string rules see only the spelling:
+
+- the destination must be absolute and must not be a symbolic link (or a Windows junction); it is not followed;
+- the destination, every source folder, its parent and the home folder are resolved with ``os.path.realpath`` and
+  compared after ``os.path.normcase``; on macOS and Windows the comparison is also case-folded. A destination that is
+  the filesystem root, the home folder, or equal to or an ancestor of a source folder, its parent or the home folder
+  is refused; so is one that is the same directory (``os.path.samefile``) as any of them;
+- the same checks run again right before anything is removed;
+- output names are compared case-folded on macOS and Windows, so ``a.fit`` and ``A.fit`` collide there;
+- emptying never follows a symbolic link or a junction; a junction is removed as a directory link;
+- a copied non-FITS source drops the keywords that describe Siril's own row order and checksums (ROWORDER, CHECKSUM,
+  DATASUM), which would be wrong for the new file;
+- if writing stops part way, the outputs already on disk are still reported per frame.
+
+A FITS source is copied with its modification time kept.
 """
 
 from __future__ import annotations
@@ -27,6 +40,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from typing import Any, Optional
 
 import numpy as np
@@ -38,10 +52,17 @@ from loomsiril.siril_bridge import planes_from_pixeldata, top_down_header
 #: A FITS frame: .fit, .fits or .fts, optionally tile-compressed (.fz). Matched on the whole path, case-blind.
 FITS_SOURCE = re.compile(r"\.(fit|fits|fts)(\.fz)?\Z", re.IGNORECASE)
 
-#: Header keywords that describe the file layout, not the image: io_fits writes its own.
-_STRUCTURAL = {"SIMPLE", "BITPIX", "EXTEND", "BZERO", "BSCALE", "END", "COMMENT", "HISTORY", "LOOMROWS"}
+#: Names compare case-folded on the platforms whose file systems usually fold case (macOS, Windows).
+_CASE_FOLD = sys.platform in ("darwin", "win32")
+
+#: Header keywords that describe the file layout or Siril's own row order and checksums: not copied to a new file.
+_STRUCTURAL = {"SIMPLE", "BITPIX", "EXTEND", "BZERO", "BSCALE", "END", "COMMENT", "HISTORY", "LOOMROWS",
+               "ROWORDER", "CHECKSUM", "DATASUM"}
 
 _INT = re.compile(r"[+-]?\d+")
+
+#: Windows FILE_ATTRIBUTE_REPARSE_POINT: junctions and other reparse points.
+_REPARSE_POINT = 0x400
 
 
 def is_fits_source(path: str) -> bool:
@@ -81,8 +102,8 @@ def _card_value(rest: str) -> Any:
 
 
 def _header_from_text(text: str) -> dict[str, Any]:
-    """Keyword -> value from a FITS header as text, one 80-character card per line. The structural keywords and the
-    ones that cannot be written back (non-ASCII text, non-finite numbers) are left out."""
+    """Keyword -> value from a FITS header as text, one 80-character card per line. The structural keywords (see
+    ``_STRUCTURAL``) and the ones that cannot be written back (non-ASCII text, non-finite numbers) are left out."""
     out: dict[str, Any] = {}
     for line in text.splitlines():
         if len(line) < 10 or line[8:10] != "= ":
@@ -102,7 +123,7 @@ def write_output(src: str, dst: str, siril: Any = None) -> None:
     A FITS source is copied byte for byte and its modification time kept. Any other source is read through
     ``siril.load_image_from_file(src, with_pixels=True)`` (which leaves the image open in Siril alone), its rows are
     turned top-down, and it is written as FITS: 16-bit unsigned for uint16 data, 32-bit float otherwise. The header
-    is the one the loaded file carries, with the keywords io_fits can write.
+    is the one the loaded file carries, minus the keywords in ``_STRUCTURAL``.
     """
     if is_fits_source(src):
         shutil.copyfile(src, dst)
@@ -111,6 +132,8 @@ def write_output(src: str, dst: str, siril: Any = None) -> None:
     if siril is None:
         raise ValueError("no Siril connection to read " + src)
     loaded = siril.load_image_from_file(src, with_pixels=True)
+    if loaded is None or getattr(loaded, "data", None) is None:
+        raise RuntimeError("could not read " + src)
     data = np.asarray(loaded.data)
     planes = planes_from_pixeldata(data)
     bitpix = 16 if data.dtype == np.uint16 else -32
@@ -131,23 +154,93 @@ def convert_in_place(paths: Optional[list[str]]) -> dict[str, Any]:
     return {"converted": 0, "failed": 0, "alreadyXisf": 0, "refused": None, "outcomes": {}}
 
 
+# ---- paths -----------------------------------------------------------------------------------------------
+
+def _canon(path: str) -> str:
+    """The path with symbolic links, "." and ".." resolved, normalised, and case-folded where names fold case."""
+    p = os.path.normcase(os.path.realpath(path))
+    return p.casefold() if _CASE_FOLD else p
+
+
+def _inside(child: str, parent: str) -> bool:
+    """Is ``child`` the same path as ``parent`` or below it? Both canonical."""
+    if child == parent:
+        return True
+    return child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def _same_dir(a: str, b: str) -> bool:
+    """Are the two paths the same existing directory (same device and inode)? False when either does not exist."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _is_junction(path: str) -> bool:
+    """A Windows junction (or another reparse point). Always False off Windows."""
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        return bool(isjunction(path))
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(st, "st_file_attributes", 0) & _REPARSE_POINT)
+
+
+def _is_link(path: str) -> bool:
+    """A symbolic link or a junction: removed as a link, never followed."""
+    return os.path.islink(path) or _is_junction(path)
+
+
+def _path_refusal(approved: list[str], destination: str, home: Optional[str]) -> Optional[str]:
+    """Why the destination must not be emptied, checked on resolved paths, or None. Run before anything is removed,
+    and again just before the emptying."""
+    if not os.path.isabs(destination):
+        return "the output folder must be an absolute path"
+    if _is_link(destination):
+        return "the output folder is a symbolic link or junction; it is not followed"
+    dst = _canon(destination)
+    if os.path.dirname(dst) == dst:
+        return "refusing to empty the filesystem root"
+    home_dir = home if home is not None else os.path.expanduser("~")
+    home_canon = _canon(home_dir)
+    if dst == home_canon:
+        return "refusing to empty the home folder"
+    if _inside(home_canon, dst):
+        return "refusing to empty a folder that contains the home folder"
+    folders = []
+    for src in approved:
+        folder = _canon(os.path.dirname(src))
+        folders += [folder, os.path.dirname(folder)]
+        if _inside(folder, dst) or _inside(os.path.dirname(folder), dst):
+            return "the output folder contains the frames being copied (" + folder + ")"
+    root = os.path.abspath(os.sep)
+    for other in folders + [home_dir, root]:
+        if other and _same_dir(destination, other):
+            return "the output folder is the same folder as " + other
+    return None
+
+
 def _mapping(approved: list[str], destination: str) -> dict[str, Any]:
     """Where each approved frame will be written. FITS sources keep their own names; the others become ``.fit``.
-    Computed by output_mapping for each kind, then the two kinds are checked against each other."""
+    Computed by output_mapping for each kind. Collisions are then checked over all the names together, case-folded
+    where names fold case, so ``a.fit`` and ``A.fit`` (or ``a.FIT`` and ``a.xisf``) collide on macOS and Windows."""
     fits = [p for p in approved if is_fits_source(p)]
     other = [p for p in approved if not is_fits_source(p)]
-    a = Fi.output_mapping(fits, destination, None) if fits else {"mapping": {}, "collisions": [], "aliased": False}
-    b = Fi.output_mapping(other, destination, ".fit") if other else {"mapping": {}, "collisions": [], "aliased": False}
-    taken = {Fi.output_name(v) for v in a["mapping"].values()}
-    cross: list[str] = []
-    for p in other:
-        name = Fi.output_name(b["mapping"][p])
-        if name in taken:
-            cross.append(name)
-        taken.add(name)
-    return {"mapping": {**a["mapping"], **b["mapping"]},
-            "collisions": a["collisions"] + b["collisions"] + cross,
-            "aliased": a["aliased"] or b["aliased"]}
+    a = Fi.output_mapping(fits, destination, None) if fits else {"mapping": {}, "aliased": False}
+    b = Fi.output_mapping(other, destination, ".fit") if other else {"mapping": {}, "aliased": False}
+    mapping = {**a["mapping"], **b["mapping"]}
+    seen: set[str] = set()
+    collisions: list[str] = []
+    for p in approved:
+        name = Fi.output_name(mapping[p])
+        key = name.casefold() if _CASE_FOLD else name
+        if key in seen:
+            collisions.append(name)
+        seen.add(key)
+    return {"mapping": mapping, "collisions": collisions, "aliased": a["aliased"] or b["aliased"]}
 
 
 def export_refusal(m: dict[str, Any]) -> Optional[str]:
@@ -172,9 +265,22 @@ def confirm_written(written: list[str], m: dict[str, Any], result: dict[str, Any
             result["failed"] += 1
 
 
-def remove_entry(path: str, folder: bool, out: dict[str, Any]) -> None:
-    """Remove one entry of an output folder: a folder is emptied and removed, a file or a symbolic link (never
-    followed) is unlinked. A folder that is not empty stays, and its leftovers are reported."""
+# ---- emptying ---------------------------------------------------------------------------------------------
+
+def _unlink(path: str) -> None:
+    """Remove one file or symbolic link. Never follows it."""
+    os.remove(path)
+
+
+def _rmdir(path: str) -> None:
+    """Remove one empty directory (or a junction)."""
+    os.rmdir(path)
+
+
+def remove_entry(path: str, folder: bool, out: dict[str, Any], junction: bool = False) -> None:
+    """Remove one entry of an output folder: a folder is emptied and removed; a junction is removed as a directory
+    link; a file or a symbolic link is unlinked, never followed. A folder that is not empty stays, and its leftovers
+    are reported."""
     try:
         if folder:
             inner = empty_directory(path)
@@ -182,9 +288,11 @@ def remove_entry(path: str, folder: bool, out: dict[str, Any]) -> None:
             out["failed"] += inner["failed"]
             if inner["failed"]:
                 return
-            os.rmdir(path)
+            _rmdir(path)
+        elif junction:
+            _rmdir(path)
         else:
-            os.remove(path)
+            _unlink(path)
         out["removed"] += 1
     except OSError:
         out["failed"].append(path)
@@ -192,12 +300,15 @@ def remove_entry(path: str, folder: bool, out: dict[str, Any]) -> None:
 
 def empty_directory(path: str) -> dict[str, Any]:
     """Remove everything inside a folder (hidden entries and subfolders too), leaving the folder itself. A symbolic
-    link is removed as a link and never followed. Returns what was removed and what could not be."""
+    link or a junction is removed as a link and never followed. Returns what was removed and what could not be."""
     out: dict[str, Any] = {"removed": 0, "failed": []}
     with os.scandir(path) as it:
         entries = list(it)
     for e in entries:
-        remove_entry(os.path.join(path, e.name), e.is_dir(follow_symlinks=False), out)
+        child = os.path.join(path, e.name)
+        junction = _is_junction(child)
+        link = junction or e.is_symlink()
+        remove_entry(child, not link and e.is_dir(follow_symlinks=False), out, junction=junction)
     return out
 
 
@@ -205,9 +316,11 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
                     home: Optional[str] = None) -> dict[str, Any]:
     """Write the approved frames into ``destination``, emptying it first.
 
-    Refused before anything is removed when two frames would share an output name, when the destination is a source
-    folder, or when it is, or contains, a source folder, the filesystem root or the home folder. If the folder cannot
-    be fully emptied nothing is copied. ``outcomes`` says per frame whether it was "written" or is "missing".
+    Refused before anything is removed when two frames would share an output name (case-folded where names fold
+    case), when the destination is a source folder, or when it is, or contains, a source folder, the filesystem root
+    or the home folder, on the JS string rules and on resolved paths (see the module docstring). The checks run again
+    just before the emptying. If the folder cannot be fully emptied nothing is copied. ``outcomes`` says per frame
+    whether it was "written" or is "missing"; a failure part way keeps the outputs already written as "written".
     """
     result: dict[str, Any] = {"written": 0, "failed": 0, "emptied": 0, "refused": None, "outcomes": {}}
     if approved is None or len(approved) == 0:
@@ -216,12 +329,16 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
         result["refused"] = Fi.empty_refusal(approved, destination, home)
         return result
     m = _mapping(approved, destination)
-    result["refused"] = export_refusal(m) or Fi.empty_refusal(
-        approved, destination, home if home is not None else os.path.expanduser("~"))
+    result["refused"] = (export_refusal(m) or Fi.empty_refusal(
+        approved, destination, home if home is not None else os.path.expanduser("~")))
+    result["refused"] = result["refused"] or _path_refusal(approved, destination, home)
     if result["refused"] is not None:
         return result
     try:
         os.makedirs(destination, exist_ok=True)
+        result["refused"] = _path_refusal(approved, destination, home)
+        if result["refused"] is not None:
+            return result
         emptied = empty_directory(destination)
         result["emptied"] = emptied["removed"]
         if emptied["failed"]:
@@ -231,6 +348,7 @@ def export_approved(approved: Optional[list[str]], destination: Optional[str], s
         run_output_routine(approved, m["mapping"], siril)
     except Exception as e:  # noqa: BLE001 - reported to the caller as the refusal, as the JS does
         result["refused"] = str(e)
+        confirm_written(approved, m, result)
         return result
     confirm_written(approved, m, result)
     return result

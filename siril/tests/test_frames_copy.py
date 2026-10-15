@@ -6,7 +6,7 @@ needs neither Siril nor PixInsight.
 from __future__ import annotations
 
 import os
-import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -161,26 +161,30 @@ def test_empty_directory_removes_a_link_without_following_it(tmp_path: Path) -> 
     assert _names(outside) == ["x.fit"]
 
 
-def test_a_folder_that_cannot_be_emptied_refuses_and_nothing_is_copied(tmp_path: Path) -> None:
-    if os.geteuid() == 0:
-        pytest.skip("root removes files in read-only folders")
+def test_a_folder_that_cannot_be_emptied_refuses_and_nothing_is_copied(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     src = _fits(tmp_path / "in" / "a.fit")
     dest = tmp_path / "out"
-    locked = dest / "locked"
-    locked.mkdir(parents=True)
-    (locked / "stuck.fit").write_bytes(b"stuck")
+    dest.mkdir()
+    (dest / "stuck.fit").write_bytes(b"stuck")
     (dest / "loose.fit").write_bytes(b"loose")
-    locked.chmod(stat.S_IRUSR | stat.S_IXUSR)
-    try:
-        result = C.export_approved([str(src)], str(dest), None, home=str(tmp_path / "home"))
-    finally:
-        locked.chmod(stat.S_IRWXU)
+    real_unlink = C._unlink
+
+    def refuses_stuck(path: str) -> None:
+        if path.endswith("stuck.fit"):
+            raise PermissionError(13, "denied", path)
+        real_unlink(path)
+
+    monkeypatch.setattr(C, "_unlink", refuses_stuck)
+
+    result = C.export_approved([str(src)], str(dest), None, home=str(tmp_path / "home"))
 
     assert result["refused"] is not None and "could not empty the output folder" in result["refused"]
     assert "nothing was copied" in result["refused"]
     assert result["written"] == 0 and result["outcomes"] == {}
     assert not (dest / "a.fit").exists()
-    assert (locked / "stuck.fit").read_bytes() == b"stuck"
+    assert (dest / "stuck.fit").read_bytes() == b"stuck"
+    assert not (dest / "loose.fit").exists()
 
 
 # ---- refusals ------------------------------------------------------------------------------------------
@@ -300,7 +304,7 @@ def test_a_failed_read_is_the_refusal_and_has_no_outcomes(tmp_path: Path) -> Non
     result = C.export_approved([str(x)], str(dest), StubSiril(fail="siril went away"), home=str(tmp_path / "home"))
 
     assert result["refused"] == "siril went away"
-    assert result["outcomes"] == {}
+    assert result["outcomes"] == {str(x): "missing"}
 
 
 # ---- convert in place: not done by the Siril port ------------------------------------------------------
@@ -327,3 +331,223 @@ def test_the_module_docstring_names_the_ported_functions_and_the_deviation() -> 
     assert "FrameSelector.js" in doc
     assert "3954-3981" in doc and "4211" in doc
     assert "NOT ported" in doc
+
+
+# ---- the safety layer: resolved paths, links, case, root spellings -------------------------------------
+
+def _sources_bytes(frames: list[str]) -> dict[str, bytes]:
+    return {f: Path(f).read_bytes() for f in frames}
+
+
+SOURCE_SPELLINGS = {
+    "parent-dotdot": lambda t, f: str(t / "out" / ".." / "frames"),
+    "dot-segment": lambda t, f: str(f) + "/.",
+    "double-slash": lambda t, f: "/" + str(f),
+    "trailing-slash": lambda t, f: str(f) + "/",
+    "parent-of-source": lambda t, f: str(f) + "/..",
+    "source-parent": lambda t, f: str(t),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(SOURCE_SPELLINGS))
+def test_resolved_spellings_of_a_source_folder_or_its_parent_are_refused(tmp_path: Path, spelling: str) -> None:
+    frames = _frames_in(tmp_path)
+    before = _sources_bytes(frames)
+
+    result = C.export_approved(frames, SOURCE_SPELLINGS[spelling](tmp_path, tmp_path / "frames"), None,
+                               home=str(tmp_path / "home"))
+
+    assert result["refused"] is not None
+    assert _sources_bytes(frames) == before
+
+
+def test_a_symbolic_link_to_the_source_folder_or_its_parent_is_refused(tmp_path: Path) -> None:
+    frames = _frames_in(tmp_path)
+    before = _sources_bytes(frames)
+    os.symlink(tmp_path / "frames", tmp_path / "to_source")
+    os.symlink(tmp_path, tmp_path / "to_parent")
+
+    for dest in (tmp_path / "to_source", tmp_path / "to_parent"):
+        result = C.export_approved(frames, str(dest), None, home=str(tmp_path / "home"))
+        assert result["refused"] is not None and "symbolic link" in result["refused"]
+    assert _sources_bytes(frames) == before
+    assert _names(tmp_path / "frames") == ["a.fit", "b.fit"]
+
+
+@pytest.mark.parametrize("root", ["/", "/.", "/..", "//", "/usr/.."])
+def test_root_spellings_are_refused(tmp_path: Path, root: str) -> None:
+    frames = _frames_in(tmp_path)
+    before = _sources_bytes(frames)
+
+    result = C.export_approved(frames, root, None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is not None
+    assert _sources_bytes(frames) == before
+
+
+def test_the_home_folder_by_symlink_or_dot_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "realhome"
+    home.mkdir()
+    (home / "notes.txt").write_bytes(b"mine")
+    link = tmp_path / "homelink"
+    os.symlink(home, link)
+    monkeypatch.setenv("HOME", str(link))
+    frames = _frames_in(tmp_path)
+
+    for dest in (str(home), str(link), str(home) + "/.", str(home) + "//"):
+        assert C.export_approved(frames, dest, None)["refused"] is not None
+    result = C.export_approved(frames, str(home) + "/.", None, home=str(link))
+    assert result["refused"] == "refusing to empty the home folder"
+    assert (home / "notes.txt").read_bytes() == b"mine"
+
+
+def test_a_destination_that_contains_the_home_folder_is_refused(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "notes").mkdir(parents=True)
+    (home / "notes" / "x.txt").write_bytes(b"x")
+
+    result = C.export_approved(_frames_in(tmp_path), str(tmp_path), None, home=str(home))
+
+    assert result["refused"] is not None
+    assert (home / "notes" / "x.txt").read_bytes() == b"x"
+
+
+def test_a_relative_destination_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = _frames_in(tmp_path)
+    before = _sources_bytes(frames)
+    monkeypatch.chdir(tmp_path / "frames")
+
+    for dest in ("frames", ".", "./", "../frames", "out"):
+        result = C.export_approved(frames, dest, None, home=str(tmp_path / "home"))
+        assert result["refused"] == "the output folder must be an absolute path", dest
+    assert _sources_bytes(frames) == before
+
+
+def test_relative_source_paths_with_an_absolute_destination_are_refused(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _frames_in(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    frames = ["frames/a.fit", "frames/b.fit"]
+    before = _sources_bytes(frames)
+
+    result = C.export_approved(frames, str(tmp_path / "frames"), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is not None
+    assert _sources_bytes(frames) == before
+
+
+def test_case_different_spellings_are_refused_where_case_folds(tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(C, "_CASE_FOLD", True)
+    frames = _frames_in(tmp_path)
+    before = _sources_bytes(frames)
+    folder = str(tmp_path / "frames")
+
+    result = C.export_approved(frames, folder.upper(), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is not None
+    assert _sources_bytes(frames) == before
+
+
+def test_output_names_collide_case_folded_where_case_folds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(C, "_CASE_FOLD", True)
+    a = _fits(tmp_path / "one" / "a.fit")
+    b = _fits(tmp_path / "two" / "A.fit", 0.9)
+    dest = tmp_path / "out"
+    result = C.export_approved([str(a), str(b)], str(dest), None, home=str(tmp_path / "home"))
+    assert result["refused"] == "two or more frames would be written to the same name: A.fit"
+
+    x = tmp_path / "three" / "a.xisf"
+    x.parent.mkdir()
+    x.write_bytes(b"xisf")
+    c = _fits(tmp_path / "four" / "a.FIT", 0.1)
+    result = C.export_approved([str(c), str(x)], str(dest), StubSiril(), home=str(tmp_path / "home"))
+    assert result["refused"] is not None and "two or more frames" in result["refused"]
+
+
+def test_output_names_differing_only_in_case_stay_distinct_where_case_is_kept(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(C, "_CASE_FOLD", False)
+    a = _fits(tmp_path / "one" / "a.fit")
+    b = _fits(tmp_path / "two" / "A.fit", 0.9)
+    dest = tmp_path / "out"
+
+    result = C.export_approved([str(a), str(b)], str(dest), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] is None
+    assert _names(dest) == ["A.fit", "a.fit"]
+
+
+def test_a_junction_is_removed_as_a_link_and_its_target_is_not_emptied(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = tmp_path / "folder"
+    (folder / "jn").mkdir(parents=True)
+    (folder / "jn" / "kept.fit").write_bytes(b"kept")
+    monkeypatch.setattr(C, "_is_junction", lambda p: p.endswith(os.sep + "jn"))
+
+    out = C.empty_directory(str(folder))
+
+    assert out["failed"] == [str(folder / "jn")]
+    assert (folder / "jn" / "kept.fit").read_bytes() == b"kept"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows feature")
+def test_a_real_junction_is_removed_as_a_link_on_windows(tmp_path: Path) -> None:
+    import subprocess
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "kept.fit").write_bytes(b"kept")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / "jn"), str(target)], check=True)
+
+    out = C.empty_directory(str(folder))
+
+    assert out["failed"] == []
+    assert _names(folder) == []
+    assert (target / "kept.fit").read_bytes() == b"kept"
+
+
+def test_row_order_and_checksum_keywords_are_not_copied(tmp_path: Path) -> None:
+    header = "OBJECT  = 'M1'\nROWORDER= 'BOTTOM-UP'\nCHECKSUM= 'abc'\nDATASUM = '12'\n"
+    siril = StubSiril({"a.xisf": (np.zeros((2, 3), dtype=np.uint16), header)})
+    dst = tmp_path / "a.fit"
+
+    C.write_output(str(tmp_path / "a.xisf"), str(dst), siril)
+
+    _, out = io_fits.read_fits(dst)
+    assert out["OBJECT"] == "M1"
+    for key in ("ROWORDER", "CHECKSUM", "DATASUM"):
+        assert key not in out
+
+
+def test_a_source_that_cannot_be_read_is_refused_with_its_path(tmp_path: Path) -> None:
+    class NoImage:
+        def load_image_from_file(self, path: str, with_pixels: bool = False) -> None:
+            return None
+
+    x = str(tmp_path / "in" / "a.xisf")
+    with pytest.raises(RuntimeError, match="could not read "):
+        C.write_output(x, str(tmp_path / "a.fit"), NoImage())
+
+    result = C.export_approved([x], str(tmp_path / "out"), NoImage(), home=str(tmp_path / "home"))
+    assert result["refused"] == "could not read " + x
+    assert result["outcomes"] == {x: "missing"}
+
+
+def test_a_failure_part_way_keeps_the_outputs_already_written(tmp_path: Path,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = _frames_in(tmp_path)
+
+    def writes_first_then_fails(sources: list[str], mapping: dict[str, str], siril: Any = None) -> bool:
+        C.write_output(sources[0], mapping[sources[0]], siril)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(C, "run_output_routine", writes_first_then_fails)
+
+    result = C.export_approved(frames, str(tmp_path / "out"), None, home=str(tmp_path / "home"))
+
+    assert result["refused"] == "boom"
+    assert result["outcomes"] == {frames[0]: "written", frames[1]: "missing"}
+    assert (result["written"], result["failed"]) == (1, 1)
