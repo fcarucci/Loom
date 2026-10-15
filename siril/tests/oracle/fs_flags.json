@@ -1,5 +1,5 @@
 {
- "about": {"recorder":"tools/oracle/fs_flags.js","loom":"v0.5.1-12-g5853280","source":"Loom script/lib (read-only)"},
+ "about": {"recorder":"tools/oracle/fs_flags.js","loom":"v0.5.1-4-gc57b699","source":"Loom script/lib (read-only)"},
  "cases": {
   "not_subframe/0": {"fn":"notSubframe","args":["Light_001.xisf","Light Frame"],"out":null},
   "not_subframe/1": {"fn":"notSubframe","args":["masterFlat.xisf",""],"out":"master"},
