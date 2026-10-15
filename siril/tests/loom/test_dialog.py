@@ -1462,6 +1462,63 @@ def test_saved_colour_paths_fill_the_list_and_choices_survive_a_reopen(tmp_path:
     assert reopened.to_config()["oscKindChoices"] == first.to_config()["oscKindChoices"]
 
 
+def test_a_path_whose_header_was_never_read_keeps_its_slot_when_another_master_changes(tmp_path: Path) -> None:
+    saved: list[dict[str, Any]] = []
+    model = dl.DialogModel.from_config(config(paths=_paths(OSC="/x/my_osc.fits", OSCNB="/x/duo.fits")), all_found())
+    model.persist = saved.append
+    model.set_osc_kind("/x/my_osc.fits", "broadband")
+    assert (model.path("OSC"), model.path("OSCNB")) == ("/x/my_osc.fits", "/x/duo.fits")
+    assert all(p["paths"]["OSCNB"] == "/x/duo.fits" for p in saved)
+    rows = {r["path"]: r for r in model.colour_rows()}
+    assert rows["/x/duo.fits"]["kind"] == "dualband" and rows["/x/duo.fits"]["slot"] == "OSCNB"   # from its slot
+    assert rows["/x/duo.fits"]["enabled"] is True
+    model.set_osc_kind("/x/duo.fits", "broadband")   # its own change moves it, and it claims the slot first
+    assert model.path("OSC") == "/x/duo.fits"
+
+
+def test_the_changed_master_claims_a_slot_even_when_it_is_not_first_in_the_list() -> None:
+    held = _colour("/m/uvir.fits", "UV/IR Cut", "OSC")
+    model = _colour_model(_result(colour={"OSC": held}, unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)]))
+    model.set_osc_kind("/m/mystery.fits", "broadband")
+    assert model.path("OSC") == "/m/mystery.fits"
+    assert [r["path"] for r in model.colour_rows() if r["slot"] == ""] == ["/m/uvir.fits"]
+
+
+def test_a_choice_made_while_a_scan_ran_routes_the_scanned_masters() -> None:
+    model = dl.DialogModel.from_config(config(), all_found())
+    scanned = _result(unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)])
+    before = model.kind_choices()
+    model._kind_choices[osc.osc_kind_key("Mystery 9000", "/m/mystery.fits")] = "dualband"   # picked mid-scan
+    assert model.scan_masters("/m", scanner=lambda folder: scanned, routed_with=before) is True
+    assert model.path("OSCNB") == "/m/mystery.fits"
+    other = dl.DialogModel.from_config(config(), all_found())
+    assert other.scan_masters("/m", scanner=lambda folder: scanned, routed_with=other.kind_choices()) is True
+    assert other.path("OSCNB") == "" and other.colour_rows()[0]["slot"] == ""
+
+
+def test_saves_are_one_at_a_time_and_an_older_snapshot_never_overwrites_a_newer_one() -> None:
+    active = {"now": 0, "max": 0}
+    written: list[Any] = []
+
+    def slow(options: dict[str, Any]) -> None:
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        time.sleep(0.05)
+        written.append(options["oscKindChoices"])
+        active["now"] -= 1
+
+    model = _colour_model(_result(unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)]))
+    model.persist = slow
+    stale = model.snapshot_options()
+    worker = threading.Thread(target=lambda: model.save_options(model.snapshot_options()))
+    worker.start()
+    model.set_osc_kind("/m/mystery.fits", "dualband")
+    worker.join()
+    model.save_options(stale)   # a late autosave of the older options
+    assert active["max"] == 1
+    assert written[-1] != {} and written[-1] == {"filter:mystery9000": "dualband"}
+
+
 # ---- the controls a colour master changes --------------------------------------------------------------------------
 
 
@@ -1669,6 +1726,7 @@ def test_the_view_shows_the_kind_control_the_sensor_row_and_the_greyed_boxes(tk_
     assert "disabled" not in view._palette_boxes["HOO"].state()
     assert MONO_REASON in view._filter_reason.get() and SHO_REASON in view._palette_reason.get()
     assert "disabled" in view._combos["filter:R"][0].state()
+    assert "disabled" not in rows[0]["combo"].state()
     # picking a kind from the control writes the choice and moves the master
     rows[1]["combo"].set(KIND_LABELS[2])
     rows[1]["combo"].event_generate("<<ComboboxSelected>>")
@@ -1692,4 +1750,15 @@ def test_the_view_hides_the_sensor_row_for_a_dual_band_only_run_and_fills_it_fro
     view._sensor_combos["sensor"].set("Sony IMX571")
     view._sensor_combos["sensor"].event_generate("<<ComboboxSelected>>")
     assert model.to_config()["oscSensor"]["sensor"] == "Sony IMX571"
+    view.top.destroy()
+
+
+def test_the_view_disables_the_kind_control_of_an_unsupported_filter(tk_root: Any) -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), resolver=FakeResolver(), spcc_names=_spcc)
+    model.scan_masters("/m", scanner=lambda folder: _result(unresolved=[_colour("/m/alpt.fits", "ALP-T SII", None),
+                                                                      _colour("/m/mystery.fits", "Mystery 9000", None)]))
+    view = dl.LoomDialog(tk_root, model)
+    tk_root.update()
+    rows = [r for r in view._kind_rows if _shown(r["frame"])]
+    assert "disabled" in rows[0]["combo"].state() and "disabled" not in rows[1]["combo"].state()
     view.top.destroy()

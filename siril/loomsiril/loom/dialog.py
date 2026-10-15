@@ -268,6 +268,9 @@ class DialogModel:
         #: Colour masters with no slot: their kind is still to be chosen, or another master holds their slot.
         self._unused: list[dict[str, Any]] = []
         self._kept_memory: list[str] = []
+        self._save_lock = threading.Lock()
+        self._save_seq = 0
+        self._saved_seq = 0
         self._output_dir = ""
 
         self._found: dict[str, Any] = {tool_id: None for tool_id in TOOL_LABELS}
@@ -487,6 +490,24 @@ class DialogModel:
 
     # ---- colour masters: kind ----------------------------------------------------------------------------------
 
+    def snapshot_options(self) -> tuple[int, dict[str, Any]]:
+        """The options as they are now with a sequence number; call it on the thread that changes the model and hand
+        both to :meth:`save_options`."""
+        self._save_seq += 1
+        return self._save_seq, self.to_config()
+
+    def save_options(self, snapshot: tuple[int, dict[str, Any]]) -> None:
+        """Writes a snapshot through ``persist``. One writer at a time (the file is replaced through one temporary
+        name), and a snapshot older than the one last written is dropped, so a late autosave cannot undo a change."""
+        if self.persist is None:
+            return
+        number, options = snapshot
+        with self._save_lock:
+            if number < self._saved_seq:
+                return
+            self._saved_seq = number
+            self.persist(options)
+
     def kind_choices(self) -> dict[str, str]:
         """The remembered kinds (``oscKindChoices``), for a scan to route colour masters by."""
         return dict(self._kind_choices)
@@ -498,11 +519,23 @@ class DialogModel:
             path = self.path(slot)
             if path:
                 known = self._colour_known.get(path)
-                out.append((known if known is not None else
-                            {"path": path, "name": os.path.basename(path), "filter": "", "colour": True,
-                             "numberOfChannels": 3, "drizzle": "", "autocrop": False}, slot))
+                if known is None:
+                    # a path typed or browsed to: its header was never read, so its filter is not known
+                    known = self._colour_known[path] = {
+                        "path": path, "name": os.path.basename(path), "filter": "", "colour": True,
+                        "numberOfChannels": 3, "drizzle": "", "autocrop": False, "unread": True}
+                out.append((known, slot))
         out.extend((entry, "") for entry in self._unused)
         return out
+
+    def _kind_look(self, entry: Mapping[str, Any], slot: str) -> dict[str, Any]:
+        """``osc_kind_row`` of a listed master. A master whose header was never read has no filter to detect from:
+        unless a choice was remembered for it, it shows the kind of the slot it sits in."""
+        look = osc_kind_row(entry, self._kind_choices)
+        if entry.get("unread") and not look["detected_link"]:
+            look["kind"] = {"OSC": "broadband", "OSCNB": "dualband"}.get(slot, "")
+            look["enabled"] = True
+        return look
 
     def colour_rows(self) -> list[dict[str, Any]]:
         """One row per colour master for the kind control: its path, name, detected filter, slot, kind ("" none),
@@ -511,14 +544,14 @@ class DialogModel:
         rows: list[dict[str, Any]] = []
         held = {slot: entry for entry, slot in self._colour_list() if slot}
         for entry, slot in self._colour_list():
-            look = osc_kind_row(entry, self._kind_choices)
+            look = self._kind_look(entry, slot)
             reason = ""
             if not look["enabled"]:
                 reason = UNSUPPORTED_REASON
             elif not look["kind"]:
                 reason = f"Choose Broadband or {KIND_ITEMS[2][1]} for {entry.get('name')}."
             elif not slot:
-                target = osc.entry_channel(entry.get("filter"), 3, entry.get("path"), self._kind_choices)["channel"]
+                target = self._route(entry, "")
                 other = held.get(target or "")
                 reason = f"Not used: {other.get('name')} is the {target} master." if other is not None else ""
             rows.append({"path": entry["path"], "name": str(entry.get("name") or ""),
@@ -532,12 +565,13 @@ class DialogModel:
         """Gives a colour master its kind: "broadband" or "dualband" is remembered (under ``osc_kind_key``, so one
         choice covers every master with that filter name), "" or "detected" forgets it. Saved at once; the master
         moves to its slot. ValueError for a filter that cannot be a colour master (it has no kind to choose)."""
-        target = next((entry for entry, _slot in self._colour_list() if entry["path"] == path), None)
-        if target is None:
+        found = next(((entry, slot) for entry, slot in self._colour_list() if entry["path"] == path), None)
+        if found is None:
             raise KeyError(f"not a colour master of the list: {path}")
+        target = found[0]
         if kind not in ("", "detected", "broadband", "dualband"):
             raise ValueError(f"not a kind: {kind}")
-        if not osc_kind_row(target, self._kind_choices)["enabled"]:
+        if not self._kind_look(target, found[1])["enabled"]:
             raise ValueError(UNSUPPORTED_REASON)
         key = osc.osc_kind_key(target.get("filter"), path)
         if kind in ("broadband", "dualband"):
@@ -546,17 +580,25 @@ class DialogModel:
             self._kind_choices.pop(key, None)
         self._reroute(target)
         self._invalidate()
-        if self.persist is not None:
-            self.persist(self.to_config())
+        self.save_options(self.snapshot_options())
 
-    def _reroute(self, first: Mapping[str, Any]) -> None:
+    def _route(self, entry: Mapping[str, Any], slot: str) -> Optional[str]:
+        """The slot a listed master's kind says (None when it has none). A master whose header was never read keeps
+        the slot it sits in unless a remembered choice says otherwise."""
+        if entry.get("unread") and slot and osc_kind_row(entry, self._kind_choices)["detected_link"] is False:
+            return slot
+        return osc.entry_channel(entry.get("filter"), 3, entry["path"], self._kind_choices)["channel"]
+
+    def _reroute(self, first: Optional[Mapping[str, Any]]) -> None:
         """Puts every colour master in the slot its kind now says; the one just changed claims its slot first, and a
         master whose slot is held stays listed as unused, with a notice."""
-        entries = [entry for entry, _slot in self._colour_list()]
+        listed = self._colour_list()
+        entries = [entry for entry, _slot in listed]
+        slot_of = {id(entry): slot for entry, slot in listed}
         claimed: dict[str, dict[str, Any]] = {}
         unused: list[dict[str, Any]] = []
         for entry in [e for e in entries if e is first] + [e for e in entries if e is not first]:
-            slot = osc.entry_channel(entry.get("filter"), 3, entry["path"], self._kind_choices)["channel"]
+            slot = self._route(entry, slot_of[id(entry)])
             if slot is not None and slot in claimed:
                 self._notices.append(f"{entry.get('name')} is not used: {claimed[slot].get('name')} is the {slot} master")
             if slot is None or slot in claimed:
@@ -565,7 +607,7 @@ class DialogModel:
                 claimed[slot] = entry
         for slot in osc.COLOUR_SLOTS:
             self._paths[slot] = claimed[slot]["path"] if slot in claimed else ""
-        self._unused = [e for e in entries if e in unused]
+        self._unused = [e for e in entries if any(e is u for u in unused)]
         self._colour_known = {e["path"]: e for e in entries}
 
     # ---- colour masters: the sensor colour filters -------------------------------------------------------------
@@ -855,13 +897,15 @@ class DialogModel:
 
     # ---- masters -----------------------------------------------------------------------------------------------
 
-    def scan_masters(self, folder: str, scanner: Optional[Callable[[str], Any]] = None) -> bool:
+    def scan_masters(self, folder: str, scanner: Optional[Callable[[str], Any]] = None,
+                     routed_with: Optional[Mapping[str, str]] = None) -> bool:
         """Reads a master folder and uses what it found; False when it is not a folder (nothing changes then).
 
         Every channel the scan confirmed gets its file, and so does each colour slot; a channel or slot the folder
         has no master for is cleared, so the selection is the folder's masters and nothing left over from before.
         A colour master whose kind is not known yet is listed with no kind to choose. The remembered kinds route
-        the colour masters of a scan the dialog runs itself.
+        the colour masters of a scan the dialog runs itself. ``routed_with`` is the choices a scan run earlier used:
+        when the remembered choices changed meanwhile, the colour masters are routed again with the current ones.
         """
         result = scanner(folder) if scanner is not None else ch.scan_masters(folder, choices=self._kind_choices)
         if result is None:
@@ -879,6 +923,8 @@ class DialogModel:
             if entry is not None:
                 self._colour_known[entry["path"]] = entry
         self._unused = [e for e in (result.get("unresolved") or [])]
+        if routed_with is not None and dict(routed_with) != self._kind_choices:
+            self._reroute(None)
         self._notices.extend(str(line) for line in result.get("corrected") or [])
         for row in self.colour_rows():
             if row["slot"] == "" and row["reason"]:
@@ -1005,7 +1051,8 @@ class DialogModel:
 
     def _request(self) -> RunRequest:
         """The run's options: a colour run leaves SHO and HSO out (they need SII), so it never dead-ends on that
-        error; the options file keeps them."""
+        error. The dialog's autosave keeps them in the options file until a Run saves this request, and the tool
+        store keeps them for the next mono run."""
         config = self.to_config()
         config["palettes"] = run_palettes(config["palettes"], self._colour_run())
         return RunRequest(config, self._output_dir, self._starnet_revision)
@@ -1586,9 +1633,8 @@ class LoomDialog:
             self._save_timer = None
             if self._closed:
                 return
-            options = self.model.to_config()
-            save = self.model.persist
-            threading.Thread(target=lambda: save(options) if save else None, name="loom-save", daemon=True).start()
+            snapshot = self.model.snapshot_options()
+            threading.Thread(target=lambda: self.model.save_options(snapshot), name="loom-save", daemon=True).start()
 
         self._save_timer = self.top.after(1000, fire)
 
@@ -1615,14 +1661,15 @@ class LoomDialog:
         if not folder:
             return
         self._notice.set("Scanning the masters folder...")
+        remembered = self.model.kind_choices()
 
         def done(result: Any) -> None:
-            if isinstance(result, Exception) or not self.model.scan_masters(folder, scanner=lambda _f: result):
+            if isinstance(result, Exception) or not self.model.scan_masters(folder, scanner=lambda _f: result,
+                                                                            routed_with=remembered):
                 messagebox.showerror("Loom", f"{folder} is not a folder.", parent=self.top)
             self._sync()
             self._measure_masters()
 
-        remembered = self.model.kind_choices()
         self._background(lambda: ch.scan_masters(folder, choices=remembered), done)
 
     def _measure_masters(self) -> None:
