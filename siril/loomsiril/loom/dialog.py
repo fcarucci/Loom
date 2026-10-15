@@ -508,6 +508,14 @@ class DialogModel:
             self._saved_seq = number
             self.persist(options)
 
+    def save_final(self, options: dict[str, Any], write: Callable[[dict[str, Any]], None]) -> None:
+        """The last save, when the window closes: written through ``write`` behind the same lock, and after it every
+        older snapshot (an autosave still running) is dropped, so nothing undoes these options."""
+        with self._save_lock:
+            self._save_seq += 1
+            self._saved_seq = self._save_seq
+            write(options)
+
     def kind_choices(self) -> dict[str, str]:
         """The remembered kinds (``oscKindChoices``), for a scan to route colour masters by."""
         return dict(self._kind_choices)
