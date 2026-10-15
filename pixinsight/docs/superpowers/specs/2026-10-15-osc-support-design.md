@@ -286,8 +286,11 @@ bandwidth.
   are never built from colour masters. Asking for SHO or HSO in a run with a
   colour master is a preflight error (the run does not start): "SHO and HSO need
   SII, which a colour camera cannot separate from Ha: choose HOO".
-- Outputs carry their provenance: every exported channel and palette layer from a
-  colour group gets the `LOOMSRC` keyword, and the run log names each palette's
+- Outputs carry their provenance where the file format can hold a keyword: every
+  channel, composite and palette result from a colour group gets the `LOOMSRC`
+  keyword in its XISF or FITS form, naming the master file and its planes. TIFF
+  and PSB exports carry no keyword (neither format stores FITS keywords) and no
+  sidecar; for them the provenance is the run log, which names each palette's
   sources ("H from OSCNB L-eXtreme (Ha, plus SII for quad-band)").
 
 ## Pipeline: what does not change
