@@ -18,12 +18,12 @@ from typing import Any
 
 import pytest
 
-from loomsiril.loom import osc
+from loomsiril.loom import cache, osc
 
 ORACLE_FILE = Path(__file__).resolve().parents[1] / "oracle" / "loom_osc.json"
 
-#: Recorded, but replayed with the white-balance port: the one recorded function with no twin here.
-DEFERRED = {"clean_white_balance_key"}
+#: Recorded here, but ported in another module: replayed there (``cache.clean_white_balance_key``).
+ELSEWHERE = {"clean_white_balance_key"}
 
 #: Public functions of osc.py that have no JavaScript counterpart.
 SIRIL_ONLY = {"colour_run", "js_config"}
@@ -79,9 +79,22 @@ def _same(a: Any, b: Any) -> bool:
     return a == b
 
 
+def _clean_white_balance_key(chans: Any, config: Any, common: Any, lum_instrume: Any, ref_key: Any) -> Any:
+    """The Siril key function with what the JavaScript reads from the config: a colour run keys on its sensor."""
+    try:
+        keys = {k: chans[k]["cleanKey"] for k in "RGB"}
+        sensor = (config.get("oscSensor") or {}) if "OSC" in osc.colour_supplied(config) else None
+        return cache.clean_white_balance_key(keys, common, config.get("filters"), lum_instrume, ref_key,
+                                             osc_sensor=sensor)
+    except ValueError as exc:
+        return {"throws": str(exc)}
+
+
 def _run(case: dict[str, Any]) -> Any:
     """Call the port with the recorded arguments; returns what it gave (the filled config, when the JS fills one)."""
     fn, args = case["fn"], copy.deepcopy(case["args"])
+    if fn == "clean_white_balance_key":
+        return _clean_white_balance_key(*args)
     target = getattr(osc, fn)
     if not callable(target):
         return target
@@ -102,7 +115,7 @@ def _run(case: dict[str, Any]) -> Any:
     return target(*args)
 
 
-@pytest.mark.parametrize("name", sorted(n for n, c in CASES.items() if c["fn"] not in DEFERRED))
+@pytest.mark.parametrize("name", sorted(CASES))
 def test_oracle_replay(name: str) -> None:
     actual = _run(CASES[name])
     expected = CASES[name]["result"]
@@ -111,7 +124,7 @@ def test_oracle_replay(name: str) -> None:
 
 def test_oracle_covers_every_ported_function() -> None:
     fns = {c["fn"] for c in CASES.values()}
-    for fn in sorted(fns - DEFERRED):
+    for fn in sorted(fns - ELSEWHERE):
         assert hasattr(osc, fn), f"no twin for the recorded function {fn}"
     public = {n for n, v in vars(osc).items()
               if not n.startswith("_") and inspect.isfunction(v) and v.__module__ == osc.__name__}
@@ -122,11 +135,14 @@ def test_oracle_covers_every_ported_function() -> None:
     assert len(CASES) >= 3000
 
 
-def test_deferred_list_is_the_white_balance_key_alone() -> None:
-    assert DEFERRED == {"clean_white_balance_key"}
-    assert {c["fn"] for c in CASES.values() if c["fn"] not in DEFERRED} >= {"osc_group_register_key"}
-    assert any(c["fn"] == "clean_white_balance_key" for c in CASES.values())
+def test_the_white_balance_key_is_replayed_against_the_cache_module() -> None:
+    assert ELSEWHERE == {"clean_white_balance_key"}
+    keyed = [c for c in CASES.values() if c["fn"] == "clean_white_balance_key"]
+    assert len(keyed) >= 200
+    assert any("OSC" in c["args"][1].get("paths", {}) for c in keyed)
+    assert any("OSC" not in c["args"][1].get("paths", {}) for c in keyed)
     assert not hasattr(osc, "clean_white_balance_key")
+    assert {c["fn"] for c in CASES.values() if c["fn"] not in ELSEWHERE} >= {"osc_group_register_key"}
 
 
 def test_a_table_or_a_callable_gives_the_infos() -> None:

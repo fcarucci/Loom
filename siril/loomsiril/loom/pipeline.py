@@ -494,7 +494,8 @@ class _Run:
         use_cache = bool(self.cfg.get("useCache"))
         factors = stages_colour.measure_clean_white_balance(
             self.ctx, clean, uncropped[ref_key], rect, self.cfg, lum_instrume,
-            self.store if use_cache else None, use_cache, bool(self.cfg.get("ignoreCache")))
+            self.store if use_cache else None, use_cache, bool(self.cfg.get("ignoreCache")),
+            ref_key=self.chans[ref_key].current_key)
         _checkpoint(self.ctx)
         return factors
 

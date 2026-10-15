@@ -42,7 +42,7 @@ Conventions that differ from the JavaScript on purpose:
 | `cache.file_source_key` | `Cache.fingerprintFile` | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.crop_tag` | `lib/Pipeline.js:1103` | V | `tests/loom/test_cache.py` |
 | `cache.crop_halos_tag` | `lib/Pipeline.js:1108` | V | `tests/loom/test_cache.py` |
-| `cache.clean_white_balance_key` | `lib/Pipeline.js:1117` | V | `tests/loom/test_cache.py` |
+| `cache.clean_white_balance_key` | `lib/Pipeline.js:1333` | V | `tests/loom/test_cache.py` |
 | `cache.rgb_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.palette_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.lstars_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
@@ -420,6 +420,7 @@ The colour-master (OSC) rules. Every row marked P is replayed against `tests/ora
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
+| `stages_colour.calibration_identity` | `lib/Pipeline.js:1333` | S | `tests/loom/test_stages_colour.py` |
 | `stages_colour.rgb_stage_params` | `lib/Pipeline.js:1453-1666` | P | `tests/loom/test_stages_colour.py` |
 | `stages_colour.palette_stage_params` | `lib/Pipeline.js:1453-1666` | P | `tests/loom/test_stages_colour.py` |
 | `stages_colour.rgb_spcc_names` | `lib/Pipeline.js:1453-1666` | S | `tests/loom/test_stages_colour.py` |

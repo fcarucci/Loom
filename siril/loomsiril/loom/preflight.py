@@ -17,6 +17,7 @@ from loomsiril import presets
 from . import channels as ch
 from . import levels as lv
 from . import osc
+from .siril_ops import OSC_NO_FRONT_FILTER, OSC_NO_LPF
 
 # Loom's wording (lib/Pipeline.js:25-94, :167-203; lib/Util.js:603-669) is kept verbatim where a message names the
 # same condition. Loom's "(SPFC cannot proceed; ...)" is dropped: the port has no SPFC step to name.
@@ -51,6 +52,11 @@ _NOISE_TOOLS: dict[str, str] = {
     lv.NR_TOOL_STUDIO2: _SYQON_CLI,
     lv.NR_TOOL_STUDIO_OLD: _SYQON_CLI,
 }
+
+# OSC choice -> (config key, the kind Siril's database reader takes, the label ``siril_ops`` words it with).
+_OSC_NAMES: tuple[tuple[str, str, str], ...] = (("sensor", "oscsensor", "sensor"),
+                                                ("frontFilter", "oscfilter", "front filter"),
+                                                ("lpf", "osclpf", "low-pass filter"))
 
 # SPCC filter key -> the kind Siril's database reader takes (siril_ops.spcc_names).
 _SPCC_KINDS: tuple[tuple[str, str], ...] = (("R", "redfilter"), ("G", "greenfilter"), ("B", "bluefilter"))
@@ -267,6 +273,16 @@ def preflight(inputs: Preflight) -> list[str]:
                 if name not in inputs.spcc_names(kind):
                     problems.append(f"SPCC filter {name} for {k} is not in Siril's SPCC database: "
                                     + _filter_fix(headless, k))
+    if osc.colour_run(cfg) and isinstance(sensor, Mapping) and not _blank(sensor.get("sensor")):
+        # The colour run's sensor, front filter and low-pass filter are Siril's own database names, with its "none"
+        # entries for an unchosen filter: the command checks them too (siril_ops), preflight says so before the run.
+        if inputs.spcc_database is not None and inputs.spcc_names is not None:
+            for key, kind, label in _OSC_NAMES:
+                name = sensor.get(key)
+                if _blank(name):
+                    name = {"frontFilter": OSC_NO_FRONT_FILTER, "lpf": OSC_NO_LPF}.get(key)
+                if name not in inputs.spcc_names(kind):
+                    problems.append(f"{label} {name!r} is not in Siril's SPCC database")
     if (spcc_runs or ch.wanted_palettes(cfg)) and inputs.spcc_database is None:
         problems.append("Siril's SPCC database folder is missing: open Siril's GUI once so it downloads "
                         "its SPCC database")

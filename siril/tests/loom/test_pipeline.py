@@ -349,10 +349,11 @@ def test_clean_white_balance_is_measured_from_cached_pre_correction_plates(tmp_p
     seen: dict[str, Any] = {}
 
     def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
-                     use_cache: bool, ignore_cache: bool) -> list[float]:
+                     use_cache: bool, ignore_cache: bool, ref_key: Any = None) -> list[float]:
         seen["channels"] = sorted(clean)
         seen["paths_exist"] = all(os.path.isfile(p) for _key, p in clean.values())
         seen["rect"] = tuple(rect)
+        seen["ref_key"] = ref_key
         return [1.0, 1.0, 1.0]
 
     monkeypatch.setattr(stages_colour, "measure_clean_white_balance", fake_measure)
@@ -362,6 +363,7 @@ def test_clean_white_balance_is_measured_from_cached_pre_correction_plates(tmp_p
     assert seen["channels"] == ["B", "G", "R"]
     assert seen["paths_exist"] is True
     assert seen["rect"] == (4, 4, SHAPE[1] - 4, SHAPE[0] - 4)  # the valid area, four pixels inside the frame
+    assert isinstance(seen["ref_key"], str) and len(seen["ref_key"]) == 40  # the reference's current cache key
     assert "RGB" in report.produced
 
 
@@ -371,7 +373,7 @@ def test_lrgb_with_narrowband_and_clean_white_balance(tmp_path: Path, monkeypatc
     seen: dict[str, Any] = {}
 
     def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
-                     use_cache: bool, ignore_cache: bool) -> list[float]:
+                     use_cache: bool, ignore_cache: bool, ref_key: Any = None) -> list[float]:
         seen["channels"] = sorted(clean)
         return [1.1, 1.0, 0.9]
 

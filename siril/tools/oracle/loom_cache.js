@@ -92,13 +92,21 @@ module.exports = function( js )
    out.crop_halos_unset = Pipeline.cropHalosTag( common, {} );
 
    const chansKeys = { R: { cleanKey: "kR" }, G: { cleanKey: "kG" }, B: { cleanKey: "kB" } };
-   out.clean_wb_no_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: {} }, common, "ZWO ASI2600MM Pro" );
-   out.clean_wb_named_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: { R: "Ha", L: "Lum" } }, common, null );
-   out.clean_wb_unset_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, {}, common, null );
+   out.clean_wb_no_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: {} }, common, "ZWO ASI2600MM Pro", "refK" );
+   out.clean_wb_named_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: { R: "Ha", L: "Lum" } }, common, null, "refK" );
+   out.clean_wb_unset_filters = Pipeline.cleanWhiteBalanceKey( chansKeys, {}, common, null, "refK" );
+   out.clean_wb_other_reference = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: {} }, common, "ZWO ASI2600MM Pro", "refL" );
+   out.clean_wb_null_reference = Pipeline.cleanWhiteBalanceKey( chansKeys, { filters: {} }, common, "ZWO ASI2600MM Pro", null );
+   const oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+   out.clean_wb_osc = Pipeline.cleanWhiteBalanceKey( chansKeys, { paths: { OSC: "/m/rgb.xisf" }, oscSensor: oscSensor },
+                                                     common, null, "refK" );
+   out.clean_wb_osc_other_reference = Pipeline.cleanWhiteBalanceKey( chansKeys, { paths: { OSC: "/m/rgb.xisf" },
+                                                                    oscSensor: oscSensor }, common, null, "refL" );
+   out.clean_wb_osc_no_sensor = Pipeline.cleanWhiteBalanceKey( chansKeys, { paths: { OSC: "/m/rgb.xisf" } }, common, null, "refK" );
    try
    {
       Pipeline.cleanWhiteBalanceKey( { R: { cleanKey: "kR" }, G: { cleanKey: "" }, B: { cleanKey: "kB" } },
-                                     { filters: {} }, common, null );
+                                     { filters: {} }, common, null, "refK" );
       out.clean_wb_missing_error = null;
    }
    catch ( e ) { out.clean_wb_missing_error = String( e.message ); }

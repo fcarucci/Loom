@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from loomsiril.io_fits import read_fits, write_fits
-from loomsiril.loom import cache, channels, imageops, nbnorm, stages_colour
+from loomsiril.loom import cache, channels, imageops, nbnorm, osc, stages_colour
 from loomsiril.loom.runctx import RunContext
 from loomsiril.loom.siril_ops import RecordingOps
 from loomsiril.loom.stagekit import StageFailed
@@ -352,9 +352,15 @@ GAINS = (0.8, 1.0, 1.25)
 OFFSETS = (0.01, 0.0, -0.005)
 
 
-def _clean_key(pre_keys: tuple[str, str, str] = ("kR", "kG", "kB")) -> str:
+def _clean_key(pre_keys: tuple[str, str, str] = ("kR", "kG", "kB"), config: dict | None = None,
+               ref_key: str | None = None) -> str:
+    config = config or _config()
     common = dict(zip(("x0", "y0", "x1", "y1"), RECT))
-    return cache.clean_white_balance_key(dict(zip(("R", "G", "B"), pre_keys)), common, FILTERS, INSTRUME)
+    colour = osc.colour_run(config)
+    return cache.clean_white_balance_key(
+        dict(zip(("R", "G", "B"), pre_keys)), common, FILTERS, INSTRUME, ref_key,
+        osc_sensor=(config.get("oscSensor") or {}) if colour else None,
+        calibration=stages_colour.calibration_identity(config, INSTRUME))
 
 
 def _measure(ctx: RunContext, clean: dict, ref: str, store: Any = None, use_cache: bool = False,
@@ -641,3 +647,233 @@ def test_palette_combine_removes_keywords_that_differ(tmp_path: Path) -> None:
     _, header = read_fits(out.path)
     assert "FILTER" not in header and "EXPTIME" not in header
     assert header["OBJECT"] == "M42"
+
+
+# ---- OSC: the calibration identity, the call sites and the keys -------------------------------------------------------
+
+#: The keys of a mono run before the calibration identity existed (the identity must add nothing to them).
+MONO_RGB_KEYS = ("cd6baf059fd2ba5359f417733e8f76c2eb66a9bb", "98f6aa6f923e02dd97b62fac503149a8b05a27ca",
+                 "7aa7e61bb322107fedb8ab0f7b3c6b97b7a3e4c1")
+MONO_RGB_WB_SPCC_KEY = "18335b39a1adfc7866852a503ec425872f86a321"
+MONO_HOO_KEYS = ("86d1337e1d1a66f13e7c7edc60c48e811013aa72", "a6010032011a35a7f024800c72b378f6a5a5ffde")
+MONO_HOO_NORM_KEY = "9d61a690caea1bc3b140a1463d1489e64c75ec9f"
+
+SONY = "Sony IMX571"
+NO_FRONT = "No filter"
+NO_LPF = "Full spectrum (no filter)"
+
+
+def _osc_config(tmp_path: Path | None = None, nb_filter: str | None = None, **extra: Any) -> dict[str, Any]:
+    """A colour run: the OSC master supplies R, G and B; with ``nb_filter`` an OSCNB master with that FILTER too."""
+    config: dict[str, Any] = {"paths": {"OSC": "/m/osc.fits"}, "filters": {}, "sharpenTool": "bxt",
+                              "narrowbandBandwidth": 3.0, "narrowbandNormalize": False,
+                              "oscSensor": {"sensor": SONY, "frontFilter": "", "lpf": ""}}
+    if nb_filter is not None:
+        assert tmp_path is not None
+        master = tmp_path / f"oscnb_{nb_filter.replace('-', '_')}.fits"
+        write_fits(master, [_plane(7) for _ in range(3)], {"FILTER": nb_filter, "INSTRUME": INSTRUME}, bitpix=-32)
+        config["paths"] = {**config["paths"], "OSCNB": str(master)}
+    config.update(extra)
+    return config
+
+
+def _oscnb_config(tmp_path: Path, nb_filter: str = "L-eXtreme", **extra: Any) -> dict[str, Any]:
+    config = _osc_config(tmp_path, nb_filter, **extra)
+    del config["paths"]["OSC"]
+    return config
+
+
+def _keys(source: str, params: dict[str, Any]) -> list[str]:
+    return [str(e["key"]) for e in cache.build_stage_keys(source, params)]
+
+
+def test_the_calibration_identity_of_a_mono_run_names_the_mode_the_sensor_and_the_three_filters() -> None:
+    identity = stages_colour.calibration_identity(_config(), INSTRUME)
+    assert identity.startswith("mono|")
+    for part in (channels.spcc_sensor_for(INSTRUME), *FILTERS.values()):
+        assert part in identity
+    assert stages_colour.calibration_identity(_config(spccSensor="Custom Sensor"), INSTRUME) != identity
+
+
+def test_the_calibration_identity_of_a_colour_run_has_the_none_names_filled_in() -> None:
+    identity = stages_colour.calibration_identity(_osc_config())
+    assert identity.startswith("osc|")
+    assert SONY in identity and NO_FRONT in identity and NO_LPF in identity
+    explicit = _osc_config(oscSensor={"sensor": SONY, "frontFilter": NO_FRONT, "lpf": NO_LPF})
+    assert stages_colour.calibration_identity(explicit) == identity  # the same arguments are sent
+
+
+@pytest.mark.parametrize("change", [{"sensor": "Canon EOS 20D"}, {"frontFilter": "Antlia Triband RGB Ultra II"},
+                                    {"lpf": "Baader UV/IR Cut"}])
+def test_every_spectral_choice_alone_changes_the_identity_and_the_rgb_keys(change: dict[str, str]) -> None:
+    base = _osc_config()
+    other = _osc_config(oscSensor={**base["oscSensor"], **change})
+    assert stages_colour.calibration_identity(other) != stages_colour.calibration_identity(base)
+    assert _keys("src", stages_colour.rgb_stage_params(other, INSTRUME, None))[2] != \
+        _keys("src", stages_colour.rgb_stage_params(base, INSTRUME, None))[2]
+    # sharpening on or off (the white balance by factors or by SPCC) does not hide it
+    assert _keys("src", stages_colour.rgb_stage_params(other, INSTRUME, (1.2, 1.0, 0.9)))[2] != \
+        _keys("src", stages_colour.rgb_stage_params(base, INSTRUME, (1.2, 1.0, 0.9)))[2]
+
+
+def test_the_keys_of_a_mono_run_are_the_ones_it_had_before_the_identity() -> None:
+    assert tuple(_keys("src", stages_colour.rgb_stage_params(_config(), INSTRUME, None))) == MONO_RGB_KEYS
+    assert _keys("src", stages_colour.rgb_stage_params(_config(), INSTRUME, [1.25, 1.0, 0.8]))[2] == \
+        MONO_RGB_WB_SPCC_KEY
+    assert tuple(_keys("src", stages_colour.palette_stage_params("HOO", _config()))) == MONO_HOO_KEYS
+    norm = _keys("src", stages_colour.palette_stage_params("HOO", _config(narrowbandNormalize=True)))
+    assert norm[2] == MONO_HOO_NORM_KEY
+
+
+def test_a_mono_sensor_override_is_part_of_the_mono_key() -> None:
+    plain = _keys("src", stages_colour.rgb_stage_params(_config(), INSTRUME, None))[2]
+    custom = _keys("src", stages_colour.rgb_stage_params(_config(spccSensor="Custom Sensor"), INSTRUME, None))[2]
+    assert custom != plain
+
+
+def test_the_composite_of_a_colour_run_sends_the_osc_set(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    src = _write(tmp_path / "RGB_solved.fits", [_plane(4) for _ in range(3)], SOLVED)
+    config = _osc_config(oscSensor={"sensor": SONY, "frontFilter": "Antlia Triband RGB Ultra II", "lpf": ""})
+    stages_colour.rgb_runners(ctx, {"R": src, "G": src, "B": src}, config, INSTRUME, None)["spccRGB"](
+        src, str(tmp_path / "RGB_spcc.fits"))
+    assert ops.transcript == [
+        f'load "{src}"',
+        f'spcc "-oscsensor={SONY}" "-oscfilter=Antlia Triband RGB Ultra II" "-osclpf={NO_LPF}"',
+        f'save "{tmp_path / "RGB_spcc.fits"}"',
+    ]
+
+
+def test_the_composite_of_a_mono_run_still_sends_the_mono_set(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    src = _write(tmp_path / "RGB_solved.fits", [_plane(4) for _ in range(3)], SOLVED)
+    stages_colour.rgb_runners(ctx, {"R": src, "G": src, "B": src}, _config(oscSensor={"sensor": SONY}), INSTRUME,
+                              None)["spccRGB"](src, str(tmp_path / "RGB_spcc.fits"))
+    assert ops.transcript[1].startswith('spcc "-monosensor=')
+    assert "-oscsensor" not in ops.transcript[1]
+
+
+def test_a_colour_run_has_no_mono_names_for_the_palettes() -> None:
+    assert stages_colour.rgb_spcc_names(_osc_config(filters=dict(FILTERS)), INSTRUME) is None
+
+
+def _hoo(ctx: RunContext, tmp_path: Path, config: dict[str, Any], names: Any = None) -> Any:
+    plate = _write(tmp_path / "HOO_in.fits", [_plane(9) for _ in range(3)], SOLVED)
+    return stages_colour.palette_runners(ctx, "HOO", {"H": plate, "O": plate}, config, names)["paletteSpcc"](
+        plate, str(tmp_path / "HOO_spcc.fits"))
+
+
+def test_an_hoo_palette_in_a_mono_run_sends_its_commands_unchanged(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    names = ("Generic mono sensor", "Baader Red", "Baader Green", "Baader Blue")
+    _hoo(ctx, tmp_path, _config(), names)
+    assert ops.transcript[1] == (
+        'spcc "-monosensor=Generic mono sensor" "-rfilter=Baader Red" "-gfilter=Baader Green" '
+        '"-bfilter=Baader Blue" -narrowband -rwl=656.28 -rbw=3.00 -gwl=500.70 -gbw=3.00 -bwl=500.70 -bbw=3.00')
+
+
+def test_an_osc_and_oscnb_run_sends_the_osc_set_and_the_filter_bandwidths(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    _hoo(ctx, tmp_path, _osc_config(tmp_path, "L-eXtreme"))
+    assert ops.transcript[1] == (
+        f'spcc "-oscsensor={SONY}" "-oscfilter={NO_FRONT}" "-osclpf={NO_LPF}" -narrowband '
+        "-rwl=656.28 -rbw=7.00 -gwl=500.70 -gbw=7.00 -bwl=500.70 -bbw=7.00")
+
+
+def test_an_oscnb_only_run_sends_no_names_and_the_filter_bandwidths(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    _hoo(ctx, tmp_path, _oscnb_config(tmp_path, "L-Ultimate"))
+    assert ops.transcript[1] == "spcc -narrowband -rwl=656.28 -rbw=3.00 -gwl=500.70 -gbw=3.00 -bwl=500.70 -bbw=3.00"
+
+
+def test_an_oscnb_filter_without_a_table_entry_uses_the_run_bandwidth(tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    _hoo(ctx, tmp_path, _oscnb_config(tmp_path, "Mystery", narrowbandBandwidth=4.5))
+    assert "-rbw=4.50 -gwl=500.70 -gbw=4.50 -bwl=500.70 -bbw=4.50" in ops.transcript[1]
+
+
+def test_the_hoo_key_changes_with_each_spectral_choice_and_the_bandwidth_source(tmp_path: Path) -> None:
+    base = _osc_config(tmp_path, "L-eXtreme")
+    ref = _keys("src", stages_colour.palette_stage_params("HOO", base))[1]
+    seen = {ref}
+    for other in (
+        _osc_config(tmp_path, "L-eXtreme", oscSensor={**base["oscSensor"], "sensor": "Canon EOS 20D"}),
+        _osc_config(tmp_path, "L-eXtreme", oscSensor={**base["oscSensor"], "frontFilter": "Antlia ALP-T"}),
+        _osc_config(tmp_path, "L-eXtreme", oscSensor={**base["oscSensor"], "lpf": "Baader UV/IR Cut"}),
+        _osc_config(tmp_path, "L-Ultimate"),
+    ):
+        key = _keys("src", stages_colour.palette_stage_params("HOO", other))[1]
+        assert key not in seen
+        seen.add(key)
+    assert _keys("src", stages_colour.palette_stage_params("HOO", base))[1] == ref  # and it is stable
+
+
+def test_the_hoo_key_of_an_oscnb_only_run_changes_with_the_bandwidth_source(tmp_path: Path) -> None:
+    a = _keys("src", stages_colour.palette_stage_params("HOO", _oscnb_config(tmp_path, "L-eXtreme")))[1]
+    b = _keys("src", stages_colour.palette_stage_params("HOO", _oscnb_config(tmp_path, "L-Ultimate")))[1]
+    assert a != b
+
+
+def test_the_palette_after_an_osc_composite_is_sent_with_the_osc_trio_even_when_mono_filters_linger(
+        tmp_path: Path) -> None:
+    ctx, ops, _ = _ctx(tmp_path)
+    names = stages_colour.rgb_spcc_names(_osc_config(tmp_path, "L-eXtreme", filters=dict(FILTERS)), INSTRUME)
+    _hoo(ctx, tmp_path, _osc_config(tmp_path, "L-eXtreme", filters=dict(FILTERS)), names)
+    assert f'"-oscsensor={SONY}"' in ops.transcript[1] and "-monosensor" not in ops.transcript[1]
+
+
+def _clean_config(**extra: Any) -> dict[str, Any]:
+    return _osc_config(**extra)
+
+
+def test_a_colour_run_measures_the_clean_balance_with_the_osc_set_and_no_registration(tmp_path: Path) -> None:
+    seen: list = []
+
+    def spcc_osc(ops: RecordingOps, sensor: str, front: Any, lpf: Any) -> None:
+        planes = ops.pixels()
+        seen.append(planes[0].shape)
+        ops.set_pixels([k * p.astype(np.float64) + o for k, o, p in zip(GAINS, OFFSETS, planes)])
+
+    ctx, ops, log = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "spcc_osc": spcc_osc,
+                                             "register": _register_handler})
+    clean, ref = _clean_setup(tmp_path)
+    rect = (4, 3, 60, 40)
+    factors = stages_colour.measure_clean_white_balance(ctx, clean, ref, rect, _clean_config(), INSTRUME, None, False,
+                                                        False, ref_key="refK")
+    assert factors == pytest.approx(list(GAINS), rel=1e-5)
+    assert log.warnings == []
+    text = "\n".join(ops.transcript)
+    for word in ("register", "link", "setref"):
+        assert not any(t.startswith(word) for t in ops.transcript), text
+    assert seen == [(37, 56)]
+    assert f'spcc "-oscsensor={SONY}" "-oscfilter={NO_FRONT}" "-osclpf={NO_LPF}"' in ops.transcript
+    assert not any("-monosensor" in t for t in ops.transcript)
+    # the combined planes are the source planes cropped once with the common rectangle
+    combined = read_fits(os.path.join(os.fspath(ctx.work_dir), stages_colour.CLEAN_WB_FOLDER, "RGB_clean.fits"))[0]
+    x0, y0, x1, y1 = rect
+    for plane, ch in zip(combined, ("R", "G", "B")):
+        np.testing.assert_array_equal(plane, read_fits(clean[ch][1])[0][0][y0:y1, x0:x1])
+
+
+def test_the_clean_balance_key_carries_the_reference_the_sensor_and_the_calibration(tmp_path: Path) -> None:
+    ctx, _, _ = _ctx(tmp_path, handlers={"rgbcomp": _composite_handler, "spcc_osc": lambda *a: None})
+    clean, ref = _clean_setup(tmp_path)
+    store = cache.CacheStore(str(tmp_path / "cache"))
+    config = _clean_config()
+    stages_colour.measure_clean_white_balance(ctx, clean, ref, RECT, config, INSTRUME, store, True, False,
+                                              ref_key="refK")
+    assert store.read_wb(_clean_key(config=config, ref_key="refK")) is not None
+    assert store.read_wb(_clean_key(config=config, ref_key="refL")) is None
+
+
+@pytest.mark.parametrize("change", [{"sensor": "Canon EOS 20D"}, {"frontFilter": "Antlia ALP-T"},
+                                    {"lpf": "Baader UV/IR Cut"}])
+def test_the_clean_balance_key_changes_with_each_spectral_choice_alone(change: dict[str, str]) -> None:
+    base = _clean_config()
+    other = _clean_config(oscSensor={**base["oscSensor"], **change})
+    assert _clean_key(config=other, ref_key="r") != _clean_key(config=base, ref_key="r")
+
+
+def test_the_clean_balance_key_of_a_mono_run_changes_with_the_sensor_override_and_the_reference() -> None:
+    assert _clean_key(config=_config(spccSensor="Custom"), ref_key="r") != _clean_key(ref_key="r")
+    assert _clean_key(ref_key="a") != _clean_key(ref_key="b")

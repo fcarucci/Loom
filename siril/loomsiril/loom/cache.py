@@ -202,19 +202,34 @@ def crop_halos_tag(common: Mapping[str, Any], reduce_halos: bool) -> str:
     return crop_tag(common) + "|halos:" + ("1" if reduce_halos else "0")
 
 
+#: Name of the quantum-efficiency curve a colour run keys on (``Util.IDEAL_QE_CURVE_NAME``).
+IDEAL_QE_CURVE_NAME = "Ideal QE curve"
+
+
 def clean_white_balance_key(clean_keys: Mapping[str, Optional[str]], common: Mapping[str, Any],
-                            filters: Optional[Mapping[str, Any]], lum_instrume: Optional[str]) -> str:
+                            filters: Optional[Mapping[str, Any]], lum_instrume: Optional[str],
+                            ref_key: Optional[str], osc_sensor: Optional[Mapping[str, Any]] = None,
+                            calibration: Optional[str] = None) -> str:
     """``Pipeline.cleanWhiteBalanceKey``: the key of the white-balance measurement.
 
-    Raises ValueError when one of the R, G, B channels has no pre-correction key.
+    ``ref_key`` is the registration reference's cache key (None is hashed as "null"). A colour run passes its sensor
+    choice as ``osc_sensor`` (``{}`` when none is set) and is keyed on that and the ideal QE curve, not on the filters;
+    a mono run passes None and is keyed on its filters and instrument. ``calibration`` is the Siril calibration
+    identity (``stages_colour.calibration_identity``): None gives Loom's key byte for byte, anything else is appended
+    and changes the key. Raises ValueError when one of the R, G, B channels has no pre-correction key.
     """
     for ch in ("R", "G", "B"):
         if not clean_keys.get(ch):
             raise ValueError("no pre-correction cache key for " + ch)
-    filters_json = js_json_stringify(filters if filters else {})
-    return hash_str("cleanwb|" + _js_str(clean_keys["R"]) + "|" + _js_str(clean_keys["G"]) + "|" +
-                    _js_str(clean_keys["B"]) + crop_tag(common) + "|" + filters_json + "|" +
-                    _js_str(lum_instrume))
+    if osc_sensor is not None:
+        response = "|osc:" + js_json_stringify(osc_sensor if osc_sensor else {}) + "|qe:" + IDEAL_QE_CURVE_NAME
+    else:
+        response = "|" + js_json_stringify(filters if filters else {}) + "|" + _js_str(lum_instrume)
+    text = ("cleanwb|" + _js_str(clean_keys["R"]) + "|" + _js_str(clean_keys["G"]) + "|" + _js_str(clean_keys["B"]) +
+            crop_tag(common) + response + "|ref:" + _js_str(ref_key))
+    if calibration is not None:
+        text += "|calibration:" + calibration
+    return hash_str(text)
 
 
 def rgb_source_key(current_keys: Mapping[str, str], common: Mapping[str, Any], reduce_halos: bool) -> str:

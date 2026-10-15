@@ -7,11 +7,14 @@ tools, so nothing touches the disk, the network or a tool.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from loomsiril.loom import levels as lv
 from loomsiril.loom import preflight as pf
+from loomsiril.loom.siril_ops import spcc_names
 from loomsiril.loom.tools.resolver import Found
 
 L = "/data/L.fits"
@@ -25,7 +28,9 @@ OSC = "/data/osc.fits"
 OSCNB = "/data/oscnb.fits"
 MISSING = "/data/missing.fits"
 SOLVED_KEYWORDS = ("CTYPE1", "CRVAL1")
-SPCC = {"redfilter": ["Red"], "greenfilter": ["Green"], "bluefilter": ["Blue"], "monosensor": []}
+SPCC = {"redfilter": ["Red"], "greenfilter": ["Green"], "bluefilter": ["Blue"], "monosensor": [],
+        "oscsensor": ["Sony IMX571", "Canon EOS 20D"], "oscfilter": ["No filter", "Antlia ALP-T"],
+        "osclpf": ["Full spectrum (no filter)", "Baader UV/IR Cut"]}
 
 
 def _filter_of(path: str) -> str | None:
@@ -662,3 +667,69 @@ def test_a_broadband_colour_run_needs_the_spcc_database_folder_too() -> None:
     hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
     assert pf.preflight(make(cfg, headers=hdrs, spcc_database=None)) == [
         "Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
+
+
+# ---- colour masters: the OSC names are looked up in Siril's SPCC database before the run -------------------------------
+
+
+def _osc_problems(sensor: dict[str, str], **kw: Any) -> list[str]:
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor=sensor)
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+    return pf.preflight(make(cfg, headers=hdrs, **kw))
+
+
+def test_known_osc_names_are_clean_and_the_none_names_are_substituted() -> None:
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}) == []
+    assert _osc_problems({"sensor": "Canon EOS 20D", "frontFilter": "Antlia ALP-T", "lpf": "Baader UV/IR Cut"}) == []
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "No filter",
+                          "lpf": "Full spectrum (no filter)"}) == []
+
+
+def test_each_unknown_osc_name_is_reported_with_the_wording_of_the_command_check() -> None:
+    out = _osc_problems({"sensor": "Sony IMX999", "frontFilter": "Nope", "lpf": "Nada"})
+    assert out == ["sensor 'Sony IMX999' is not in Siril's SPCC database",
+                   "front filter 'Nope' is not in Siril's SPCC database",
+                   "low-pass filter 'Nada' is not in Siril's SPCC database"]
+
+
+def test_a_sensor_entry_name_is_not_a_model() -> None:
+    assert _osc_problems({"sensor": "Sony IMX571 Red", "frontFilter": "", "lpf": ""}) == [
+        "sensor 'Sony IMX571 Red' is not in Siril's SPCC database"]
+
+
+def test_the_osc_names_are_read_from_a_database_folder(tmp_path: Path) -> None:
+    folder = tmp_path / "siril-spcc-database"
+    folder.mkdir()
+    entries = [
+        {"type": "OSC_SENSOR", "name": "Sony IMX571 Red", "model": "Sony IMX571", "channel": "RED"},
+        {"type": "OSC_FILTER", "name": "No filter"}, {"type": "OSC_FILTER", "name": "Antlia ALP-T"},
+        {"type": "OSC_LPF", "name": "Full spectrum (no filter)"},
+    ]
+    (folder / "osc.json").write_text(json.dumps(entries), encoding="utf-8")
+    lookup = {"spcc_database": str(folder), "spcc_names": lambda kind: spcc_names(kind, folder)}
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "Antlia ALP-T", "lpf": ""}, **lookup) == []
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "Antlia OIII", "lpf": ""}, **lookup) == [
+        "front filter 'Antlia OIII' is not in Siril's SPCC database"]
+
+
+def test_a_missing_database_gives_the_one_database_message_and_no_name_problems() -> None:
+    out = _osc_problems({"sensor": "Sony IMX999", "frontFilter": "Nope", "lpf": "Nada"}, spcc_database=None)
+    assert out == ["Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
+
+
+def test_an_oscnb_only_run_checks_the_names_too() -> None:
+    cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"],
+                        oscSensor={"sensor": "Sony IMX571", "frontFilter": "Nope", "lpf": ""})
+    hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == ["front filter 'Nope' is not in Siril's SPCC database"]
+
+
+def test_a_mono_run_does_not_look_up_the_osc_names() -> None:
+    calls: list[str] = []
+
+    def names(kind: str) -> list[str]:
+        calls.append(kind)
+        return SPCC.get(kind, [])
+
+    assert pf.preflight(make(base_config(oscSensor={"sensor": "Nope"}), spcc_names=names)) == []
+    assert not any(k.startswith("osc") for k in calls)
