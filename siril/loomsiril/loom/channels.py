@@ -609,6 +609,7 @@ def inherit_instrument(chans: Mapping[str, dict[str, Any]]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _FITS_BLOCK = 2880
+_MAX_HDUS = 64  # extensions looked at for a tile-compressed image before giving up
 
 
 def _fits_value_text(v: Any) -> str:
@@ -643,14 +644,18 @@ def _int_of(header: Mapping[str, Any], key: str) -> Optional[int]:
 
 def _data_size(header: Mapping[str, Any]) -> int:
     """The bytes of an HDU's data part, padding included (FITS standard 4.4.1.1 and 7.3)."""
-    naxis = _int_of(header, "NAXIS") or 0
+    def non_negative(key: str, default: int) -> int:
+        v = _int_of(header, key)
+        return default if v is None else max(0, v)  # a corrupt negative size must never move the file position back
+
+    naxis = min(non_negative("NAXIS", 0), 999)
     if naxis == 0:
         return 0
     count = 1
     for i in range(1, naxis + 1):
-        count *= _int_of(header, f"NAXIS{i}") or 0
+        count *= non_negative(f"NAXIS{i}", 0)
     bits = abs(_int_of(header, "BITPIX") or 8)
-    size = bits // 8 * (_int_of(header, "GCOUNT") or 1) * (count + (_int_of(header, "PCOUNT") or 0))
+    size = bits // 8 * non_negative("GCOUNT", 1) * (count + non_negative("PCOUNT", 0))
     return size + (-size % _FITS_BLOCK)
 
 
@@ -664,7 +669,7 @@ def _compressed_image_header(fh: Any, path: str, primary: Mapping[str, Any]) -> 
     The data of every HDU passed over is skipped by its size, never read. None when there is no such extension.
     """
     fh.seek(_data_size(primary), 1)
-    while True:
+    for _ in range(_MAX_HDUS):
         try:
             ext = _read_hdu_header(fh, path)
         except ValueError:
@@ -672,6 +677,7 @@ def _compressed_image_header(fh: Any, path: str, primary: Mapping[str, Any]) -> 
         if ext.get("XTENSION") == "BINTABLE" and ext.get("ZIMAGE") is True:
             return ext
         fh.seek(_data_size(ext), 1)
+    return None
 
 
 def _read_fits_header(path: str) -> dict[str, Any]:

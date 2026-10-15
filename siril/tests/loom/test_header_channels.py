@@ -49,16 +49,13 @@ def _plain_fits(naxes: list[int], extra: Optional[list[bytes]] = None) -> bytes:
     return _header(cards) + b"\xff\xfe"  # a stub, not a pixel array: reading it as one would fail
 
 
-def _fz(zaxes: list[int], lead_table: bool = False, primary_extra: Optional[list[bytes]] = None) -> bytes:
+def _fz(zaxes: list[int], leads: bytes = b"", primary_extra: Optional[list[bytes]] = None) -> bytes:
     pa: list[int] = []
     cards = [_card("SIMPLE", True), _card("BITPIX", 16), _card("NAXIS", len(pa))]
     cards += [_card(f"NAXIS{i + 1}", n) for i, n in enumerate(pa)]
     cards += (primary_extra or []) + [_card("EXTEND", True)]
     primary = _header(cards)
-    if lead_table:  # an ordinary table before the image: skipped by its size
-        table = [_card("XTENSION", "BINTABLE"), _card("BITPIX", 8), _card("NAXIS", 2), _card("NAXIS1", 10),
-                 _card("NAXIS2", 100), _card("PCOUNT", 0), _card("GCOUNT", 1), _card("TFIELDS", 1)]
-        primary += _header(table) + b"\x01" * 1000 + _pad(1000)
+    primary += leads
     ext = [_card("XTENSION", "BINTABLE"), _card("BITPIX", 8), _card("NAXIS", 2), _card("NAXIS1", 8),
            _card("NAXIS2", 4), _card("PCOUNT", 16), _card("GCOUNT", 1), _card("TFIELDS", 1),
            _card("ZIMAGE", True), _card("ZCMPTYPE", "RICE_1"), _card("ZBITPIX", 16), _card("ZNAXIS", len(zaxes))]
@@ -66,6 +63,20 @@ def _fz(zaxes: list[int], lead_table: bool = False, primary_extra: Optional[list
     ext += [_card("FILTER", "Ha")]
     heap = 8 * 4 + 16
     return primary + _header(ext) + b"\x00" * heap + _pad(heap)
+
+
+def _fake_block() -> bytes:
+    """A block that parses as a compressed image header with 9 channels: wrong if it is ever read as an HDU."""
+    return _header([_card("XTENSION", "BINTABLE"), _card("ZIMAGE", True), _card("ZNAXIS", 3), _card("ZNAXIS1", 1),
+                    _card("ZNAXIS2", 1), _card("ZNAXIS3", 9)])
+
+
+def _ext(xtension: str, bitpix: int, axes: list[int], pcount: int, gcount: int, blocks: int) -> bytes:
+    """An extension whose data part is made of fake headers, so that a wrong skip size lands on one."""
+    cards = [_card("XTENSION", xtension), _card("BITPIX", bitpix), _card("NAXIS", len(axes))]
+    cards += [_card(f"NAXIS{i + 1}", n) for i, n in enumerate(axes)]
+    cards += [_card("PCOUNT", pcount), _card("GCOUNT", gcount)]
+    return _header(cards) + _fake_block() * blocks
 
 
 def _xisf(geometry: str) -> bytes:
@@ -126,9 +137,54 @@ def test_fz_merges_primary_keywords_extension_wins(tmp_path: Path) -> None:
     assert len([k for k in h["keywords"] if k["name"] == "FILTER"]) == 1
 
 
-def test_fz_skips_a_leading_table_by_its_size(tmp_path: Path) -> None:
-    h = ch.read_header(_write(tmp_path, "m.fz", _fz([12, 7, 3], lead_table=True)))
+def test_fz_skips_leading_hdus_by_their_computed_size(tmp_path: Path) -> None:
+    leads = (
+        _ext("BINTABLE", 8, [2880, 1], pcount=2880, gcount=1, blocks=2)   # the heap (PCOUNT) is part of the size
+        + _ext("IMAGE", 32, [60, 48], pcount=0, gcount=1, blocks=4)       # 4 bytes per sample
+        + _ext("IMAGE", 16, [60, 48], pcount=0, gcount=1, blocks=2)       # 2 bytes per sample
+        + _ext("IMAGE", 32, [30, 24], pcount=0, gcount=2, blocks=2)       # GCOUNT groups
+    )
+    h = ch.read_header(_write(tmp_path, "m.fz", _fz([12, 7, 3], leads=leads)))
     assert (h["channels"], h["width"], h["height"]) == (3, 12, 7)
+
+
+def test_fz_mono_keeps_its_keywords_and_takes_the_size_from_znaxis(tmp_path: Path) -> None:
+    primary_extra = [_card("OBJECT", "M 42"), _card("EXPTIME", 120.0)]
+    data = _fz([40, 30], primary_extra=primary_extra)
+    h = ch.read_header(_write(tmp_path, "mono.fits.fz", data))
+    kw = {k["name"]: k["value"] for k in h["keywords"]}
+    assert kw["FILTER"] == "'Ha'" and kw["OBJECT"] == "'M 42'" and float(kw["EXPTIME"]) == 120.0
+    assert (h["width"], h["height"], h["channels"]) == (40, 30, 1)
+
+
+@pytest.mark.parametrize("ext_axes", [[-2880], [-5, -5], [10, -3]])
+def test_corrupt_negative_sizes_return_promptly(tmp_path: Path, ext_axes: list[int]) -> None:
+    import signal
+
+    bad = _ext("IMAGE", 8, ext_axes, pcount=0, gcount=1, blocks=0)
+    data = _header([_card("SIMPLE", True), _card("BITPIX", 16), _card("NAXIS", 0), _card("EXTEND", True)]) + bad
+    path = _write(tmp_path, "bad.fz", data)
+
+    def timeout(*_a: Any) -> None:
+        raise TimeoutError("read_header did not return")
+
+    old = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(10)
+    try:
+        h = ch.read_header(path)   # no compressed image found: the primary's view, one channel
+    except ValueError:
+        pass
+    else:
+        assert h["channels"] == 1
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_fz_scan_gives_up_after_many_extensions(tmp_path: Path) -> None:
+    empties = _ext("IMAGE", 8, [], pcount=0, gcount=1, blocks=0) * 200
+    data = _header([_card("SIMPLE", True), _card("BITPIX", 16), _card("NAXIS", 0)]) + empties + _fz([4, 4, 3])[BLOCK:]
+    assert ch.read_header(_write(tmp_path, "many.fz", data))["channels"] == 1
 
 
 def test_fz_znaxis_two_is_one_channel_even_with_a_stray_znaxis3(tmp_path: Path) -> None:
