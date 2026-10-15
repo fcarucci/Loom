@@ -5,7 +5,10 @@ Covered, by JS line range: the constants (28-41); the settings store protocol, l
 ``number`` and ``describe`` (91-122); the dark classification by IMAGETYP and by name, and ``darksOf`` (123-165);
 the darks on the card (167-285: ``cardDarks``, ``cardDarkMatch``, ``readCardDarks``, ``darkSourceOf``,
 ``cardDarksUi``); matching (286-391: ``sameExposure``, ``compatible``, ``darkSuits``, ``chooseDark``, ``rawGroupKey``);
-names and rejection, the integration specs and the dark cache path (392-443).
+names and rejection, the integration specs and the dark cache path (392-443); the plan: ``build_plan`` (462-531)
+and ``dark_shortfall`` (538-550); the import-log lines: ``master_flat_num`` (982, a plain function of the lib file),
+``frame_line`` (985-991), ``dark_summary_lines`` (994-1015) and ``plan_lines`` (1017-1037); and the folder scan:
+``SCAN_DEPTH`` (1050), ``master_flat_scan_folder_entry`` (1052-1070) and ``scan_folder`` (1072-1082).
 
 Pure: no file, no display, no Siril call. Header reads take the reader as an argument, ``read_header(path)``
 returning an object with ``info`` (None when unreadable) and ``keyword(name)``; the card's file size and time are
@@ -22,8 +25,12 @@ Two Siril differences, each a parameter whose default is the Siril value; the JS
 
 * ``file_name(filter_name, binning, ext=".fit")``: the JS writes ``.xisf``.
 * ``dark_cache_path(group, sources, cache_dir, ext=".fit")``: the JS writes ``.xisf``.
+* ``build_plan(flats, darks, dest_flat_dir, darks_where, ext=".fit")``: the JS writes ``.xisf``.
 
-Out of this module, by design: the plan, the execution and the engine (MasterFlat.js 449 on).
+``scan_folder`` lists a real folder (``os.scandir``, names in code-unit order) where the JS lists it with
+``Util.findEntries``; the oracle replaces that listing with a fake tree, and the Python replay writes the same tree to disk.
+
+Out of this module, by design: the execution and the engine (MasterFlat.js 551-980 and 1083 on).
 """
 
 from __future__ import annotations
@@ -34,7 +41,8 @@ import re
 from functools import cmp_to_key
 from typing import Any, Callable, Optional, Protocol
 
-from loomsiril.jsmath import is_falsy, js_max, js_round, js_string, parse_float
+from loomsiril.frames import to_fixed
+from loomsiril.jsmath import is_falsy, js_max, js_min, js_round, js_string, parse_float
 from loomsiril.loom.cache import hash_str, iso_ms
 
 # MasterFlat.js 28-41
@@ -473,3 +481,281 @@ def dark_cache_path(group: dict[str, Any], sources: list[dict[str, Any]], cache_
         parts.append(js_string(s.get("path")) + "|" + js_string(s.get("size")) + "|" + js_string(s.get("modified")))
     digest = hash_str("\n".join(parts))
     return js_string(cache_dir) + "/master-darks/masterDark_" + key + "_" + digest[:16] + ext
+
+
+# ---------------------------------------------------------------------------
+# The plan (MasterFlat.js 449-531): one job per filter and binning
+# ---------------------------------------------------------------------------
+
+
+def _round_half_up(x: float) -> float:
+    """JS ``Math.round`` of a number: halves toward +infinity; NaN and the infinities pass through."""
+    if math.isnan(x) or math.isinf(x):
+        return x
+    return float(math.floor(x + 0.5))
+
+
+def _nz(v: Any) -> Any:
+    """JS ``v || 0``: a falsy value (null, undefined, 0, NaN) reads as 0."""
+    return v if _truthy(v) else 0
+
+
+def _strip_ext(name: str, ext: str) -> str:
+    """The JS ``name.replace(/\\.xisf$/, "")``, with the extension ``ext`` in place of ``.xisf``."""
+    return name[: -len(ext)] if ext and name.endswith(ext) else name
+
+
+def _job_order(a: dict[str, Any], b: dict[str, Any]) -> float:
+    """The comparator of ``buildPlan``'s sort: filter name (lower case, code units), then binning."""
+    x = js_string(a.get("filter")).lower()
+    y = js_string(b.get("filter")).lower()
+    c = _cmp_utf16(x, y)
+    if c != 0:
+        return c
+    return _nz(a.get("binning")) - _nz(b.get("binning"))
+
+
+def _path_order(a: dict[str, Any], b: dict[str, Any]) -> int:
+    """The comparator of the sort of a job's flats: by path, code units."""
+    return _cmp_utf16(js_string(a.get("path")), js_string(b.get("path")))
+
+
+# MasterFlat.js 462-531. The comment above buildPlan in the JavaScript is the contract: one job per filter and
+# binning; the flats of a job are split into parts by exposure and gain, each part calibrated with its own dark;
+# a job is ready only when every part has a dark.
+def build_plan(flats: list[dict[str, Any]], darks: list[dict[str, Any]], dest_flat_dir: Any,
+               darks_where: Any = None, ext: str = ".fit") -> list[dict[str, Any]]:
+    """``MasterFlat.buildPlan``: the jobs of a night's described flats, each with its ``name``, ``master`` path,
+    ``parts`` (``exposure``, ``gain``, ``flats``, ``dark``) and ``skip`` (None, or the reason the job is not run).
+
+    ``ext`` is the extension the masters are named with (the JS writes ``.xisf``; Siril writes ``.fit``). ``darks_where``
+    says where the darks were looked for, in a skip reason.
+    """
+    by_job: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    seen: set[str] = set()
+    for f in flats:
+        # The same copy listed twice is one flat (and is deleted once).
+        if js_string(f.get("path")) in seen:
+            continue
+        seen.add(js_string(f.get("path")))
+        filt, binning = f.get("filter"), f.get("binning")
+        key = js_string("" if filt is None else filt) + "\u0001" + js_string("" if binning is None else binning)
+        if key not in by_job:
+            by_job[key] = {"filter": filt, "binning": binning, "flats": []}
+            order.append(key)
+        by_job[key]["flats"].append(f)
+
+    jobs = [by_job[k] for k in order]
+    jobs.sort(key=cmp_to_key(_job_order))
+
+    # A filter shot at two binnings needs the binning in the name.
+    per_filter: dict[str, int] = {}
+    for j in jobs:
+        k = js_string(j["filter"]).lower()
+        per_filter[k] = per_filter.get(k, 0) + 1
+    names: set[str] = set()
+    for j in jobs:
+        binning = j["binning"] if per_filter[js_string(j["filter"]).lower()] > 1 else None
+        base = file_name(j["filter"], binning, ext=ext)
+        n, c = base, 1
+        while n.lower() in names:
+            c += 1
+            n = _strip_ext(base, ext) + "_" + js_string(c) + ext
+        names.add(n.lower())
+        j["name"] = n
+        j["master"] = js_string(dest_flat_dir) + "/" + n
+
+        j["flats"].sort(key=cmp_to_key(_path_order))
+        j["parts"] = []
+        for f in j["flats"]:
+            for part in j["parts"]:
+                if (same_exposure(part["exposure"], f.get("exposure"))
+                        and compatible(part["gain"], f.get("gain"), 0)
+                        and (part["exposure"] is not None or f.get("exposure") is None)):
+                    part["flats"].append(f)
+                    break
+            else:
+                j["parts"].append({"exposure": f.get("exposure"), "gain": f.get("gain"), "flats": [f], "dark": None})
+
+        j["skip"] = None
+        if len(j["flats"]) < MIN_FLATS:
+            j["skip"] = "only " + js_string(len(j["flats"])) + " flat(s); at least " + js_string(MIN_FLATS) + " are needed"
+        i = 0
+        while i < len(j["parts"]) and j["skip"] is None:
+            part = j["parts"][i]
+            part["dark"] = choose_dark(part["flats"][0], darks)
+            if part["dark"] is None:
+                exposure = part["exposure"]
+                what = ("flats with no exposure time" if exposure is None
+                        else "the " + js_string(exposure) + " s flats")
+                j["skip"] = "no matching dark for " + what + dark_shortfall(part["flats"][0], darks, darks_where)
+            i += 1
+    return jobs
+
+
+# MasterFlat.js 538-550
+def dark_shortfall(flat: dict[str, Any], darks: list[dict[str, Any]], where: Any = None) -> str:
+    """``MasterFlat.darkShortfall``: why no dark suited ``flat``, appended to the skip reason: no darks at all (at
+    ``where``), or the exposures of the darks found and the flat's temperature, so a wrong folder, a missing
+    temperature or another exposure shows at a glance."""
+    if len(darks) == 0:
+        return " (no darks found " + (js_string(where) if _truthy(where) else "in the darks folder or below it") + ")"
+    seen: set[str] = set()
+    listed: list[str] = []
+    for d in darks:
+        e = ("no exposure" if d.get("exposure") is None
+             else js_string(_round_half_up(d["exposure"] * 1000) / 1000) + " s")
+        if e not in seen:
+            seen.add(e)
+            listed.append(e)
+    temp = ("the flats state no temperature" if flat.get("temp") is None
+            else "flats at " + to_fixed(flat["temp"], 1) + " C")
+    return (" (" + temp + "; darks found: " + ", ".join(listed[:8]) + (", ..." if len(listed) > 8 else "") + ")")
+
+
+# ---------------------------------------------------------------------------
+# The import log (MasterFlat.js 980-1037)
+# ---------------------------------------------------------------------------
+
+
+# MasterFlat.js 982 (a plain function of the lib file, not a member of MasterFlat)
+def master_flat_num(v: Any, digits: float) -> str:
+    """``masterFlatNum``: the value rounded to 1/digits, as JS prints it; "-" when it is not stated."""
+    return "-" if v is None else js_string(_round_half_up(v * digits) / digits)
+
+
+# MasterFlat.js 985-991
+def frame_line(f: dict[str, Any]) -> str:
+    """``MasterFlat.frameLine``: one line describing a frame: what the matching looked at."""
+    filt = "-" if f.get("filter") is None else _js_trim(re.sub(r"^'|'\Z", "", js_string(f["filter"])))
+    return (js_string(f.get("name")) + "  filter=" + filt
+            + " exposure=" + master_flat_num(f.get("exposure"), 1000)
+            + " bin=" + master_flat_num(f.get("binning"), 1)
+            + " gain=" + master_flat_num(f.get("gain"), 10)
+            + " temp=" + master_flat_num(f.get("temp"), 10)
+            + ("" if f.get("kind") is None else " kind=" + js_string(f["kind"])))
+
+
+# MasterFlat.js 994-1015
+def dark_summary_lines(darks: list[dict[str, Any]]) -> list[str]:
+    """``MasterFlat.darkSummaryLines``: the darks found, one line per kind, exposure, binning and gain, with the
+    count and the range of their temperatures."""
+    groups: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for d in darks:
+        k = (js_string(d.get("kind")) + " exposure=" + master_flat_num(d.get("exposure"), 1000)
+             + " bin=" + master_flat_num(d.get("binning"), 1) + " gain=" + master_flat_num(d.get("gain"), 10))
+        if k not in groups:
+            groups[k] = {"n": 0, "lo": None, "hi": None}
+            order.append(k)
+        g = groups[k]
+        g["n"] += 1
+        if d.get("temp") is not None:
+            g["lo"] = d["temp"] if g["lo"] is None else js_min(g["lo"], d["temp"])
+            g["hi"] = d["temp"] if g["hi"] is None else js_max(g["hi"], d["temp"])
+    out: list[str] = []
+    for k in order:
+        g = groups[k]
+        temps = ("-" if g["lo"] is None
+                 else master_flat_num(g["lo"], 10) + ".." + master_flat_num(g["hi"], 10))
+        out.append("  " + js_string(g["n"]) + " x " + k + " temp=" + temps)
+    return out
+
+
+# MasterFlat.js 1017-1037
+def plan_lines(jobs: list[dict[str, Any]]) -> list[str]:
+    """``MasterFlat.planLines``: one line per job, then one per part: the dark it uses, or that it has none."""
+    out: list[str] = []
+    for j in jobs:
+        head = ("  " + js_string(j.get("filter"))
+                + ("" if j.get("binning") is None else " bin " + js_string(j["binning"]))
+                + ": " + js_string(len(j["flats"])) + " flat(s)")
+        if _truthy(j.get("skip")):
+            out.append(head + " -> SKIPPED, " + js_string(j["skip"]))
+            continue
+        out.append(head)
+        for p in j["parts"]:
+            d = p.get("dark")
+            if d is None:
+                what = "no dark"
+            elif d.get("kind") == "master":
+                what = "master dark " + js_string(d.get("path"))
+            else:
+                what = ("integrate " + js_string(len(d["paths"])) + " raw dark(s), exposure "
+                        + master_flat_num(d.get("exposure"), 1000) + " s, mean temp "
+                        + master_flat_num(d.get("temp"), 10))
+            out.append("    " + js_string(len(p["flats"])) + " flat(s) of " + master_flat_num(p.get("exposure"), 1000)
+                       + " s -> " + what)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The folder scan (MasterFlat.js 1050-1082)
+# ---------------------------------------------------------------------------
+
+# MasterFlat.js 1050: folders are entered down to this level.
+SCAN_DEPTH = 4
+
+
+def _find_entries(folder: str) -> list[dict[str, Any]]:
+    """``Util.findEntries( folder + "/*" )``: one level, without the hidden names (a leading ".", such as the AppleDouble
+    twin of a file on an exFAT card), as ``{name, isDirectory, isFile, isSymbolicLink, size}``. Listed in name order
+    here (code units, as JS sorts); PixInsight lists them in FileFind order."""
+    try:
+        with os.scandir(folder) as it:
+            entries = list(it)
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for e in sorted(entries, key=lambda x: _utf16_key(x.name)):
+        if e.name.startswith("."):
+            continue
+        try:
+            is_dir = e.is_dir()
+            is_file = e.is_file()
+        except OSError:
+            is_dir = is_file = False
+        try:
+            size = int(e.stat().st_size)
+        except OSError:
+            size = 0
+        out.append({"name": e.name, "isDirectory": is_dir, "isFile": is_file,
+                    "isSymbolicLink": e.is_symlink(), "size": size})
+    return out
+
+
+# MasterFlat.js 1052-1070
+def master_flat_scan_folder_entry(e: dict[str, Any], base: str, read_header: ReadHeader, depth: Optional[int],
+                                  out: list[dict[str, Any]]) -> None:
+    """``masterFlatScanFolderEntry``: recurse on a directory (not a symbolic link, while below SCAN_DEPTH), or add the
+    described frame of a dark-named image whose header can be read. ``read_header(path)`` returns an object with
+    ``info`` (None when unreadable) and ``keyword(name)``, as ``describe`` takes."""
+    path = base + "/" + e["name"]
+    if e["isDirectory"]:
+        if not e["isSymbolicLink"] and (depth or 0) < SCAN_DEPTH:
+            out.extend(scan_folder(path, read_header, (depth or 0) + 1))
+        return
+    if not IMAGE_EXTENSION.search(e["name"]) or not _DARK.search(e["name"]):
+        return
+    h = read_header(path)
+    if h is None or h.info is None:
+        return
+    d = describe(path, h.keyword)
+    d["size"] = e["size"]
+    d["modified"] = file_info_of(path)[1]
+    out.append(d)
+
+
+# MasterFlat.js 1072-1082
+def scan_folder(folder: Optional[str], read_header: ReadHeader, depth: Optional[int] = None) -> list[dict[str, Any]]:
+    """``MasterFlat.scanFolder``: the frames in a folder and its subfolders (SCAN_DEPTH levels), described. Only files
+    with "dark" in the name are read, so a deep archive of lights costs nothing. ``folder`` may end in slashes; a
+    missing or empty folder gives an empty list."""
+    out: list[dict[str, Any]] = []
+    if folder is None or len(folder) == 0 or not os.path.isdir(folder):
+        return out
+    base = re.sub(r"/+\Z", "", folder)
+    for e in _find_entries(base):
+        master_flat_scan_folder_entry(e, base, read_header, depth, out)
+    return out
