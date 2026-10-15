@@ -488,13 +488,6 @@ def dark_cache_path(group: dict[str, Any], sources: list[dict[str, Any]], cache_
 # ---------------------------------------------------------------------------
 
 
-def _round_half_up(x: float) -> float:
-    """JS ``Math.round`` of a number: halves toward +infinity; NaN and the infinities pass through."""
-    if math.isnan(x) or math.isinf(x):
-        return x
-    return float(math.floor(x + 0.5))
-
-
 def _nz(v: Any) -> Any:
     """JS ``v || 0``: a falsy value (null, undefined, 0, NaN) reads as 0."""
     return v if _truthy(v) else 0
@@ -605,7 +598,7 @@ def dark_shortfall(flat: dict[str, Any], darks: list[dict[str, Any]], where: Any
     listed: list[str] = []
     for d in darks:
         e = ("no exposure" if d.get("exposure") is None
-             else js_string(_round_half_up(d["exposure"] * 1000) / 1000) + " s")
+             else js_string(js_round(d["exposure"] * 1000) / 1000) + " s")
         if e not in seen:
             seen.add(e)
             listed.append(e)
@@ -622,7 +615,7 @@ def dark_shortfall(flat: dict[str, Any], darks: list[dict[str, Any]], where: Any
 # MasterFlat.js 982 (a plain function of the lib file, not a member of MasterFlat)
 def master_flat_num(v: Any, digits: float) -> str:
     """``masterFlatNum``: the value rounded to 1/digits, as JS prints it; "-" when it is not stated."""
-    return "-" if v is None else js_string(_round_half_up(v * digits) / digits)
+    return "-" if v is None else js_string(js_round(v * digits) / digits)
 
 
 # MasterFlat.js 985-991
