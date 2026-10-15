@@ -27,7 +27,6 @@ All notable changes to this project are documented here. The format follows
   score weights and criteria. Measurements and file digests are cached, so reopening a folder is quick.
 - `docs/frame-selector-parity.md`: every PixInsight Frame Selector function with the Python function that ports it, and
   every deviation with its reason.
-
 - The Frame Selector has not been run inside Siril's user interface; it is tested against a stand-in for the Siril API
   and, for the parts that need Siril, headless `siril-cli` 1.4.4 in the Docker image. Experimental, as 0.5.x.
 

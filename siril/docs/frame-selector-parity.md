@@ -21,17 +21,15 @@ are remembered between runs (deviation 12).
   up, so every name below exists, except where the status says otherwise.
 - **Status** is `ported` (same behaviour, JavaScript semantics kept), `replaced` (the Siril port does the same job
   another way: see the deviation named in the note), `PixInsight only` (nothing to port, the note says why),
-  `not ported` (a deliberate omission, see the note) or `pending` (the Python module is planned but not written
-  yet).
+  or `not ported` (a deliberate omission, see the note).
 
 ## Function table
-
 
 ### FrameSelector.js
 
 | JS lines | JS name | Python | Status | Note |
 |---|---|---|---|---|
-| FrameSelector.js:37-37 | FrameSelector | planned: `Loom/loom_frame_selector.py` | pending |  |
+| FrameSelector.js:37-37 | FrameSelector | `Loom/loom_frame_selector.py` (`main`) | ported |  |
 | FrameSelector.js:44-49 | FrameSelector.title | `frames_ui.frame_selector_title` | ported |  |
 | FrameSelector.js:55-55 | FrameSelector.MEASURE_ROUTINE | `frames_measure.MEASURE_CONFIG` | replaced | deviation 1 |
 | FrameSelector.js:61-69 | FrameSelector.newMeasureProcess | `frames_measure.measure_batch` | replaced | deviation 1 |
@@ -39,7 +37,7 @@ are remembered between runs (deviation 12).
 | FrameSelector.js:118-156 | FrameSelector.collectRows | `frames_measure.parse_seq` | replaced | deviation 1 |
 | FrameSelector.js:173-196 | FrameSelector.checkSchema | - | not ported | there is no SubframeSelector column schema; the batch check in `frames_measure.batch_problem` covers the same risk |
 | FrameSelector.js:204-211 | FrameSelector.pathProblem | `frames_measure.batch_problem` | replaced | deviation 1 |
-| FrameSelector.js:220-235 | FrameSelector.markRejected | planned: `frames_dialog` | pending |  |
+| FrameSelector.js:220-235 | FrameSelector.markRejected | `frames_ui.mark_icon` | ported |  |
 | FrameSelector.js:238-244 | FrameSelector.detach | - | PixInsight only | releases PJSR objects; Tk widgets are released by their own methods |
 | FrameSelector.js:251-251 | FrameSelector.STRETCH | `frames_render.STRETCH` | ported |  |
 | FrameSelector.js:258-258 | FrameSelector.io | `frames_render.IO` | ported |  |
@@ -99,113 +97,113 @@ are remembered between runs (deviation 12).
 | FrameSelector.js:1223-1234 | FrameSelector.measuringReporter | `frames_scan.measuring_reporter` | ported |  |
 | FrameSelector.js:1236-1239 | FrameSelector.scan | `frames_scan.scan` | ported |  |
 | FrameSelector.js:1246-1249 | FrameSelector.logDir | `frames_delete.log_dir` | ported |  |
-| FrameSelector.js:1259-1262 | FrameSelector.importLogPath | planned: `asiair_import` | pending |  |
-| FrameSelector.js:1264-1277 | FrameSelector.writeImportLog | planned: `asiair_import` | pending |  |
+| FrameSelector.js:1259-1262 | FrameSelector.importLogPath | `asiair_import.import_log_path` | ported |  |
+| FrameSelector.js:1264-1277 | FrameSelector.writeImportLog | `asiair_import.write_import_log` | ported |  |
 | FrameSelector.js:1279-1307 | FrameSelector.writeManifestLog | `frames_delete.write_manifest_log` | ported |  |
 | FrameSelector.js:1313-1336 | FrameSelector.appendOutcome | `frames_delete.append_outcome` | ported |  |
 | FrameSelector.js:1350-1418 | FrameSelector.execute | `frames_delete.execute` | ported |  |
 | FrameSelector.js:1441-1441 | FrameSelector.LABEL_GAP | `frames_ui.LABEL_GAP` | ported |  |
 | FrameSelector.js:1448-1448 | FrameSelector.SCROLL_LINE | `frames_ui.SCROLL_LINE` | ported |  |
-| FrameSelector.js:1454-1455 | FrameSelector.TAG_COLOURS | `frames_ui.TAG_COLOURS` | ported |  |
+| FrameSelector.js:1454-1455 | FrameSelector.TAG_COLOURS | `frames_preview.tag_colours` | ported |  |
 | FrameSelector.js:1456-1456 | FrameSelector.TAG | `frames_ui.TAG` | ported |  |
 | FrameSelector.js:1459-1459 | FrameSelector.AUTO_STYLE | `frames_ui.AUTO_STYLE` | ported |  |
 | FrameSelector.js:1462-1462 | FrameSelector.THUMB | `frames_ui.THUMB` | ported |  |
 | FrameSelector.js:1463-1463 | FrameSelector.THUMB_CAP | `frames_ui.THUMB_CAP` | ported |  |
 | FrameSelector.js:1466-1466 | FrameSelector.PICK_RADIUS | `frames_ui.PICK_RADIUS` | ported |  |
-| FrameSelector.js:1491 | PreviewControl.constructor (method) | planned: `frames_preview.PreviewControl.__init__` | pending |  |
-| FrameSelector.js:1616 | PreviewControl.setFit (method) | planned: `frames_preview.PreviewControl.set_fit` | pending |  |
-| FrameSelector.js:1629 | PreviewControl.centreOn (method) | planned: `frames_preview.PreviewControl.centre_on` | pending |  |
-| FrameSelector.js:1653 | PreviewControl.fittedPixelAt (method) | planned: `frames_preview.PreviewControl.fitted_pixel_at` | pending |  |
-| FrameSelector.js:1673 | PreviewControl.layOutScroll (method) | planned: `frames_preview.PreviewControl.lay_out_scroll` | pending |  |
-| FrameSelector.js:1741 | PreviewControl.pan (method) | planned: `frames_preview.PreviewControl.pan` | pending |  |
-| FrameSelector.js:1754 | PreviewControl.paintViewport (method) | planned: `frames_preview.PreviewControl.paint_viewport` | pending |  |
-| FrameSelector.js:1807 | PreviewControl.dispose (method) | planned: `frames_preview.PreviewControl.dispose` | pending |  |
-| FrameSelector.js:1813 | PreviewControl.setTags (method) | planned: `frames_preview.PreviewControl.set_tags` | pending |  |
-| FrameSelector.js:1823 | PreviewControl.tagRects (method) | planned: `frames_preview.PreviewControl.tag_rects` | pending |  |
-| FrameSelector.js:1835 | PreviewControl.paintTags (method) | planned: `frames_preview.PreviewControl.paint_tags` | pending |  |
-| FrameSelector.js:1848 | PreviewControl.thumbnail (method) | planned: `frames_preview.PreviewControl.thumbnail` | pending |  |
-| FrameSelector.js:1869 | PreviewControl.release (method) | planned: `frames_preview.PreviewControl.release` | pending |  |
-| FrameSelector.js:1893 | PreviewControl.load (method) | planned: `frames_preview.PreviewControl.load` | pending |  |
+| FrameSelector.js:1491 | PreviewControl.constructor (method) | `frames_preview.PreviewControl.__init__` | ported |  |
+| FrameSelector.js:1616 | PreviewControl.setFit (method) | `frames_preview.PreviewControl.set_fit` | ported |  |
+| FrameSelector.js:1629 | PreviewControl.centreOn (method) | `frames_preview.PreviewControl.centre_on` | ported |  |
+| FrameSelector.js:1653 | PreviewControl.fittedPixelAt (method) | `frames_preview.PreviewControl.fitted_pixel_at` | ported |  |
+| FrameSelector.js:1673 | PreviewControl.layOutScroll (method) | `frames_preview.PreviewControl.lay_out_scroll` | ported |  |
+| FrameSelector.js:1741 | PreviewControl.pan (method) | `frames_preview.PreviewControl.pan` | ported |  |
+| FrameSelector.js:1754 | PreviewControl.paintViewport (method) | `frames_preview.PreviewControl.paint_viewport` | ported |  |
+| FrameSelector.js:1807 | PreviewControl.dispose (method) | `frames_preview.PreviewControl.dispose` | ported |  |
+| FrameSelector.js:1813 | PreviewControl.setTags (method) | `frames_preview.PreviewControl.set_tags` | ported |  |
+| FrameSelector.js:1823 | PreviewControl.tagRects (method) | `frames_preview.View.tag_rects` | ported |  |
+| FrameSelector.js:1835 | PreviewControl.paintTags (method) | `frames_preview.PreviewControl.paint_tags` | ported |  |
+| FrameSelector.js:1848 | PreviewControl.thumbnail (method) | `frames_preview.PreviewControl.thumbnail` | ported |  |
+| FrameSelector.js:1869 | PreviewControl.release (method) | `frames_preview.PreviewControl.release` | ported |  |
+| FrameSelector.js:1893 | PreviewControl.load (method) | `frames_preview.PreviewControl.load` | ported |  |
 | FrameSelector.js:1938-1964 | FrameSelector.emptyState | `frames_state.empty_state` | ported |  |
 | FrameSelector.js:1973-1978 | FrameSelector.buildStateFrom | `frames_state.build_state_from` | ported |  |
 | FrameSelector.js:1980-1995 | FrameSelector.stateFromScan | `frames_state.state_from_scan` | ported |  |
 | FrameSelector.js:1997-2001 | FrameSelector.buildState | `frames_state.build_state` | ported |  |
 | FrameSelector.js:2010-2025 | FrameSelector.approvedLightRecords | `frames_state.approved_light_records` | ported |  |
-| FrameSelector.js:2034-2052 | FrameSelector.convertOne | planned: `asiair_import` | pending | copy of the FITS bytes (deviation 8) |
-| FrameSelector.js:2058-2058 | FrameSelector.REQUIRED_KEYWORDS | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2072-2104 | FrameSelector.verifyImported | planned: `asiair_import` | pending | digest comparison first (deviation 8) |
-| FrameSelector.js:2110-2132 | FrameSelector.writeManifest | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2140-2145 | FrameSelector.readCardDarks | `master_flat.read_card_darks` | ported |  |
-| FrameSelector.js:2148-2151 | FrameSelector.cardDarksFound | `frames_state.card_darks_found` | ported |  |
-| FrameSelector.js:2154-2157 | FrameSelector.cardDarksUsed | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2160-2163 | FrameSelector.darkSourceOf | `master_flat.dark_source_of` | ported |  |
-| FrameSelector.js:2171-2226 | FrameSelector.makeMasterFlats | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2233-2247 | FrameSelector.importOutcome | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2259-2270 | FrameSelector.outputsAreSafe | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2277-2290 | FrameSelector.resolved | planned: `asiair_import` | pending |  |
-| FrameSelector.js:2294 | Dialog.constructor (method) | planned: `frames_dialog.Dialog.__init__` | pending |  |
-| FrameSelector.js:2338 | Dialog.buildChannelTree (method) | planned: `frames_dialog.Dialog.build_channel_tree` | pending |  |
-| FrameSelector.js:2367 | Dialog.buildPlotPane (method) | planned: `frames_dialog.Dialog.build_plot_pane` | pending |  |
-| FrameSelector.js:2404 | Dialog.selectedRowIndex (method) | planned: `frames_dialog.Dialog.selected_row_index` | pending |  |
-| FrameSelector.js:2423 | Dialog.selectRow (method) | planned: `frames_dialog.Dialog.select_row` | pending |  |
-| FrameSelector.js:2446 | Dialog.rowNode (method) | planned: `frames_dialog.Dialog.row_node` | pending |  |
-| FrameSelector.js:2454 | Dialog.loadPreview (method) | planned: `frames_dialog.Dialog.load_preview` | pending |  |
-| FrameSelector.js:2474 | Dialog.showPreview (method) | planned: `frames_dialog.Dialog.show_preview` | pending |  |
-| FrameSelector.js:2482 | Dialog.channelStretch (method) | planned: `frames_dialog.Dialog.channel_stretch` | pending |  |
+| FrameSelector.js:2034-2052 | FrameSelector.convertOne | `asiair_import.convert_one` | replaced | copy of the FITS bytes (deviation 8) |
+| FrameSelector.js:2058-2058 | FrameSelector.REQUIRED_KEYWORDS | `asiair_import.REQUIRED_KEYWORDS` | ported |  |
+| FrameSelector.js:2072-2104 | FrameSelector.verifyImported | `asiair_import.verify_imported` | replaced | digest comparison first (deviation 8) |
+| FrameSelector.js:2110-2132 | FrameSelector.writeManifest | `asiair_import.write_manifest` | ported |  |
+| FrameSelector.js:2140-2145 | FrameSelector.readCardDarks | `asiair_import.read_card_darks` | ported |  |
+| FrameSelector.js:2148-2151 | FrameSelector.cardDarksFound | `asiair_import.card_darks_found` | ported |  |
+| FrameSelector.js:2154-2157 | FrameSelector.cardDarksUsed | `asiair_import.card_darks_used` | ported |  |
+| FrameSelector.js:2160-2163 | FrameSelector.darkSourceOf | `asiair_import.dark_source_of` | ported |  |
+| FrameSelector.js:2171-2226 | FrameSelector.makeMasterFlats | `asiair_import.make_master_flats` | ported |  |
+| FrameSelector.js:2233-2247 | FrameSelector.importOutcome | `asiair_import.import_outcome` | ported |  |
+| FrameSelector.js:2259-2270 | FrameSelector.outputsAreSafe | `asiair_import.outputs_are_safe` | ported |  |
+| FrameSelector.js:2277-2290 | FrameSelector.resolved | `asiair_import.resolved` | ported |  |
+| FrameSelector.js:2294 | Dialog.constructor (method) | `frames_dialog.Dialog.__init__` | ported |  |
+| FrameSelector.js:2338 | Dialog.buildChannelTree (method) | `frames_dialog.Dialog.build_channel_tree` | ported |  |
+| FrameSelector.js:2367 | Dialog.buildPlotPane (method) | `frames_dialog.Dialog.build_plot_pane` | ported |  |
+| FrameSelector.js:2404 | Dialog.selectedRowIndex (method) | `frames_dialog.Dialog.selected_row_index` | ported |  |
+| FrameSelector.js:2423 | Dialog.selectRow (method) | `frames_dialog.Dialog.select_row` | ported |  |
+| FrameSelector.js:2446 | Dialog.rowNode (method) | `frames_dialog.Dialog.row_iid` | ported |  |
+| FrameSelector.js:2454 | Dialog.loadPreview (method) | `frames_dialog.Dialog.load_preview` | ported |  |
+| FrameSelector.js:2474 | Dialog.showPreview (method) | `frames_dialog.Dialog.show_preview` | ported |  |
+| FrameSelector.js:2482 | Dialog.channelStretch (method) | `frames_dialog.Dialog.channel_stretch` | ported |  |
 | FrameSelector.js:2492 | Dialog.currentTags (method) | `frames_state.current_tags` | ported |  |
-| FrameSelector.js:2506 | Dialog.chooseDestination (method) | planned: `frames_dialog.Dialog.choose_destination` | pending |  |
-| FrameSelector.js:2517 | Dialog.plotMetric (method) | planned: `frames_dialog.Dialog.plot_metric` | pending |  |
-| FrameSelector.js:2523 | Dialog.fillPlot (method) | planned: `frames_dialog.Dialog.fill_plot` | pending |  |
-| FrameSelector.js:2557 | Dialog.buildFrameTable (method) | planned: `frames_dialog.Dialog.build_frame_table` | pending |  |
-| FrameSelector.js:2592 | Dialog.buildPreviewPane (method) | planned: `frames_dialog.Dialog.build_preview_pane` | pending |  |
-| FrameSelector.js:2620 | Dialog.buildKnobPanel (method) | planned: `frames_dialog.Dialog.build_knob_panel` | pending |  |
-| FrameSelector.js:2744 | Dialog.applyEdit (method) | planned: `frames_dialog.Dialog.apply_edit` | pending |  |
-| FrameSelector.js:2756 | Dialog.commitEdit (method) | planned: `frames_dialog.Dialog.commit_edit` | pending |  |
-| FrameSelector.js:2767 | Dialog.commitPendingEdits (method) | planned: `frames_dialog.Dialog.commit_pending_edits` | pending |  |
-| FrameSelector.js:2781 | Dialog.buildFilmstrip (method) | planned: `frames_dialog.Dialog.build_filmstrip` | pending |  |
-| FrameSelector.js:2830 | Dialog.armLoader (method) | planned: `frames_dialog.Dialog.arm_loader` | pending |  |
-| FrameSelector.js:2847 | Dialog.mayLoad (method) | planned: `frames_dialog.Dialog.may_load` | pending |  |
-| FrameSelector.js:2853 | Dialog.rebuildQueue (method) | planned: `frames_dialog.Dialog.rebuild_queue` | pending |  |
-| FrameSelector.js:2882 | Dialog.queueOtherChannels (method) | planned: `frames_dialog.Dialog.queue_other_channels` | pending |  |
-| FrameSelector.js:2902 | Dialog.loaderTick (method) | planned: `frames_dialog.Dialog.loader_tick` | pending |  |
-| FrameSelector.js:2949 | Dialog.storeThumb (method) | planned: `frames_dialog.Dialog.store_thumb` | pending |  |
-| FrameSelector.js:2967 | Dialog.pushThumbs (method) | planned: `frames_dialog.Dialog.push_thumbs` | pending |  |
-| FrameSelector.js:2987 | Dialog.syncStrip (method) | planned: `frames_dialog.Dialog.sync_strip` | pending |  |
-| FrameSelector.js:3000 | Dialog.buildActionRow (method) | planned: `frames_dialog.Dialog.build_action_row` | pending |  |
+| FrameSelector.js:2506 | Dialog.chooseDestination (method) | `frames_dialog.Dialog.choose_destination` | ported |  |
+| FrameSelector.js:2517 | Dialog.plotMetric (method) | `frames_dialog.Dialog.plot_metric` | ported |  |
+| FrameSelector.js:2523 | Dialog.fillPlot (method) | `frames_dialog.Dialog.fill_plot` | ported |  |
+| FrameSelector.js:2557 | Dialog.buildFrameTable (method) | `frames_dialog.Dialog.build_frame_table` | ported |  |
+| FrameSelector.js:2592 | Dialog.buildPreviewPane (method) | `frames_dialog.Dialog.build_preview_pane` | ported |  |
+| FrameSelector.js:2620 | Dialog.buildKnobPanel (method) | `frames_dialog.Dialog.build_knob_panel` | ported |  |
+| FrameSelector.js:2744 | Dialog.applyEdit (method) | `frames_dialog.Dialog.apply_edit` | ported |  |
+| FrameSelector.js:2756 | Dialog.commitEdit (method) | `frames_dialog.Dialog.commit_edit` | ported |  |
+| FrameSelector.js:2767 | Dialog.commitPendingEdits (method) | `frames_dialog.Dialog.commit_pending_edits` | ported |  |
+| FrameSelector.js:2781 | Dialog.buildFilmstrip (method) | `frames_dialog.Dialog.build_filmstrip` | ported |  |
+| FrameSelector.js:2830 | Dialog.armLoader (method) | `frames_filmstrip.ThumbLoader.arm_loader` | ported |  |
+| FrameSelector.js:2847 | Dialog.mayLoad (method) | `frames_filmstrip.ThumbLoader.may_load` | ported |  |
+| FrameSelector.js:2853 | Dialog.rebuildQueue (method) | `frames_filmstrip.ThumbLoader.rebuild_queue` | ported |  |
+| FrameSelector.js:2882 | Dialog.queueOtherChannels (method) | `frames_filmstrip.ThumbLoader.queue_other_channels` | ported |  |
+| FrameSelector.js:2902 | Dialog.loaderTick (method) | `frames_filmstrip.ThumbLoader.loader_tick` | ported |  |
+| FrameSelector.js:2949 | Dialog.storeThumb (method) | `frames_filmstrip.ThumbLoader.store_thumb` | ported |  |
+| FrameSelector.js:2967 | Dialog.pushThumbs (method) | `frames_filmstrip.ThumbLoader.push_thumbs` | ported |  |
+| FrameSelector.js:2987 | Dialog.syncStrip (method) | `frames_filmstrip.ThumbLoader.sync_strip` | ported |  |
+| FrameSelector.js:3000 | Dialog.buildActionRow (method) | `frames_dialog.Dialog.build_action_row` | ported |  |
 | FrameSelector.js:3072 | Dialog.editable (method) | `frames_state.editable` | ported |  |
 | FrameSelector.js:3078 | Dialog.channel (method) | `frames_state.channel_of` | ported |  |
-| FrameSelector.js:3083 | Dialog.toggleOverride (method) | planned: `frames_dialog.Dialog.toggle_override` | pending |  |
-| FrameSelector.js:3105 | Dialog.fillChannels (method) | planned: `frames_dialog.Dialog.fill_channels` | pending |  |
-| FrameSelector.js:3121 | Dialog.fillFrames (method) | planned: `frames_dialog.Dialog.fill_frames` | pending |  |
-| FrameSelector.js:3142 | Dialog.fillRow (method) | planned: `frames_dialog.Dialog.fill_row` | pending |  |
+| FrameSelector.js:3083 | Dialog.toggleOverride (method) | `frames_dialog.Dialog.toggle_override` | ported |  |
+| FrameSelector.js:3105 | Dialog.fillChannels (method) | `frames_dialog.Dialog.fill_channels` | ported |  |
+| FrameSelector.js:3121 | Dialog.fillFrames (method) | `frames_dialog.Dialog.fill_frames` | ported |  |
+| FrameSelector.js:3142 | Dialog.fillRow (method) | `frames_dialog.Dialog.fill_row` | ported |  |
 | FrameSelector.js:3167 | Dialog.flagLine (method) | `frames_state.flag_line` | ported |  |
-| FrameSelector.js:3182 | Dialog.syncCriteria (method) | planned: `frames_dialog.Dialog.sync_criteria` | pending |  |
-| FrameSelector.js:3198 | Dialog.syncKnobs (method) | planned: `frames_dialog.Dialog.sync_knobs` | pending |  |
+| FrameSelector.js:3182 | Dialog.syncCriteria (method) | `frames_dialog.Dialog.sync_criteria` | ported |  |
+| FrameSelector.js:3198 | Dialog.syncKnobs (method) | `frames_dialog.Dialog.sync_knobs` | ported |  |
 | FrameSelector.js:3237 | Dialog.committableRows (method) | `frames_state.committable_rows` | ported |  |
-| FrameSelector.js:3255 | Dialog.refresh (method) | planned: `frames_dialog.Dialog.refresh` | pending |  |
+| FrameSelector.js:3255 | Dialog.refresh (method) | `frames_dialog.Dialog.refresh` | ported |  |
 | FrameSelector.js:3286 | Dialog.recomputeAll (method) | `frames_state.recompute_all` | ported |  |
 | FrameSelector.js:3306 | Dialog.summaryText (method) | `frames_state.summary_text` | ported |  |
-| FrameSelector.js:3322 | Dialog.syncActions (method) | planned: `frames_dialog.Dialog.sync_actions` | pending |  |
+| FrameSelector.js:3322 | Dialog.syncActions (method) | `frames_dialog.Dialog.sync_actions` | ported |  |
 | FrameSelector.js:3337 | Dialog.destinationText (method) | `frames_state.destination_text` | ported |  |
 | FrameSelector.js:3354 | Dialog.allPaths (method) | `frames_state.all_paths` | ported |  |
 | FrameSelector.js:3370 | Dialog.destinationIsSource (method) | `frames_state.destination_is_source` | ported |  |
-| FrameSelector.js:3380 | Dialog.release (method) | planned: `frames_dialog.Dialog.release` | pending |  |
-| FrameSelector.js:3394 | Dialog.stopLoader (method) | planned: `frames_dialog.Dialog.stop_loader` | pending |  |
-| FrameSelector.js:3411 | Dialog.detachHandlers (method) | planned: `frames_dialog.Dialog.detach_handlers` | pending |  |
+| FrameSelector.js:3380 | Dialog.release (method) | `frames_dialog.Dialog.release` | ported |  |
+| FrameSelector.js:3394 | Dialog.stopLoader (method) | `frames_dialog.Dialog.stop_loader` | ported |  |
+| FrameSelector.js:3411 | Dialog.detachHandlers (method) | `frames_dialog.Dialog.detach_handlers` | ported |  |
 | FrameSelector.js:3433 | Dialog.copyingOut (method) | `frames_state.copying_out` | ported |  |
 | FrameSelector.js:3439 | Dialog.approvedPaths (method) | `frames_state.approved_paths` | ported |  |
-| FrameSelector.js:3461 | Dialog.reportOutcome (method) | planned: `frames_dialog_actions` | pending |  |
-| FrameSelector.js:3479 | Dialog.commitCopy (method) | planned: `frames_dialog_actions` | pending |  |
-| FrameSelector.js:3510 | Dialog.buildMasterFlatControls (method) | planned: `frames_dialog.Dialog.build_master_flat_controls` | pending |  |
-| FrameSelector.js:3569 | Dialog.setMasterFlatSettings (method) | planned: `frames_dialog.Dialog.set_master_flat_settings` | pending |  |
+| FrameSelector.js:3461 | Dialog.reportOutcome (method) | `frames_dialog_actions.DialogActions.report_outcome` | ported |  |
+| FrameSelector.js:3479 | Dialog.commitCopy (method) | `frames_dialog_actions.DialogActions.commit_copy` | ported |  |
+| FrameSelector.js:3510 | Dialog.buildMasterFlatControls (method) | `frames_dialog.Dialog.build_master_flat_controls` | ported |  |
+| FrameSelector.js:3569 | Dialog.setMasterFlatSettings (method) | `frames_dialog.Dialog.set_master_flat_settings` | ported |  |
 | FrameSelector.js:3578 | Dialog.masterFlatsMode (method) | `frames_state.master_flats_mode` | ported |  |
-| FrameSelector.js:3585 | Dialog.syncMasterFlatControls (method) | planned: `frames_dialog.Dialog.sync_master_flat_controls` | pending |  |
+| FrameSelector.js:3585 | Dialog.syncMasterFlatControls (method) | `frames_dialog.Dialog.sync_master_flat_controls` | ported |  |
 | FrameSelector.js:3606 | Dialog.importing (method) | `frames_state.importing` | ported |  |
-| FrameSelector.js:3615 | Dialog.commitImport (method) | planned: `frames_dialog_actions` | pending |  |
+| FrameSelector.js:3615 | Dialog.commitImport (method) | `frames_dialog_actions.DialogActions.commit_import` | ported |  |
 | FrameSelector.js:3732 | Dialog.matchedFlats (method) | `frames_state.matched_flats` | ported |  |
-| FrameSelector.js:3762 | Dialog.commit (method) | planned: `frames_dialog_actions` | pending |  |
-| FrameSelector.js:3829 | Dialog.layOutCriteria (method) | planned: `frames_dialog.Dialog.lay_out_criteria` | pending |  |
-| FrameSelector.js:3865 | Dialog.layOut (method) | planned: `frames_dialog.Dialog.lay_out` | pending |  |
+| FrameSelector.js:3762 | Dialog.commit (method) | `frames_dialog_actions.DialogActions.commit` | ported |  |
+| FrameSelector.js:3829 | Dialog.layOutCriteria (method) | `frames_dialog.Dialog.lay_out_criteria` | ported |  |
+| FrameSelector.js:3865 | Dialog.layOut (method) | `frames_dialog.Dialog.lay_out` | ported |  |
 | FrameSelector.js:3954-3981 | FrameSelector.runOutputRoutine | `frames_copy.run_output_routine` | ported |  |
 | FrameSelector.js:3994-4014 | FrameSelector.convertInPlace | `frames_copy.convert_in_place` | ported |  |
 | FrameSelector.js:4020-4051 | FrameSelector.convertGroup | - | not ported | no conversion of kept frames after a delete (deviation 10) |
@@ -233,14 +231,14 @@ are remembered between runs (deviation 12).
 | FrameSelector.js:4499 | Plot.drawLine (method) | `frames_plot_widget._line_shapes` | ported |  |
 | FrameSelector.js:4522 | Plot.drawMarkers (method) | `frames_plot_widget._marker_shapes` | ported |  |
 | FrameSelector.js:4547 | Plot.drawRing (method) | `frames_plot_widget._ring_shapes` | ported |  |
-| FrameSelector.js:4567 | Filmstrip.constructor (method) | planned: `frames_filmstrip.Filmstrip.__init__` | pending |  |
-| FrameSelector.js:4596 | Filmstrip.setMetric (method) | planned: `frames_filmstrip.Filmstrip.set_metric` | pending |  |
-| FrameSelector.js:4602 | Filmstrip.setRows (method) | planned: `frames_filmstrip.Filmstrip.set_rows` | pending |  |
-| FrameSelector.js:4612 | Filmstrip.page (method) | planned: `frames_filmstrip.Filmstrip.page` | pending |  |
-| FrameSelector.js:4620 | Filmstrip.indexAt (method) | planned: `frames_filmstrip.Filmstrip.index_at` | pending |  |
-| FrameSelector.js:4625 | Filmstrip.paintTile (method) | planned: `frames_filmstrip.Filmstrip.paint_tile` | pending |  |
-| FrameSelector.js:4669 | Filmstrip.paint (method) | planned: `frames_filmstrip.Filmstrip.paint` | pending |  |
-| FrameSelector.js:4686 | Filmstrip.release (method) | planned: `frames_filmstrip.Filmstrip.release` | pending |  |
+| FrameSelector.js:4567 | Filmstrip.constructor (method) | `frames_filmstrip.Filmstrip.__init__` | ported |  |
+| FrameSelector.js:4596 | Filmstrip.setMetric (method) | `frames_filmstrip.Filmstrip.set_metric` | ported |  |
+| FrameSelector.js:4602 | Filmstrip.setRows (method) | `frames_filmstrip.Filmstrip.set_rows` | ported |  |
+| FrameSelector.js:4612 | Filmstrip.page (method) | `frames_filmstrip.Filmstrip.page` | ported |  |
+| FrameSelector.js:4620 | Filmstrip.indexAt (method) | `frames_filmstrip.Filmstrip.index_at` | ported |  |
+| FrameSelector.js:4625 | Filmstrip.paintTile (method) | `frames_filmstrip.Filmstrip._paint_tile` | ported |  |
+| FrameSelector.js:4669 | Filmstrip.paint (method) | `frames_filmstrip.Filmstrip.paint` | ported |  |
+| FrameSelector.js:4686 | Filmstrip.release (method) | `frames_filmstrip.Filmstrip.release` | ported |  |
 | FrameSelector.js:4704-4704 | FrameSelector.SCAN_NAME_CHARS | `frames_ui.SCAN_NAME_CHARS` | ported |  |
 | FrameSelector.js:4708 | ScanWindow.constructor (method) | `frames_ui.ScanWindow.__init__` | ported |  |
 | FrameSelector.js:4809 | ScanWindow.report (method) | `frames_ui.ScanWindow.report` | ported |  |
@@ -251,13 +249,13 @@ are remembered between runs (deviation 12).
 | FrameSelector.js:4895-4898 | FrameSelector.tell | `frames_ui.tell` | ported |  |
 | FrameSelector.js:4900-4904 | FrameSelector.ask | `frames_ui.ask` | ported |  |
 | FrameSelector.js:4916-4936 | FrameSelector.withProgress | `frames_ui.with_progress` | ported |  |
-| FrameSelector.js:4942-4961 | FrameSelector.detectCard | planned: `asiair_import` | pending |  |
-| FrameSelector.js:4967-4990 | FrameSelector.readCard | planned: `asiair_import` | pending |  |
-| FrameSelector.js:4993-5002 | FrameSelector.pickNight | `night_dialog_tk.pick_night` | ported |  |
-| FrameSelector.js:5011-5055 | FrameSelector.offerCard | planned: `asiair_import` | pending |  |
-| FrameSelector.js:5057-5097 | FrameSelector.main | planned: `frames_main` | pending |  |
-| FrameSelector.js:5106-5120 | FrameSelector.CORE_CHECK | planned: `Loom/loom_frame_selector.py` | pending | Siril version check (deviation 14) |
-| FrameSelector.js:5122-5140 | main | planned: `frames_main` | pending |  |
+| FrameSelector.js:4942-4961 | FrameSelector.detectCard | `frames_main.detect_card` | ported |  |
+| FrameSelector.js:4967-4990 | FrameSelector.readCard | `frames_main.read_card` | ported |  |
+| FrameSelector.js:4993-5002 | FrameSelector.pickNight | `frames_main.pick_night` | ported |  |
+| FrameSelector.js:5011-5055 | FrameSelector.offerCard | `frames_main.offer_card` | ported |  |
+| FrameSelector.js:5057-5097 | FrameSelector.main | `frames_main.main` | ported |  |
+| FrameSelector.js:5106-5120 | FrameSelector.CORE_CHECK | `frames_main.check_siril` | replaced | Siril version check (deviation 14) |
+| FrameSelector.js:5122-5140 | main | `Loom/loom_frame_selector.py` (`main`) | ported |  |
 
 ### lib/Frames.js
 
@@ -532,7 +530,7 @@ are remembered between runs (deviation 12).
 | MasterFlat.js:1050-1050 | MasterFlat.SCAN_DEPTH | `master_flat.SCAN_DEPTH` | ported |  |
 | MasterFlat.js:1052-1070 | masterFlatScanFolderEntry | `master_flat.master_flat_scan_folder_entry` | ported |  |
 | MasterFlat.js:1072-1082 | MasterFlat.scanFolder | `master_flat.scan_folder` | ported |  |
-| MasterFlat.js:1088-1398 | MasterFlat.engine | planned: `master_flat_siril` | pending | built on Siril calibrate and stack (deviation 9) |
+| MasterFlat.js:1088-1398 | MasterFlat.engine | `master_flat_siril.SirilMasterFlatEngine` | replaced | built on Siril calibrate and stack (deviation 9) |
 
 ### lib/NightDialog.js
 
@@ -635,8 +633,8 @@ Each entry says what differs, why, and what was checked.
     remembered once and applied to every channel that is opened next; PixInsight keeps them per channel for the session
     only. A channel's `k` still counts as edited only when it was typed by hand.
 13. **Logs and cache.** Deletion logs go to `~/Siril/Loom-frame-selector/` (PixInsight: `~/PixInsight/Loom-frame-selector/`).
-    The measurement and digest tables, previews, work folders and cached master darks live in the Loom cache folder of
-    the Siril scripts. Import logs go to the system temporary folder under `Loom-import-logs`, as in PixInsight. The
+    The measurement and digest tables, previews, work folders and cached master darks live in a `frame-selector` folder inside
+    the Loom cache folder of the Siril scripts. Import logs go to the system temporary folder under `Loom-import-logs`, as in PixInsight. The
     measurement table is keyed by version, measurement configuration (which includes Siril's version) and content
     digest, with size and modification time as the quick check, as in PixInsight; its version string is that of the
     Siril port, so a PixInsight cache is never reused.

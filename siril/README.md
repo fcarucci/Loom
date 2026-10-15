@@ -321,30 +321,32 @@ for each channel on that night, and deletes the frames below it or copies the re
 a night straight off an ASIAIR card and turn its flats into master flats. The numbers come from Siril itself (see
 "Differences from the PixInsight Frame Selector" below), not from PixInsight.
 
-Requirements: Siril 1.4 with Python scripting, and the Install steps below (the script sits next to the other Loom
-scripts and needs no extra setup). It has not been run inside Siril's own user interface: the logic is tested with a
-stand-in for the Siril API and, for the parts that need Siril, against headless `siril-cli` 1.4.4 in the Docker image.
+Requirements: Siril 1.4 with Python scripting (the script also installs `ttkthemes` on its first run), and the Install
+steps below (the script sits next to the other Loom scripts and needs no extra setup). It has not been run inside
+Siril's own user interface: the logic is tested with a stand-in for the Siril API and, for the parts that need Siril,
+against headless `siril-cli` 1.4.4 in the Docker image.
 
 ### Using it
 
 1. Run **Scripts, Loom, loom_frame_selector.py**. If an ASIAIR card is mounted the script offers it first (see below);
-   decline and it asks for a folder instead. Reading the folder can be stopped, and a read writes nothing but the cache.
+   cancel the night picker and it asks for a folder instead. Reading the folder can be stopped, and a read writes
+   nothing but the cache. Run ignores a second click while the first is still working.
 2. Frames are grouped by their raw `FILTER` string, one channel per filter. Frames with no readable filter are shown but
    never rejected automatically. A channel whose frames differ in exposure, binning, geometry or calibration state is
    flagged as not comparable; that is a warning, and Run still acts on it. Formats are those Siril reads: FITS
    (including compressed `.fz`) and XISF.
-3. Each channel has a **preset**: Lenient, Balanced or Strict, which set `k`, the width of the cut in normalised MADs, to
-   3.0, 2.5 or 2.0. `k` can be edited, and each channel has an on/off switch. Below 10 valid measurements in a channel
-   the cut does not run. All the measurements rank the frames (PSF SNR most heavily), but by default only FWHM,
+3. Each channel has a **preset**: Lenient, Balanced or Strict, which set `k`, the width of the cut in normalised MADs,
+   to 3.0, 2.5 or 2.0. `k` can be edited, and each channel has an on/off switch. Below 10 valid measurements in a
+   channel the cut does not run. All the measurements rank the frames (PSF SNR most heavily), but by default only FWHM,
    eccentricity and star count reject; PSF SNR can be turned on per channel.
 4. Each criterion (`FWHM <=`, `ecc <=`, `stars >=`, `PSF SNR >=`) has a tick box and a limit. An untouched limit is
    automatic: greyed and in italics, it shows the cut `k` gives on this night. Type a number to replace it for that
    metric only (clear it to go back to automatic); it stays when the preset or `k` changes. Untick a criterion to switch
    it off. The dialog shows how many frames Run will keep.
 5. Review: the **table** (one row per frame, named by what differs, the full path as its tooltip, a red cross on frames
-   Run leaves out and the rejecting measurement in red), the **plot** of the channel's measurement in frame order with the
-   keep band (click a point to select its row), the **filmstrip** of thumbnails (selected one highlighted, rejected ones
-   crossed, a chooser for how many are shown, grey tiles not read yet, `!` for unreadable), and a **1:1 preview**
+   Run leaves out and the rejecting measurement in red), the **plot** of the channel's measurement in frame order with
+   the keep band (click a point to select its row), the **filmstrip** of thumbnails (selected one highlighted, rejected
+   ones crossed, a chooser for how many are shown, grey tiles not read yet, `!` for unreadable), and a **1:1 preview**
    (double click for the whole frame, drag, scroll bars or arrow keys, Shift for a page; the view stays put when the
    frame changes). **Override** a verdict with Space or the button under the preview: it survives a change of `k`, is
    counted separately and logged, and lasts for the session.
@@ -385,17 +387,19 @@ Siril's own calibration and stacking, and written to `<destination>/Flat/masterF
 added when a filter was shot at two binnings; a master from an earlier import is never overwritten, the new one takes
 `_2`). The master is checked before the raw flat copies are deleted, and only those copies are deleted. A filter with no
 matching dark, fewer than two flats, or a failed master keeps its raw flats, and the closing message says which and why.
-Cancel is checked between steps. Every import writes a log with the copies and any failures and, for master flats, the
-flats read, the darks found and the plan for each filter; its path is shown in the final message.
+Cancel is checked between steps; if the master-flat step fails, the closing message says which masters were finished and
+where the raw flats were kept. Cancelling the copy stops it after the file being written. Every import writes a log with
+the copies and any failures and, for master flats, the flats read, the darks found and the plan for each filter; its
+path is shown in the final message.
 
 ### What is remembered, and where
 
 - Options are saved in one file in Siril's configuration folder (`loomsiril-frame-selector.json`): the source and
-  destination folders, the darks folder, the Combine flats box, the preset, `k` (only when you typed it; otherwise the preset decides it next time), the score weights, and the
-  criteria with any typed limits.
-- Measurements and file digests are cached in the Loom cache folder (the same one the Loom pipeline uses; set `cacheDir`
-  to move it), so reopening a folder is quick and a changed frame is measured again. Previews, the work folders of a
-  measurement or a master flat, and cached master darks are kept there too.
+  destination folders, the darks folder, the Combine flats box, the preset, `k` (only when you typed it; otherwise the
+  preset decides it next time), the score weights, and the criteria with any typed limits.
+- Measurements and file digests are cached in a `frame-selector` folder inside the Loom cache folder (the same one the
+  Loom pipeline uses; set `cacheDir` to move it), so reopening a folder is quick and a changed frame is measured again.
+  Previews, the work folders of a measurement or a master flat, and cached master darks are kept there too.
 - Deletion logs are written to `~/Siril/Loom-frame-selector/` before any file is removed. Import logs go to the system
   temporary folder, in `Loom-import-logs`.
 
@@ -407,7 +411,8 @@ that ports it and every deviation with its reason. In short:
 - **Measurements come from Siril** (its star registration and image statistics, the numbers its Plot tab shows), not
   from SubframeSelector. PSF SNR becomes the median star amplitude over the background noise; eccentricity is
   derived from Siril's roundness; the SNR estimate is dropped; the star count is capped near 2000 by Siril.
-- **Altitude comes from the header** (`AIRMASS`, `CENTALT`, `OBJCTALT`, else computed from the coordinates, time and site).
+- **Altitude comes from the header** (`AIRMASS`, `CENTALT`, `OBJCTALT`, else computed from the coordinates, time and
+  site).
 - **Copies and imports are FITS**, not XISF, and an import is verified by digest. Master flats are built by Siril and
   named `.fit`; Siril has no "equalize fluxes" normalisation, so rejection is not flux-equalised.
 - **Delete in place does not convert the kept frames** to another format.
@@ -435,8 +440,8 @@ that ports it and every deviation with its reason. In short:
    `loom_preprocess.py` (the pipeline), `loom_fly_through.py` (Fly-Through) and `loom_frame_selector.py` (Frame
    Selector) appear under Scripts, Loom.
 3. Run one of them. The script finds the `loomsiril` package in the clone it sits in, so no environment variable
-   is needed. On first run it installs `numpy`, `scipy` and `tifffile` into Siril's Python environment; that step
-   needs the network.
+   is needed. On first run it installs `numpy`, `scipy` and `tifffile` (and `ttkthemes` for the Frame Selector) into Siril's
+   Python environment; that step needs the network.
 
 To update, run `git pull` in the clone and restart the script. Siril only syncs its own scripts repository; it does
 not pull this one.
