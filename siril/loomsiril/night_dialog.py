@@ -21,18 +21,24 @@ Semantics kept exactly:
 
 * A JS object used as a map has its keys as strings. ``flatsBySession`` is keyed by the session index as text, so a
   lookup by index and a lookup by the string of that index agree, and the survey holds string keys like the JS does.
-* ``surveyOf`` tracks the targets it has seen in a plain JS object (``seen = {}``), so a target whose name is a
-  property every plain object inherits (``constructor``, ``toString``, ...) is never listed as a target. The
-  picker's tree and a card scan therefore omit such a target from ``targets`` while ``nights`` still holds it.
-  ``_PLAIN_OBJECT_KEYS`` lists those names.
-* ``recentNights`` takes ``k || RECENT``: a zero, a missing or a false ``k`` gives the default, and a negative ``k``
-  slices from the end as ``Array.prototype.slice`` does.
+* Deviation from the JavaScript, by decision: ``surveyOf`` tracks the targets it has seen in a set, so every target
+  name is listed, including names that a plain JS object inherits (``constructor``, ``toString``, ``__proto__``).
+  The JS tracks them in a plain object (``seen = {}``), where ``"constructor" in seen`` is already true, so such a
+  target is dropped from ``targets`` (its nights stay in ``nights``). Dropping a target from the picker's list hides
+  its nights from the observer, so the port does not reproduce that. The oracle case
+  ``survey/target_names_of_object_properties`` records the JS result; the replay expects the port's list instead
+  (see the test module).
+* ``recentNights`` takes ``k || RECENT``: a zero, a missing, a false or a NaN ``k`` gives the default. A fractional
+  ``k`` is truncated toward zero, and a negative ``k`` slices from the end, as ``Array.prototype.slice`` does; an
+  infinite ``k`` takes every night.
 * Sorting is stable, as the JS sort is; the comparisons are plain string comparisons on ASCII dates and spans.
 * ``String(n)`` for a count, and ``String(x)`` for any value printed, come from ``loomsiril.jsmath.js_string``.
 """
 
 from __future__ import annotations
 
+import math
+import sys
 from typing import Any, Optional
 
 from loomsiril import asiair_names as A
@@ -45,11 +51,6 @@ Row = dict[str, str]
 #: How many nights the picker shows for a target (NightDialog.js 106).
 RECENT = 3
 
-#: The names every plain JS object inherits from Object.prototype. ``key in {}`` is true for each of them.
-_PLAIN_OBJECT_KEYS = frozenset({
-    "constructor", "__proto__", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toString",
-    "valueOf", "toLocaleString", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
-})
 
 
 def clock_of(stamp: str) -> str:
@@ -112,7 +113,7 @@ def survey_of(scan: dict[str, Any], gap_hours: Optional[float] = None) -> Survey
     seen: set[str] = set()
     for n in nights:
         t = n["target"]
-        if t in seen or t in _PLAIN_OBJECT_KEYS:
+        if t in seen:
             continue
         seen.add(t)
         targets.append(t)
@@ -129,7 +130,7 @@ def survey_of(scan: dict[str, Any], gap_hours: Optional[float] = None) -> Survey
 def recent_nights(survey: Survey, target: Any, k: Optional[int] = None) -> list[Night]:
     """A target's most recent ``k`` nights, newest first (NightDialog.js 107-113).
 
-    ``k`` falls back to :data:`RECENT` when it is missing or falsy, as ``k || RECENT`` does.
+    ``k`` falls back to :data:`RECENT` when it is missing, falsy or NaN, as ``k || RECENT`` does.
     """
     mine = [n for n in survey["nights"] if n["target"] == target]
 
@@ -138,7 +139,16 @@ def recent_nights(survey: Survey, target: Any, k: Optional[int] = None) -> list[
         return r["date"] + " " + r["span"]
 
     mine.sort(key=key, reverse=True)
-    return mine[: (k if k else RECENT)]
+    return mine[: _slice_end(k)]
+
+
+def _slice_end(k: Any) -> int:
+    """The ``end`` that ``slice(0, k || RECENT)`` uses: NaN and falsy values give RECENT, fractions truncate toward zero."""
+    if not k or (isinstance(k, float) and math.isnan(k)):
+        return RECENT
+    if isinstance(k, float) and math.isinf(k):
+        return sys.maxsize if k > 0 else -sys.maxsize
+    return int(k)
 
 
 def flats_for_night(survey: Survey, night: Night) -> list[Any]:

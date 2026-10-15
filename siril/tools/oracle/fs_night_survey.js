@@ -182,6 +182,10 @@ module.exports = function( js )
    pure( "recent_nights/zero_falls_back_to_recent", "recentNights", [ SURVEY, "M42", 0 ] );
    pure( "recent_nights/two_of_two_targets_nights", "recentNights", [ SURVEY, "IC 1396A", null ] );
    pure( "recent_nights/larger_than_count", "recentNights", [ SURVEY, "IC 1396A", 9 ] );
+   pure( "recent_nights/nan_k_falls_back", "recentNights", [ SURVEY, "M42", NaN ] );
+   pure( "recent_nights/fractional_k_truncates", "recentNights", [ SURVEY, "M42", 2.5 ] );
+   pure( "recent_nights/negative_fraction_truncates", "recentNights", [ SURVEY, "M42", -1.5 ] );
+   pure( "recent_nights/infinite_k_takes_all", "recentNights", [ SURVEY, "M42", Infinity ] );
    pure( "recent_nights/absent_target", "recentNights", [ SURVEY, "NGC 7000", null ] );
    pure( "recent_nights/empty_survey", "recentNights", [ survey_empty(), "M42", null ] );
 
