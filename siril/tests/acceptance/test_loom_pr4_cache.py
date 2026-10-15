@@ -216,13 +216,17 @@ def test_tags_and_derived_source_keys_match_loom() -> None:
 
 def test_clean_white_balance_key_matches_loom_and_checks_inputs() -> None:
     keys = {"R": "kr", "G": "kg", "B": "kb"}
-    assert cache.clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro") == "9796cdb3c68916426da9b40a92b50ce38ee02ea2"
+    # Loom's key text: cleanwb|R|G|B + crop + filters JSON + instrument + |ref:<reference key>
+    assert cache.clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", "kref") == \
+        "2eed33ed3e9cf282ffe1556c86feb94c25cb219f"
     filters = {"R": "Astronomik Red", "G": "Astronomik Green"}
-    assert cache.clean_white_balance_key(keys, COMMON, filters, None) == "e9554532c1c07104ba8741be01f207853e25c0e1"
+    assert cache.clean_white_balance_key(keys, COMMON, filters, None, "kref") == "82a622958346e80b2895f0862144ce691d99d90e"
+    assert cache.clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", "kref2") != \
+        cache.clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", "kref")
     for missing in ("R", "G", "B"):
         broken = {**keys, missing: ""}
         with pytest.raises(ValueError, match="no pre-correction cache key for " + missing):
-            cache.clean_white_balance_key(broken, COMMON, {}, "x")
+            cache.clean_white_balance_key(broken, COMMON, {}, "x", "kref")
 
 
 # ---------------------------------------------------------------- hit resolution
