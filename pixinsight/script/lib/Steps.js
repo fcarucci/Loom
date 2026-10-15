@@ -1458,6 +1458,10 @@ Steps.linearFit = function( view, referenceView )
  * leaving Ha with 23 levels of 16-bit range across the nebula -- which is
  * why NarrowbandNormalization posterised, and why the palette went green.
  */
+/*
+ * bandwidthNm is one number for all three channels, or { R, G, B } when the
+ * channels' lines differ in width (a palette from a colour master).
+ */
 Steps.spccNarrowband = function( view, palette, bandwidthNm )
 {
    Util.reportStage( "narrowband SPCC \u2192 " + ( palette || view.id ) );
@@ -1465,23 +1469,31 @@ Steps.spccNarrowband = function( view, palette, bandwidthNm )
    if ( wl == null )
       throw new Error( "No emission-line mapping for palette " + palette );
 
-   var bw = parseFloat( bandwidthNm );
-   if ( !isFinite( bw ) || bw <= 0 )
-      bw = 3.0;   // SPCC's own default
+   // One number for all three channels, or { R, G, B }.
+   function bandwidthOf( v )
+   {
+      var b = parseFloat( v );
+      return ( !isFinite( b ) || b <= 0 ) ? 3.0 : b;   // SPCC's own default
+   }
+   var per = ( bandwidthNm != null && typeof bandwidthNm == "object" );
+   var bwR = bandwidthOf( per ? bandwidthNm.R : bandwidthNm ),
+       bwG = bandwidthOf( per ? bandwidthNm.G : bandwidthNm ),
+       bwB = bandwidthOf( per ? bandwidthNm.B : bandwidthNm );
 
    Util.log( "spcc", palette + " narrowband: R=" + wl[0].channel + " " + wl[0].nm +
                      "nm, G=" + wl[1].channel + " " + wl[1].nm +
                      "nm, B=" + wl[2].channel + " " + wl[2].nm +
-                     "nm, bandwidth " + bw + "nm" );
+                     ( per ? "nm, bandwidths R " + bwR + "nm, G " + bwG + "nm, B " + bwB + "nm"
+                           : "nm, bandwidth " + bwR + "nm" ) );
 
    var P = new SpectrophotometricColorCalibration;
    P.applyCalibration = true;
    P.narrowbandMode = true;
    P.neutralizeBackground = true;
 
-   P.redFilterWavelength   = wl[0].nm;   P.redFilterBandwidth   = bw;
-   P.greenFilterWavelength = wl[1].nm;   P.greenFilterBandwidth = bw;
-   P.blueFilterWavelength  = wl[2].nm;   P.blueFilterBandwidth  = bw;
+   P.redFilterWavelength   = wl[0].nm;   P.redFilterBandwidth   = bwR;
+   P.greenFilterWavelength = wl[1].nm;   P.greenFilterBandwidth = bwG;
+   P.blueFilterWavelength  = wl[2].nm;   P.blueFilterBandwidth  = bwB;
 
    P.generateGraphs = false;
    P.generateStarMaps = false;

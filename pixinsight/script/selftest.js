@@ -22198,10 +22198,269 @@ function runPipeTests()
              Pipeline.oscKindProblems( cfg( { OSC: "/m/a.xisf" } ),
                 infoOf( { OSC: { filter: "UV/IR Cut", path: "/m/a.xisf", width: 9, height: 9 } } ) ),
              [ "could not read the channel count of /m/a.xisf" ] );
-      check( "oscSensorProblems is empty for now", Pipeline.oscSensorProblems( cfg( { OSC: "/m/a" } ) ), [] );
+      check( "oscSensorProblems asks for the sensor when a colour master has none chosen",
+             Pipeline.oscSensorProblems( cfg( { OSC: "/m/a" } ) ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
       check( "oscInfoOf gives null for a missing file",
              Pipeline.oscInfoOf( cfg( { OSC: "/m/definitely/not/here.xisf" } ) )( "OSC" ), null );
       check( "oscInfoOf gives null for an empty slot", Pipeline.oscInfoOf( cfg( {} ) )( "OSC" ), null );
+   } )();
+   } if ( testGroup( "osc.calibration" ) ) {
+   ( function()
+   {
+      var sensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+      function oscConfig()
+      {
+         var c = Config.defaults();
+         c.paths.OSC = "/m/a.xisf";
+         c.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
+         return c;
+      }
+
+      // Mono runs: the palette and composite stage keys, captured through a stubbed processChain.
+      function chainKeys( build )
+      {
+         var got = null, realChain = Pipeline.processChain, realAbort = Pipeline.checkAbort,
+             realFree = Util.freeWindowId, realLog = Util.log;
+         Pipeline.processChain = function( holder, chain ) { got = chain; };
+         Pipeline.checkAbort = function() {};
+         Util.freeWindowId = function( id ) { return id; };
+         Util.log = function() {};
+         try { build(); }
+         finally { Pipeline.processChain = realChain; Pipeline.checkAbort = realAbort;
+                   Util.freeWindowId = realFree; Util.log = realLog; }
+         var out = {};
+         got.forEach( function( s ) { out[s.stage] = s.key; } );
+         return out;
+      }
+      var monoCommon = { x0: 0, y0: 0, x1: 100, y1: 100 };
+      var monoChans = {};
+      [ "R", "G", "B", "H", "O", "S" ].forEach( function( k )
+      {
+         monoChans[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, window: null };
+      } );
+      var monoCfg = Config.defaults();
+      monoCfg.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      var reg = { add: function() {} };
+      var monoPalette = chainKeys( function() { Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon ); } );
+      var monoRGB = chainKeys( function()
+      {
+         Pipeline.buildRGB( monoChans, monoCfg, reg, monoCommon, "ZWO ASI2600MM", null );
+      } );
+      check( "mono palette keys are unchanged", [ monoPalette.paletteCombine, monoPalette.paletteSpcc ],
+             [ "ecac9209a41585a1bd324e8a4e4f9a42a1f024ef", "03a5d59dae3633c0ebbc667d6d3c30f7c675b886" ] );
+      check( "mono composite keys are unchanged",
+             [ monoRGB.spfcRGB, monoRGB.spccRGB ], [ "63e48e287b8b762d0d93b8d9fb2a1d8934cfe40e", "5f7e0d0d752c33e61c213075ded9b931f3c99f67" ] );
+
+      // The sensor curves and Ideal QE.
+      var c = oscConfig();
+      check( "oscSpfcParams uses the sensor curve and Ideal QE",
+             Pipeline.oscSpfcParams( "G", c ),
+             { channel: "G", filter: "Sony Color Sensor G", qe: "Ideal QE curve" } );
+      check( "oscSensorProblems missing curve",
+             Pipeline.oscSensorProblems( c, function( name ) { return name != "Sony Color Sensor B"; } ),
+             [ "sensor colour filter curve 'Sony Color Sensor B' is not in filters.xspd" ] );
+      var empty = Config.defaults(); empty.paths.OSC = "/m/a.xisf";
+      check( "oscSensorProblems sensor not chosen",
+             Pipeline.oscSensorProblems( empty, function() { return true; } ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+      var partial = oscConfig(); partial.oscSensor.B = "";
+      check( "oscSensorProblems one sensor curve not chosen",
+             Pipeline.oscSensorProblems( partial, function() { return true; } ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+      check( "oscSensorProblems all curves present", Pipeline.oscSensorProblems( c, function() { return true; } ), [] );
+      var monoRun = Config.defaults(); monoRun.paths.L = "/m/l.xisf";
+      check( "oscSensorProblems empty for a mono run",
+             Pipeline.oscSensorProblems( monoRun, function() { return false; } ), [] );
+      var nbOnly = Config.defaults(); nbOnly.paths.OSCNB = "/m/n.xisf"; nbOnly.oscKinds = { OSCNB: "dualband" };
+      check( "oscSensorProblems empty for an OSCNB-only run",
+             Pipeline.oscSensorProblems( nbOnly, function() { return false; } ), [] );
+      var seenCurves = [];
+      Pipeline.oscSensorProblems( c, function( name, ch ) { seenCurves.push( ch + ":" + name ); return true; } );
+      check( "oscSensorProblems asks for each curve by channel", seenCurves,
+             [ "R:Sony Color Sensor R", "G:Sony Color Sensor G", "B:Sony Color Sensor B" ] );
+
+      // The spfc stage and its runner.
+      var a = Pipeline.buildStageKeys( "src-G", { solve: {}, spfc: Pipeline.oscSpfcParams( "G", c ), mgc: { marsFiles: [] },
+                                                  graxpert: { enabled: false } } );
+      c.oscSensor.G = "Other Color Sensor G";
+      var b = Pipeline.buildStageKeys( "src-G", { solve: {}, spfc: Pipeline.oscSpfcParams( "G", c ), mgc: { marsFiles: [] },
+                                                  graxpert: { enabled: false } } );
+      check( "spfc key changes with the sensor", a[1].key != b[1].key, true );
+      var realCurve = Steps.deviceCurveForImage, realMgc = Steps.configuredMGC, realStudio = Steps.studioAvailable;
+      Steps.deviceCurveForImage = function( i ) { return { name: "QE:" + i }; };
+      Steps.configuredMGC = function() { return null; };
+      Steps.studioAvailable = function() { return false; };
+      var stages;
+      try { stages = Pipeline.broadbandStages( "G", { group: "OSC", instrume: "ZWO ASI2600MC" }, oscConfig() ); }
+      finally { Steps.deviceCurveForImage = realCurve; Steps.configuredMGC = realMgc; Steps.studioAvailable = realStudio; }
+      check( "broadbandStages: an OSC channel calibrates against the sensor curve and Ideal QE",
+             stages.spfc, { channel: "G", filter: "Sony Color Sensor G", qe: "Ideal QE curve" } );
+      var calls = [], realSpfc = Steps.spfc;
+      Steps.spfc = function( view, f, ch, instrume, chosen ) { calls.push( [ f, ch, instrume, chosen ] ); };
+      try
+      {
+         Pipeline.broadbandRunners( "G", oscConfig() ).spfc( { view: {}, filter: "UV/IR Cut", group: "OSC",
+                                                                instrume: "ZWO ASI2600MC" } );
+         var mono2 = Config.defaults(); mono2.filters = { G: "Mono G filter" };
+         Pipeline.broadbandRunners( "G", mono2 ).spfc( { view: {}, filter: "G", instrume: "ZWO ASI2600MM" } );
+      }
+      finally { Steps.spfc = realSpfc; }
+      check( "broadbandRunners: OSC uses the sensor curve and no camera; mono is unchanged", calls,
+             [ [ "UV/IR Cut", "G", null, "Sony Color Sensor G" ], [ "G", "G", "ZWO ASI2600MM", "Mono G filter" ] ] );
+
+      // The composite.
+      var osc3 = { R: { group: "OSC", instrume: "ZWO ASI2600MC" }, G: { group: "OSC", instrume: "ZWO ASI2600MC" },
+                   B: { group: "OSC", instrume: "ZWO ASI2600MC" } };
+      check( "compositeInstrument is null for an OSC composite", Pipeline.compositeInstrument( osc3, "G" ), null );
+      check( "compositeInstrument still follows the camera for mono",
+             Pipeline.compositeInstrument( { G: { instrume: "ZWO ASI2600MM" } }, "G" ), "ZWO ASI2600MM" );
+      var inh = { R: { group: "OSC", instrume: "ZWO ASI2600MC" }, G: { group: "OSC", instrume: "" },
+                  B: { group: "OSC", instrume: null } };
+      Pipeline.inheritInstrument( inh );
+      check( "inheritInstrument leaves colour channels alone", [ inh.G.instrume, inh.B.instrume, inh.G.instrumeInherited ],
+             [ "", null, undefined ] );
+      var mix = { R: { key: "R", instrume: "ZWO ASI2600MM" }, G: { key: "G", instrume: "" } };
+      Pipeline.inheritInstrument( mix );
+      check( "inheritInstrument still lends a camera to mono", mix.G.instrume, "ZWO ASI2600MM" );
+
+      var ef = Config.defaults();
+      ef.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      check( "effectiveFilters mono run", Pipeline.effectiveFilters( ef ), ef.filters );
+      check( "effectiveFilters mono run is a copy", Pipeline.effectiveFilters( ef ) !== ef.filters, true );
+      ef.paths.OSC = "/m/a.xisf";
+      ef.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
+      check( "effectiveFilters OSC run uses the sensor curves",
+             [ Pipeline.effectiveFilters( ef ).R, Pipeline.effectiveFilters( ef ).G, Pipeline.effectiveFilters( ef ).B ],
+             [ sensor.R, sensor.G, sensor.B ] );
+      check( "effectiveFilters leaves config.filters alone", ef.filters.G, "Mono G filter" );
+
+      var seen = [], keepSpfc = Steps.spfc, keepSpcc = Steps.spccRGB, keepWb = Steps.applyWhiteBalance;
+      Steps.spfc = function( view, f, ch, instrume, filters ) { seen.push( [ "spfc", ch, instrume, filters.G ] ); };
+      Steps.spccRGB = function( view, instrume, filters ) { seen.push( [ "spcc", instrume, filters.G ] ); };
+      Steps.applyWhiteBalance = function( view, factors ) { seen.push( [ "wb", factors ] ); };
+      try { Pipeline.rgbCalibrationRunners( ef, null, null ).spfcRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( ef, null, null ).spccRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( ef, null, [ 1, 2, 3 ] ).spccRGB( { view: {} } ); }
+      finally { Steps.spfc = keepSpfc; Steps.spccRGB = keepSpcc; Steps.applyWhiteBalance = keepWb; }
+      check( "composite runners: sensor curves, no camera; clean factors applied instead of SPCC",
+             seen, [ [ "spfc", "RGB", null, sensor.G ], [ "spcc", null, sensor.G ], [ "wb", [ 1, 2, 3 ] ] ] );
+      var mono = Config.defaults(); mono.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      seen = [];
+      Steps.spfc = function( view, f, ch, instrume, filters ) { seen.push( [ "spfc", filters.G ] ); };
+      Steps.spccRGB = function( view, instrume, filters ) { seen.push( [ "spcc", filters.G ] ); };
+      Steps.applyWhiteBalance = function( view, factors ) { seen.push( [ "wb", factors ] ); };
+      try { Pipeline.rgbCalibrationRunners( mono, "ZWO ASI2600MM", null ).spccRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( mono, "ZWO ASI2600MM", [ 4, 5, 6 ] ).spccRGB( { view: {} } ); }
+      finally { Steps.spfc = keepSpfc; Steps.spccRGB = keepSpcc; Steps.applyWhiteBalance = keepWb; }
+      check( "mono runners unchanged", seen, [ [ "spcc", "Mono G filter" ], [ "wb", [ 4, 5, 6 ] ] ] );
+
+      // The composite's cache parameters follow the sensor.
+      var oscChans = {};
+      [ "R", "G", "B" ].forEach( function( k )
+      {
+         oscChans[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, group: "OSC" };
+      } );
+      var oscCfgA = oscConfig(), oscCfgB = oscConfig();
+      oscCfgB.oscSensor.R = "Other Color Sensor R";
+      var oscA = chainKeys( function() { Pipeline.buildRGB( oscChans, oscCfgA, reg, monoCommon, null, null ); } );
+      var oscB = chainKeys( function() { Pipeline.buildRGB( oscChans, oscCfgB, reg, monoCommon, null, null ); } );
+      check( "composite spfc and spcc keys move with the sensor",
+             [ oscA.spfcRGB != oscB.spfcRGB, oscA.spccRGB != oscB.spccRGB ], [ true, true ] );
+
+      // Narrowband bandwidths.
+      var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf"; nb.oscKinds = { OSCNB: "dualband" };
+      check( "narrowband bandwidths from the filter table",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "L-eXtreme" } ), { R: 7, G: 7, B: 7 } );
+      check( "narrowband bandwidths differ per channel when the table says so",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "L-eNhance" } ), { R: 10, G: 24, B: 24 } );
+      check( "narrowband bandwidths fall back to the run's bandwidth",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "Duo" } ),
+             { R: nb.narrowbandBandwidth, G: nb.narrowbandBandwidth, B: nb.narrowbandBandwidth } );
+      check( "narrowband bandwidths fall back with no filter",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: null } ).G, nb.narrowbandBandwidth );
+
+      function nbChans( filter )
+      {
+         var o = {};
+         [ "H", "O" ].forEach( function( k )
+         {
+            o[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, group: "OSCNB", filter: filter };
+         } );
+         return o;
+      }
+      var logged = [], realLog = Util.log;
+      function nbKeys( filter )
+      {
+         logged = [];
+         var keys = chainKeys( function()
+         {
+            Util.log = function( st, m ) { logged.push( st + ": " + m ); };
+            try { Pipeline.buildPalette( "HOO", nbChans( filter ), nb, reg, monoCommon ); }
+            finally { Util.log = realLog; }
+         } );
+         return keys;
+      }
+      var kx = nbKeys( "L-eXtreme" ), kxLog = logged.slice(), ku = nbKeys( "L-Ultimate" );
+      check( "HOO paletteSpcc key differs between L-eXtreme and L-Ultimate", kx.paletteSpcc != ku.paletteSpcc, true );
+      check( "HOO from OSCNB logs the approximation",
+             kxLog.some( function( l ) { return l.indexOf( "approximation: H and O from a colour master are not single lines" ) >= 0; } ),
+             true );
+      check( "a mono palette does not log the approximation",
+             ( function()
+             {
+                var l2 = [], keep = Util.log;
+                chainKeys( function()
+                {
+                   Util.log = function( st, m ) { l2.push( m ); };
+                   try { Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon ); }
+                   finally { Util.log = keep; }
+                } );
+                return l2.some( function( m ) { return m.indexOf( "approximation" ) >= 0; } );
+             } )(), false );
+
+      // The bandwidth reaches Steps.spccNarrowband in the form the key records.
+      var bwSeen = [], realNb = Steps.spccNarrowband, realCheck = Pipeline.processChain;
+      var capturedRunners = null, realAbort = Pipeline.checkAbort, realFree = Util.freeWindowId, realLog2 = Util.log;
+      Pipeline.processChain = function( holder, chain, cfg, r, runners ) { capturedRunners = runners; };
+      Pipeline.checkAbort = function() {}; Util.freeWindowId = function( id ) { return id; }; Util.log = function() {};
+      Steps.spccNarrowband = function( view, pal, bw ) { bwSeen.push( bw ); };
+      try
+      {
+         Pipeline.buildPalette( "HOO", nbChans( "L-eXtreme" ), nb, reg, monoCommon );
+         capturedRunners.paletteSpcc( { window: { hasAstrometricSolution: true }, view: {} } );
+         Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon );
+         capturedRunners.paletteSpcc( { window: { hasAstrometricSolution: true }, view: {} } );
+      }
+      finally { Steps.spccNarrowband = realNb; Pipeline.processChain = realCheck; Pipeline.checkAbort = realAbort;
+                Util.freeWindowId = realFree; Util.log = realLog2; }
+      check( "palette calibration gets per-channel bandwidths for OSCNB and a plain number for mono", bwSeen,
+             [ { R: 7, G: 7, B: 7 }, monoCfg.narrowbandBandwidth ] );
+
+      // A light-pollution filter in front of the camera is noted, never refused.
+      function lpLog( filter )
+      {
+         var l = [], keep = Util.log;
+         Util.log = function( st, m ) { l.push( m ); };
+         try
+         {
+            var chans3 = {};
+            [ "R", "G", "B" ].forEach( function( k )
+            {
+               chans3[k] = { group: "OSC", instrume: "ZWO ASI2600MC", filter: filter };
+            } );
+            Pipeline.compositeInstrument( chans3, "G" );
+         }
+         finally { Util.log = keep; }
+         return l.filter( function( m ) { return m.indexOf( "colour calibration does not model" ) >= 0; } );
+      }
+      check( "L-Pro is noted once", lpLog( "L-Pro" ),
+             [ "colour calibration does not model the L-Pro filter in front of the camera" ] );
+      check( "CLS CCD is noted", lpLog( "CLS CCD" ).length, 1 );
+      check( "UV/IR cut is not noted", lpLog( "UV/IR Cut" ), [] );
+      check( "L-eXtreme is not noted for the broadband colour master", lpLog( "L-eXtreme" ), [] );
+      var lp = oscConfig();
+      check( "an L-Pro run has no sensor problem", Pipeline.oscSensorProblems( lp, function() { return true; } ), [] );
    } )();
    } if ( testGroup( "pipeline.run" ) ) {
    /*

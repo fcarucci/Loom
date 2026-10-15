@@ -317,10 +317,33 @@ Pipeline.oscInfoOf = function( config )
    };
 };
 
-/* The colour camera's sensor checks; a later change fills this. */
-Pipeline.oscSensorProblems = function( config )
+/*
+ * The colour camera's sensor checks. A colour master (OSC) is calibrated
+ * against the three sensor colour-filter curves in config.oscSensor, so all
+ * three must be chosen and each must exist in filters.xspd. A run without
+ * OSC (mono, or OSCNB alone) has no sensor to choose. curveExists( name,
+ * channel ) can be injected; production asks the filter database.
+ */
+Pipeline.oscSensorProblems = function( config, curveExists )
 {
-   return [];
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) < 0 )
+      return [];
+   var sensor = config.oscSensor || {};
+   var trio = Util.RGB_GROUP;
+   for ( var t = 0; t < trio.length; ++t )
+      if ( !sensor[trio[t]] )
+         return [ "choose the sensor colour filters for the colour master (SPCC section)" ];
+
+   var exists = curveExists || function( name, channel )
+   {
+      return Steps.filterCurveByName( name, channel ) != null;
+   };
+   var problems = [];
+   for ( var c = 0; c < trio.length; ++c )
+      if ( !exists( sensor[trio[c]], trio[c] ) )
+         problems.push( "sensor colour filter curve '" + sensor[trio[c]] +
+                        "' is not in filters.xspd" );
+   return problems;
 };
 
 /*
@@ -1430,8 +1453,9 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
       temps.push( refWin );
 
       Steps.solve( refWin.mainView );
-      Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, config.filters || {} );
-      Steps.spccRGB( refWin.mainView, lumInstrume, config.filters || {} );
+      var refFilters = Pipeline.effectiveFilters( config );
+      Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, refFilters );
+      Steps.spccRGB( refWin.mainView, lumInstrume, refFilters );
 
       var factors = Steps.readWhiteBalanceFactors( refWin.mainView );
       if ( factors == null )
@@ -1691,10 +1715,27 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                                chans[map[2]].currentKey +
                                Pipeline.cropHalosTag( common, config ) );
 
+   /*
+    * The bandwidth drives the emission-line calibration directly, and the
+    * value in the key is the one handed to Steps.spccNarrowband. A mono run
+    * passes the run's single number. A palette from a colour master's
+    * channels passes one bandwidth per output channel, from the filter
+    * table, so a different filter re-runs the calibration.
+    */
+   var bandwidth = config.narrowbandBandwidth;
+   if ( chans[map[0]].group == "OSCNB" || chans[map[1]].group == "OSCNB" ||
+        chans[map[2]].group == "OSCNB" )
+   {
+      bandwidth = Pipeline.oscNarrowbandBandwidths( config,
+                     { filter: chans[map[0]].filter || chans[map[1]].filter || chans[map[2]].filter } );
+      Util.log( "palette", pal + ": approximation: H and O from a colour master are not single lines; " +
+                           "bandwidths R " + bandwidth.R + "nm, G " + bandwidth.G + "nm, B " +
+                           bandwidth.B + "nm" );
+   }
+
    var palParams = {
       paletteCombine: {},
-      // bandwidth drives the emission-line calibration directly
-      paletteSpcc: { palette: pal, bandwidth: config.narrowbandBandwidth }
+      paletteSpcc: { palette: pal, bandwidth: bandwidth }
    };
    /*
     * Omitted entirely when off, rather than carried with an enabled
@@ -1737,7 +1778,7 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                Util.log( "solve", pal + ": no inherited solution, solving" );
                Steps.solve( h.view );
             }
-            Steps.spccNarrowband( h.view, pal, config.narrowbandBandwidth );
+            Steps.spccNarrowband( h.view, pal, bandwidth );
          }
          catch ( e )
          {
@@ -1815,11 +1856,11 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
       solveRGB: {},
       // the filters and QE curve drive both calibrations, exactly as
       // for the per-channel SPFC
-      spfcRGB:  { filters: config.filters || {}, instrume: lumInstrume },
+      spfcRGB:  { filters: Pipeline.effectiveFilters( config ), instrume: lumInstrume },
       // The white balance source is part of the key: factors measured
       // on uncorrected channels give different pixels from SPCC run
       // directly on the corrected composite.
-      spccRGB:  { filters: config.filters || {}, instrume: lumInstrume,
+      spccRGB:  { filters: Pipeline.effectiveFilters( config ), instrume: lumInstrume,
                   whiteBalance: cleanFactors ? cleanFactors : "direct" }
    };
    var finishing = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING,
@@ -1836,19 +1877,11 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
          h.view = h.window.mainView;
          reg.add( h.window );
       },
-      solveRGB: function( h ) { Steps.solve( h.view ); },
-      spfcRGB:  function( h )
-      {
-         Steps.spfc( h.view, null, "RGB", lumInstrume, config.filters || {} );
-      },
-      spccRGB:  function( h )
-      {
-         if ( cleanFactors != null )
-            Steps.applyWhiteBalance( h.view, cleanFactors );
-         else
-            Steps.spccRGB( h.view, lumInstrume, config.filters || {} );
-      }
+      solveRGB: function( h ) { Steps.solve( h.view ); }
    };
+   var calibration = Pipeline.rgbCalibrationRunners( config, lumInstrume, cleanFactors );
+   rgbRunners.spfcRGB = calibration.spfcRGB;
+   rgbRunners.spccRGB = calibration.spccRGB;
    Pipeline.appendStages( rgbRunners, finishing.runners );
 
    Pipeline.checkAbort( "combining and calibrating RGB" );
@@ -2304,6 +2337,11 @@ Pipeline.oscColourChannels = function( slot, kind, config, reg )
 Pipeline.inheritInstrument = function( chans )
 {
    var ckeys = Object.keys( chans ), known = [];
+   // A colour master's channels are calibrated against Ideal QE: they
+   // neither give nor take a camera.
+   for ( var gi = 0; gi < ckeys.length; ++gi )
+      if ( chans[ckeys[gi]].group )
+         return;
    for ( var ci = 0; ci < ckeys.length; ++ci )
       known.push( chans[ckeys[ci]].instrume );
    var common = Util.commonInstrument( known );
@@ -2369,7 +2407,8 @@ Pipeline.broadbandStages = function( bk, bc, config )
       solve: {},
       // channel key + chosen filter + resolved QE curve name: anything
       // that changes what SPFC actually calibrates against.
-      spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
+      spfc: ( bc.group == "OSC" ) ? Pipeline.oscSpfcParams( bk, config )
+                                  : { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
       // the MARS database file list, not just "MGC ran" -- a different
       // database gives a different correction from the same input.
       mgc: { marsFiles: marsFiles },
@@ -2406,8 +2445,14 @@ Pipeline.broadbandRunners = function( channel, config )
       solve: function( c ) { Steps.solve( c.view ); },
       spfc: function( c )
       {
-         Steps.spfc( c.view, c.filter, channel, c.instrume,
-                     config.filters ? config.filters[channel] : null );
+         // A colour master: the sensor's curve, and no camera, which
+         // Steps.deviceCurveForImage turns into the Ideal QE curve.
+         if ( c.group == "OSC" )
+            Steps.spfc( c.view, c.filter, channel, null,
+                        Pipeline.oscSpfcParams( channel, config ).filter );
+         else
+            Steps.spfc( c.view, c.filter, channel, c.instrume,
+                        config.filters ? config.filters[channel] : null );
       },
       mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
       graxpert: function( c ) { Steps.removeGradient( c.view, config ); },
@@ -2421,6 +2466,75 @@ Pipeline.broadbandRunners = function( channel, config )
                              Pipeline.studioFamily( config ) );
       }
    };
+};
+
+/*
+ * What SPFC calibrates a colour master's channel against: the sensor's
+ * colour-filter curve for that channel and the Ideal QE curve (the sensor
+ * curves already carry the sensor's response, so a camera QE on top would
+ * count it twice).
+ */
+Pipeline.oscSpfcParams = function( channel, config )
+{
+   return { channel: channel, filter: ( config.oscSensor || {} )[channel],
+            qe: Util.IDEAL_QE_CURVE_NAME };
+};
+
+/*
+ * The filters the composite and the clean reference are calibrated with:
+ * config.filters, with R, G and B replaced by the sensor curves when a
+ * colour master is used. A copy; config.filters is never changed.
+ */
+Pipeline.effectiveFilters = function( config )
+{
+   var out = {}, own = config.filters || {};
+   Object.keys( own ).forEach( function( k ) { out[k] = own[k]; } );
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
+   {
+      var sensor = config.oscSensor || {};
+      Util.RGB_GROUP.forEach( function( k ) { out[k] = sensor[k]; } );
+   }
+   return out;
+};
+
+/*
+ * The RGB composite's two calibration runners. With clean white-balance
+ * factors the composite is corrected by them (Steps.spccRGB is not run);
+ * without, SPCC runs on the composite itself.
+ */
+Pipeline.rgbCalibrationRunners = function( config, lumInstrume, cleanFactors )
+{
+   return {
+      spfcRGB: function( h )
+      {
+         Steps.spfc( h.view, null, "RGB", lumInstrume, Pipeline.effectiveFilters( config ) );
+      },
+      spccRGB: function( h )
+      {
+         if ( cleanFactors != null )
+            Steps.applyWhiteBalance( h.view, cleanFactors );
+         else
+            Steps.spccRGB( h.view, lumInstrume, Pipeline.effectiveFilters( config ) );
+      }
+   };
+};
+
+/*
+ * Narrowband SPCC bandwidths for a palette built from a dual-band colour
+ * master, one per output channel: HOO is R = Ha, G = OIII, B = OIII. The
+ * filter table gives each line's bandwidth; a filter it does not know (or
+ * that has none) falls back to the run's narrowband bandwidth. info.filter
+ * is the master's FILTER keyword.
+ */
+Pipeline.oscNarrowbandBandwidths = function( config, info )
+{
+   var fi = Util.oscFilterInfo( info ? info.filter : null );
+   function pick( nm )
+   {
+      return ( typeof nm == "number" && isFinite( nm ) && nm > 0 ) ? nm : config.narrowbandBandwidth;
+   }
+   var ha = pick( fi ? fi.haNm : null ), oiii = pick( fi ? fi.oiiiNm : null );
+   return { R: ha, G: oiii, B: oiii };
 };
 
 /*
@@ -2645,6 +2759,19 @@ Pipeline.registrationQuality = function( chans )
  */
 Pipeline.compositeInstrument = function( chans, refKey )
 {
+   // A colour master's composite is calibrated against the sensor curves
+   // and Ideal QE (no camera). A light-pollution filter in front of the
+   // camera is not modelled by that; say so, and carry on.
+   var oscKeys = Object.keys( chans ).filter( function( k ) { return chans[k].group == "OSC"; } );
+   if ( oscKeys.length > 0 )
+   {
+      var fi = Util.oscFilterInfo( chans[oscKeys[0]].filter );
+      if ( fi && [ "lpro", "cls", "clsccd" ].indexOf( Util.normaliseFilter( fi.name ) ) >= 0 )
+         Util.log( "spcc", "colour calibration does not model the " + fi.name +
+                           " filter in front of the camera" );
+   }
+   if ( refKey && chans[refKey] && chans[refKey].group == "OSC" )
+      return null;
    if ( chans.L )
       return chans.L.instrume;
    return ( refKey && chans[refKey] ) ? chans[refKey].instrume : null;
