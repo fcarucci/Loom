@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -54,6 +54,12 @@ class _State:
     lock_depth: int = 0
     locks: int = 0
     cmds_under_lock: List[str] = field(default_factory=list)
+    # Siril's persisted preferences read by get_siril_config ("section.key" -> value). setfindstar reset sets the
+    # star-finder focal length and pixel size to 0, as Siril 1.4.4 does; setfindstar -focal= / -pixelsize= set them.
+    config: Dict[str, Any] = field(default_factory=lambda: {"starfinder.focal_length": 0.0,
+                                                            "starfinder.pixel_size": 0.0})
+    config_error: bool = False          # True: get_siril_config raises (as an older Siril would)
+    fail_commands: List[str] = field(default_factory=list)  # a command starting with one of these returns False
 
     def reset(self) -> None:
         """Back to a fresh stub (tests call this in a fixture)."""
@@ -123,7 +129,26 @@ class SirilInterface:
         STATE.commands.append(tuple(str(a) for a in args))
         if STATE.lock_depth:
             STATE.cmds_under_lock.append(" ".join(str(a) for a in args))
+        text = " ".join(str(a) for a in args)
+        if any(text.startswith(p) for p in STATE.fail_commands):
+            return False
+        if text.startswith("setfindstar"):
+            words = text.split()
+            if "reset" in words:
+                STATE.config["starfinder.focal_length"] = 0.0
+                STATE.config["starfinder.pixel_size"] = 0.0
+            for word in words:
+                if word.startswith("-focal="):
+                    STATE.config["starfinder.focal_length"] = float(word[len("-focal="):])
+                elif word.startswith("-pixelsize="):
+                    STATE.config["starfinder.pixel_size"] = float(word[len("-pixelsize="):])
         return True
+
+    def get_siril_config(self, section: str, key: str) -> Any:
+        """A persisted Siril preference (the stub's ``STATE.config``); None when the key is not set."""
+        if STATE.config_error:
+            raise RuntimeError("get_siril_config: the stub's config read fails")
+        return STATE.config.get(f"{section}.{key}")
 
     @contextmanager
     def image_lock(self):
