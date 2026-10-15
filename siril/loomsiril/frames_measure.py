@@ -297,17 +297,41 @@ def _restore_text(prefs: Mapping[str, Any]) -> Optional[str]:
     return command_text("setfindstar", *parts) if parts else None
 
 
-def _link_inputs(siril: Any, abs_paths: list[str], work_dir: str) -> None:
-    for i, path in enumerate(abs_paths, start=1):
-        dst = os.path.join(work_dir, link_name(i))
+def _link_one(siril: Any, path: str, dst: str) -> None:
+    """Make ``dst`` a link to a FITS source, or a FITS copy of a non-FITS source. On failure ``dst`` is removed."""
+    try:
         if _is_fits(path):
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"no such file: {path}")
             os.symlink(path, dst)
-            continue
+            return
         loaded = siril.load_image_from_file(path, with_pixels=True)
         data = _get(loaded, "data") if loaded is not None else None
         if data is None:
             raise _BatchError(f"no pixels for {path}")
         write_fits(dst, planes_from_pixeldata(data))
+    except Exception:
+        if os.path.lexists(dst):
+            os.remove(dst)
+        raise
+
+
+def _link_inputs(siril: Any, abs_paths: list[str], work_dir: str,
+                 note: Callable[[str], None]) -> tuple[list[int], dict[int, str]]:
+    """Link every input that can be read, renumbered 1..k in order. Returns (indices of the linked inputs, {index
+    of an unreadable input: reason}). An unreadable input does not stop the others."""
+    good: list[int] = []
+    bad: dict[int, str] = {}
+    for i, path in enumerate(abs_paths):
+        dst = os.path.join(work_dir, link_name(len(good) + 1))
+        try:
+            _link_one(siril, path, dst)
+        except Exception as exc:
+            bad[i] = str(exc)
+            note(f"frame not measured: {path}: {exc}")
+        else:
+            good.append(i)
+    return good, bad
 
 
 def _read_seq(work_dir: str, n: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -353,10 +377,12 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
                                                                         Optional[str]]:
     """Measure one batch of up to 8 frames of one channel through Siril's registration.
 
-    Returns ``(results, problem)``: ``results`` maps each input path (as given) to its metrics, None when
-    unmeasurable; ``problem`` is None, or the reason the batch was abandoned (then ``results`` is empty). A failed
-    register leaves every frame to the fallback alone. Nothing is printed; ``log`` gets the notes and the failed
-    steps. Not safe to run concurrently against one Siril."""
+    Returns ``(results, problem)``. ``results`` maps each input path (as given) to its metrics, None when
+    unmeasurable. A frame that cannot be read (missing, no pixels, any error while linking it) is None and the
+    others are measured as if it were not there; if no frame can be read, ``results`` is ``{}`` and ``problem``
+    is None. ``problem`` is set only for a batch-wide failure (settings, working directory, sequence): then
+    ``results`` is ``{}``. A failed register leaves every readable frame to the fallback alone. Nothing is printed;
+    ``log`` gets the notes and the failed steps. Not safe to run concurrently against one Siril."""
     note = log or (lambda _text: None)
     seen: set[str] = set()
     for p in paths:
@@ -364,20 +390,20 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
         if key in seen:
             return {}, f"duplicate path: {p}"
         seen.add(key)
-    n = len(paths)
     abs_paths = [os.path.abspath(p) for p in paths]
     work_dir = os.path.abspath(work_dir)
 
     if os.path.lexists(work_dir):
         shutil.rmtree(work_dir)
-    os.makedirs(work_dir)
     try:
-        try:
-            _link_inputs(siril, abs_paths, work_dir)
-        except _BatchError as exc:
-            return {}, str(exc)
-        except Exception as exc:
-            return {}, f"cannot prepare the batch: {exc}"
+        os.makedirs(work_dir)
+    except OSError as exc:
+        return {}, f"cannot create the work directory: {exc}"
+    try:
+        good, bad = _link_inputs(siril, abs_paths, work_dir, note)
+        if not good:
+            return {}, None
+        n = len(good)
 
         seq: Optional[dict[str, Any]] = None
         wd0: Optional[str] = None
@@ -402,15 +428,16 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
             _leave(siril, wd0, prefs, note)
 
         layer = registration_layer(seq) if seq is not None else None
-        results: dict[str, Optional[dict[str, Any]]] = {}
-        for i, (path, abs_path) in enumerate(zip(paths, abs_paths), start=1):
+        results: dict[str, Optional[dict[str, Any]]] = {paths[i]: None for i in bad}
+        for j, i in enumerate(good, start=1):
+            path, abs_path = paths[i], abs_paths[i]
             r = None
             m = None
             if seq is not None and layer is not None:
-                r = seq["R"][layer][i - 1]
-                m = seq["M"].get((layer, i - 1))
+                r = seq["R"][layer][j - 1]
+                m = seq["M"].get((layer, j - 1))
             try:
-                stars = _read_stars(work_dir, i)
+                stars = _read_stars(work_dir, j)
             except (OSError, ValueError) as exc:
                 return {}, f"unreadable star list for {path}: {exc}"
             fallback = None

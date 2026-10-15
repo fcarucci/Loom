@@ -252,6 +252,30 @@ class CommandError(Exception):
     pass
 
 
+def _seq_text_for(k: int) -> str:
+    """The mono fixture cut to k images: the S count is k; the I, R and M lines of the first k images stay."""
+    out = []
+    r_seen = 0
+    for line in _text("mono.seq").splitlines():
+        parts = line.split()
+        if line.startswith("S "):
+            parts[3] = str(k)
+            out.append(" ".join(parts))
+        elif line.startswith("I "):
+            if int(parts[1]) <= k:
+                out.append(line)
+        elif line.startswith("R0 "):
+            if r_seen < k:
+                out.append(line)
+            r_seen += 1
+        elif line.startswith("M0-"):
+            if int(parts[0][3:]) < k:
+                out.append(line)
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
 class FakeSiril:
     """Records every command. ``cd`` changes the directory it reports; ``register`` writes the fixture sequence
     and two star lists into the current directory, as Siril would for a batch of 12. Switches make each Siril call
@@ -259,6 +283,7 @@ class FakeSiril:
 
     def __init__(self, wd: str, register_error: bool = False, config_error: bool = False,
                  config: Optional[dict] = None) -> None:
+        self.seq_images: Optional[int] = None  # when set, the sequence claims this many images
         self.wd = wd
         self.cwd = wd
         self.register_error = register_error
@@ -297,7 +322,8 @@ class FakeSiril:
                 full = os.path.join(self.cwd, name)
                 if name.startswith("fs_") and os.path.islink(full):
                     self.links_during_register[name] = os.readlink(full)
-            if os.path.isfile(os.path.join(self.cwd, "fs_00012.fit")):
+            copied = os.path.join(self.cwd, "fs_00012.fit")
+            if os.path.isfile(copied) and not os.path.islink(copied):
                 from loomsiril.io_fits import read_fits
                 planes = read_fits(os.path.join(self.cwd, "fs_00012.fit"))[0]
                 self.seen_at_register["fs_00012_regular"] = not os.path.islink(os.path.join(self.cwd, "fs_00012.fit"))
@@ -305,10 +331,13 @@ class FakeSiril:
                 self.seen_at_register["fs_00012_max"] = float(np.max(planes[0]))
             if self.register_error:
                 raise CommandError("register failed")
-            shutil.copy(FIXTURES / "mono.seq", os.path.join(self.cwd, "fs_.seq"))
+            k = len([n for n in os.listdir(self.cwd) if n.startswith("fs_") and n.endswith(".fit")])
+            with open(os.path.join(self.cwd, "fs_.seq"), "w", encoding="utf-8") as fh:
+                fh.write(_seq_text_for(self.seq_images if self.seq_images is not None else k))
             os.makedirs(os.path.join(self.cwd, "cache"), exist_ok=True)
             for name in ("fs_00001.lst", "fs_00012.lst"):
-                shutil.copy(FIXTURES / name, os.path.join(self.cwd, "cache", name))
+                if name == "fs_00001.lst" or k == 12:
+                    shutil.copy(FIXTURES / name, os.path.join(self.cwd, "cache", name))
         return True
 
     def analyse_image_from_file(self, path: str) -> SimpleNamespace:
@@ -323,12 +352,19 @@ class FakeSiril:
         raise AssertionError("the open image must not be read")
 
 
-def _names(n: int) -> list[str]:
-    return [f"/frames/light_{k:02d}.fit" for k in range(1, n + 1)]
+def _names(n: int, root: Path) -> list[str]:
+    """Source paths for a batch: real (empty) files under ``root``, so the FITS existence check passes."""
+    out = []
+    for k in range(1, n + 1):
+        path = root / "frames" / f"light_{k:02d}.fit"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        out.append(str(path))
+    return out
 
 
 def test_measure_batch_keys_by_path_in_any_order(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     order = [names[k] for k in (7, 2, 11, 0, 5, 9, 1, 3, 10, 4, 8, 6)]
     siril = FakeSiril(str(tmp_path / "siril_wd"))
     siril.wd = str(tmp_path / "siril_wd")
@@ -345,7 +381,7 @@ def test_measure_batch_keys_by_path_in_any_order(tmp_path) -> None:
 
 
 def test_measure_batch_links_point_at_sources_during_register(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     siril = FakeSiril(str(tmp_path / "siril_wd"))
     os.makedirs(siril.wd)
     fm.measure_batch(siril, names, str(tmp_path / "work"))
@@ -353,7 +389,7 @@ def test_measure_batch_links_point_at_sources_during_register(tmp_path) -> None:
 
 
 def test_measure_batch_command_text_and_cd_restored(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
@@ -367,7 +403,7 @@ def test_measure_batch_command_text_and_cd_restored(tmp_path) -> None:
 
 
 def test_measure_batch_cd_restored_when_register_raises(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0, register_error=True)
@@ -381,7 +417,7 @@ def test_measure_batch_cd_restored_when_register_raises(tmp_path) -> None:
 
 
 def test_measure_batch_work_dir_removed(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     work = tmp_path / "work"
@@ -391,7 +427,7 @@ def test_measure_batch_work_dir_removed(tmp_path) -> None:
 
 
 def test_measure_batch_fallback_only_for_all_zero_row(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
@@ -402,7 +438,7 @@ def test_measure_batch_fallback_only_for_all_zero_row(tmp_path) -> None:
 
 
 def test_measure_batch_duplicate_path_refused_without_commands(tmp_path) -> None:
-    names = _names(3)
+    names = _names(3, tmp_path)
     siril = FakeSiril(str(tmp_path))
     results, problem = fm.measure_batch(siril, [names[0], names[1], names[0]], str(tmp_path / "work"))
     assert results == {}
@@ -411,10 +447,11 @@ def test_measure_batch_duplicate_path_refused_without_commands(tmp_path) -> None
 
 
 def test_measure_batch_sequence_count_mismatch_abandons_batch(tmp_path) -> None:
-    names = _names(8)
+    names = _names(8, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
+    siril.seq_images = 12
     results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
     assert results == {}
     assert problem == "sequence has 12 images, batch has 8"
@@ -422,7 +459,7 @@ def test_measure_batch_sequence_count_mismatch_abandons_batch(tmp_path) -> None:
 
 
 def test_measure_batch_non_fits_source_is_loaded_and_written(tmp_path) -> None:
-    names = _names(11) + ["/frames/light_12.xisf"]
+    names = _names(11, tmp_path) + ["/frames/light_12.xisf"]
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
@@ -435,20 +472,64 @@ def test_measure_batch_non_fits_source_is_loaded_and_written(tmp_path) -> None:
     assert results["/frames/light_12.xisf"]["fwhm"] == pytest.approx(2.89)
 
 
-def test_measure_batch_source_without_pixels_is_a_batch_problem(tmp_path) -> None:
-    names = _names(11) + ["/frames/light_12.xisf"]
+def test_measure_batch_one_unreadable_frame_is_none_and_the_rest_are_measured(tmp_path) -> None:
+    names = _names(11, tmp_path) + ["/frames/light_12.xisf"]
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    siril.load_data = False  # the XISF frame has no pixels
+    notes: list[str] = []
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"), log=notes.append)
+    assert problem is None
+    assert results["/frames/light_12.xisf"] is None
+    assert any("/frames/light_12.xisf" in n for n in notes)
+    # the eleven readable frames are registered as 1..11 and mapped by path, not shifted
+    assert siril.links_during_register == {fm.link_name(i): names[i - 1] for i in range(1, 12)}
+    assert results[names[0]]["fwhm"] == pytest.approx(3.07018)
+    assert results[names[10]]["fwhm"] == pytest.approx(_mono()["R"][0][10]["fwhm"])
+    assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
+
+
+def test_measure_batch_missing_fits_is_none_and_the_rest_are_measured(tmp_path) -> None:
+    names = _names(12, tmp_path)
+    missing = str(tmp_path / "frames" / "gone.fit")
+    names[4] = missing
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
+    assert problem is None
+    assert results[missing] is None
+    kept = [names[i] for i in range(12) if i != 4]
+    assert siril.links_during_register == {fm.link_name(j + 1): kept[j] for j in range(11)}
+
+
+def test_measure_batch_missing_xisf_is_none_like_a_missing_fits(tmp_path) -> None:
+    names = _names(11, tmp_path) + ["/frames/gone.xisf"]
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
     siril.load_data = False
     results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
+    assert problem is None
+    assert results["/frames/gone.xisf"] is None
+    assert len(results) == 12
+
+
+def test_measure_batch_all_frames_unreadable_gives_empty_result(tmp_path) -> None:
+    names = [str(tmp_path / f"gone_{k}.fit") for k in range(3)]
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    siril = FakeSiril(wd0)
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"))
     assert results == {}
-    assert problem == "no pixels for /frames/light_12.xisf"
+    assert problem is None
     assert siril.commands == []
+    assert not (tmp_path / "work").exists()
 
 
 def test_measure_batch_log_gets_failed_register(tmp_path) -> None:
-    names = _names(12)
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     notes: list[str] = []
@@ -490,7 +571,7 @@ def test_measure_batch_restores_focal_length_and_pixel_size(tmp_path) -> None:
     os.makedirs(wd0)
     notes: list[str] = []
     siril = FakeSiril(wd0)
-    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"), log=notes.append)
+    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"), log=notes.append)
     assert problem is None and results
     assert siril.commands[-1] == "setfindstar -focal=600.0 -pixelsize=3.76"
     assert any("sigma" in n and "not restored" in n for n in notes)
@@ -500,7 +581,7 @@ def test_measure_batch_missing_pixel_size_is_not_restored(tmp_path) -> None:
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0, config={"focal_length": None, "pixel_size": 3.76})
-    fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"))
     assert siril.commands[-1] == "setfindstar -pixelsize=3.76"
 
 
@@ -508,7 +589,7 @@ def test_measure_batch_unreadable_settings_abandon_batch(tmp_path) -> None:
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0, config_error=True)
-    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"))
     assert results == {}
     assert problem.startswith("cannot run Siril commands")
     assert "register fs_ -2pass" not in siril.commands
@@ -521,9 +602,9 @@ def test_measure_batch_cd_back_failure_is_logged_not_masking(tmp_path) -> None:
     notes: list[str] = []
     siril = FakeSiril(wd0)
     siril.fail_cd_back = True
-    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"), log=notes.append)
+    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"), log=notes.append)
     assert problem is None
-    assert results[_names(12)[0]]["fwhm"] == pytest.approx(3.07018)
+    assert results[_names(12, tmp_path)[0]]["fwhm"] == pytest.approx(3.07018)
     assert any(n.startswith("cannot return Siril") for n in notes)
 
 
@@ -532,7 +613,7 @@ def test_measure_batch_quote_error_is_a_problem(tmp_path) -> None:
     os.makedirs(wd0)
     work = tmp_path / 'bad"name'
     siril = FakeSiril(wd0)
-    results, problem = fm.measure_batch(siril, _names(12), str(work))
+    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(work))
     assert results == {}
     assert problem.startswith("cannot run Siril commands")
     assert "register fs_ -2pass" not in siril.commands
@@ -542,7 +623,7 @@ def test_measure_batch_quote_error_is_a_problem(tmp_path) -> None:
 def test_measure_batch_working_directory_error_is_a_problem(tmp_path) -> None:
     siril = FakeSiril(str(tmp_path))
     siril.wd_error = True
-    results, problem = fm.measure_batch(siril, _names(12), str(tmp_path / "work"))
+    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"))
     assert results == {}
     assert problem.startswith("cannot run Siril commands")
     assert siril.commands == []
@@ -554,6 +635,9 @@ def test_measure_batch_relative_paths_become_absolute(tmp_path, monkeypatch) -> 
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0)
+    for name in rel:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).touch()
     results, problem = fm.measure_batch(siril, rel, str(tmp_path / "work"))
     assert problem is None
     assert set(results) == set(rel)
@@ -614,6 +698,7 @@ def prefs():
     return [siril.get_siril_config("starfinder", "focal_length"), siril.get_siril_config("starfinder", "pixel_size")]
 
 
+siril.cmd("setfindstar -focal=600 -pixelsize=3.76")
 before = prefs()
 names_a = ["f%02d" % i for i in range(1, 9)]
 names_b = ["f09", "f10", "f11", "f12", "f01", "f02", "f03", "f04"]
@@ -650,4 +735,5 @@ def test_measure_batch_in_siril_separates_the_frames(tmp_path) -> None:
     assert got["f11"]["background"] > 1.05 * median_bg
     assert got["f12"] is not None and got["f12"]["stars"] < 20
     before, after = run.value("prefs")
-    assert before == after
+    assert before == [600.0, 3.76]
+    assert after == before
