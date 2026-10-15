@@ -354,6 +354,7 @@ def test_clean_white_balance_is_measured_from_cached_pre_correction_plates(tmp_p
         seen["paths_exist"] = all(os.path.isfile(p) for _key, p in clean.values())
         seen["rect"] = tuple(rect)
         seen["ref_key"] = ref_key
+        seen["ref_channel"] = ref_channel
         return [1.0, 1.0, 1.0]
 
     monkeypatch.setattr(stages_colour, "measure_clean_white_balance", fake_measure)
@@ -364,6 +365,7 @@ def test_clean_white_balance_is_measured_from_cached_pre_correction_plates(tmp_p
     assert seen["paths_exist"] is True
     assert seen["rect"] == (4, 4, SHAPE[1] - 4, SHAPE[0] - 4)  # the valid area, four pixels inside the frame
     assert isinstance(seen["ref_key"], str) and len(seen["ref_key"]) == 40  # the reference's current cache key
+    assert seen["ref_channel"] == "L"  # the run's reference letter (the luminance of this LRGB run), not left out
     assert "RGB" in report.produced
 
 
@@ -375,6 +377,7 @@ def test_lrgb_with_narrowband_and_clean_white_balance(tmp_path: Path, monkeypatc
     def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
                      use_cache: bool, ignore_cache: bool, ref_key: Any = None, ref_channel: Any = None) -> list[float]:
         seen["channels"] = sorted(clean)
+        seen["ref_channel"] = ref_channel
         return [1.1, 1.0, 0.9]
 
     monkeypatch.setattr(stages_colour, "measure_clean_white_balance", fake_measure)
@@ -383,8 +386,38 @@ def test_lrgb_with_narrowband_and_clean_white_balance(tmp_path: Path, monkeypatc
     harness = Harness(tmp_path)
     report = harness.run(_config(tmp_path, paths, sharpenTool="BlurXTerminator", palettes=["SHO"]), "lrgb-nb")
     assert seen["channels"] == ["B", "G", "R"]
+    assert seen["ref_channel"] == "L"
     assert sorted(report.produced) == ["L", "RGB", "SHO"]
     assert any("-narrowband" in t for t in harness.ops.transcript)
+
+
+def test_clean_white_balance_of_an_osc_run_gets_the_green_reference_letter(tmp_path: Path,
+                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a run whose broadband input is an OSC master the registration reference is its green plane, and the clean
+    white-balance measurement is told so (``ref_channel``)."""
+    seen: dict[str, Any] = {}
+
+    def fake_measure(ctx: RunContext, clean: dict, ref_plate: Any, rect: Any, config: Any, lum: Any, store: Any,
+                     use_cache: bool, ignore_cache: bool, ref_key: Any = None, ref_channel: Any = None) -> list[float]:
+        seen["channels"] = sorted(clean)
+        seen["ref_key"] = ref_key
+        seen["ref_channel"] = ref_channel
+        return [1.0, 1.0, 1.0]
+
+    monkeypatch.setattr(stages_colour, "measure_clean_white_balance", fake_measure)
+    _stub_sharpen_tools(monkeypatch)
+    (tmp_path / "masters").mkdir(exist_ok=True)
+    master = str(tmp_path / "masters" / "osc.fits")
+    write_fits(master, [_plane(seed) for seed in (1, 2, 3)],
+               {"FILTER": "L-Pro", "INSTRUME": INSTRUME, "OBJECT": "M42"}, bitpix=-32)
+    cfg = _config(tmp_path, {}, sharpenTool="BlurXTerminator", oscKinds={"OSC": "broadband"},
+                  oscSensor={"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""})
+    cfg["paths"]["OSC"] = master
+    report = Harness(tmp_path).run(cfg, "osc-clean-wb")
+    assert seen["channels"] == ["B", "G", "R"]
+    assert seen["ref_channel"] == "G"
+    assert isinstance(seen["ref_key"], str) and len(seen["ref_key"]) == 40
+    assert "RGB" in report.produced
 
 
 def test_clean_white_balance_falls_back_without_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
