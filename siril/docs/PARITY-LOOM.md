@@ -102,6 +102,15 @@ Conventions that differ from the JavaScript on purpose:
 | `channels.read_header` | `lib/Util.js:468` | P | `tests/loom/test_channels.py` |
 | `channels.scan_masters` | - | P | `tests/loom/test_channels.py` |
 
+## loomsiril/loom/colour_load.py
+
+| Function | JavaScript (Loom) | Status | Test |
+|---|---|---|---|
+| `colour_load.ColourGroupLoader` | `lib/Pipeline.js:2073` | P | `tests/loom/test_colour_load.py` |
+| `colour_load.group_log_line` | `lib/Pipeline.js:2192` | P | `tests/loom/test_colour_load.py` |
+| `colour_load.plane_statistics` | `Steps.planeStats` | S | `tests/loom/test_colour_load.py` |
+| `colour_load.is_plain_fits` | - | S | `tests/loom/test_colour_load.py` |
+
 ## loomsiril/loom/config.py
 
 | Function | JavaScript (Loom) | Status | Test |

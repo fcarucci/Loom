@@ -325,3 +325,114 @@ def test_fewer_than_three_planes_is_refused(env: Env, tmp_path: Path) -> None:
     write_fits(master, [_planes()[0]], {"FILTER": "L"}, bitpix=-32)
     with pytest.raises(ValueError, match="has 1 channel"):
         env.loader(master).plate(0)
+
+
+# ---- what the plate header says about the source ------------------------------------------------------------------
+
+WBPP_LUM = "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-L-eXtreme_RGB_autocrop.xisf"
+WBPP_NONE = "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-NoFilter_RGB_autocrop.xisf"
+
+
+def _loomsrc_of(env: Env, tmp_path: Path, name: str, plane: int = 0) -> str:
+    # the content is plain FITS whatever the name says, so the loader reads the file directly
+    master = _master(tmp_path / name, _planes())
+    return str(read_fits(env.loader(master).plate(plane))[1]["LOOMSRC"])
+
+
+def test_long_wbpp_names_stay_distinct_and_keep_their_filter_and_extension(env: Env, tmp_path: Path) -> None:
+    assert len(WBPP_LUM) > 69
+    a = _loomsrc_of(env, tmp_path, WBPP_LUM)
+    b = _loomsrc_of(env, tmp_path, WBPP_NONE)
+    assert a != b
+    assert len(a) <= 68 and len(b) <= 68
+    assert a.startswith("...") and a.endswith("FILTER-L-eXtreme_RGB_autocrop.xisf|plane:0")
+    assert b.endswith("FILTER-NoFilter_RGB_autocrop.xisf|plane:0")
+    assert WBPP_LUM.endswith(a[3:].split("|plane:")[0])  # what is kept is the end of the name, unchanged
+
+
+def test_a_short_name_is_written_whole(env: Env, tmp_path: Path) -> None:
+    assert _loomsrc_of(env, tmp_path, "m31.fits", 2) == "m31.fits|plane:2"
+
+
+def test_a_name_full_of_apostrophes_neither_raises_nor_overflows_the_card(env: Env, tmp_path: Path) -> None:
+    name = "'" * 70 + "end.fits"
+    value = _loomsrc_of(env, tmp_path, name)
+    assert value.endswith("end.fits|plane:0") and value.startswith("...")
+    assert len(value) + value.count("'") <= 68
+
+
+# ---- a plane that is already in the run is not stored again --------------------------------------------------------
+
+
+def test_a_split_does_not_rewrite_a_plane_already_handed_out(env: Env, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    master = _master(tmp_path / "rgb.fits", _planes())
+    cold = env.loader(master)
+    cold.plate(0)
+    key0, key1 = cold.sibling_key(0), cold.sibling_key(1)
+    os.remove(env.store.path_for(key1))
+    stored: list[str] = []
+    real_store = env.store.store
+
+    def spy(key: str, *args: Any, **kwargs: Any) -> Any:
+        stored.append(key)
+        return real_store(key, *args, **kwargs)
+
+    monkeypatch.setattr(env.store, "store", spy)
+    warm = env.loader(master)
+    mtime = os.stat(env.store.path_for(key0)).st_mtime_ns
+    warm.plate(0)                       # from the cache
+    warm.plate(1)                       # missing: the master is split
+    assert warm.opens == 1
+    assert key0 not in stored and key1 in stored
+    assert os.stat(env.store.path_for(key0)).st_mtime_ns == mtime
+
+
+# ---- the format is decided by the content ---------------------------------------------------------------------------
+
+
+def _compressed_looking(path: Path) -> str:
+    """A file with a FITS signature and an empty primary HDU, as a tile-compressed file starts; named like a plain one."""
+    cards = [b"SIMPLE  =                    T", b"BITPIX  =                    8", b"NAXIS   =                    0",
+             b"EXTEND  =                    T", b"END"]
+    block = b"".join(c.ljust(80) for c in cards)
+    path.write_bytes(block.ljust(2880))
+    return str(path)
+
+
+def test_a_tile_compressed_file_named_fits_is_converted(env: Env, tmp_path: Path) -> None:
+    planes = _planes(9)
+    master = _compressed_looking(tmp_path / "wbpp.fits")
+    _master(Path(master + ".as.fits"), planes)
+    loader = env.loader(master)
+    assert np.array_equal(_plate(loader.plate(0)), planes[0])
+    assert len(env.conversions) == 1
+
+
+def test_a_plain_fits_under_another_name_is_read_directly(env: Env, tmp_path: Path) -> None:
+    master = _master(tmp_path / "rgb.dat", _planes())
+    env.loader(master).plate(0)
+    assert env.conversions == [] and _master_reads(env, master) == 1
+
+
+def test_the_converted_copy_is_deleted_once_it_has_been_read(env: Env, tmp_path: Path) -> None:
+    master = _foreign(env, tmp_path, ".xisf", _planes(8))
+    loader = env.loader(master)
+    loader.plate(0)
+    assert os.listdir(env.work) == []
+    assert os.path.isfile(master)  # the master itself is never touched
+
+
+def test_plane_statistics_are_python_floats_of_min_max_and_median() -> None:
+    stats = colour_load.plane_statistics(np.array([[0.25, 1.0], [0.5, 0.75]], np.float32))
+    assert stats == {"min": 0.25, "max": 1.0, "median": 0.625}
+    assert all(type(v) is float for v in stats.values())
+
+
+def test_is_plain_fits_looks_at_the_content(tmp_path: Path) -> None:
+    plain = _master(tmp_path / "a.xisf", _planes())
+    assert colour_load.is_plain_fits(plain)
+    assert not colour_load.is_plain_fits(_compressed_looking(tmp_path / "b.fits"))
+    (tmp_path / "c.fits").write_bytes(b"XISF0100" + b"\0" * 100)
+    assert not colour_load.is_plain_fits(str(tmp_path / "c.fits"))
+    assert not colour_load.is_plain_fits(str(tmp_path / "missing.fits"))

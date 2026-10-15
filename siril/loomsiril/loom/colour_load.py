@@ -29,25 +29,38 @@ from typing import Any, Callable, Mapping, Optional
 import numpy as np
 
 from loomsiril.io_fits import read_fits, write_fits
-from loomsiril.loom import cache, osc
+from loomsiril.loom import cache, channels, osc
 
 __all__ = ["ColourGroupLoader", "group_log_line", "plane_statistics", "is_plain_fits"]
-
-#: The file name extensions ``read_fits`` reads as they are (compared without regard to case).
-_PLAIN_FITS = (".fit", ".fits", ".fts")
 
 #: The FITS FILTER value of each logical channel of a colour master, as Loom's exports name them.
 _PLANE_NAMES = {"H": "Ha", "O": "OIII"}
 
-#: Longest file name written to LOOMSRC: a FITS card holds 80 characters, 12 of them are the keyword and quotes.
-_LOOMSRC_NAME_MAX = 48
+#: Longest LOOMSRC string once its apostrophes are doubled: a card holds 80 characters, 12 of them are the keyword,
+#: the equals sign and the quotes.
+_LOOMSRC_MAX = 68
+#: What replaces the start of a name too long for the card.
+_ELLIPSIS = "..."
 
 _SEPARATORS = re.compile(r"[\\/]")
 
 
 def is_plain_fits(path: str) -> bool:
-    """True for a ``.fit``, ``.fits`` or ``.fts`` file (any case): the ones ``read_fits`` takes directly."""
-    return os.path.splitext(path)[1].lower() in _PLAIN_FITS
+    """True when the file is a FITS file with its image in the primary HDU: the ones ``read_fits`` takes directly.
+
+    Decided by content, not by name: an XISF, a tile-compressed FITS (empty primary HDU, image in an extension) and a
+    file that cannot be read as FITS are not plain, whatever their extension says.
+    """
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(6) != b"SIMPLE":
+                return False
+            fh.seek(0)
+            header = channels._read_hdu_header(fh, path)
+    except (OSError, ValueError):
+        return False
+    naxis = header.get("NAXIS")
+    return isinstance(naxis, int) and not isinstance(naxis, bool) and naxis > 0
 
 
 def plane_statistics(plane: np.ndarray) -> dict[str, float]:
@@ -75,11 +88,28 @@ def group_log_line(slot: str, path: str, kind: str, filter_value: Optional[str],
 
 
 def _loomsrc(path: str, plane: int) -> str:
-    """The LOOMSRC value: the master's file name and the plane. ASCII (FITS needs it) and short enough for one card."""
+    """The LOOMSRC value: the master's file name and the plane, as one FITS string that fits a card.
+
+    FITS strings are ASCII, and a card holds 80 characters with every apostrophe doubled. A name that is too long
+    loses its start (replaced by ``...``), never its end: the end carries the filter, the suffix and the extension
+    that tell two masters of one session apart. Never raises, whatever the name holds.
+    """
     name = os.path.basename(path).encode("ascii", "replace").decode("ascii")
-    if len(name) > _LOOMSRC_NAME_MAX:
-        name = name[:_LOOMSRC_NAME_MAX]
-    return f"{name}|plane:{plane}"
+    text = f"{name}|plane:{plane}"
+
+    def width(chars: str) -> int:
+        return len(chars) + chars.count("'")
+
+    if width(text) <= _LOOMSRC_MAX:
+        return text
+    kept: list[str] = []
+    used = len(_ELLIPSIS)
+    for ch in reversed(text):
+        used += 2 if ch == "'" else 1
+        if used > _LOOMSRC_MAX:
+            break
+        kept.append(ch)
+    return _ELLIPSIS + "".join(reversed(kept))
 
 
 class ColourGroupLoader:
@@ -142,9 +172,21 @@ class ColourGroupLoader:
             raise ValueError(self.path + ": a colour master of this format needs the converter")
         return self._convert(self.path, "osc_" + cache.hash_str(self.identity)[:16])
 
+    def _forget(self, converted: str) -> None:
+        """Deletes the converted copy of the master once it has been read (it is only a stepping stone)."""
+        if converted != self.path:
+            try:
+                os.remove(converted)
+            except OSError:
+                pass
+
     def _open_and_split(self) -> None:
         self.opens += 1
-        planes, header = read_fits(self._readable_master())
+        readable = self._readable_master()
+        try:
+            planes, header = read_fits(readable)
+        finally:
+            self._forget(readable)
         if len(planes) < 3:
             raise ValueError(f"{self.path} is not a colour master: it has {len(planes)} channel"
                              + ("" if len(planes) == 1 else "s"))
