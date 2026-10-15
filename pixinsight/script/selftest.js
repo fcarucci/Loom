@@ -23429,6 +23429,93 @@ function runFailurePathTests()
    }
    finally { Steps.FILTERS_XSPD_PATH = savedXspd; }
 
+   } if ( testGroup( "qa.osc.detect" ) ) {
+   /*
+    * Acceptance: how a colour master's filter says what its planes hold.
+    * Known models first, then broadband names, then family aliases, then
+    * nothing; spelling, case, spacing and punctuation never matter.
+    */
+   ( function()
+   {
+      function info( v ) { return Util.oscFilterInfo( v ); }
+      function field( v, f ) { var i = info( v ); return i == null ? "null" : i[f]; }
+      var KINDS = [ "broadband", "dualband", "unsupported" ];
+
+      // 1. Known models are dual-band and confident, with their passbands.
+      [ "L-eXtreme", "L-Ultimate", "L-eNhance", "NBZ" ].forEach( function( n )
+      {
+         check( "qa.osc.detect: " + n + " is a known dual-band model", [ field( n, "kind" ), field( n, "confident" ) ],
+                [ "dualband", true ] );
+      } );
+      check( "qa.osc.detect: L-eXtreme passes 7 nm / 7 nm", [ field( "L-eXtreme", "haNm" ), field( "L-eXtreme", "oiiiNm" ) ], [ 7, 7 ] );
+      check( "qa.osc.detect: L-Ultimate passes 3 nm / 3 nm", [ field( "L-Ultimate", "haNm" ), field( "L-Ultimate", "oiiiNm" ) ], [ 3, 3 ] );
+
+      // 1. Spelling, case, spaces and punctuation do not matter.
+      var ref = info( "L-eXtreme" );
+      [ "l-extreme", "L EXTREME", "LeXtreme", "L_eXtreme", "  l - e x t r e m e ", "L.eXtreme" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the same filter as L-eXtreme", info( v ), ref );
+      } );
+      var ult = info( "L-Ultimate" );
+      [ "l ultimate", "LULTIMATE", "L_Ultimate" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the same filter as L-Ultimate", info( v ), ult );
+      } );
+
+      // 1. A known model beats a family alias: ALP-T is also the family alias "alpt".
+      var alpt = info( "ALP-T Hα/OIII" );
+      check( "qa.osc.detect: the ALP-T Hα/OIII variant is supported, dual-band and confident (the model beats the alias)",
+             [ alpt && alpt.kind, alpt && alpt.confident ], [ "dualband", true ] );
+      [ "ALP-T Ha/OIII", "alpt ha oiii", "ALP-T HA/OIII", "ALPT Hα OIII" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the ALP-T Hα/OIII variant", info( v ), alpt );
+      } );
+      var alptSii = info( "ALP-T SII/Hβ" );
+      check( "qa.osc.detect: the ALP-T SII/Hβ variant is unsupported (not an unconfident dual-band alias)",
+             alptSii && alptSii.kind, "unsupported" );
+      [ "ALP-T SII/Hb", "alpt sii hb", "ALP-T SII/Hbeta", "ALPT SII Hβ" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the ALP-T SII/Hβ variant, unsupported", field( v, "kind" ), "unsupported" );
+      } );
+      check( "qa.osc.detect: the two ALP-T variants differ", alpt && alptSii && alpt.kind != alptSii.kind, true );
+
+      // 2. Broadband names, and an empty or absent FILTER, are broadband and confident.
+      [ "UVIR", "UV/IR", "uv-ir", "IR-Cut", "ircut", "L-Pro", "lpro", "CLS", "cls", "", "   ", null, undefined ].forEach( function( v )
+      {
+         check( "qa.osc.detect: " + JSON.stringify( v ) + " is broadband and confident",
+                [ field( v, "kind" ), field( v, "confident" ) ], [ "broadband", true ] );
+      } );
+
+      // 3. Family aliases are dual-band but not confident: the name alone does not give the line pair.
+      [ "Duo", "duo", "Dual", "Tri", "Triad", "Quad", "ALPT", "alp-t", " D U O " ].forEach( function( v )
+      {
+         check( "qa.osc.detect: family alias '" + v + "' is dual-band, not confident",
+                [ field( v, "kind" ), field( v, "confident" ) ], [ "dualband", false ] );
+      } );
+
+      // 4. Anything else is null.
+      [ "Astronomik Deep-Sky", "xyzzy", "Ha 7nm", "Baader Moon & Skyglow" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is not recognised", info( v ), null );
+      } );
+
+      // Quad-band is dual-band: no fourth kind exists, and the kind is never "quad".
+      [ "Quad", "Quad band", "quad-band", "Quadband", "QUAD BAND" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: quad-band '" + v + "' is dual-band", field( v, "kind" ), "dualband" );
+      } );
+      var every = [ "L-eXtreme", "L-Ultimate", "L-eNhance", "NBZ", "ALP-T Hα/OIII", "ALP-T SII/Hβ", "UVIR", "", null,
+                    "Duo", "Quad", "Triad" ].map( function( v ) { return field( v, "kind" ); } );
+      check( "qa.osc.detect: every answer is one of broadband, dualband, unsupported",
+             every.filter( function( k ) { return KINDS.indexOf( k ) < 0; } ), [] );
+
+      // The normaliser the table and the override keys share.
+      check( "qa.osc.detect: normaliseFilter lowercases and drops punctuation and spacing",
+             [ Util.normaliseFilter( "L-eXtreme" ), Util.normaliseFilter( " Duo Band! " ), Util.normaliseFilter( "UV/IR" ) ],
+             [ "lextreme", "duoband", "uvir" ] );
+      check( "qa.osc.detect: normaliseFilter of nothing is empty", [ Util.normaliseFilter( null ), Util.normaliseFilter( "" ) ], [ "", "" ] );
+   } )();
+
    } if ( testGroup( "cache" ) ) {
    /*
     * The cache folder's own bookkeeping, on a synthetic folder: entries
