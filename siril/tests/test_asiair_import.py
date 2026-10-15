@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shutil
+from unittest import mock
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pytest
@@ -105,7 +107,8 @@ def test_manifest_is_written_and_every_copy_verified(card: str, lights: list[str
     dest = str(tmp_path / "out")
     manifest = manifest_for(dest, lights)
     result = AI.write_manifest(manifest, card_root=card)
-    assert result == {"written": 3, "failed": [], "cancelled": False}
+    assert result == {"written": 3, "failed": [], "cancelled": False,
+                      "written_paths": [item["dst"] for item in manifest["lights"]]}
     for src, item in zip(lights, manifest["lights"]):
         assert Path(item["dst"]).read_bytes() == Path(src).read_bytes()
         assert AI.verify_imported(src, item["dst"]) == {"ok": True, "reason": ""}
@@ -179,7 +182,8 @@ def test_cancel_after_the_first_file_writes_no_more(card: str, lights: list[str]
         return False
 
     result = AI.write_manifest(manifest, on_progress=stop_after_first, card_root=card)
-    assert result == {"written": 1, "failed": [], "cancelled": True}
+    assert result == {"written": 1, "failed": [], "cancelled": True,
+                      "written_paths": [manifest["lights"][0]["dst"]]}
     assert seen == [(1, 3)]
     assert os.path.exists(manifest["lights"][0]["dst"])
     assert not os.path.exists(manifest["lights"][1]["dst"])
@@ -294,18 +298,22 @@ def test_card_darks_state_helpers(card: str, tmp_path: Path) -> None:
 
 # ---- the master flats (FrameSelector.js 2171-2226) -------------------------------------------------------------
 
-class FakeEngine:
-    pass
-
-
-def master_flat_fixture(card: str, tmp_path: Path, ticked: bool) -> tuple[dict[str, Any], dict[str, Any], str,
-                                                                        dict[str, Any], str]:
+def master_flat_fixture(card: str, tmp_path: Path, ticked: bool, n_flats: int = 2,
+                        fail: Optional[str] = None) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], str]:
+    """Flats on the card copied into ``<dest>/Flat``, the card's darks read; ``fail`` names a flat whose copy fails."""
     dest = str(tmp_path / "out")
-    flat_srcs = [write_frame(Path(card) / "Flat" / f"F_{i}.fit", flat_header()) for i in range(2)]
+    flat_srcs = [write_frame(Path(card) / "Flat" / f"F_{i}.fit", flat_header()) for i in range(n_flats)]
     dark_srcs = [write_frame(Path(card) / "Dark" / f"D_{i}.fit", dark_header()) for i in range(2)]
     manifest = manifest_for(dest, [], flat_srcs)
-    written = AI.write_manifest(manifest, card_root=card)
-    assert written["written"] == 2
+    real_convert = AI.convert_one
+
+    def convert(src: str, dst: str) -> dict[str, Any]:
+        if src == fail:
+            return {"ok": False, "reason": "could not write: injected"}
+        return real_convert(src, dst)
+
+    with mock.patch.object(AI, "convert_one", convert):
+        written = AI.write_manifest(manifest, card_root=card)
     darks_folder = tmp_path / "darks-folder"
     darks_folder.mkdir()
     write_frame(darks_folder / "dark_folder_1.fit", dark_header())
@@ -327,7 +335,7 @@ def test_master_flats_notes_in_order_with_card_darks_preferred(card: str, tmp_pa
         assert opts["shouldStop"]() is False
         return "run-result"
 
-    engine = FakeEngine()
+    engine = object()
     progress: list[tuple[int, int, str]] = []
     result = AI.make_master_flats(manifest, written, dest, state, engine=engine, run=run, note=notes.append,
                                   on_progress=lambda d, t, s: progress.append((d, t, s)))
@@ -365,16 +373,181 @@ def test_master_flats_darks_folder_when_the_box_is_not_ticked(card: str, tmp_pat
     assert not any("on the ASIAIR card" in n for n in notes)
 
 
-def test_master_flats_skip_a_filter_with_a_failed_copy(card: str, tmp_path: Path) -> None:
-    manifest, written, dest, state, _folder = master_flat_fixture(card, tmp_path, ticked=True)
-    lost = manifest["flats"][0]["src"]
-    written = {"written": 1, "failed": [{"src": lost, "reason": "x"}], "cancelled": False}
-    seen: list[list[dict[str, Any]]] = []
-    AI.make_master_flats(manifest, written, dest, state, engine=None,
-                         run=lambda jobs, engine, opts: seen.append(jobs), note=lambda _l: None)
-    # Both flats are filter Ha, so the one filter with a failed copy is skipped as a whole.
-    assert seen and len(seen[0]) > 0
-    assert all(j["skip"] is not None for j in seen[0])
+def test_a_failed_flat_copy_skips_its_filter_and_deletes_no_raw_flat(card: str, tmp_path: Path) -> None:
+    master_flat_run = pytest.importorskip("loomsiril.master_flat_run")
+    lost = str(Path(card) / "Flat" / "F_0.fit")
+    manifest, written, dest, state, _folder = master_flat_fixture(card, tmp_path, ticked=True, n_flats=3, fail=lost)
+    assert written["written"] == 2
+    assert [f["src"] for f in written["failed"]] == [lost]
+    engine = FakeMasterEngine(tmp_path / "work")
+    jobs_seen: list[list[dict[str, Any]]] = []
+
+    def run(jobs: list[dict[str, Any]], eng: Any, opts: dict[str, Any]) -> Any:
+        jobs_seen.append(jobs)
+        return master_flat_run.execute(jobs, eng, opts)
+
+    result = AI.make_master_flats(manifest, written, dest, state, engine=engine, run=run, note=lambda _l: None)
+    assert len(jobs_seen[0]) == 1
+    job = jobs_seen[0][0]
+    assert job["skip"] == "1 flat copy(ies) failed to write; a master from the rest would be incomplete"
+    flat_paths = [f["path"] for f in job["flats"]]
+    assert lost not in flat_paths
+    assert flat_paths == [m["dst"] for m in manifest["flats"][1:]]
+    assert result["made"] == []
+    assert [k["reason"] for k in result["kept"]] == [job["skip"]]
+    assert engine.removed == []
+    for m in manifest["flats"][1:]:
+        assert os.path.exists(m["dst"])
+
+
+def test_an_earlier_import_flat_is_never_a_job_input_nor_deleted(card: str, tmp_path: Path) -> None:
+    master_flat_run = pytest.importorskip("loomsiril.master_flat_run")
+    manifest, written, dest, state, _folder = master_flat_fixture(card, tmp_path, ticked=True, n_flats=2)
+    earlier = write_frame(Path(dest) / "Flat" / "F_2.fit", flat_header())
+    engine = FakeMasterEngine(tmp_path / "work")
+    jobs_seen: list[list[dict[str, Any]]] = []
+
+    def run(jobs: list[dict[str, Any]], eng: Any, opts: dict[str, Any]) -> Any:
+        jobs_seen.append(jobs)
+        return master_flat_run.execute(jobs, eng, opts)
+
+    result = AI.make_master_flats(manifest, written, dest, state, engine=engine, run=run, note=lambda _l: None)
+    assert [f["path"] for job in jobs_seen[0] for f in job["flats"]] == [m["dst"] for m in manifest["flats"]]
+    assert earlier not in [f["path"] for job in jobs_seen[0] for f in job["flats"]]
+    assert len(result["made"]) == 1 and result["made"][0]["flats"] == 2
+    assert os.path.exists(earlier)
+    assert earlier not in engine.removed
+
+
+def test_a_cancelled_import_makes_no_master_flats(card: str, tmp_path: Path) -> None:
+    manifest, written, dest, state, _folder = master_flat_fixture(card, tmp_path, ticked=True, n_flats=2)
+    cancelled = {"written": 1, "failed": [], "cancelled": True, "written_paths": [manifest["flats"][0]["dst"]]}
+    notes: list[str] = []
+    called: list[Any] = []
+    out = AI.make_master_flats(manifest, cancelled, dest, state, engine=None,
+                               run=lambda *a: called.append(a), note=notes.append)
+    assert out is None
+    assert called == []
+    assert notes == ["import cancelled: no master flats were made"]
+
+
+def test_write_manifest_reports_only_the_paths_it_wrote_and_verified(card: str, lights: list[str],
+                                                                     tmp_path: Path) -> None:
+    manifest = manifest_for(str(tmp_path / "out"), lights)
+    result = AI.write_manifest(manifest, card_root=card, on_progress=lambda done, total: False)
+    assert result["written_paths"] == [manifest["lights"][0]["dst"]]
+    assert result["cancelled"] is True
+
+
+def test_write_manifest_requires_the_card_root(lights: list[str], tmp_path: Path) -> None:
+    with pytest.raises(TypeError):
+        AI.write_manifest(manifest_for(str(tmp_path / "out"), lights))  # type: ignore[call-arg]
+
+
+# ---- the card, however it is spelled or linked (frames_copy._canon) --------------------------------------------
+
+def test_a_card_spelled_in_another_case_is_the_card_where_names_fold_case(card: str, monkeypatch: pytest.MonkeyPatch,
+                                                                         tmp_path: Path) -> None:
+    spelled = card.lower() + "/export"
+    monkeypatch.setattr(AI, "_CASE_FOLD", False)
+    assert AI.outputs_are_safe(spelled, card) is True
+    monkeypatch.setattr(AI, "_CASE_FOLD", True)
+    assert AI.outputs_are_safe(spelled, card) is False
+    assert AI.on_card(spelled, card) is True
+
+
+def test_a_samefile_alias_of_the_card_is_refused(card: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    real_samefile = os.path.samefile
+
+    def samefile(a: str, b: str) -> bool:
+        if os.path.abspath(a) == str(alias) or os.path.abspath(b) == str(alias):
+            return os.path.abspath(a) == card or os.path.abspath(b) == card
+        return real_samefile(a, b)
+
+    monkeypatch.setattr(AI.os.path, "samefile", samefile)
+    assert AI.outputs_are_safe(str(alias / "out"), card) is False
+    assert AI.on_card(str(alias / "out"), card) is True
+
+
+def test_a_samefile_error_is_a_refusal(card: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(a: str, b: str) -> bool:
+        raise OSError("cannot compare")
+
+    monkeypatch.setattr(AI.os.path, "samefile", broken)
+    assert AI.on_card(str(tmp_path / "out"), card) is True
+    assert AI.outputs_are_safe(str(tmp_path / "out"), card) is False
+
+
+def test_a_parent_symlink_onto_the_card_is_refused_by_the_copy(card: str, lights: list[str], tmp_path: Path) -> None:
+    os.symlink(card, tmp_path / "link")
+    manifest = manifest_for(str(tmp_path / "link" / "export"), lights)
+    result = AI.write_manifest(manifest, card_root=card)
+    assert result["written"] == 0
+    assert result["written_paths"] == []
+    assert all(f["reason"] == "the destination is on the ASIAIR card; not written" for f in result["failed"])
+    assert not os.path.exists(os.path.join(card, "export"))
+    assert AI.outputs_are_safe(str(tmp_path / "link" / "export"), card) is False
+
+
+class FakeMasterEngine:
+    """A master-flat engine in memory-free files under ``work``: calibrates by copying, integrates by writing bytes."""
+
+    def __init__(self, work: Path) -> None:
+        self.work = work
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.removed: list[str] = []
+        self.calls = 0
+
+    def exists(self, path: str) -> bool:
+        return os.path.exists(path)
+
+    def remove(self, path: str) -> bool:
+        os.remove(path)
+        self.removed.append(path)
+        return True
+
+    def remove_dir(self, path: str) -> bool:
+        shutil.rmtree(path, ignore_errors=True)
+        return True
+
+    def temp_dir(self, job: dict[str, Any]) -> str:
+        self.calls += 1
+        d = self.work / f"tmp-{self.calls}"
+        d.mkdir(parents=True)
+        return str(d)
+
+    def master_dark(self, group: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        p = self.work / f"dark-master-{self.calls}.fit"
+        p.write_bytes(b"dark")
+        return {"ok": True, "path": str(p)}
+
+    def calibrate(self, paths: list[str], dark_path: str, out_dir: str) -> dict[str, Any]:
+        outs = []
+        for p in paths:
+            o = os.path.join(out_dir, "c_" + os.path.basename(p))
+            Path(o).write_bytes(b"calibrated")
+            outs.append(o)
+        return {"ok": True, "paths": outs}
+
+    def integrate(self, paths: list[str], spec: dict[str, Any], out_path: str, job: dict[str, Any]) -> dict[str, Any]:
+        Path(out_path).write_bytes(b"master")
+        return {"ok": True}
+
+    def verify(self, partial_path: str, job: dict[str, Any]) -> Optional[str]:
+        return None
+
+    def publish(self, partial_path: str, final_path: str) -> bool:
+        os.replace(partial_path, final_path)
+        return True
+
+    def resolve(self, path: str) -> str:
+        return os.path.realpath(path)
+
+    def remove_partials(self, dir_path: str) -> None:
+        return None
 
 
 def test_master_flat_work_folder_is_removed(card: str, tmp_path: Path) -> None:

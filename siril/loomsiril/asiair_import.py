@@ -31,8 +31,11 @@ Covered, by JS line range (FrameSelector.js):
 The import summary (``AsiairNames.importSummary``, AsiairNames.js 562-579, in ``asiair_names.import_summary``) is
 wrapped by :func:`import_summary`, which says "Written as FITS copies:" where the JavaScript says "XISF".
 
-Nothing here writes under the card root: :func:`write_manifest` refuses a destination that resolves onto the card when
-it is given ``card_root``, and :func:`outputs_are_safe` is the caller's check before any copy.
+Nothing here writes under the card root: :func:`on_card` decides whether a path is on the card (canonical path,
+case-folded where names fold case, or the same file as the card root for any existing ancestor); :func:`write_manifest`
+requires the card root and refuses each destination on it; :func:`outputs_are_safe` is the caller's check before any
+copy. :func:`write_manifest` reports ``written_paths``, the destinations written and verified in that run, and
+:func:`make_master_flats` takes its flats from those alone; a cancelled import makes no master flats.
 
 Names are the JS names in snake_case; dict keys keep the JS camelCase (``cardRoot``, ``cardDarkMatch``,
 ``onlyMasterFlats``, ``darksFolder``), so a state dict reads the same on both sides. JS ``null``/``undefined`` is
@@ -45,6 +48,7 @@ import datetime as _dt
 import logging
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -79,6 +83,9 @@ _FITS_LABEL = "Written as FITS copies:"
 
 #: The master-flat work folder, under the cache folder (FrameSelector.js 2218).
 MASTER_FLAT_WORK = "master-flat-work"
+
+#: Names that fold case on this platform (as frames_copy does): a card and a destination spelled in another case are the same.
+_CASE_FOLD = sys.platform in ("darwin", "win32")
 
 
 @dataclass(frozen=True)
@@ -212,36 +219,66 @@ def resolved(path: str) -> str:
         return path
 
 
+def _canon(path: str) -> str:
+    """The path with links, "." and ".." resolved, normalised, and case-folded where names fold case (frames_copy._canon)."""
+    p = os.path.normcase(os.path.realpath(path))
+    return p.casefold() if _CASE_FOLD else p
+
+
+def _inside(child: str, parent: str) -> bool:
+    """Is ``child`` the same path as ``parent`` or below it? Both canonical."""
+    if child == parent:
+        return True
+    return child.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def on_card(path: str, card_root: str) -> bool:
+    """Is ``path`` on the card? True when its canonical form is the card or below it, or when any existing ancestor
+    (the path itself included) is the same file as the card root. A check that cannot be made is a refusal."""
+    if _inside(_canon(path), _canon(card_root)):
+        return True
+    p = os.path.abspath(path)
+    while True:
+        try:
+            if os.path.exists(p) and os.path.samefile(p, card_root):
+                return True
+        except OSError:
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+
+
 def outputs_are_safe(destination: Optional[str], card_root: Optional[str]) -> bool:
     """Is no output path on the card? (FrameSelector.js 2259-2270).
 
-    The destination and its ``Light`` and ``Flat`` folders are each resolved, then compared with the card root on
-    path components.
+    The destination and its ``Light`` and ``Flat`` folders are each checked with :func:`on_card`.
     """
     if destination is None or card_root is None:
         return False
-    root = resolved(card_root)
     for out in (destination, destination + "/Light", destination + "/Flat"):
-        if AN.is_inside(resolved(out), root):
+        if on_card(out, card_root):
             return False
     return True
 
 
-def write_manifest(manifest: dict[str, Any], on_progress: Optional[Callable[[int, int], Any]] = None,
-                   card_root: Optional[str] = None, warn: Warn = None) -> dict[str, Any]:
+def write_manifest(manifest: dict[str, Any], card_root: str, on_progress: Optional[Callable[[int, int], Any]] = None,
+                   warn: Warn = None) -> dict[str, Any]:
     """Copy and verify every file of ``manifest`` (lights, then flats) (FrameSelector.js 2110-2132).
 
-    Returns ``{"written", "failed": [{"src", "reason"}], "cancelled"}``. ``on_progress(done, total)`` returning
-    ``False`` stops after the file just written. With ``card_root`` given, a destination that resolves onto the card
-    is failed, not written.
+    Returns ``{"written", "failed": [{"src", "reason"}], "cancelled", "written_paths"}``: ``written_paths`` are the
+    destinations written AND verified in this run, and nothing else. ``on_progress(done, total)`` returning ``False``
+    stops after the file just written. A destination on the card (see :func:`on_card`) is failed, not written.
     """
     items = list(manifest["lights"]) + list(manifest["flats"])
     written = 0
     failed: list[dict[str, str]] = []
+    written_paths: list[str] = []
     cancelled = False
     for i, item in enumerate(items):
         dst = item["dst"]
-        if card_root is not None and AN.is_inside(resolved(dst), resolved(card_root)):
+        if on_card(dst, card_root):
             good = {"ok": False, "reason": "the destination is on the ASIAIR card; not written"}
         else:
             try:
@@ -254,12 +291,13 @@ def write_manifest(manifest: dict[str, Any], on_progress: Optional[Callable[[int
             good = verify_imported(item["src"], dst, warn) if made["ok"] else made
         if good["ok"]:
             written += 1
+            written_paths.append(dst)
         else:
             failed.append({"src": item["src"], "reason": good["reason"]})
         if on_progress is not None and on_progress(i + 1, len(items)) is False:
             cancelled = True
             break
-    return {"written": written, "failed": failed, "cancelled": cancelled}
+    return {"written": written, "failed": failed, "cancelled": cancelled, "written_paths": written_paths}
 
 
 def read_card_darks(state: dict[str, Any], dark_frames: list[dict[str, Any]], flat_frames: list[dict[str, Any]]) -> None:
@@ -300,12 +338,17 @@ def make_master_flats(manifest: dict[str, Any], written: dict[str, Any], dest: s
     ``onProgress``). ``cache_dir`` is where the work folder lives; it is removed afterwards.
     """
     emit: Callable[[str], None] = note or (lambda _line: None)
+    if written["cancelled"]:
+        # A cancelled import wrote only some of its flats: a master from those would be incomplete, so none is made.
+        emit("import cancelled: no master flats were made")
+        return None
     root = AN.import_root(dest)["root"]
-    failed_srcs = {js_string(f["src"]) for f in written["failed"]}
+    # Only the flats written and verified in THIS run are masters' inputs; a flat from an earlier import is never read.
+    this_run = set(js_string(p) for p in written["written_paths"])
 
     flats: list[dict[str, Any]] = []
     for f in manifest["flats"]:
-        if js_string(f["src"]) in failed_srcs:
+        if js_string(f["dst"]) not in this_run:
             continue
         h = _quiet_header(f["dst"])
         if h.info is not None:
