@@ -21898,6 +21898,18 @@ function runPipeTests()
    check( "planeWindow twice returns one window", first === second, true );
    check( "planeWindow twice reads the cache once", io5.loads, loadsAfterFirst );
 
+   // A cached plane already handed out is not extracted or stored again when another plane misses.
+   var cache6 = {}; cache6[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fq", "broadband" ), 0 ) ] = true;
+   var io6 = fakeIo( cache6 );
+   var l6 = Pipeline.oscGroupLoader( "OSC", { path: "/m/q.xisf", fingerprint: "fq" }, "broadband", null, io6 );
+   l6.planeWindow( 0 ); l6.planeWindow( 1 );
+   check( "a handed cached plane is not extracted again", io6.asked.indexOf( 0 ), -1 );
+   check( "only the other two planes are stored", io6.stored.length, 2 );
+   check( "oscWorkingId keeps its own id", Pipeline.oscWorkingId( "R_work", "R", function( id ) { return id == "R_work"; } ), "R_work" );
+   check( "oscWorkingId moves off a taken id", Pipeline.oscWorkingId( "Ha_work", "H", function( id ) { return id == "H_work"; } ), "H_work_1" );
+   check( "oscWorkingId renames a plain id", Pipeline.oscWorkingId( "Ha_work", "H", function() { return false; } ), "H_work" );
+   check( "fitsString doubles apostrophes", Util.fitsString( "Bob's M31.xisf|plane:1" ), "'Bob''s M31.xisf|plane:1'" );
+
    // The group's log line.
    check( "oscGroupLogLine", Pipeline.oscGroupLogLine( "OSCNB", { path: "/m/n.xisf" }, "dualband", "L-eXtreme",
              { planes: [ { min: 0.1, max: 0.9, median: 0.2 }, { min: 0, max: 1, median: 0.5 }, { min: 0, max: 1, median: 0.5 } ] } ),

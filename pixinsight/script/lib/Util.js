@@ -339,6 +339,12 @@ Util.powerShellFile = function( script, args )
  * Returns `base` if free, otherwise the first free `base_<n>` starting at n=1.
  * `exists` is a predicate taking an identifier and returning true if taken.
  */
+// A FITS string value: quoted, each apostrophe in the text doubled.
+Util.fitsString = function( text )
+{
+   return "'" + String( text ).replace( /'/g, "''" ) + "'";
+};
+
 Util.uniqueWindowId = function( base, exists )
 {
    if ( !exists( base ) )

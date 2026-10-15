@@ -2086,18 +2086,13 @@ Pipeline.oscGroupLoader = function( slot, source, kind, reg, io )
          for ( var n in names )
          {
             var plane = +n;
+            if ( handed[plane] )
+               continue;   // a sibling already holds it, and its cache entry exists
             var w = io.planeWindow( master, plane, channelName( plane ) );
             io.cacheStore( Pipeline.oscSiblingKey( gid, plane ), w,
                            { channel: names[n], stage: "split",
                              params: { recipe: "plane:" + plane } } );
-            if ( handed[plane] || kept[plane] != null )
-            {
-               // a sibling already has this plane; the new copy is only for the cache
-               try { if ( io.closeWindow ) io.closeWindow( w ); }
-               catch ( e ) {}
-            }
-            else
-               kept[plane] = w;
+            kept[plane] = w;
          }
       }
       finally { io.closeMaster( master ); }
@@ -2147,6 +2142,17 @@ Pipeline.oscGroupLoader = function( slot, source, kind, reg, io )
    };
 
    return loader;
+};
+
+/*
+ * The id a plane's working window takes: <key>_work, or the next free
+ * suffix. A window already holding the base id is not asked to move off
+ * itself.
+ */
+Pipeline.oscWorkingId = function( currentId, key, exists )
+{
+   var base = key + "_work";
+   return currentId == base ? currentId : Util.uniqueWindowId( base, exists );
 };
 
 // The log line of one colour group, from its validation record.
@@ -2276,7 +2282,7 @@ Pipeline.oscColourChannels = function( slot, kind, config, reg )
                         if ( this.window != null )
                            return this.window;
                         var win = loader.planeWindow( this.plane );
-                        win.mainView.id = Util.freeWindowId( this.key + "_work" );
+                        win.mainView.id = Pipeline.oscWorkingId( win.mainView.id, this.key, Util.windowIdExists );
                         this.window = win;
                         this.view = win.mainView;
                         Util.log( "load", this.key + " <- " + this.path + " (plane " + this.plane + ")" );

@@ -2384,7 +2384,7 @@ Steps.extractPlane = function( view, plane, newId, filterName )
    try
    {
       src.selectedChannel = plane;
-      w.mainView.image.assign( src );
+      w.mainView.image.assign( src );   // copies the selected channel
    }
    finally { src.selectedChannel = saved; }
    w.mainView.endProcess();
@@ -2394,7 +2394,7 @@ Steps.extractPlane = function( view, plane, newId, filterName )
       return k.name != "FILTER" && k.name != "LOOMSRC";
    } );
    kws.push( new FITSKeyword( "FILTER", "'" + name + "'", "channel of the colour master" ) );
-   kws.push( new FITSKeyword( "LOOMSRC", "'" + fileName + "|plane:" + plane + "'", "colour master and plane" ) );
+   kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( fileName + "|plane:" + plane ), "colour master and plane" ) );
    w.keywords = kws;
 
    try
