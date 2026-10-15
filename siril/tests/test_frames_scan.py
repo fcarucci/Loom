@@ -303,3 +303,40 @@ def test_nothing_is_written_outside_the_cache_directory(tmp_path: Path) -> None:
                      if p.is_file() and cache not in p.parents and folder not in p.parents)
     assert written == []
     assert (cache / "frame-quality.json").is_file()
+
+
+# ---- a frame that cannot be measured is not cached as a result ---------------------------------------------
+
+class _UnreadableMeasure(FakeMeasure):
+    """Reports one frame as None and omits another from its results, as an unreadable frame may come back."""
+
+    def __init__(self, none_for: str, absent_for: str) -> None:
+        super().__init__()
+        self._none_for = none_for
+        self._absent_for = absent_for
+
+    def __call__(self, siril: Any, paths: list[str], work_dir: str,
+                 altitude_of: Optional[Callable[[str], Any]] = None) -> tuple[dict[str, Any], Optional[str]]:
+        self.calls.append((list(paths), work_dir))
+        out: dict[str, Any] = {p: _metrics_for(p) for p in paths if p not in (self._none_for, self._absent_for)}
+        if self._none_for in paths:
+            out[self._none_for] = None
+        return out, None
+
+
+def test_an_unreadable_frame_is_unmeasurable_and_measured_again_on_the_next_scan(tmp_path: Path) -> None:
+    paths = [_frame(tmp_path / "light_L_1.fit", "L"), _frame(tmp_path / "light_L_2.fit", "L"),
+             _frame(tmp_path / "light_L_3.fit", "L")]
+    cache = tmp_path / "cache"
+    flaky = _UnreadableMeasure(none_for=paths[0], absent_for=paths[1])
+    result = _scan(paths, cache, flaky)
+    L = result["channels"]["L"]
+    assert set(L["metrics"]) == {paths[2]}          # neither the None nor the absent frame has numbers
+    assert [e["path"] for e in L["entries"]] == paths
+    assert L["problems"] == [] and result["unstable"] == [] and result["cancelled"] is False
+
+    # nothing was stored for them: the next scan measures exactly those two, and now they have numbers
+    later = FakeMeasure()
+    again = _scan(paths, cache, later)
+    assert sorted(later.measured) == sorted([paths[0], paths[1]])
+    assert set(again["channels"]["L"]["metrics"]) == set(paths)
