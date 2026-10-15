@@ -852,7 +852,7 @@ Util.oscModelName = function( value )
       return "";
    return String( value ).trim()
       .replace( /\s*\d+(\.\d+)?\s*("|''|mm|in)$/i, "" )
-      .replace( /^(optolong|antlia|idas)[\s_-]+(?=\S)/i, "" );
+      .replace( /^(optolong|antlia|idas|astronomik|zwo|baader|svbony|stc|radian)[\s_-]+(?=\S)/i, "" );
 };
 
 Util.oscFilterInfo = function( filterValue )

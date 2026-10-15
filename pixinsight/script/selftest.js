@@ -22048,6 +22048,14 @@ function runPipeTests()
       check( "osc.kindkey: a brand alone is kept", Util.oscKindKey( "Optolong", "/m/a" ), "filter:optolong" );
       check( "osc.kindkey: a blank filter keys on the path", Util.oscKindKey( "", "/m/a" ), "path:/m/a" );
       check( "osc.kindkey: an absent filter keys on the path", Util.oscKindKey( null, "/m/a" ), "path:/m/a" );
+      check( "osc.kindkey: other OSC filter brands are dropped too",
+             Util.oscModelName( "Astronomik CLS-CCD" ), "CLS-CCD" );
+      check( "osc.kindkey: a ZWO brand gives the model's key",
+             Util.oscKindKey( "ZWO Duo-Band", "/m/a" ), Util.oscKindKey( "Duo-Band", "/m/b" ) );
+      check( "osc.kindkey: a branded broadband filter has the bare filter's kind",
+             Util.oscFilterInfo( "Astronomik CLS" ).kind, Util.oscFilterInfo( "CLS" ).kind );
+      check( "osc.kindkey: a brand needs a separator to be dropped",
+             Util.oscKindKey( "Baader", "/m/a" ), "filter:baader" );
       check( "osc.kindkey: two blank-filter paths have different keys",
              Util.oscKindKey( "", "/m/a" ) != Util.oscKindKey( "", "/m/b" ), true );
       check( "osc.kindkey: paths differing only in case have different keys",
