@@ -21585,7 +21585,7 @@ function runPipeTests()
          Pipeline.correctNarrowband( chans, config, reg );
          var ref = Pipeline.registerToReference( chans, config, reg );
          Pipeline.cropToCommonArea( chans, ref.refKey );
-         return { chans: chans, reg: reg };
+         return { chans: chans, reg: reg, ref: ref, common: common };
       }
       function peak( view )
       {
@@ -21698,6 +21698,49 @@ function runPipeTests()
          st.reg.closeAll();
          check( "a re-made OSCNB master: opened once and the group registers again",
                 [ count( nb ), logged( /registerGroup MISS/ ) ], [ 1, true ] );
+
+         // clean white balance branch: the OSC planes are on the reference already, so they are only
+         // cropped (once, with the corrected planes) and need no registration
+         var cleanCfg = makeConfig( both, "D" );
+         cleanCfg.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+         var keptAberration = Steps.aberration, keptFactors = Steps.readWhiteBalanceFactors;
+         var keptRegClean = Pipeline.registerCleanChannel, keptCropClean = Pipeline.cropCleanChannel;
+         var regCalls = 0, cleanPeaks = {}, cleanSizes = {};
+         try
+         {
+            Steps.aberration = function() {};
+            Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
+            Pipeline.registerCleanChannel = function() { ++regCalls; return keptRegClean.apply( Pipeline, arguments ); };
+            Pipeline.cropCleanChannel = function( cleanKey, k )
+            {
+               var v = keptCropClean.apply( Pipeline, arguments );
+               cleanPeaks[k] = peak( v );
+               cleanSizes[k] = [ v.image.width, v.image.height ];
+               return v;
+            };
+            st = staged( cleanCfg );
+            try
+            {
+               var factors = Pipeline.cleanWhiteBalance( st.chans, cleanCfg, st.reg, st.common, null,
+                                                         st.ref.refView, st.ref.refFingerprint, st.ref.refKey );
+               var gv = st.chans.G.view, pgc = peak( gv );
+               check( "clean branch: factors were measured", factors, [ 1, 1, 1 ] );
+               check( "clean branch: no registration is run for the OSC planes", regCalls, 0 );
+               check( "clean branch: each clean plane has the corrected planes' size (one crop)",
+                      [ "R", "G", "B" ].map( function( k ) { return cleanSizes[k]; } ),
+                      [ "R", "G", "B" ].map( function() { return [ gv.image.width, gv.image.height ]; } ) );
+               check( "clean branch: the clean planes are pixel-aligned with the reference",
+                      [ "R", "G", "B" ].map( function( k )
+                      { return Math.abs( cleanPeaks[k].x - pgc.x ) <= 1 && Math.abs( cleanPeaks[k].y - pgc.y ) <= 1; } ),
+                      [ true, true, true ] );
+            }
+            finally { st.reg.closeAll(); }
+         }
+         finally
+         {
+            Steps.aberration = keptAberration; Steps.readWhiteBalanceFactors = keptFactors;
+            Pipeline.registerCleanChannel = keptRegClean; Pipeline.cropCleanChannel = keptCropClean;
+         }
 
          // OSCNB alone, narrowband gradient removal off: one open cold, none warm
          var alone = makeMaster( "OSCNB_alone.xisf", "OSCNB" );

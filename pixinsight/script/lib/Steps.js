@@ -4131,6 +4131,8 @@ Steps.exportPsb = function( results, dir, name )
       var c = Steps.syqonCloneWindowForProcessing(
                  entry.window, Util.freeWindowId(
                     Steps.syqonSanitizeFileName( entry.name ) + "_psb" ) );
+      // A PSB has no per-layer keyword store: the provenance lives on the layer's source
+      // window (and in the exported channel files), so the clone only carries it along.
       var srcKw = Util.loomSourceKeywords( entry.window );
       if ( srcKw.length > 0 )
          c.keywords = srcKw;
