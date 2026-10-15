@@ -23516,6 +23516,69 @@ function runFailurePathTests()
       check( "qa.osc.detect: normaliseFilter of nothing is empty", [ Util.normaliseFilter( null ), Util.normaliseFilter( "" ) ], [ "", "" ] );
    } )();
 
+   } if ( testGroup( "qa.osc.header" ) ) {
+   /*
+    * Acceptance: a colour master is a three-channel image; any other
+    * channel count than 1 or 3 is refused with its path and count; the
+    * channel count comes from the header alone; a WBPP colour master's
+    * name gives its filter token (hyphens included) and a colour mark.
+    */
+   ( function()
+   {
+      function header( desc )
+      {
+         var F = { canStoreKeywords: false, canStoreImageProperties: false, name: "XISF" };
+         return Util.headerInfo( F, { keywords: [] }, [ desc ] );
+      }
+      check( "qa.osc.header: a three-channel description reports 3 channels",
+             header( { width: 40, height: 30, numberOfChannels: 3 } ).numberOfChannels, 3 );
+      check( "qa.osc.header: a one-channel description reports 1 channel",
+             header( { width: 40, height: 30, numberOfChannels: 1 } ).numberOfChannels, 1 );
+      check( "qa.osc.header: a description that does not say is one channel",
+             header( { width: 40, height: 30 } ).numberOfChannels, 1 );
+      var h3 = header( { width: 40, height: 30, numberOfChannels: 3 } );
+      check( "qa.osc.header: the geometry is still reported alongside", [ h3.width, h3.height ], [ 40, 30 ] );
+
+      [ 1, 3 ].forEach( function( n )
+      {
+         check( "qa.osc.header: " + n + " channel(s) accepted", Util.channelCountProblem( "/m/a.xisf", n ), null );
+      } );
+      [ 0, 2, 4, 5, 7 ].forEach( function( n )
+      {
+         var p = Util.channelCountProblem( "/m/a.xisf", n );
+         check( "qa.osc.header: " + n + " channels refused, naming the path and the count",
+                [ typeof p == "string" && p.length > 0, p != null && p.indexOf( "/m/a.xisf" ) >= 0,
+                  p != null && new RegExp( "(^|[^0-9])" + n + "([^0-9]|$)" ).test( p.replace( "/m/a.xisf", "" ) ) ],
+                [ true, true, true ] );
+      } );
+
+      // The colour-master name: the filter token runs to the next underscore, hyphens included.
+      var cn = Util.parseColourMasterName(
+         "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-L-eXtreme_color_drizzle_2x_autocrop.xisf" );
+      check( "qa.osc.header: FILTER-L-eXtreme_color gives the filter L-eXtreme", cn && cn.filter, "L-eXtreme" );
+      check( "qa.osc.header: _color marks a colour candidate", cn && cn.colour, true );
+      check( "qa.osc.header: the drizzle label is read as the mono parser reads it", cn && cn.drizzle, "2x" );
+      check( "qa.osc.header: autocrop is read", cn && cn.autocrop, true );
+      var rgb = Util.parseColourMasterName( "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-UV-IR_RGB.xisf" );
+      check( "qa.osc.header: _RGB marks a colour candidate, and the hyphenated token is whole",
+             [ rgb && rgb.colour, rgb && rgb.filter ], [ true, "UV-IR" ] );
+      check( "qa.osc.header: a plain colour name is neither drizzled nor autocropped",
+             [ rgb && rgb.drizzle, rgb && rgb.autocrop ], [ "", false ] );
+      var mono = Util.parseColourMasterName( "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-Ha_mono.xisf" );
+      check( "qa.osc.header: a mono-named file is not a colour candidate", mono == null || mono.colour === false, true );
+
+      // The drizzle and autocrop answers rank candidates the same way mono ones are ranked.
+      check( "qa.osc.header: drizzle and autocrop feed the existing variant rank",
+             [ Util.masterVariantRank( cn.drizzle, cn.autocrop ), Util.masterVariantRank( rgb.drizzle, rgb.autocrop ) ], [ 3, 0 ] );
+
+      // The mono parser keeps its mono behaviour.
+      var m = Util.parseMasterName( "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-L_mono_drizzle_2x_(1)_autocrop.xisf" );
+      check( "qa.osc.header: parseMasterName still reads a mono name",
+             [ m.filter, m.channel, m.drizzle, m.autocrop ], [ "L", "L", "2x", true ] );
+      check( "qa.osc.header: parseMasterName still answers null without a filter token",
+             Util.parseMasterName( "masterFlat_something_else.xisf" ), null );
+   } )();
+
    } if ( testGroup( "cache" ) ) {
    /*
     * The cache folder's own bookkeeping, on a synthetic folder: entries
