@@ -27,8 +27,9 @@ Read it before any task: this plan argues from it and does not repeat its reason
 
 ## Global Constraints
 
-- PixInsight scripts keep running on PixInsight 1.9.4 and 1.9.5: `node ci/run-tests.js` and `LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js` both pass.
-- Every new check in `script/selftest.js` sits inside an `if ( testGroup( "<group>" ) )` block; the groups used by this plan start with `osc.` and `ci/test-groups.js` stays green.
+- PixInsight scripts keep running on PixInsight 1.9.4 and 1.9.5: in CI, `node ci/run-tests.js` and `LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js` both pass.
+- Every new check in `script/selftest.js` sits inside an `if ( testGroup( "<group>" ) )` block; the groups used by this plan start with `osc.` and `ci/test-groups.js` stays green. Group selectors match whole namespace segments: `osc` runs every `osc.*` group, `pipeline` every `pipeline.*` group (`pipeline.*` is not a selector).
+- While working, run only the groups and test files a task names; the full suites (both PixInsight core releases, the whole Siril suite, the Docker image) run in CI on the pull request.
 - `ci/check-refs.js` stays green: every `NS.member` read is defined, every new file is in the include and packaging lists.
 - Python floor 3.10 (no 3.11+ syntax); dependencies stay numpy, scipy, tifffile.
 - Debayered three-channel masters only; one `OSC` and/or one `OSCNB` per run; a run with a colour master takes no mono master.
@@ -70,6 +71,7 @@ has a test in the task named.
 | `script/lib/UI.js` | Discovery of colour candidates, masters list kind control, greyed boxes, sensor colour filter choice. |
 | `script/selftest.js` | New `osc.*` test groups. |
 | `README.md`, `CHANGELOG.md`, `ci/release-notes.sh`, `ci/release-notes.test.js` | OSC documentation and release notes. |
+| `ci/release-prep.js`, `ci/release-prep.test.js` (new), `ci/release.sh`, `ci/run-tests.js`, `docs/RELEASING.md` | The release script also finalises the Siril changelog and version. |
 
 **Siril port (`siril/`)**
 
@@ -84,18 +86,19 @@ has a test in the task named.
 | `loomsiril/loom/stages_colour.py`, `cache.py` | Calibration identity in `rgb_stage_params` and the clean white-balance key; per-channel narrowband bandwidths. |
 | `loomsiril/loom/siril_ops.py` | OSC SPCC command builder and name checks. |
 | `loomsiril/loom/dialog.py` | Kind control, greyed boxes, sensor choice. |
-| `tools/oracle/osc.js` (new), `tests/oracle/osc.json` (new) | Recorded JavaScript values for the pure functions. |
+| `tools/oracle/loom_osc.js` (new), `tests/oracle/loom_osc.json` (new) | Recorded JavaScript values for the pure functions. |
 | `tests/loom/test_osc.py` (new) and the listed test files | Unit tests; `tests/loom/integration/test_osc_siril.py` (new) for `siril`-marked runs. |
-| `docs/PARITY-LOOM.md`, `README.md`, `CHANGELOG.md`, `loomsiril/__init__.py` | Parity rows, user docs, release notes, version. |
+| `docs/PARITY-LOOM.md`, `README.md`, `CHANGELOG.md`, `tests/test_package.py` | Parity rows, user docs, release notes, version consistency check. |
 
 ---
 
 ## Phase A: PixInsight
 
-All commands in Phase A run from `pixinsight/`. Run one group while working:
-`LOOM_TEST_ONLY=osc.detect node ci/run-tests.js` (replace the group). Before a
-task's commit, also run the full suite once: `node ci/run-tests.js | tail -1`
-must print PASS.
+All commands in Phase A run from `pixinsight/`. Run the task's groups while
+working: `LOOM_TEST_ONLY=osc.detect node ci/run-tests.js` (replace the group;
+several are comma-separated). Where a step says "existing groups", run those
+groups by name (for example `LOOM_TEST_ONLY=util,ui,pipeline`); the full suite
+runs in CI. Every "Step N: Run ... → PASS" below means the named groups print PASS.
 
 ### Task 1: Filter table and kind detection
 
@@ -195,7 +198,7 @@ Util.oscFilterInfo = function( filterValue )
 Check the UV/IR entries against the test names: `"UV/IR Cut"` normalises to `uvircut`, `"L-Pro"` to `lpro`. Before writing the table, look up each model's published Ha and OIII bandwidth and correct the numbers above if the manufacturer states otherwise; keep the test values in step with the table.
 
 - [ ] **Step 4: Run the group.** `LOOM_TEST_ONLY=osc.detect node ci/run-tests.js` → PASS.
-- [ ] **Step 5: Full suite and commit.** `node ci/run-tests.js | tail -1` → PASS. Commit `script/lib/Util.js script/selftest.js`: "OSC: colour-camera filter table and kind detection".
+- [ ] **Step 5: Existing groups and commit.** `LOOM_TEST_ONLY=util node ci/run-tests.js` → PASS. Commit `script/lib/Util.js script/selftest.js`: "OSC: colour-camera filter table and kind detection".
 
 ### Task 2: Channel count in header info and colour master names
 
@@ -272,7 +275,7 @@ Util.parseColourMasterName = function( name )
 };
 ```
 
-- [ ] **Step 4: Run** the group → PASS; full suite → PASS.
+- [ ] **Step 4: Run** the group and `util,imageinfo` → PASS.
 - [ ] **Step 5: Commit**: "OSC: channel count in header info, colour master names".
 
 ### Task 3: Config keys and logical channels
@@ -355,7 +358,7 @@ The `mem` store must match the store interface `Config.save` / `Config.load` use
   3. if `info && info.confident` return it with `source: "detected"`.
   4. return `{ kind: null, name: ..., confident: false, haNm: null, oiiiNm: null, source: "none" }`.
   In `Config.js`, add the three fields to `Config.FIELDS` (JSON-serialised like the existing object fields; read how another object-valued field is stored) and their defaults (`oscSensor: { R: "", G: "", B: "" }`, `oscKindChoices: {}`, `oscKinds: {}`), and make `paths` / `views` defaults carry `OSC: ""` and `OSCNB: ""`.
-- [ ] **Step 4: Run** the group → PASS; full suite → PASS (existing `util` and `ui` groups must stay green: `paths` gained two keys).
+- [ ] **Step 4: Run** the group and `util,ui,pipeline` → PASS (`paths` gained two keys).
 - [ ] **Step 5: Commit**: "OSC: colour slots in the configuration, logical channels, kind overrides".
 
 ### Task 4: Preflight and the logical-channel consumers
@@ -366,7 +369,7 @@ The `mem` store must match the store interface `Config.save` / `Config.load` use
 
 **Interfaces:**
 - Consumes: Tasks 1-3.
-- Produces: `Pipeline.oscPaletteProblem( config ) -> string | null`; `Pipeline.oscKindProblems( config, infoOf ) -> [ string ]` where `infoOf( slot ) -> { filter, path, numberOfChannels, width, height }` (injectable for tests; production reads `Util.readImageInfo` or the view); `Pipeline.preflight( config )` fills `config.oscKinds` and returns problems including the four verbatim errors.
+- Produces: `Pipeline.oscPaletteProblem( config ) -> string | null`; `Pipeline.inputChannelProblems( config, infoOf ) -> [ string ]` (every physical input, mono and colour, file or view); `Pipeline.oscKindProblems( config, infoOf ) -> [ string ]` where `infoOf( slot ) -> { filter, path, numberOfChannels, width, height }` (injectable for tests; production is `Pipeline.oscInfoOf( config )`, a function of the slot that reads `Util.readImageInfo( config.paths[slot] )` or the open view's image); `Pipeline.preflight( config )` fills `config.oscKinds` and returns problems including the four verbatim errors. `Pipeline.narrowbandSupplied( config )` keeps its contract: an array of the supplied narrowband channel keys.
 
 - [ ] **Step 1: Failing tests.**
 
@@ -379,16 +382,30 @@ The `mem` store must match the store interface `Config.save` / `Config.load` use
       if ( palettes ) c.palettes = palettes;   // use the real palette field name from Config.defaults()
       return c;
    }
+   function infoOf( table ) { return function( slot ) { return table[slot]; }; }
    check( "oscPaletteProblem SHO with colour",
           Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "SHO", "HOO" ] ) ),
           "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
    check( "oscPaletteProblem HOO only", Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), null );
    check( "oscPaletteProblem mono run unaffected",
           Pipeline.oscPaletteProblem( cfg( { H: "/m/h", S: "/m/s", O: "/m/o" }, [ "SHO" ] ) ), null );
-   check( "narrowbandSupplied OSCNB", Pipeline.narrowbandSupplied( cfg( { OSCNB: "/m/nb" } ) ), true );
+   check( "narrowbandSupplied OSCNB", Pipeline.narrowbandSupplied( cfg( { OSCNB: "/m/nb" } ) ), [ "H", "O" ] );
+   // Channel counts are checked for every physical input, not only colour slots.
+   var mc = cfg( { R: "/m/r.xisf", H: "/m/h.xisf" } );
+   check( "inputChannelProblems colour file in a mono slot",
+          Pipeline.inputChannelProblems( mc, infoOf( {
+             R: { filter: "R", path: "/m/r.xisf", numberOfChannels: 3, width: 9, height: 9 },
+             H: { filter: "Ha", path: "/m/h.xisf", numberOfChannels: 2, width: 9, height: 9 } } ) ),
+          [ "/m/r.xisf is a colour master (3 channels); a mono slot needs a one-channel master",
+            "/m/h.xisf has 2 channels; Loom takes mono (1) or colour (3) masters" ] );
+   // Two colour masters of different sizes are allowed (registration and the common crop handle the overlap).
+   var sz = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ); sz.oscKindChoices = {};
+   check( "oscKindProblems different sizes allowed",
+          Pipeline.oscKindProblems( sz, infoOf( {
+             OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
+             OSCNB: { filter: "L-eXtreme", path: "/m/b.xisf", numberOfChannels: 3, width: 90, height: 70 } } ) ), [] );
    check( "wantedPalettes OSCNB gives HOO",
           Pipeline.wantedPalettes( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), [ "HOO" ] );
-   function infoOf( table ) { return function( slot ) { return table[slot]; }; }
    var c = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
    var probs = Pipeline.oscKindProblems( c, infoOf( {
       OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
@@ -420,10 +437,11 @@ Find the palette selection field in `Config.defaults()` (search `HOO` in `Config
 - [ ] **Step 3: Implement.**
   - `Pipeline.narrowbandSupplied`, `wantedPalettes`, `reportSkippedPalettes` and `marsProblems` read `Util.suppliedChannels( config )` instead of `config.paths` / `config.views`.
   - `Pipeline.oscPaletteProblem`: colour supplied and SHO or HSO requested → the verbatim error.
-  - `Pipeline.oscKindProblems`: for each supplied colour slot, read `infoOf( slot )`; one channel → the mono-file error above; any other count than 3 → `Util.channelCountProblem`; else `Util.effectiveOscKind( slot, filter, path, config.oscKindChoices )`; `unsupported` → verbatim error; `source == "none"` → "choose Broadband or Dual-band Hα + OIII for <path>"; kind not matching the slot (`OSC` must be broadband, `OSCNB` dual-band) → the mismatch error; otherwise set `config.oscKinds[slot]`. When both slots are used, they must have the same width and height: "<pathA> and <pathB> differ in size (WxH vs WxH)".
-  - `Pipeline.preflight` adds, in this order: `Util.colourMixProblem`, `Pipeline.oscPaletteProblem`, `Pipeline.oscKindProblems( config, Pipeline.oscInfoOf )` where `Pipeline.oscInfoOf( config )( slot )` reads `Util.readImageInfo( config.paths[slot] )` or the view's image, and the sensor check from Task 7 (leave a call to `Pipeline.oscSensorProblems( config )` returning `[]` for now; Task 7 fills it).
+  - `Pipeline.oscKindProblems`: for each supplied colour slot, read `infoOf( slot )`; one channel → the mono-file error above; any other count than 3 → `Util.channelCountProblem`; else `Util.effectiveOscKind( slot, filter, path, config.oscKindChoices )`; `unsupported` → verbatim error; `source == "none"` → "choose Broadband or Dual-band Hα + OIII for <path>"; kind not matching the slot (`OSC` must be broadband, `OSCNB` dual-band) → the mismatch error; otherwise set `config.oscKinds[slot]`. The two colour masters may differ in size: registration and the common crop handle the overlap, as for mono masters.
+  - `Pipeline.inputChannelProblems`: for every physical input (each of `Util.CHANNELS` and `Util.COLOUR_SLOTS`, file or view), a mono slot holding three channels gives "<path> is a colour master (3 channels); a mono slot needs a one-channel master"; any count other than 1 or 3 gives `Util.channelCountProblem`; colour slots are left to `oscKindProblems`. Open views are read through the same `infoOf` (number of channels from `view.image.numberOfChannels`).
+  - `Pipeline.preflight` adds, in this order: `Util.colourMixProblem`, `Pipeline.oscPaletteProblem`, `Pipeline.inputChannelProblems( config, Pipeline.oscInfoOf( config ) )`, `Pipeline.oscKindProblems( config, Pipeline.oscInfoOf( config ) )` where `Pipeline.oscInfoOf( config )( slot )` reads `Util.readImageInfo( config.paths[slot] )` or the view's image, and the sensor check from Task 7 (leave a call to `Pipeline.oscSensorProblems( config )` returning `[]` for now; Task 7 fills it).
   - `Pipeline.preflightChannels`, `preflightPath` and `preflightView` iterate `Util.CHANNELS.concat( Util.COLOUR_SLOTS )`; for colour slots they skip the mono-only keyword checks that Task 7 replaces.
-- [ ] **Step 4: Run** the group → PASS; full suite → PASS.
+- [ ] **Step 4: Run** the group and `pipeline` → PASS.
 - [ ] **Step 5: Commit**: "OSC: preflight errors and logical channels for palettes and MGC".
 
 ### Task 5: Colour group identity and cache keys
@@ -439,7 +457,7 @@ Find the palette selection field in `Config.defaults()` (search `HOO` in `Config
   - `Pipeline.oscGroupIdentity( fingerprint, kind ) -> string` = `fingerprint + "|osc:" + kind`.
   - `Pipeline.oscSiblingKey( groupIdentity, plane ) -> hex` = `Cache.hash( groupIdentity + "|plane:" + plane )`.
   - `Pipeline.oscValidateName( groupIdentity ) -> string` = `Cache.hash( groupIdentity + "|validate" ) + ".osc.json"`.
-  - `Pipeline.oscGroupRegisterKey( stage, siblingKeysInPlaneOrder, params ) -> hex` = `Cache.chainKey( Cache.hash( siblingKeys.join( "|" ) ), stage, params )`; `stage` is `"registerGroup"` or `"cleanRegisterGroup"`.
+  - `Pipeline.oscGroupRegisterKey( stage, siblingKeysInPlaneOrder, params ) -> hex` = `Cache.chainKey( Cache.hash( siblingKeys.join( "|" ) ), stage, params )`; `stage` is `"registerGroup"` (the clean branch never registers a colour group, see Task 9).
   - `Pipeline.oscRegisteredSiblingKey( groupKey, plane ) -> hex` = `Cache.hash( groupKey + "|plane:" + plane )`.
   - `Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume, refKey )` gains `refKey` and hashes `refKey`, the sensor curve names (`config.oscSensor` when `OSC` is used, else the existing filters) and the QE curve name.
 
@@ -463,11 +481,6 @@ Find the palette selection field in `Config.defaults()` (search `HOO` in `Config
           Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, "k1x", "k2" ], { ref: "refA", planes: "R,G,B" } ) != g1, true );
    check( "group key changes with the reference",
           Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, k1, "k2" ], { ref: "refB", planes: "R,G,B" } ) != g1, true );
-   var c1 = Pipeline.oscGroupRegisterKey( "cleanRegisterGroup", [ k0, k1, "k2" ],
-              { ref: "refA", crop: Pipeline.cropTag( { x0: 0, y0: 0, x1: 90, y1: 70 } ), planes: "R,G,B" } );
-   var c2 = Pipeline.oscGroupRegisterKey( "cleanRegisterGroup", [ k0, k1, "k2" ],
-              { ref: "refA", crop: Pipeline.cropTag( { x0: 0, y0: 0, x1: 80, y1: 70 } ), planes: "R,G,B" } );
-   check( "clean group key changes with the crop", c1 != c2, true );
    check( "registered sibling keys hexadecimal",
           hexOnly.test( Pipeline.oscRegisteredSiblingKey( g1, 2 ) ), true );
 ```
@@ -499,16 +512,17 @@ Then add three checks for `Pipeline.cleanWhiteBalanceKey`: build the arguments t
           "/m/a.xisf: plane 2 is constant (all values 0); the master looks broken" );
    check( "oscPlaneProblem normal plane",
           Pipeline.oscPlaneProblem( { min: 0.01, max: 0.9, median: 0.1 }, 0, "/m/a.xisf" ), null );
+   var sidecars = {};   // persists across loaders, like the cache directory
    function fakeIo( cached )
    {
-      var io = { opens: 0, stored: [], sidecar: null };
+      var io = { opens: 0, stored: [] };
       io.openMaster = function() { io.opens++; return { id: "master", planes: 3 }; };
       io.cacheLoad = function( key ) { return cached[key] ? { id: "cached_" + key } : null; };
       io.cacheStore = function( key ) { io.stored.push( key ); cached[key] = true; };
       io.planeWindow = function( master, plane ) { return { id: "plane" + plane }; };
       io.planeStats = function() { return { min: 0.01, max: 0.9, median: 0.1 }; };
-      io.writeSidecar = function( name, rec ) { io.sidecar = rec; };
-      io.readSidecar = function() { return io.sidecar; };
+      io.writeSidecar = function( name, rec ) { sidecars[name] = JSON.stringify( rec ); };
+      io.readSidecar = function( name ) { return sidecars[name] ? JSON.parse( sidecars[name] ) : null; };
       io.closeMaster = function() {};
       return io;
    }
@@ -522,7 +536,8 @@ Then add three checks for `Pipeline.cleanWhiteBalanceKey`: build the arguments t
    var loader2 = Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io2 );
    loader2.planeWindow( 1 );
    check( "warm run does not open the master", io2.opens, 0 );
-   check( "warm run logs the cached plane statistics", loader2.validation().planes.length, 3 );
+   check( "warm run logs the cached plane statistics", loader2.validation(), loader.validation() );
+   check( "validation record holds three planes", loader2.validation().planes.length, 3 );
    delete cache[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp", "broadband" ), 1 ) ];
    var io3 = fakeIo( cache );
    Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io3 ).planeWindow( 1 );
@@ -543,7 +558,7 @@ Then add three checks for `Pipeline.cleanWhiteBalanceKey`: build the arguments t
   - `Steps.extractPlane( view, plane, newId )`: a new one-channel float `ImageWindow` of the view's size whose image is `view.image` channel `plane` (use `Image.selectedChannel` and `Image.assign` the way `Pipeline.duplicateViewChannel` copies images); keywords copied, `FILTER` set to the channel letter (`R`,`G`,`B`,`Ha`,`OIII` as the exports name them), `LOOMSRC` = `<file name>|<recipe>`.
   - `Pipeline.loadChannels`: for each supplied colour slot create one loader and lazy channels for its members (`plane` from `Pipeline.OSC_RECIPES`); `sourceKey` = `currentKey` = the sibling key; `load()` calls `loader.planeWindow( plane )`. Views (`config.views.OSC`) use a loader whose `openMaster` returns the view's window without closing it.
   - The run log gets one line per colour group: "OSC <file>: broadband, filter <name>, planes R/G/B, min/max/median <values>", taken from `validation()` on cold and warm runs alike.
-- [ ] **Step 4: Run** the group → PASS; full suite → PASS.
+- [ ] **Step 4: Run** the group and `pipeline,cache` → PASS.
 - [ ] **Step 5: In PixInsight** (hand check, logged in the PR description): the `osc.load` checks also pass inside PixInsight (`Loom selftest` script), and `Steps.extractPlane` on a synthetic three-channel image returns the right plane (add an `IN_PIXINSIGHT`-guarded check that builds a 3×2 three-channel image with distinct plane values).
 - [ ] **Step 6: Commit**: "OSC: one shared loader per colour master, cached split planes, plane validation".
 
@@ -556,7 +571,7 @@ Then add three checks for `Pipeline.cleanWhiteBalanceKey`: build the arguments t
 
 **Interfaces:**
 - Consumes: `config.oscSensor`, `config.oscKinds`, `Util.oscFilterInfo`.
-- Produces: `Pipeline.oscSpfcParams( channel, config ) -> { channel, filter: <sensor curve>, qe: "Ideal QE curve" }`; `Pipeline.oscSensorProblems( config, curveExists ) -> [ string ]` (`curveExists( name, channel )` injectable; production `Steps.filterCurveByName`); `Steps.spccNarrowband( view, palette, bandwidthNm )` where `bandwidthNm` is a number (all channels) or `{ R, G, B }`; `Pipeline.oscNarrowbandBandwidths( config ) -> { R, G, B }` for HOO from `OSCNB`.
+- Produces: `Pipeline.effectiveFilters( config ) -> { R, G, B, ... }` (the `config.filters` object with R, G and B replaced by `config.oscSensor` when `OSC` is used; `config.filters` unchanged otherwise); `Pipeline.oscSpfcParams( channel, config ) -> { channel, filter: <sensor curve>, qe: "Ideal QE curve" }`; `Pipeline.oscSensorProblems( config, curveExists ) -> [ string ]` (`curveExists( name, channel )` injectable; production `Steps.filterCurveByName`); `Steps.spccNarrowband( view, palette, bandwidthNm )` where `bandwidthNm` is a number (all channels) or `{ R, G, B }`; `Pipeline.oscNarrowbandBandwidths( config ) -> { R, G, B }` for HOO from `OSCNB`.
 
 - [ ] **Step 1: Failing tests.**
 
@@ -586,6 +601,24 @@ Then add three checks for `Pipeline.cleanWhiteBalanceKey`: build the arguments t
           Pipeline.compositeInstrument( { R: { group: "OSC", instrume: "ZWO ASI2600MC" },
                                           G: { group: "OSC", instrume: "ZWO ASI2600MC" },
                                           B: { group: "OSC", instrume: "ZWO ASI2600MC" } }, "G" ), null );
+   // Composite and clean-reference calibration read the effective filters, never config.filters directly.
+   var ef = Config.defaults();
+   ef.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+   check( "effectiveFilters mono run", Pipeline.effectiveFilters( ef ).G, "Mono G filter" );
+   ef.paths.OSC = "/m/a.xisf";
+   ef.oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+   check( "effectiveFilters OSC run uses the sensor curves",
+          [ Pipeline.effectiveFilters( ef ).R, Pipeline.effectiveFilters( ef ).G, Pipeline.effectiveFilters( ef ).B ],
+          [ "Sony Color Sensor R", "Sony Color Sensor G", "Sony Color Sensor B" ] );
+   // The runners receive them: stub Steps.spfc / Steps.spccRGB and record their arguments.
+   var seen = [], keepSpfc = Steps.spfc, keepSpcc = Steps.spccRGB;
+   Steps.spfc = function( view, f, ch, instrume, filters ) { seen.push( [ "spfc", ch, instrume, filters.G ] ); };
+   Steps.spccRGB = function( view, instrume, filters ) { seen.push( [ "spcc", instrume, filters.G ] ); };
+   try { Pipeline.rgbCalibrationRunners( ef, null ).spfcRGB( { view: {} } );
+         Pipeline.rgbCalibrationRunners( ef, null ).spccRGB( { view: {} } ); }
+   finally { Steps.spfc = keepSpfc; Steps.spccRGB = keepSpcc; }
+   check( "composite runners pass the sensor curves and no camera",
+          seen, [ [ "spfc", "RGB", null, "Sony Color Sensor G" ], [ "spcc", null, "Sony Color Sensor G" ] ] );
    var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf"; nb.oscKinds = { OSCNB: "dualband" };
    check( "narrowband bandwidths from the filter table",
           Pipeline.oscNarrowbandBandwidths( nb, { filter: "L-eXtreme" } ), { R: 7, G: 7, B: 7 } );
@@ -599,12 +632,13 @@ Use the real name of the narrowband bandwidth field in `Config.defaults()` (sear
 - [ ] **Step 3: Implement.**
   - `Pipeline.broadbandStages( bk, bc, config )`: when `bc.group == "OSC"` the `spfc` parameters are `Pipeline.oscSpfcParams( bk, config )`; `Pipeline.broadbandRunners` passes that filter name and Ideal QE to `Steps.spfc` (check how `instrume` resolves to a QE curve in `Steps.setDeviceQE`, line 1029, and pass a value that resolves to the Ideal QE curve).
   - `Pipeline.compositeInstrument`: return `null` when the reference channel's `group` is `"OSC"`.
+  - `Pipeline.effectiveFilters` replaces every read of `config.filters` on the composite and the clean reference: the clean-reference `Steps.spfc` / `Steps.spccRGB` calls (Pipeline.js 1232-1233), the `spfcRGB` cache parameters (1617) and the composite runners (1641-1645). Extract the runners object built in `Pipeline.buildRGB` into `Pipeline.rgbCalibrationRunners( config, lumInstrume )` so the test above can call it; `Pipeline.buildRGB` uses it.
   - `Pipeline.inheritInstrument`: return unchanged when any channel has a `group`.
   - `Pipeline.oscSensorProblems` runs in `Pipeline.preflight` (replace the Task 4 stub).
   - `Steps.spccNarrowband`: accept `{ R, G, B }`; set `redFilterBandwidth` etc. per channel; log the three bandwidths and, when called for an `OSCNB` palette, "approximation: H and O from a colour master are not single lines".
   - `Pipeline.buildPalette`: for a palette built from `OSCNB` channels pass `Pipeline.oscNarrowbandBandwidths( config, info )`.
   - When `OSC` is used with a light-pollution filter (`Util.oscFilterInfo( filter ).name` normalised in `["lpro", "cls", "clsccd"]`), log once: "colour calibration does not model the <name> filter in front of the camera".
-- [ ] **Step 4: Run** the group, `steps.*` groups and the full suite → PASS.
+- [ ] **Step 4: Run** the group and `steps,pipeline` → PASS.
 - [ ] **Step 5: Commit**: "OSC: sensor colour curves and Ideal QE for calibration; per-channel narrowband bandwidths".
 
 ### Task 8: Registration plan and grouped registration
@@ -636,17 +670,27 @@ Use the real name of the narrowband bandwidth field in `Config.defaults()` (sear
                                           { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } ).key, "G" );
 ```
 
+Add a node test of the cache policy with a fake cache: `Pipeline.oscGroupCacheAction( groupCached, splitsCached ) -> "register" | "split" | "load"` returns `"register"` for `( false, [ true, true, true ] )`, `"split"` for `( true, [ true, false, true ] )` and `"load"` for `( true, [ true, true, true ] )`; `Pipeline.registerToReference` follows it.
+
 - [ ] **Step 2: Run** `LOOM_TEST_ONLY=osc.register node ci/run-tests.js` → FAIL.
 - [ ] **Step 3: Implement.**
+  - `Pipeline.oscGroupCacheAction` as tested above.
   - `Pipeline.oscRegistrationPlan` as specified (spec "Registration").
   - `Pipeline.registrationReference( present, quality, groups )`: when `groups` has any member, return `{ key: plan.ref, reason: "colour group reference" }` without consulting `quality`; mono behaviour unchanged when `groups` is absent.
-  - `Pipeline.registerToReference`: build `groups` from the loaded channels' `group` fields. Identity members keep their views. For each grouped entry: key = `Pipeline.oscGroupRegisterKey( "registerGroup", member current keys in plane order, { ref: refKey, planes: planes.join( "," ) } )`. On a cache hit of every `Pipeline.oscRegisteredSiblingKey( key, i )` load those; else if the group image `key` is cached, split it (`Steps.extractPlane`) and store the splits; else `Steps.combinePlanes`, `Steps.register( combined, refView )` once, store the group image under `key`, split into the members, store each split, release the temporary windows from the run's registry. Members' `currentKey` become their registered split keys.
+  - `Pipeline.registerToReference`: build `groups` from the loaded channels' `group` fields. Identity members keep their views. For each grouped entry: key = `Pipeline.oscGroupRegisterKey( "registerGroup", member current keys in plane order, { ref: refKey, planes: planes.join( "," ) } )`. The group image is authoritative: if the group image `key` is not in the cache, re-register (even when some splits are cached); if it is cached, load each member from its split `Pipeline.oscRegisteredSiblingKey( key, i )` when present, else split it from the group image (`Steps.extractPlane`) and store that split. Re-registering is `Steps.combinePlanes`, `Steps.register( combined, refView )` once, store the group image under `key`, split into the members, store each split, release the temporary windows from the run's registry. Members' `currentKey` become their registered split keys.
   - `Steps.combinePlanes( views, newId )`: a three-channel float window whose channel i is `views[i]`'s image (same size required, else throw).
-- [ ] **Step 4: Run** group and full suite → PASS.
+- [ ] **Step 4: Run** the group and `pipeline` → PASS.
 - [ ] **Step 5: In PixInsight** (hand check, logged): an `IN_PIXINSIGHT`-guarded check registers a synthetic `OSCNB` pair shifted by (3, 2) px against a synthetic `OSC` `G` and asserts the registered `H` and `O` are pixel-aligned with each other (star centroids within 0.05 px) and with `G` (within 0.2 px).
 - [ ] **Step 6: Commit**: "OSC: siblings share one registration transform".
 
 ### Task 9: Clean white balance for a colour group
+
+The clean white balance measures `R`, `G` and `B`, which in a colour run come only
+from `OSC`. By the spec's reference policy the reference is `OSC`'s `G` whenever
+`OSC` is used, so the `OSC` group is always the reference group there and its
+clean planes need no registration: the spec's "else one grouped registration"
+case cannot arise. This task implements the identity case and makes the
+impossible case an explicit internal error rather than untested code.
 
 **Files:**
 - Modify: `script/lib/Pipeline.js` `Pipeline.measureCleanWhiteBalance` (1207), `Pipeline.registerCleanChannel` (1155), `Pipeline.cleanWhiteBalance` (2390)
@@ -654,34 +698,51 @@ Use the real name of the narrowband bandwidth field in `Config.defaults()` (sear
 
 **Interfaces:**
 - Consumes: Tasks 5 and 8.
-- Produces: `Pipeline.cleanRegistrationPlan( refKey, groups ) -> "identity" | "grouped" | "mono"`.
+- Produces: `Pipeline.cleanRegistrationPlan( refKey, groups ) -> "identity" | "mono"` (throws for a colour run whose reference is not in the `OSC` group).
 
 - [ ] **Step 1: Failing tests** (append to `osc.register`):
 
 ```javascript
    check( "clean plan: OSC is the reference group",
-          Pipeline.cleanRegistrationPlan( "G", { OSC: [ "R", "G", "B" ] } ), "identity" );
-   check( "clean plan: OSC is not the reference group",
-          Pipeline.cleanRegistrationPlan( "H", { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } ), "grouped" );
+          Pipeline.cleanRegistrationPlan( "G", { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } ), "identity" );
    check( "clean plan: mono run", Pipeline.cleanRegistrationPlan( "L", {} ), "mono" );
+   var thrown = null;
+   try { Pipeline.cleanRegistrationPlan( "H", { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } ); }
+   catch ( e ) { thrown = e.message; }
+   check( "clean plan: a colour run's reference is always OSC G",
+          thrown, "internal: with OSC in the run the reference must be its G (got H)" );
+   // The white-balance key follows the crop and the reference in the identity case.
+   var cfgW = Config.defaults(); cfgW.paths.OSC = "/m/a.xisf";
+   cfgW.oscSensor = { R: "S R", G: "S G", B: "S B" };
+   function wbKey( common, refKey )
+   {
+      var chans = { R: { currentKey: "r1" }, G: { currentKey: "g1" }, B: { currentKey: "b1" } };
+      return Pipeline.cleanWhiteBalanceKey( chans, cfgW, common, null, refKey );
+   }
+   var full = { x0: 0, y0: 0, x1: 100, y1: 80 }, smaller = { x0: 0, y0: 0, x1: 90, y1: 70 };
+   check( "clean white balance key changes when the overlap shrinks", wbKey( full, "g1" ) != wbKey( smaller, "g1" ), true );
+   check( "clean white balance key changes with a replaced OSC master (new reference key, same crop)",
+          wbKey( full, "g1" ) != wbKey( full, "g2" ), true );
 ```
 
-- [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement.** In `measureCleanWhiteBalance`: `"mono"` keeps today's per-channel `registerCleanChannel`; `"identity"` crops the three clean planes with `common` (the same crop call `Pipeline.cropToCommonArea` uses) and measures; `"grouped"` combines the clean R, G, B into one image, registers once against the cropped reference, caches under `Pipeline.oscGroupRegisterKey( "cleanRegisterGroup", cleanKeys, { ref: refKey, crop: Pipeline.cropTag( common ), planes: "R,G,B" } )` and splits. Pass the reference key to `Pipeline.cleanWhiteBalanceKey` (Task 5).
-- [ ] **Step 4: Run** group, `pipeline.*` groups and full suite → PASS.
-- [ ] **Step 5: In PixInsight** (hand check, logged): the Task 8 synthetic pair, white-balance branch: clean planes pixel-aligned; a smaller `OSCNB` (cropped by 20 px) re-registers the clean group (log shows a MISS for `cleanRegisterGroup`); replacing the `OSC` file with a byte-different copy re-measures the white balance.
-- [ ] **Step 6: Commit**: "OSC: clean white balance registers a colour group once".
+Match `chans` and `common` to the shapes `Pipeline.cleanWhiteBalanceKey` and `Pipeline.cropTag` read (Task 5 made `refKey` the last argument).
+
+- [ ] **Step 2: Run** `LOOM_TEST_ONLY=osc.register node ci/run-tests.js` → FAIL.
+- [ ] **Step 3: Implement.** In `measureCleanWhiteBalance`: `"mono"` keeps today's per-channel `registerCleanChannel`; `"identity"` crops the three clean `OSC` planes with `common` (the same crop call `Pipeline.cropToCommonArea` uses) and measures with `Pipeline.effectiveFilters` (Task 7). Pass the reference's cache key to `Pipeline.cleanWhiteBalanceKey`.
+- [ ] **Step 4: Run** the group and `pipeline` → PASS.
+- [ ] **Step 5: In PixInsight** (hand check, logged): the Task 8 synthetic pair, white-balance branch: no clean registration runs (log), the measured factors are those of the cropped `OSC` planes; an `OSCNB` covering 20 px less of the field shrinks the common crop and the white balance is measured again (log shows a MISS for the clean white balance); replacing the `OSC` file with a byte-different copy measures it again.
+- [ ] **Step 6: Commit**: "OSC: clean white balance on the reference colour group".
 
 ### Task 10: Folder discovery of colour masters
 
 **Files:**
-- Modify: `script/lib/Util.js` (add `Util.selectColourMasters`, `Util.colourCandidateCorrection`)
-- Modify: `script/lib/UI.js` `scanMasterFolder` (2007), `resolveUnnamedMasters` (2024), `confirmMasters` (2046), `adoptMasters` (2178), `reportScan` (2196)
+- Modify: `script/lib/Util.js` (add `Util.selectColourMasters`, `Util.colourCandidateCorrection`, `Util.entryChannel`)
+- Modify: `script/lib/UI.js` `UI.foldEntries` (385), `UI.fileEntry` (484), `addView` (2244), `scanMasterFolder` (2007), `resolveUnnamedMasters` (2024), `confirmMasters` (2046), `adoptMasters` (2178), `reportScan` (2196)
 - Test: `script/selftest.js` (new group `osc.discovery`)
 
 **Interfaces:**
 - Consumes: Tasks 1-3.
-- Produces: `Util.selectColourMasters( candidates ) -> { OSC: candidate|null, OSCNB: candidate|null }` where a candidate is `{ path, filter, colour, drizzle, autocrop, mtime, numberOfChannels, imagetyp }` and its slot is decided by `Util.effectiveOscKind` (unknown kind lands in `OSC` when broadband-looking names fail, else is listed with an empty kind: return it under `unresolved: [ candidates ]`); `Util.colourCandidateCorrection( candidate ) -> string | null` ("name says colour, header says 1 channel: <file> is used as mono", and the reverse).
+- Produces: `Util.selectColourMasters( candidates ) -> { OSC: candidate|null, OSCNB: candidate|null }` where a candidate is `{ path, filter, colour, drizzle, autocrop, mtime, numberOfChannels, imagetyp }` and its slot is decided by `Util.effectiveOscKind` (unknown kind lands in `OSC` when broadband-looking names fail, else is listed with an empty kind: return it under `unresolved: [ candidates ]`); `Util.colourCandidateCorrection( candidate ) -> string | null` ("name says colour, header says 1 channel: <file> is used as mono", and the reverse); `Util.entryChannel( filter, numberOfChannels, path, choices ) -> { channel: <mono key> | "OSC" | "OSCNB" | null, colour: true|false, kindSource: "choice"|"detected"|"none"|null }`. Every masters-list entry (files and open views) carries `channel`, `colour` and `numberOfChannels`; `UI.foldEntries( entries, choices )` returns `{ paths, views, problems }` with `OSC` / `OSCNB` filled from colour entries.
 
 - [ ] **Step 1: Failing tests.**
 
@@ -707,52 +768,76 @@ Use the real name of the narrowband bandwidth field in `Config.defaults()` (sear
           Util.colourCandidateCorrection( cand( "/m/x_color.xisf", "UV/IR", { numberOfChannels: 1 } ) ),
           "/m/x_color.xisf: the name says colour but the image has 1 channel; it is used as a mono master" );
    check( "correction: none", Util.colourCandidateCorrection( cand( "/m/y_color.xisf", "UV/IR" ) ), null );
+   // Entries route by channel count first, then by kind.
+   check( "entryChannel mono", Util.entryChannel( "Ha", 1, "/m/h", {} ).channel, "H" );
+   check( "entryChannel broadband colour", Util.entryChannel( "UV/IR Cut", 3, "/m/a", {} ).channel, "OSC" );
+   check( "entryChannel dual-band colour", Util.entryChannel( "L-eXtreme", 3, "/m/b", {} ).channel, "OSCNB" );
+   check( "entryChannel unconfident colour waits for a choice",
+          [ Util.entryChannel( "Duo", 3, "/m/c", {} ).channel, Util.entryChannel( "Duo", 3, "/m/c", {} ).colour ],
+          [ null, true ] );
+   check( "entryChannel override moves a broadband-named master to OSCNB",
+          Util.entryChannel( "UV/IR Cut", 3, "/m/a", { "filter:uvircut": "dualband" } ).channel, "OSCNB" );
+   function ent( ref, filter, n, source )
+   {
+      var r = Util.entryChannel( filter, n, ref, {} );
+      return { source: source || "file", ref: ref, label: ref, filter: filter, numberOfChannels: n,
+               channel: r.channel, colour: r.colour };
+   }
+   var folded = UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "nbview", "L-eXtreme", 3, "view" ) ], {} );
+   check( "foldEntries colour file and view", [ folded.paths.OSC, folded.views.OSCNB, folded.problems ],
+          [ "/m/a", "nbview", [] ] );
+   check( "foldEntries colour entry without a kind",
+          UI.foldEntries( [ ent( "/m/c", "Duo", 3 ) ], {} ).problems,
+          [ "choose Broadband or Dual-band Hα + OIII for /m/c" ] );
+   check( "foldEntries keeps mono behaviour",
+          UI.foldEntries( [ ent( "/m/h", "Ha", 1 ) ], {} ).paths.H, "/m/h" );
 ```
 
 `Util.selectColourMasters( candidates, choices )` takes the remembered kind choices as its second argument.
 
 - [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** the two Util functions (variant ranking with `Util.masterVariantRank`, then newest `mtime`, as `Util.selectMasters` does). In `UI.js`: `scanMasterFolder` collects names with `Util.parseColourMasterName( name ).colour` into `scan.colourNamed`; `resolveUnnamedMasters` header-reads unnamed files when a mono slot or a colour slot has no named winner, routing three-channel files to colour candidates; `confirmMasters` confirms colour candidates by header (`numberOfChannels == 3`, `IMAGETYP` a master light via `Util.isMasterLight` or its equivalent) and reports `Util.colourCandidateCorrection`; `adoptMasters` sets `config.paths.OSC` / `OSCNB` and keeps mono winners too; when both kinds are adopted the masters list shows both and `updateRunEnabled` (1937) keeps Run disabled with `Util.colourMixProblem`'s text.
-- [ ] **Step 4: Run** group and full suite → PASS (the `ui` groups must stay green).
+- [ ] **Step 3: Implement** `Util.entryChannel` (three channels → `Util.effectiveOscKind`, `broadband` → `OSC`, `dualband` → `OSCNB`, `unsupported` or no kind → `null` with `colour: true`; one channel → `Util.channelFromFilter`). `UI.fileEntry` and `addView` set `numberOfChannels` (from `Util.readImageInfo` / `view.image.numberOfChannels`) and `channel`/`colour` from `Util.entryChannel( filter, n, ref, config.oscKindChoices )`. `UI.foldEntries( entries, choices )` initialises `paths`/`views` for `Util.CHANNELS.concat( Util.COLOUR_SLOTS )`, maps colour entries to `OSC`/`OSCNB` (two entries for one slot is the existing "Two images map to ..." problem), reports a colour entry with `channel === null` with the kind message (or the unsupported-filter message), and keeps today's text for unrecognised mono filters; its caller in the dialog (the Run handler near UI.js 2505) passes `this.config.oscKindChoices`. Then the two Util functions (variant ranking with `Util.masterVariantRank`, then newest `mtime`, as `Util.selectMasters` does). In `UI.js`: `scanMasterFolder` collects names with `Util.parseColourMasterName( name ).colour` into `scan.colourNamed`; `resolveUnnamedMasters` header-reads unnamed files when a mono slot or a colour slot has no named winner, routing three-channel files to colour candidates; `confirmMasters` confirms colour candidates by header (`numberOfChannels == 3`, `IMAGETYP` a master light via `Util.isMasterLight` or its equivalent) and reports `Util.colourCandidateCorrection`; `adoptMasters` sets `config.paths.OSC` / `OSCNB` and keeps mono winners too; when both kinds are adopted the masters list shows both and `updateRunEnabled` (1937) keeps Run disabled with `Util.colourMixProblem`'s text.
+- [ ] **Step 4: Run** the group and `util,ui` → PASS.
 - [ ] **Step 5: In PixInsight** (hand check, logged): a folder with a synthetic `OSC`, a synthetic `OSCNB` and a mono L master lists all three and Run stays disabled with the mix message.
 - [ ] **Step 6: Commit**: "OSC: discover colour masters in a folder".
 
 ### Task 11: Dialog controls
 
 **Files:**
-- Modify: `script/lib/UI.js` `buildMasterList` (855), `showMaster` (2166), `buildFilterRows` (982), `buildPaletteGroup` (1119), `updatePaletteVisibility` (2391), `rebuild` (2417), `updateRunEnabled` (1937); add `UI.oscControlState`
+- Modify: `script/lib/Util.js` (add `Util.oscControlState`)
+- Modify: `script/lib/UI.js` `buildMasterList` (855), `showMaster` (2166), `buildFilterRows` (982), `buildPaletteGroup` (1119), `updatePaletteVisibility` (2391), `rebuild` (2417), `updateRunEnabled` (1937)
 - Test: `script/selftest.js` (new group `osc.ui`)
 
 **Interfaces:**
 - Consumes: Tasks 1-4, 7, 10.
-- Produces: `UI.oscControlState( config ) -> { monoEnabled, monoReason, shoHsoEnabled, shoHsoReason, sensorRowVisible, rgbFilterRowsVisible }` (pure, node-tested); the dialog applies it.
+- Produces: `Util.oscControlState( config ) -> { monoEnabled, monoReason, shoHsoEnabled, shoHsoReason, sensorRowVisible, rgbFilterRowsVisible }` (pure, node-tested, and recorded for the Siril port); the dialog applies it. A kind change or a "detected" reset recomputes the entry's `channel` with `Util.entryChannel` (Task 10) and calls `rebuild()`, so a master moves between `OSC` and `OSCNB` at once; `updatePaletteVisibility` reads `Util.suppliedChannels` of the folded entries.
 
 - [ ] **Step 1: Failing tests.**
 
 ```javascript
    } if ( testGroup( "osc.ui" ) ) {
    var c = Config.defaults(); c.paths.OSC = "/m/a.xisf";
-   var s = UI.oscControlState( c );
+   var s = Util.oscControlState( c );
    check( "mono boxes greyed with reason", [ s.monoEnabled, s.monoReason ],
           [ false, "colour and mono masters cannot be combined" ] );
    check( "SHO/HSO greyed with reason", [ s.shoHsoEnabled, s.shoHsoReason ],
           [ false, "needs SII, which a colour camera cannot separate from Ha" ] );
    check( "sensor row instead of R/G/B filter boxes", [ s.sensorRowVisible, s.rgbFilterRowsVisible ], [ true, false ] );
    var m = Config.defaults(); m.paths.L = "/m/l.xisf";
-   var t = UI.oscControlState( m );
+   var t = Util.oscControlState( m );
    check( "mono run unchanged", [ t.monoEnabled, t.shoHsoEnabled, t.sensorRowVisible ], [ true, true, false ] );
    var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf";
-   check( "OSCNB alone: no sensor row", UI.oscControlState( nb ).sensorRowVisible, false );
+   check( "OSCNB alone: no sensor row", Util.oscControlState( nb ).sensorRowVisible, false );
 ```
 
 - [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** `UI.oscControlState` and apply it:
+- [ ] **Step 3: Implement** `Util.oscControlState` and apply it:
   - masters list rows for `OSC` / `OSCNB`: file name, detected filter, a kind `ComboBox` ("", "Broadband", "Dual-band Hα + OIII") preset from `Util.effectiveOscKind`, disabled for `unsupported` kinds, writing `config.oscKindChoices[ Util.oscKindKey( filter, path ) ]` on change; a "detected" `Label` (link style) that deletes that key and refreshes;
   - mono channel boxes disabled with the reason as tooltip while a colour master is selected;
   - SHO and HSO check boxes unticked and disabled with the reason; a remembered SHO/HSO choice is not applied to a colour run (it stays in the saved settings for mono runs);
   - SPCC section: while `OSC` is used, hide the R, G, B filter rows and show a "Sensor colour filters" row of three `ComboBox`es filled from `Steps.listFilterCurves( "R" | "G" | "B" )` (Steps.js 530), writing `config.oscSensor`;
   - every new value saved through `Config.save` like the existing fields.
-- [ ] **Step 4: Run** group and full suite → PASS.
+- [ ] **Step 4: Run** the group and `util,ui` → PASS.
 - [ ] **Step 5: In PixInsight** (hand check, logged with a screenshot in the PR description): the dialog with a synthetic `OSC` master shows the kind control, the sensor row, greyed mono and SHO/HSO boxes with their tooltips; values survive closing and reopening the dialog.
 - [ ] **Step 6: Commit**: "OSC: dialog controls for colour masters".
 
@@ -784,7 +869,7 @@ Use the real name of the narrowband bandwidth field in `Config.defaults()` (sear
   - `O` equals the green plane exactly, whatever the blue plane holds;
   - a constant plane is refused with the Task 6 message;
   - one sibling's input changed (re-made `OSCNB` file): the group re-registers; one sibling's registered split deleted: re-split without re-registering.
-- [ ] **Step 5: Run** the node suite → PASS. Run `osc.e2e` in PixInsight (hand check; paste the result line in the PR description).
+- [ ] **Step 5: Run** `LOOM_TEST_ONLY=osc,pipeline node ci/run-tests.js` → PASS. Run `osc.e2e` in PixInsight (hand check; paste the result line in the PR description).
 - [ ] **Step 6: Commit**: "OSC: provenance keywords, log lines, end-to-end checks".
 
 ---
@@ -799,15 +884,16 @@ in the Docker image built from `docker/Dockerfile`; CI runs them in the
 ### Task 13: Record the JavaScript oracle for the OSC pure functions
 
 **Files:**
-- Create: `tools/oracle/osc.js`, `tests/oracle/osc.json`
-- Modify: `tools/record_oracle.js` (add the `osc` set)
+- Create: `tools/oracle/loom_osc.js`, `tests/oracle/loom_osc.json`
+
+The recorder's name must start with `loom_`: `tools/record_oracle.js` loads the Loom libraries (Util, Hasher, Cache, Psb, Steps, Config, Pipeline) only for `loom_*` recorders (line 64-67) and exposes `Util`, `Cache`, `Config`, `Pipeline` in `js`. Every function recorded here lives in those namespaces (the dialog state is `Util.oscControlState`, not in UI.js), so `record_oracle.js` needs no change.
 
 **Interfaces:**
-- Produces: `tests/oracle/osc.json` with cases for `Util.normaliseFilter`, `Util.oscFilterInfo`, `Util.parseColourMasterName`, `Util.channelCountProblem`, `Util.suppliedChannels`, `Util.colourMixProblem`, `Util.oscKindKey`, `Util.effectiveOscKind`, `Pipeline.oscPaletteProblem`, `Pipeline.oscKindProblems` (with a table-driven `infoOf`), `Pipeline.oscGroupIdentity`, `Pipeline.oscSiblingKey`, `Pipeline.oscValidateName`, `Pipeline.oscGroupRegisterKey`, `Pipeline.oscRegisteredSiblingKey`, `Pipeline.cleanWhiteBalanceKey` (OSC and mono), `Pipeline.oscRegistrationPlan`, `Pipeline.cleanRegistrationPlan`, `Pipeline.oscNarrowbandBandwidths`, `Pipeline.oscPaletteSources`, `UI.oscControlState`.
+- Produces: `tests/oracle/loom_osc.json` with cases for `Util.entryChannel`, `Pipeline.inputChannelProblems`, `Pipeline.effectiveFilters`, `Pipeline.oscGroupCacheAction`, `Util.selectColourMasters`, `Util.colourCandidateCorrection`, `Util.normaliseFilter`, `Util.oscFilterInfo`, `Util.parseColourMasterName`, `Util.channelCountProblem`, `Util.suppliedChannels`, `Util.colourMixProblem`, `Util.oscKindKey`, `Util.effectiveOscKind`, `Pipeline.oscPaletteProblem`, `Pipeline.oscKindProblems` (with a table-driven `infoOf`), `Pipeline.oscGroupIdentity`, `Pipeline.oscSiblingKey`, `Pipeline.oscValidateName`, `Pipeline.oscGroupRegisterKey`, `Pipeline.oscRegisteredSiblingKey`, `Pipeline.cleanWhiteBalanceKey` (OSC and mono), `Pipeline.oscRegistrationPlan`, `Pipeline.cleanRegistrationPlan`, `Pipeline.oscNarrowbandBandwidths`, `Pipeline.oscPaletteSources`, `Util.oscControlState`.
 
 - [ ] **Step 1:** Read `tools/record_oracle.js` and one existing recorder under `tools/oracle/`; copy its structure (`module.exports = function( js ) { return { "<case>": { fn, args, out } } }`, clone args before each call).
-- [ ] **Step 2:** Write `tools/oracle/osc.js` with at least the inputs used in the Phase A tests plus: every entry of `Util.OSC_FILTERS`, five spellings each of two models, ten random mixed-case names, empty/absent values, all palette combinations with and without colour slots, and the key functions over ten fingerprints.
-- [ ] **Step 3:** Record: `LOOM_JS_DIR=../pixinsight/script node tools/record_oracle.js tests/oracle/ osc`. Commit both files: "Siril: record the OSC oracle from the JavaScript".
+- [ ] **Step 2:** Write `tools/oracle/loom_osc.js` with at least the inputs used in the Phase A tests plus: every entry of `Util.OSC_FILTERS`, five spellings each of two models, ten random mixed-case names, empty/absent values, all palette combinations with and without colour slots, and the key functions over ten fingerprints.
+- [ ] **Step 3:** Record from `siril/`: `LOOM_JS_DIR=../pixinsight/script node tools/record_oracle.js tests/oracle/ loom_osc`; check that the JSON holds every function listed above (a missing namespace fails the recorder). Commit both files: "Siril: record the OSC oracle from the JavaScript".
 
 ### Task 14: `osc.py` pure functions
 
@@ -816,9 +902,9 @@ in the Docker image built from `docker/Dockerfile`; CI runs them in the
 
 **Interfaces:**
 - Consumes: Task 13 oracle.
-- Produces: `normalise_filter`, `OSC_FILTERS`, `osc_filter_info`, `parse_colour_master_name`, `channel_count_problem`, `COLOUR_SLOTS`, `COLOUR_MEMBERS`, `supplied_channels`, `colour_mix_problem`, `osc_kind_key`, `effective_osc_kind`, `osc_palette_problem`, `osc_kind_problems`, `group_identity`, `sibling_key`, `validate_name`, `group_register_key`, `registered_sibling_key`, `registration_plan`, `clean_registration_plan`, `narrowband_bandwidths`, `palette_sources`, `control_state`: one Python function per JS function, snake_case of the JS name, same arguments and return shapes (dicts for JS objects).
+- Produces: `clean_white_balance_key` stays in `cache.py` (its twin, extended in Task 17); `entry_channel`, `input_channel_problems`, `effective_filters`, `group_cache_action`, `select_colour_masters`, `colour_candidate_correction`, `normalise_filter`, `OSC_FILTERS`, `osc_filter_info`, `parse_colour_master_name`, `channel_count_problem`, `COLOUR_SLOTS`, `COLOUR_MEMBERS`, `supplied_channels`, `colour_mix_problem`, `osc_kind_key`, `effective_osc_kind`, `osc_palette_problem`, `osc_kind_problems`, `group_identity`, `sibling_key`, `validate_name`, `group_register_key`, `registered_sibling_key`, `registration_plan`, `clean_registration_plan`, `narrowband_bandwidths`, `palette_sources`, `control_state`: one Python function per JS function, snake_case of the JS name, same positional arguments and return shapes (dicts for JS objects). Configuration objects are passed in the JavaScript shape (`paths`, `views`, `oscKinds`, `oscSensor`, `oscKindChoices`, `filters`, `palettes`); the test converts the port's configuration to that shape with `osc.js_config( config )`, defined here, which maps the Python keys of Task 15 (`osc_kinds`, `osc_sensor`, `osc_kind_choices`) to the JavaScript names. Two differences are explicit and tested: the port's `osc_sensor` is `{"sensor", "front_filter", "lpf"}` (Siril's SPCC takes one OSC sensor name), so `js_config` maps `sensor` to all three of R, G, B for the functions that only compare names, and `effective_filters` has no Siril twin (Siril has no per-channel SPFC; Task 17 builds the calibration identity instead) — its oracle cases are skipped with that reason in the replay.
 
-- [ ] **Step 1: Failing test.** `tests/loom/test_osc.py` replays every case of `tests/oracle/osc.json` (copy the replay and compare helpers of an existing oracle test such as `tests/test_frames.py`: floats to 1e-9 relative, NaN equal, the rest exact) and adds a guard that every recorded function has a Python twin.
+- [ ] **Step 1: Failing test.** `tests/loom/test_osc.py` replays every case of `tests/oracle/loom_osc.json` (copy the replay and compare helpers of an existing oracle test such as `tests/test_frames.py`: floats to 1e-9 relative, NaN equal, the rest exact) and adds a guard that every recorded function has a Python twin.
 - [ ] **Step 2: Run** `pytest -q tests/loom/test_osc.py` → FAIL (module missing).
 - [ ] **Step 3: Implement** `osc.py`. Hashes use the port's existing `hash_str` / chain-key helpers in `loomsiril/loom/cache.py` (`clean_white_balance_key`, line 205, shows the pattern) so Python keys equal JavaScript keys.
 - [ ] **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: OSC detection, selection rules and keys ported".
@@ -834,43 +920,47 @@ in the Docker image built from `docker/Dockerfile`; CI runs them in the
 - Produces: config keys `paths["OSC"]`, `paths["OSCNB"]`, `osc_kinds`, `osc_sensor` (`{"sensor", "front_filter", "lpf"}` Siril names, see Task 17), `osc_kind_choices`; preflight errors identical to the JavaScript texts; `scan_masters` returns colour candidates and corrections.
 
 - [ ] **Step 1: Failing tests:** the mix error, the SHO/HSO error, an unconfident kind, an unsupported filter, a mono file in a colour slot, `OSCNB` alone giving HOO, `osc_sensor` and `osc_kind_choices` round-tripping through `save`/`load`, `scan_masters` on a temporary folder with a synthetic three-channel FITS named `..._FILTER-L-eXtreme_color.fit` and a mono `..._FILTER-L_mono.fit` (both listed; selection blocked), and a name/header disagreement reported.
-- [ ] **Step 2: Run** the three files → FAIL. **Step 3: Implement** by calling `osc.py`. **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: OSC configuration, preflight and discovery".
+- [ ] **Step 2: Run** the three files → FAIL. **Step 3: Implement** by calling `osc.py`. Existing assertions pin the default configuration and the option list: update `tests/loom/test_config.py` (defaults, around line 40) and `tests/acceptance/test_loom_pr3_options.py` (option list, around line 75) for the new keys, adding the new keys to the expected values rather than relaxing the checks. **Step 4: Run** those files plus the three above → PASS. **Step 5: Commit**: "Siril: OSC configuration, preflight and discovery".
 
 ### Task 16: Loading and splitting a colour master
 
 **Files:**
-- Modify: `loomsiril/loom/pipeline.py` (`_Run.load_channels`, line 190; `_Chan`, line 140)
-- Test: `tests/loom/test_pipeline.py` (new tests)
+- Modify: `loomsiril/loom/pipeline.py` (`_Run.load_channels`, line 190; `_Chan`, line 140; the run log lines); `loomsiril/loom/stages_colour.py` (`_combine`, line 138: `LOOMSRC` on combined products only) and `loomsiril/loom/publish.py` / `psb.py` (palette layer keywords, where the port writes layer metadata)
+- Test: `tests/loom/test_pipeline.py`, `tests/loom/test_stages_colour.py` (new tests)
 
 **Interfaces:**
 - Produces: `_Chan` gains `group` and `plane`; colour members are loaded from FITS plates written into the cache under their sibling keys; the validation sidecar (same name as the JS) holds the plane statistics; the master is read at most once per run, not at all when every sibling plate is cached.
 
-- [ ] **Step 1: Failing tests** (synthetic three-channel FITS from `tests/loom/synth.py` written with the port's FITS writer): split planes equal the source planes (`O` equals plane 1 exactly, independent of plane 2); a constant plane is refused with the JS text; a second run reads the master zero times (count opens by monkeypatching the reader); deleting one plate reads it once; `FILTER` and `LOOMSRC` are set on each plate.
+Provenance survives to the products: the port's channel combination (`stages_colour._combine`, line 138, through `imageops` around line 324) drops keywords that differ between inputs, so the composite and palette products get their `LOOMSRC` set explicitly after combining (one value per product naming each source plane, e.g. `OSC <file> planes 0,1,2`), and the PSB palette layers get it like the JavaScript (Task 12). The run log carries, on cold and warm runs alike, one line per colour group with kind, filter, split and the plane statistics read from the validation sidecar, the palette-sources line and the narrowband approximation line.
+
+- [ ] **Step 1: Failing tests** (synthetic three-channel FITS from `tests/loom/synth.py` written with the port's FITS writer): split planes equal the source planes (`O` equals plane 1 exactly, independent of plane 2); a constant plane is refused with the JS text; a second run reads the master zero times (count opens by monkeypatching the reader); deleting one plate reads it once; `FILTER` and `LOOMSRC` are set on each plate; the composite and an HOO palette product carry `LOOMSRC`; the log lines appear on a cold run and again on a warm run (statistics from the sidecar, master not read).
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** (numpy; pixels via the port's existing FITS reader; never through the image open in Siril). **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: colour masters split into cached channel plates".
 
 ### Task 17: SPCC for OSC and the calibration identity
 
 **Files:**
-- Modify: `loomsiril/loom/siril_ops.py` (`_spcc_checks` 190, `_text_spcc_broadband` 196, `_text_spcc_narrowband` 210, the `spcc_broadband` methods at 412, 618, 842); `loomsiril/loom/stages_colour.py` (`rgb_stage_params` 61, `rgb_spcc_names` 96, `_palette_spcc` 228); `loomsiril/loom/cache.py` (`clean_white_balance_key` 205)
+- Modify: `loomsiril/loom/siril_ops.py` (`_spcc_checks` 190, `_text_spcc_broadband` 196, `_text_spcc_narrowband` 210, the `spcc_broadband` methods at 412, 618, 842); `loomsiril/loom/stages_colour.py` (`rgb_stage_params` 61, `rgb_spcc_names` 96, `_spcc_rgb_runner` 155-165, `_palette_spcc` 228-254, `_measure_clean` 315-333); `loomsiril/loom/cache.py` (`clean_white_balance_key` 205); `tests/loom/test_cache.py` (the pinned key around line 156)
 - Test: `tests/loom/test_siril_ops.py`, `tests/loom/test_siril_ops_spcc_session.py`, `tests/loom/test_stages_colour.py`, `tests/loom/test_cache.py`
 
 **Interfaces:**
 - Produces: `_text_spcc_osc( sensor, front_filter, lpf ) -> str` emitting `spcc -oscsensor=<sensor> -oscfilter=<front> -osclpf=<lpf>` (all three always present; Siril's no-filter entry when none is chosen; read Siril 1.4 `spcc` help in the Docker image for the exact names, and record them in the module docstring); `spcc_osc(...)` methods on every ops class; a calibration identity `calibration_identity( config ) -> str` (mode plus every effective spectral argument) added to `rgb_stage_params` and to `clean_white_balance_key`; narrowband per-channel bandwidths from `osc.narrowband_bandwidths`.
 
-- [ ] **Step 1: Failing tests:** the exact OSC command text; a mono call after an OSC call in one session sends the full mono argument set (and the reverse), extending `test_siril_ops_spcc_session.py`; `rgb_stage_params` and the clean white-balance key change when only the sensor, only the front filter or only the low-pass filter changes; narrowband SPCC gets `-rbw/-gbw/-bbw` from the filter table.
-- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: SPCC with an OSC sensor and the calibration identity in the keys".
+Every SPCC call site dispatches on the mode: the composite runner (`_spcc_rgb_runner`, line 165), the clean white balance (`_measure_clean`, line 333) and the palettes (`_palette_spcc`, line 254, including an `OSCNB`-only run) call `spcc_osc` with the full OSC argument set when `OSC` is used, and the full mono set (sensor plus three filters, resolved with the existing instrument fallback) otherwise; narrowband calls always pass every spectral argument they depend on. `calibration_identity` is computed from the same effective arguments those calls send, and `clean_white_balance_key` also hashes the reference's cache key (as Task 5 does in the JavaScript), threaded from `_Run.clean_white_balance`.
+
+- [ ] **Step 1: Failing tests:** the exact OSC command text; each of the three call sites sends the OSC set for an `OSC` run and the mono set for a mono run (record the commands with the recording ops class); an `OSCNB`-only run sends complete narrowband arguments; a mono call after an OSC call in one session sends the full mono argument set (and the reverse), extending `test_siril_ops_spcc_session.py`; `rgb_stage_params` and the clean white-balance key change when only the sensor, only the front filter or only the low-pass filter changes; narrowband SPCC gets `-rbw/-gbw/-bbw` from the filter table.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** The clean white-balance key's pinned value in `tests/loom/test_cache.py` changes because the reference key is now hashed: re-record it from the JavaScript (`Pipeline.cleanWhiteBalanceKey`) through the Task 13 recorder rather than editing the number by hand. **Step 4: Run** → PASS. **Step 5: Commit**: "Siril: SPCC with an OSC sensor and the calibration identity in the keys".
 
 ### Task 18: Grouped registration in Siril
 
 **Files:**
-- Modify: `loomsiril/loom/stages_geometry.py` (`register_channels` 63, `register_stage_params` 50); `loomsiril/loom/pipeline.py` (`_Run.register` 262, `_Run.clean_white_balance` 318)
+- Modify: `loomsiril/loom/siril_ops.py` (`_text_register` 230 and the three `register` methods at 439, 645, 859 gain an optional `layer: Optional[int] = None`; `None` keeps today's command text exactly; the recording/stub ops record it); `loomsiril/loom/stages_geometry.py` (`register_channels` 63, `register_stage_params` 50); `loomsiril/loom/pipeline.py` (`_Run.register` 262)
 - Test: `tests/loom/test_stages_geometry.py` (stub tests) and `tests/loom/integration/test_osc_siril.py` (new, `siril`-marked)
 
 **Interfaces:**
 - Consumes: `osc.registration_plan`, `osc.group_register_key`, `osc.clean_registration_plan`.
-- Produces: a registration step that, for a grouped colour group, expands the reference plate to three identical channels (`rgbcomp`), builds a two-image colour sequence (reference, group image), runs `register` with `-layer=1` for `OSC` or `-layer=0` for `OSCNB`, and splits the registered group image back into its member plates; the reference group's members are not registered.
+- Produces: (the clean white balance needs no colour-group registration, as in the JavaScript, Task 9) a registration step that, for a grouped colour group, expands the reference plate to three identical channels (`rgbcomp`), builds a two-image colour sequence (reference, group image), runs `register` with `-layer=1` for `OSC` or `-layer=0` for `OSCNB`, and splits the registered group image back into its member plates; the reference group's members are not registered.
 
-- [ ] **Step 1: Failing stub tests:** the command sequence for an `OSCNB` group against an `OSC` reference (`rgbcomp`, sequence link, `register ... -layer=0`, split), the cache keys used, the identity case sending no registration command.
+- [ ] **Step 1: Failing stub tests:** `_text_register( name, layer=None )` equals today's text and `layer=1` appends `-layer=1`; the command sequence for an `OSCNB` group against an `OSC` reference (`rgbcomp`, sequence link, `register ... -layer=0`, split), the cache keys used, the identity case sending no registration command.
 - [ ] **Step 2: Failing `siril`-marked tests** (`tests/loom/integration/test_osc_siril.py`): synthetic `OSC` and `OSCNB` masters with a (3, 2) px shift: registered `H` and `O` aligned to the reference `G` within 0.2 px and to each other within 0.05 px; the clean white-balance branch likewise.
 - [ ] **Step 3: Implement.** **Step 4: Run** the stub tests locally and the `siril` tests in the Docker image → PASS. **Step 5: Commit**: "Siril: a colour group is registered as one image".
 
@@ -903,40 +993,46 @@ in the Docker image built from `docker/Dockerfile`; CI runs them in the
 ### Task 21: Documentation, release notes and version
 
 **Files:**
-- Modify: `pixinsight/README.md` (new "One-shot colour (OSC) cameras" section; remove "not supported" wording), `pixinsight/CHANGELOG.md` (`## [Unreleased]`), `pixinsight/ci/release-notes.sh` (line 44) and `pixinsight/ci/release-notes.test.js` (lines 57-58), `siril/README.md` (replace the "Cameras" bullet at line 12; add an OSC section), `siril/CHANGELOG.md` (`## [Unreleased]`), `siril/loomsiril/__init__.py` (`__version__`)
+- Modify: `pixinsight/README.md` (new "One-shot colour (OSC) cameras" section; remove "not supported" wording), `pixinsight/CHANGELOG.md` (`## [Unreleased]`), `pixinsight/ci/release-notes.sh` (line 44) and `pixinsight/ci/release-notes.test.js` (lines 57-58), `siril/README.md` (replace the "Cameras" bullet at line 12; add an OSC section), `siril/CHANGELOG.md` (`## [Unreleased]`); release tooling: `pixinsight/ci/release-prep.js` and `pixinsight/ci/release-prep.test.js` (new), `pixinsight/ci/release.sh`, `pixinsight/ci/run-tests.js` (gate list), `pixinsight/docs/RELEASING.md`, `siril/tests/test_package.py`
 
 - [ ] **Step 1: Failing test.** In `ci/release-notes.test.js` replace the "OSC cameras are said not to be supported" check with one asserting the notes say OSC masters are supported ("broadband and Hα + OIII dual-band colour masters") and no longer contain "not supported yet". Run `node ci/run-tests.js` → FAIL.
 - [ ] **Step 2:** Update `ci/release-notes.sh` text; run → PASS.
 - [ ] **Step 3: READMEs.** Both READMEs gain a section covering: what OSC masters are accepted (debayered, three channels; one broadband and/or one Hα + OIII dual-band per run), how kind is detected and overridden, that colour and mono masters cannot be combined, HOO only (SHO/HSO refused with the reason), the sensor colour filter choice, the light-pollution filter note, and quad-band carrying SII in H. Siril README edits stay inside the new section and the one "Cameras" bullet.
 - [ ] **Step 4: CHANGELOGs.** One `### Added` bullet list under `## [Unreleased]` in each CHANGELOG, OSC only, in a separate list item from anything else there.
-- [ ] **Step 5: Version.** The next release is a minor release: set `siril/loomsiril/__init__.py` `__version__` to the next minor version after the latest `v*` tag (`git describe --tags --abbrev=0`; 0.5.1 today, so `0.6.0`). `Util.LOOM_VERSION` is set by `ci/release.sh` at release time and is not edited here. Run `PYTHONPATH=$PWD python -m pytest -q tests/test_package.py` (version tests) → PASS.
-- [ ] **Step 6:** Hygiene: `node ci/run-tests.js` and `pytest -q siril/tests/acceptance` → PASS. Commit: "OSC: documentation, release notes and version".
+- [ ] **Step 5: Siril in the release script.** `ci/release.sh` finalises only the PixInsight `CHANGELOG.md` and `Util.LOOM_VERSION` (release.sh 52-71, staged at line 84), so a tag would leave the Siril notes under `[Unreleased]` and its version at the previous release. Add `pixinsight/ci/release-prep.js` exporting `finalizeChangelog( text, version, date ) -> text` (the same transformation release.sh's Python does today: insert `## [<version>] — <date>` after `## [Unreleased]`, refusing an empty section) and `setPythonVersion( text, version ) -> text` (replaces `__version__ = "..."`, refusing a file without exactly one). Add `pixinsight/ci/release-prep.test.js` (cases: normal, empty section refused, missing heading refused, version line replaced, two version lines refused) and run it from `ci/run-tests.js` beside `release-notes.test.js` (line 57). Make `ci/release.sh` call `node ci/release-prep.js "$version"` right after its Python block to update `../siril/CHANGELOG.md` and `../siril/loomsiril/__init__.py`, and stage both in the release commit (line 84: `git add CHANGELOG.md script ci/signed-tree.sha256 repo ../siril/CHANGELOG.md ../siril/loomsiril/__init__.py`). Update `docs/RELEASING.md` steps 2 and 6 to say so. In `siril/tests/test_package.py` add a check that `loomsiril.__version__` equals the newest dated section of `siril/CHANGELOG.md`, which holds before and after a release. Run `node ci/run-tests.js` (the gate runs the new test first) and `PYTHONPATH=$PWD python -m pytest -q tests/test_package.py` from `siril/` → PASS. The version itself (`0.6.0`, the next minor after the latest `v*` tag) is set by the release script, not edited here.
+- [ ] **Step 6:** Run `LOOM_TEST_ONLY=osc node ci/run-tests.js` and `pytest -q siril/tests/acceptance` → PASS. Commit: "OSC: documentation, release notes; the release script finalises the Siril notes and version".
 
 ### Task 22: Release candidate checks
 
-- [ ] **Step 1:** Open a pull request from `osc` to `main`. Both workflows run (`.github/workflows/ci.yml`, `siril.yml`); the pull request is ready only when every required job is green on the head commit.
-- [ ] **Step 2:** Run in PixInsight (hand checks, results pasted in the pull request): the full selftest including `osc.e2e`, and one real run with a broadband and a dual-band OSC master (the maintainer's data), checking the masters list, the dialog controls and the outputs.
-- [ ] **Step 3:** Run in Siril (hand check): the same masters through `Loom/loom_preprocess.py`.
-- [ ] **Step 4:** Release itself (merge, `ci/release.sh <version> --push`) is the maintainer's step, per `docs/RELEASING.md`.
-
----
+- [ ] **Step 1:** Open a pull request from `osc` to `main`. Both workflows run (`.github/workflows/ci.yml`, `siril.yml`); the pull request is ready only when every job is green on the head commit.
+- [ ] **Step 2: Siril integration evidence.** The `docker` job in `siril.yml` has `continue-on-error: true` (line 51), so a green workflow does not prove the Siril-marked OSC tests ran. Run the Docker image on the pull request's head commit with `python -m pytest -q -rs -m siril tests/loom/integration/test_osc_siril.py` and paste the output in the pull request: every OSC test passed, none skipped. The candidate is not ready without it.
+- [ ] **Step 3:** Run in PixInsight (hand checks, results pasted in the pull request): the full selftest including `osc.e2e`, the hand checks of Tasks 6, 8, 9, 10 and 11, and one real run with a broadband and a dual-band OSC master (the maintainer's data), checking the masters list, the dialog controls and the outputs.
+- [ ] **Step 4:** Run in Siril (hand check): the same masters through `Loom/loom_preprocess.py`.
+- [ ] **Step 5:** Release is the maintainer's step, per `docs/RELEASING.md`: merge, then from `pixinsight/` run `ci/release.sh 0.6.0 --key-dir <folder> --push` (it finalises both changelogs and both versions, signs, tags `v0.6.0` and pushes).
 
 ## Dependency order and parallel groups
 
+A task starts only when every task it consumes from is merged on `osc`.
+
 | Wave | Tasks (parallel within a wave) | Needs |
 |---|---|---|
-| 1 | 1, 2 | — |
-| 2 | 3 | 1, 2 |
-| 3 | 4, 5 | 3 |
-| 4 | 6, 7, 10 | 4, 5 (10 needs only 3) |
-| 5 | 8, 11 | 6 (8), 7 and 10 (11) |
-| 6 | 9, 12 | 8 (9), 6-9 (12) |
-| 7 | 13 | Phase A merged on `osc` |
-| 8 | 14 | 13 |
-| 9 | 15, 16, 17 | 14 |
-| 10 | 18, 19 | 16, 17 (18), 15 (19) |
-| 11 | 20 | 18 |
-| 12 | 21 | 12, 20 |
-| 13 | 22 | 21 |
+| 1 | 1 | — |
+| 2 | 2 | 1 |
+| 3 | 3 | 1, 2 |
+| 4 | 4, 5 | 3 |
+| 5 | 6, 10 | 5 (6); 3 (10) |
+| 6 | 7 | 4, 6 |
+| 7 | 8, 11 | 6, 7 (8); 7, 10 (11) |
+| 8 | 9 | 7, 8 |
+| 9 | 12 | 6-9 |
+| 10 | 13 | 1-12 (Phase A complete) |
+| 11 | 14 | 13 |
+| 12 | 15 | 14 |
+| 13 | 16 | 15 |
+| 14 | 17 | 16 |
+| 15 | 18, 19 | 17 (18); 15 (19) |
+| 16 | 20 | 18 |
+| 17 | 21 | 12, 20 |
+| 18 | 22 | 21 |
 
-Tasks touching the same file in one wave (6 and 7 both edit `Pipeline.js` and `Steps.js`; 8 and 11 edit different files) are owned function by function as listed under each task's **Files**; whoever lands second rebuilds on the first.
+Tasks in one wave never edit the same function. Waves 5 and 7 hold tasks that touch different files (6: `Pipeline.js` loading and `Steps.js` plane helpers; 10: `Util.js` discovery and `UI.js` entry routing; 8: `Pipeline.js` registration and `Steps.combinePlanes`; 11: `Util.oscControlState` and `UI.js` dialog builders). Each task's brief carries the **Interfaces** of the tasks it consumes.
