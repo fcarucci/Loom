@@ -15,7 +15,7 @@ config = pytest.importorskip("loomsiril.loom.config")
 
 # Loom's defaults for every field the port keeps (lib/Config.js:126-188), plus the port's two additions.
 EXPECTED_DEFAULTS = {
-    "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": ""},
+    "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
     "savedList": "",
     "filters": {},
     "gradientTool": "GraXpert",
@@ -48,6 +48,9 @@ EXPECTED_DEFAULTS = {
     "cacheDir": "",
     "ignoreCache": False,
     "spccSensor": "",
+    "oscKinds": {},   # per run, never saved: preflight fills it
+    "oscSensor": {"sensor": "", "frontFilter": "", "lpf": ""},   # port: Siril SPCC database names
+    "oscKindChoices": {},
 }
 REMOVED = ("views", "marsPath", "autoUpdate")
 

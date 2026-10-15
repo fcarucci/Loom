@@ -624,36 +624,88 @@ def _fits_value_text(v: Any) -> str:
     return str(v)
 
 
-def _read_fits_header(path: str) -> dict[str, Any]:
-    """The primary header of a FITS file, read block by block up to END. No pixels are read."""
+def _read_hdu_header(fh: Any, path: str) -> dict[str, Any]:
+    """One FITS header read block by block up to its END card, leaving ``fh`` at the start of the HDU's data."""
     data = b""
+    while True:
+        block = fh.read(_FITS_BLOCK)
+        if len(block) < _FITS_BLOCK:
+            raise ValueError(f"FITS header has no END card: {path}")
+        data += block
+        if any(block[c:c + 8].rstrip() == b"END" for c in range(0, _FITS_BLOCK, 80)):
+            return io_fits._parse_header(data)[0]
+
+
+def _int_of(header: Mapping[str, Any], key: str) -> Optional[int]:
+    v = header.get(key)
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _data_size(header: Mapping[str, Any]) -> int:
+    """The bytes of an HDU's data part, padding included (FITS standard 4.4.1.1 and 7.3)."""
+    naxis = _int_of(header, "NAXIS") or 0
+    if naxis == 0:
+        return 0
+    count = 1
+    for i in range(1, naxis + 1):
+        count *= _int_of(header, f"NAXIS{i}") or 0
+    bits = abs(_int_of(header, "BITPIX") or 8)
+    size = bits // 8 * (_int_of(header, "GCOUNT") or 1) * (count + (_int_of(header, "PCOUNT") or 0))
+    return size + (-size % _FITS_BLOCK)
+
+
+def _fits_keywords(header: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [{"name": k, "value": _fits_value_text(v)} for k, v in header.items()]
+
+
+def _compressed_image_header(fh: Any, path: str, primary: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The header of the first tile-compressed image extension (a BINTABLE with ZIMAGE = T) after the primary HDU.
+
+    The data of every HDU passed over is skipped by its size, never read. None when there is no such extension.
+    """
+    fh.seek(_data_size(primary), 1)
+    while True:
+        try:
+            ext = _read_hdu_header(fh, path)
+        except ValueError:
+            return None
+        if ext.get("XTENSION") == "BINTABLE" and ext.get("ZIMAGE") is True:
+            return ext
+        fh.seek(_data_size(ext), 1)
+
+
+def _read_fits_header(path: str) -> dict[str, Any]:
+    """The header of a FITS file, read block by block up to END. No pixels are read.
+
+    A plain image gives the primary header. A tile-compressed one (``.fz``) has an empty primary and its image in the
+    first compressed BINTABLE: that header gives width, height and channels from ZNAXIS1-3, and its keywords come
+    after the primary's, so they win.
+    """
     with open(path, "rb") as fh:
-        while True:
-            block = fh.read(_FITS_BLOCK)
-            if not block:
-                raise ValueError(f"FITS header has no END card: {path}")
-            data += block
-            try:
-                header, _ = io_fits._parse_header(data)
-                break
-            except ValueError:
-                if len(block) < _FITS_BLOCK:
-                    raise
-    keywords = [{"name": k, "value": _fits_value_text(v)} for k, v in header.items()]
-
-    def _int(key: str) -> Optional[int]:
-        v = header.get(key)
-        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-
+        header = _read_hdu_header(fh, path)
+        keywords = _fits_keywords(header)
+        width, height = _int_of(header, "NAXIS1"), _int_of(header, "NAXIS2")
+        naxis, naxis3 = _int_of(header, "NAXIS") or 0, _int_of(header, "NAXIS3")
+        channels = naxis3 if naxis >= 3 and naxis3 is not None else 1
+        ext = _compressed_image_header(fh, path, header) if naxis == 0 else None
+    if ext is not None:
+        merged = {k["name"]: k for k in keywords}
+        for k in _fits_keywords(ext):
+            merged[k["name"]] = k
+        keywords = list(merged.values())
+        width, height = _int_of(ext, "ZNAXIS1"), _int_of(ext, "ZNAXIS2")
+        znaxis, znaxis3 = _int_of(ext, "ZNAXIS") or 0, _int_of(ext, "ZNAXIS3")
+        channels = znaxis3 if znaxis >= 3 and znaxis3 is not None else 1
     return {"format": "fits", "keywords": keywords, "history": None, "signature": None,
-            "width": _int("NAXIS1"), "height": _int("NAXIS2"), "notes": []}
+            "width": width, "height": height, "channels": channels, "notes": []}
 
 
 def read_header(path: str) -> dict[str, Any]:
     """The header fields a master needs, read without decoding pixels.
 
-    Returns ``{"format", "keywords": [{"name", "value"}], "history", "signature", "width", "height"}``. ``history``
-    and ``signature`` are the XISF properties ``PixInsight:ProcessingHistory`` and
+    Returns ``{"format", "keywords": [{"name", "value"}], "history", "signature", "width", "height", "channels"}``.
+    ``channels`` is NAXIS3 of a FITS image (1 below three axes), ZNAXIS3 of a tile-compressed one, and the third part
+    of an XISF geometry. ``history`` and ``signature`` are the XISF properties ``PixInsight:ProcessingHistory`` and
     ``PCL:Signature:Integration``; FITS has neither. Raises ValueError for anything that is neither XISF nor FITS.
     """
     with open(path, "rb") as fh:
@@ -668,6 +720,7 @@ def read_header(path: str) -> dict[str, Any]:
             "signature": hdr.properties.get("PCL:Signature:Integration"),
             "width": geometry[0] if geometry else None,
             "height": geometry[1] if geometry else None,
+            "channels": geometry[2] if geometry else 1,
             "notes": list(hdr.notes),
         }
     if sig.startswith(b"SIMPLE"):

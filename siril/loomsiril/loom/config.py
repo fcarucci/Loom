@@ -43,7 +43,8 @@ NOISE_LEVELS = ("low", "medium", "high")
 
 # Keys the file never holds: ignoreCache, validateOnly and keepWindowsOnError are for one run only (lib/Config.js:186-188,
 # and Config.save writes neither validateOnly nor keepWindowsOnError).
-_NEVER_PERSISTED = ("ignoreCache", "validateOnly", "keepWindowsOnError")
+# oscKinds is filled by preflight for one run.
+_NEVER_PERSISTED = ("ignoreCache", "validateOnly", "keepWindowsOnError", "oscKinds")
 
 # The plain settings. "type" is what a stored value must be; "load" is "set"
 # (a stored value replaces the default unless null), "text" (the same, but an
@@ -85,7 +86,13 @@ _EXTRA_TYPES: dict[str, str] = {
     "filters": "str_map",
     "palettes": "str_list",
     "gradientTool": "str",
+    "oscKindChoices": "object",
+    "oscSensor": "object",
 }
+
+# What a remembered one-shot-colour answer may be, and the keys of the chosen sensor (Siril SPCC database names).
+OSC_KIND_VALUES = ("broadband", "dualband")
+OSC_SENSOR_KEYS = ("sensor", "frontFilter", "lpf")
 
 # How a stored value of each type is described in a warning.
 _KIND_TEXT = {
@@ -94,6 +101,7 @@ _KIND_TEXT = {
     "float": "a number",
     "str_map": "an object of text values",
     "str_list": "a list of text",
+    "object": "an object",
 }
 
 # A legacy checkbox, read only to derive gradientTool (lib/Config.js:238-273).
@@ -108,7 +116,7 @@ def _no_warn(text: str) -> None:
 def defaults() -> dict[str, Any]:
     """Loom's defaults, minus views, marsPath and autoUpdate, plus spccSensor and cacheDir."""
     return {
-        "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": ""},
+        "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
         "savedList": "",
         "filters": {},
         "gradientTool": GRADIENT_TOOL_GRAXPERT,
@@ -141,6 +149,9 @@ def defaults() -> dict[str, Any]:
         "cacheDir": "",
         "spccSensor": "",
         "ignoreCache": False,
+        "oscKinds": {},
+        "oscSensor": {"sensor": "", "frontFilter": "", "lpf": ""},
+        "oscKindChoices": {},
     }
 
 
@@ -263,6 +274,8 @@ def _matches(kind: str, value: Any) -> bool:
         return isinstance(value, dict) and all(isinstance(v, str) for v in value.values())
     if kind == "str_list":
         return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if kind == "object":
+        return isinstance(value, dict)
     raise ValueError(kind)
 
 
@@ -309,6 +322,26 @@ def _apply_document(config: dict[str, Any], raw: dict[str, Any], warn: WarnFn, p
                 elif filter_value:
                     kept[name] = filter_value
             config["filters"] = kept
+            continue
+        if key == "oscKindChoices":
+            kept_choices: dict[str, str] = {}
+            for name, choice in value.items():
+                if choice in OSC_KIND_VALUES:
+                    kept_choices[name] = choice
+                else:
+                    warn(f"oscKindChoices: {name!r} is not broadband or dualband; ignored")
+            config[key] = kept_choices
+            continue
+        if key == "oscSensor":
+            sensor = dict(config["oscSensor"])
+            for name, text in value.items():
+                if name not in OSC_SENSOR_KEYS:
+                    warn(f"oscSensor: {name!r} is not kept; ignored")
+                elif isinstance(text, str):
+                    sensor[name] = text
+                else:
+                    warn(f"oscSensor: {name} expected text, got {_type_name(text)}; ignored")
+            config[key] = sensor
             continue
         if key == "parallaxFamily":
             value = value if value in STUDIO_PARALLAX_FAMILIES else STUDIO_PARALLAX_FAMILY
