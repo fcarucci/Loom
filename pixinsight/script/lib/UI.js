@@ -382,18 +382,33 @@ UI.hiddenEntriesNote = function( missing, skipped )
  * problems that refuse a run: duplicate channels and unrecognised
  * filters. Unavailable entries are ignored.
  */
-UI.foldEntries = function( entries )
+UI.foldEntries = function( entries, choices )
 {
    var paths = {}, views = {}, seen = {}, problems = [];
-   for ( var k = 0; k < Util.CHANNELS.length; ++k )
+   var slots = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var k = 0; k < slots.length; ++k )
    {
-      paths[Util.CHANNELS[k]] = "";
+      paths[slots[k]] = "";
    }
    for ( var i = 0; i < entries.length; ++i )
    {
       var e = entries[i];
       if ( e.unavailable )
          continue;   // remembered but not currently available; simply ignored
+      if ( e.channel === null && e.colour )
+      {
+         var kind = Util.effectiveOscKind( null, e.filter, e.ref, choices );
+         problems.push( kind.kind == "unsupported"
+            ? "this filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported"
+            : "choose Broadband or Dual-band H\u03b1 + OIII for " + e.ref );
+         continue;
+      }
+      if ( e.channel === null && typeof e.numberOfChannels == "number" &&
+           Util.channelCountProblem( e.ref, e.numberOfChannels ) != null )
+      {
+         problems.push( Util.channelCountProblem( e.ref, e.numberOfChannels ) );
+         continue;
+      }
       if ( e.channel === null )
       {
          problems.push( "Unrecognised FILTER " +
@@ -437,12 +452,25 @@ UI.classifyMasterFile = function( scan, dir, found )
    }
 
    var rec = UI.masterFileRecord( dir, found );
+   // A colour name is collected apart from the mono winners; its header decides.
+   var colourName = Util.parseColourMasterName( name );
+   if ( colourName.colour )
+   {
+      rec.filter = colourName.filter;
+      rec.colour = true;
+      rec.drizzle = colourName.drizzle;
+      rec.autocrop = colourName.autocrop;
+      rec.numberOfChannels = 3;
+      scan.colourNamed.push( rec );
+      return;
+   }
    var parsed = Util.parseMasterName( name );
    if ( parsed != null && parsed.channel != null )
    {
       rec.channel  = parsed.channel;
       rec.drizzle  = parsed.drizzle;
       rec.autocrop = parsed.autocrop;
+      rec.colour   = false;
       scan.named.push( rec );
    }
    else
@@ -481,24 +509,100 @@ UI.fileLabel = function( path )
  * A masters-list entry for a file, from its header. An unreadable file is
  * still listed -- with no filter, so the list shows it as a problem.
  */
-UI.fileEntry = function( path )
+UI.fileEntry = function( path, choices )
 {
    var info = null;
    try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
    var kws = info ? info.keywords : null;
    var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
+   var n = info ? ( info.numberOfChannels == null ? 1 : info.numberOfChannels ) : null;
+   var route = Util.entryChannel( filter, n, path, choices );
    return {
       source: "file",
       ref: path,
       label: UI.fileLabel( path ),
       filter: filter,
       instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
-      channel: Util.channelFromFilter( filter ),
+      channel: route.channel,
+      colour: route.colour,
+      numberOfChannels: n,
       width: info ? info.width : 0,
       height: info ? info.height : 0,
       drizzle: Util.masterDrizzleLabel( info ),
       created: Util.fileCreatedMs( path )
    };
+};
+
+/*
+ * What a folder scan yields before any header is read: the mono winners from
+ * the names, the colour winners per slot (candidates with no kind yet listed
+ * apart), and whether unnamed files must be header-read -- when any mono slot
+ * or either colour slot has no named winner.
+ */
+UI.planFolderPicks = function( scan, choices )
+{
+   var mono = Util.selectMasters( scan.named || [] );
+   var cp = Util.selectColourMasters( scan.colourNamed || [], choices );
+   var missing = Util.CHANNELS.some( function( k ) { return mono[k] == null; } ) ||
+                 cp.OSC == null || cp.OSCNB == null;
+   return { mono: mono, colour: { OSC: cp.OSC, OSCNB: cp.OSCNB }, unresolved: cp.unresolved,
+            readUnnamed: missing && ( scan.unnamed || [] ).length > 0 };
+};
+
+/*
+ * Reads the headers of the unnamed files and promotes into scan.named
+ * (mono) or scan.colourNamed (three channels) those that fill a slot with no
+ * named winner. `readInfo( path )` is the header reader. A file whose header
+ * cannot be read, or has a channel count Loom does not take, is listed in
+ * scan.unreadable and skipped; it never stops the scan.
+ */
+UI.resolveUnnamedRecords = function( scan, choices, readInfo )
+{
+   var plan = UI.planFolderPicks( scan, choices );
+   if ( scan.unreadable == null )
+      scan.unreadable = [];
+   var unnamed = scan.unnamed || [];
+   for ( var u = 0; u < unnamed.length; ++u )
+   {
+      var rec = unnamed[u];
+      var info = null;
+      try { info = readInfo( rec.path ); } catch ( e ) { info = null; }
+      if ( info == null )
+      {
+         scan.unreadable.push( rec.path + ": header could not be read" );
+         continue;
+      }
+      var n = info.numberOfChannels == null ? 1 : info.numberOfChannels;   // a header that does not say is one channel
+      var bad = Util.channelCountProblem( rec.path, n );
+      if ( bad != null )
+      {
+         scan.unreadable.push( bad );
+         continue;
+      }
+      var filter = Util.keywordValue( info.keywords, "FILTER" );
+      rec.autocrop = Util.isAutocropName( rec.name );
+      rec.drizzle = Util.masterDrizzleLabel( info );
+      if ( n == 3 )
+      {
+         var slot = Util.entryChannel( filter, n, rec.path, choices ).channel;
+         if ( slot != null && plan.colour[slot] != null )
+            continue;   // that slot already has a named winner
+         rec.filter = filter == null ? "" : filter;
+         rec.colour = true;
+         rec.numberOfChannels = 3;
+         scan.colourNamed.push( rec );
+      }
+      else
+      {
+         var ch = Util.channelFromFilter( filter );
+         if ( ch == null || plan.mono[ch] != null )
+            continue;
+         rec.channel = ch;
+         rec.colour = false;
+         rec.numberOfChannels = 1;
+         scan.named.push( rec );
+      }
+   }
 };
 
 /*
@@ -1939,8 +2043,18 @@ UI.SelectDialog = class extends Dialog
       if ( this.runButton == null )
          return;
       var n = Util.runnableEntryCount( this.entries );
-      this.runButton.enabled = !this.busy && n > 0;
-      this.runButton.toolTip = ( n > 0 )
+      // colour and mono masters cannot be run together: say so and keep Run off
+      var mix = null;
+      try
+      {
+         var folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices );
+         mix = Util.colourMixProblem( { paths: folded.paths, views: folded.views } );
+      }
+      catch ( e ) { mix = null; }
+      this.runButton.enabled = !this.busy && n > 0 && mix == null;
+      this.runButton.toolTip = ( mix != null )
+         ? "<p>" + mix + "</p>"
+         : ( n > 0 )
          ? "<p>Process the masters listed above.</p>"
          : "<p>Add at least one master first \u2014 " +
            "<b>Scan Masters Folder</b> or <b>Add Files</b>.</p>";
@@ -1988,13 +2102,20 @@ UI.SelectDialog = class extends Dialog
          return;
       }
 
-      var picks = Util.selectMasters( scan.named );
-      // Only fall back to opening unnamed files when a channel is missing.
-      if ( Object.keys( picks ).length == 0 && scan.unnamed.length > 0 )
-         picks = this.resolveUnnamedMasters( scan );
+      var choices = ( this.config || {} ).oscKindChoices;
+      var plan = UI.planFolderPicks( scan, choices );
+      // Open unnamed files when a mono or colour slot has no named winner.
+      if ( plan.readUnnamed )
+         plan = this.resolveUnnamedMasters( scan );
+
+      // mono and colour picks go through one confirmation, by header
+      var picks = {};
+      Object.keys( plan.mono ).forEach( function( k ) { picks[k] = plan.mono[k]; } );
+      Util.COLOUR_SLOTS.forEach( function( k ) { if ( plan.colour[k] != null ) picks[k] = plan.colour[k]; } );
+      plan.unresolved.forEach( function( c, i ) { picks["unresolved:" + i] = c; } );
 
       var confirm = this.confirmMasters( picks, scan.named );
-      var added = this.adoptMasters( confirm.confirmed );
+      var added = this.adoptMasters( confirm.confirmed, confirm.unresolved );
 
       this.rebuild();
       this.reportScan( scan, confirm, added );
@@ -2006,37 +2127,32 @@ UI.SelectDialog = class extends Dialog
     */
    scanMasterFolder( dir )
    {
-      var scan = { named: [], unnamed: [], total: 0, skipped: 0 };
+      var scan = { named: [], colourNamed: [], unnamed: [], unreadable: [], total: 0, skipped: 0 };
       if ( !File.directoryExists( dir ) )
          return null;
       // Util.findEntries: hidden files (macOS's "._name" twins) are never candidates
-      Util.findEntries( dir + "/*" ).forEach( function( e ) { UI.classifyMasterFile( scan, dir, e ); } );
+      Util.findEntries( dir + "/*" ).forEach( function( e )
+      {
+         // a name that cannot be parsed is reported and skipped, never fatal
+         try { UI.classifyMasterFile( scan, dir, e ); }
+         catch ( x ) { scan.unreadable.push( String( e && e.name ) + ": name could not be read" ); }
+      } );
 
       return scan;
    }
 
    /*
     * Files whose names carry no FILTER token are deferred: they are only
-    * opened if some channel ended up with no candidate at all, so an
-    * oddly-named master is still found without paying for it every time.
-    * Promotes whatever it can identify into `scan.named` and re-picks.
+    * opened when some mono slot or colour slot ended up with no named
+    * winner, so an oddly-named master is still found without paying for it
+    * every time. Fills only the missing slots (a three-channel file becomes
+    * a colour candidate) and returns the plan again.
     */
    resolveUnnamedMasters( scan )
    {
-      for ( var u = 0; u < scan.unnamed.length; ++u )
-      {
-         var rec = scan.unnamed[u];
-         var ui = null;
-         try { ui = Util.readImageInfo( rec.path ); } catch ( e ) { ui = null; }
-         if ( ui == null ) continue;
-         var uc = Util.channelFromFilter( Util.keywordValue( ui.keywords, "FILTER" ) );
-         if ( uc == null ) continue;
-         rec.channel  = uc;
-         rec.drizzle  = Util.masterDrizzleLabel( ui );
-         rec.autocrop = Util.isAutocropName( rec.name );
-         scan.named.push( rec );
-      }
-      return Util.selectMasters( scan.named );
+      var choices = ( this.config || {} ).oscKindChoices;
+      UI.resolveUnnamedRecords( scan, choices, function( p ) { return Util.readImageInfo( p ); } );
+      return UI.planFolderPicks( scan, choices );
    }
 
    /*
@@ -2045,7 +2161,8 @@ UI.SelectDialog = class extends Dialog
     */
    confirmMasters( picks, named )
    {
-      var confirmed = {}, opened = 0, skipped = 0, corrected = [];
+      var confirmed = {}, unresolved = [], opened = 0, skipped = 0, corrected = [], unreadable = [];
+      var choices = ( this.config || {} ).oscKindChoices;
       var keys = Object.keys( picks );
       /*
        * The candidate list is known before any measuring starts, so the
@@ -2064,7 +2181,10 @@ UI.SelectDialog = class extends Dialog
             try { info = Util.readImageInfo( p.path ); } catch ( e ) { info = null; }
             ++opened;
             if ( info == null )
+            {
+               unreadable.push( p.path + ": header could not be read" );
                continue;
+            }
 
             var kws = info.keywords;
             if ( !Util.isMasterLight( p.name, Util.keywordValue( kws, "IMAGETYP" ) ) )
@@ -2073,11 +2193,44 @@ UI.SelectDialog = class extends Dialog
                continue;
             }
 
+            // the channel count decides mono or colour; the header, not the name
+            var n = info.numberOfChannels == null ? 1 : info.numberOfChannels;
+            var bad = Util.channelCountProblem( p.path, n );
+            if ( bad != null )
+            {
+               unreadable.push( bad );
+               continue;
+            }
             var filter = Util.keywordValue( kws, "FILTER" );
-            var channel = Util.channelFromFilter( filter );
+            var route = Util.entryChannel( filter, n, p.path, choices );
+            var fix = Util.colourCandidateCorrection(
+               { path: p.path, colour: !!p.colour, numberOfChannels: n } );
+            if ( fix != null )
+               corrected.push( fix );
+
+            if ( route.colour )
+            {
+               var centry = this.colourMaster( p, info, route, filter );
+               if ( route.channel == null )
+               {
+                  unresolved.push( centry );
+                  continue;
+               }
+               var cprev = confirmed[route.channel];
+               if ( cprev == null ||
+                    Util.masterVariantRank( centry.drizzle, centry.autocrop ) >
+                    Util.masterVariantRank( cprev.drizzle, cprev.autocrop ) )
+               {
+                  confirmed[route.channel] = centry;
+                  this.showMaster( centry );
+               }
+               continue;
+            }
+
+            var channel = route.channel;
             if ( channel == null )
                continue;
-            if ( channel != p.channel )
+            if ( channel != p.channel && p.channel != null && !fix )
                corrected.push( p.name + ": name says " + p.channel +
                                ", header says " + channel );
 
@@ -2100,8 +2253,35 @@ UI.SelectDialog = class extends Dialog
          this.setBusy( null );
       }
 
-      return { confirmed: confirmed, opened: opened,
-               skipped: skipped, corrected: corrected };
+      return { confirmed: confirmed, unresolved: unresolved, opened: opened,
+               skipped: skipped, corrected: corrected, unreadable: unreadable };
+   }
+
+   /*
+    * A colour master's entry. Its channel is the slot its kind gives it, or
+    * null while the kind is still to be chosen. It is not measured here: the
+    * quality figures compare mono stacks of one channel.
+    */
+   colourMaster( p, info, route, filter )
+   {
+      return {
+         source: "file",
+         ref: p.path,
+         label: File.extractName( p.path ) + File.extractExtension( p.path ),
+         filter: filter,
+         instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
+         channel: route.channel,
+         colour: true,
+         numberOfChannels: 3,
+         width: info.width,
+         height: info.height,
+         drizzle: Util.masterDrizzleLabel( info ),
+         autocrop: p.autocrop,
+         mtime: p.mtime,
+         created: p.created,
+         quality: null,
+         delta: null
+      };
    }
 
    /*
@@ -2123,6 +2303,8 @@ UI.SelectDialog = class extends Dialog
          filter: filter,
          instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
          channel: channel,
+         colour: false,
+         numberOfChannels: 1,
          width: info.width,
          height: info.height,
          drizzle: Util.masterDrizzleLabel( info ),
@@ -2175,7 +2357,7 @@ UI.SelectDialog = class extends Dialog
     * Take the confirmed masters into the entry list, one per channel,
     * displacing whatever held that channel before.
     */
-   adoptMasters( confirmed )
+   adoptMasters( confirmed, unresolved )
    {
       var added = [], ckeys = Object.keys( confirmed );
       for ( var c = 0; c < ckeys.length; ++c )
@@ -2190,6 +2372,15 @@ UI.SelectDialog = class extends Dialog
          added.push( ckeys[c] + " (" + ( pick.drizzle ? pick.drizzle + " " : "" ) +
                      ( pick.autocrop ? "autocrop" : "full" ) + ")" );
       }
+      // colour masters with no kind yet have no slot to displace; each is listed once
+      var open = unresolved || [];
+      for ( var u = 0; u < open.length; ++u )
+      {
+         var cu = open[u];
+         this.entries = this.entries.filter( function( e ) { return !( e.source == "file" && e.ref == cu.ref ); } );
+         this.entries.push( cu );
+         added.push( cu.label + " (choose a kind)" );
+      }
       return added;
    }
 
@@ -2198,12 +2389,14 @@ UI.SelectDialog = class extends Dialog
       var detail = "<i>(" + scan.total + " files, " + scan.named.length +
                    " named candidates, " + confirm.opened + " opened, " +
                    ( scan.skipped + confirm.skipped ) + " skipped)</i>";
+      var unreadable = ( scan.unreadable || [] ).concat( confirm.unreadable || [] );
+      var tail = ( confirm.corrected.length ? "<br/><b>Filter from header, not name:</b> " +
+                                              confirm.corrected.join( "; " ) : "" ) +
+                 ( unreadable.length ? "<br/><b>Skipped, unreadable:</b> " + unreadable.join( "; " ) : "" );
       this.status.text = added.length
          ? ( "<b>Loaded " + added.length + " master" + ( added.length == 1 ? "" : "s" ) +
-             ":</b> " + added.sort().join( ", " ) + "  " + detail +
-             ( confirm.corrected.length ? "<br/><b>Filter from header, not name:</b> " +
-                                          confirm.corrected.join( "; " ) : "" ) )
-         : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail );
+             ":</b> " + added.sort().join( ", " ) + "  " + detail + tail )
+         : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail + tail );
    }
 
    addFiles( paths )
@@ -2222,7 +2415,7 @@ UI.SelectDialog = class extends Dialog
                this.setBusy( Util.scanProgressMessage( "Reading masters", UI.fileLabel( paths[i] ),
                                                        i+1, paths.length ),
                              Util.stepProgress( i+1, paths.length, 0, 1 ) );
-            this.entries.push( UI.fileEntry( paths[i] ) );
+            this.entries.push( UI.fileEntry( paths[i], ( this.config || {} ).oscKindChoices ) );
             // each row as it is read, not all of them at the end
             if ( report )
                this.rebuild();
@@ -2251,13 +2444,17 @@ UI.SelectDialog = class extends Dialog
 
       var kws = view.window.keywords;
       var filter = Util.keywordValue( kws, "FILTER" );
+      var n = view.image.numberOfChannels;
+      var route = Util.entryChannel( filter, n, view.id, ( this.config || {} ).oscKindChoices );
       this.entries.push( {
          source: "view",
          ref: view.id,
          label: view.id,
          filter: filter,
          instrume: Util.keywordValue( kws, "INSTRUME" ),
-         channel: Util.channelFromFilter( filter ),
+         channel: route.channel,
+         colour: route.colour,
+         numberOfChannels: n,
          width: view.image.width,
          height: view.image.height,
          drizzle: Util.masterDrizzleLabel( { keywords: kws,
@@ -2509,7 +2706,7 @@ UI.SelectDialog = class extends Dialog
        */
       try { this.config.projectName = this.projectEdit.text.trim(); }
       catch ( e ) {}
-      var folded = UI.foldEntries( this.entries );
+      var folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices );
       var paths = folded.paths, views = folded.views, problems = folded.problems;
 
       if ( problems.length )

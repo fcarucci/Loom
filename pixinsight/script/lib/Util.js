@@ -1837,6 +1837,75 @@ Util.selectMasters = function( candidates )
    return best;
 };
 
+/*
+ * Where a masters-list entry goes, from its filter and header channel
+ * count. One channel is a mono master (its channel key); three channels
+ * are a colour master whose slot follows its kind: broadband is OSC,
+ * dual-band is OSCNB, and an undetected or unsupported kind has no slot
+ * yet (channel null). Any other count has none either. `path` is the
+ * file's path or the view's id, as the list holds it.
+ */
+Util.entryChannel = function( filterValue, numberOfChannels, path, choices )
+{
+   if ( numberOfChannels == 1 )
+      return { channel: Util.channelFromFilter( filterValue ), colour: false, kindSource: null };
+   if ( numberOfChannels != 3 )
+      return { channel: null, colour: false, kindSource: null };
+   var k = Util.effectiveOscKind( null, filterValue, path, choices );
+   var channel = k.kind == "broadband" ? "OSC" : k.kind == "dualband" ? "OSCNB" : null;
+   return { channel: channel, colour: true, kindSource: k.source };
+};
+
+/*
+ * The best colour master per slot: the variant rank first (drizzle, then
+ * autocrop), the newest within a variant, as selectMasters does. A candidate
+ * with no slot (kind undetected or unsupported) goes to `unresolved`, in
+ * input order; a candidate that is not a colour image is not a colour pick.
+ */
+Util.selectColourMasters = function( candidates, choices )
+{
+   var best = { OSC: null, OSCNB: null, unresolved: [] };
+   for ( var i = 0; i < candidates.length; ++i )
+   {
+      var c = candidates[i];
+      if ( !c )
+         continue;
+      var n = c.numberOfChannels == null ? 3 : c.numberOfChannels;
+      var r = Util.entryChannel( c.filter, n, c.path, choices );
+      if ( r.channel == null )
+      {
+         best.unresolved.push( c );
+         continue;
+      }
+      if ( !r.colour )
+         continue;
+      var rank = Util.masterVariantRank( c.drizzle, c.autocrop );
+      var cur = best[r.channel];
+      if ( cur == null || rank > cur.rank ||
+           ( rank == cur.rank && ( c.mtime || 0 ) > ( cur.mtime || 0 ) ) )
+      {
+         c.rank = rank;
+         best[r.channel] = c;
+      }
+   }
+   return best;
+};
+
+/*
+ * A name and a header that disagree about colour. The header wins; this is
+ * the line that says so, or null when they agree.
+ */
+Util.colourCandidateCorrection = function( c )
+{
+   if ( !c )
+      return null;
+   if ( c.colour && c.numberOfChannels == 1 )
+      return c.path + ": the name says colour but the image has 1 channel; it is used as a mono master";
+   if ( !c.colour && c.numberOfChannels == 3 )
+      return c.path + ": the name says mono but the image has 3 channels; it is used as a colour master";
+   return null;
+};
+
 Util.sigmaToReach = function( target, current )
 {
    var t = parseFloat( target ), c = parseFloat( current );

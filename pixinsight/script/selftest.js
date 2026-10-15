@@ -9030,7 +9030,7 @@ function runTests()
       check( "addFiles: one file is an entry from its header, with no busy state",
              [ one.entries, one.busy, one.rebuilt ],
              [ [ { source: "file", ref: "/m/a.xisf", label: "a.xisf", filter: "Red",
-                   instrume: "ZWO ASI2600MM Pro", channel: "R", width: 6248, height: 4176,
+                   instrume: "ZWO ASI2600MM Pro", channel: "R", colour: false, numberOfChannels: 1, width: 6248, height: 4176,
                    drizzle: Util.drizzleLabel( "7.52" ), created: 9 } ], [], 1 ] );
 
       var many = dialog();
@@ -9038,10 +9038,10 @@ function runTests()
       check( "addFiles: several files report progress, and an unreadable one is still listed",
              [ many.entries, many.busy, many.rebuilt ],
              [ [ { source: "file", ref: "/m/b.fits", label: "b.fits", filter: null,
-                   instrume: null, channel: null, width: 10, height: 20,
+                   instrume: null, channel: null, colour: false, numberOfChannels: 1, width: 10, height: 20,
                    drizzle: Util.drizzleLabel( null ), created: 9 },
                  { source: "file", ref: "/m/gone.xisf", label: "gone.xisf", filter: null,
-                   instrume: null, channel: null, width: 0, height: 0,
+                   instrume: null, channel: null, colour: false, numberOfChannels: null, width: 0, height: 0,
                    drizzle: "", created: 12 } ],
                [ Util.scanProgressMessage( "Reading masters", "b.fits", 1, 2 ),
                  Util.scanProgressMessage( "Reading masters", "gone.xisf", 2, 2 ),
@@ -9151,11 +9151,12 @@ function runTests()
          log: [ "busy Measuring masters", "busy Measuring masters: B (# of 4)", "busy Measuring masters: R (# of 4)",
                 "busy null", "measure " + M + "G_mono_drizzle_2x_autocrop", "measure " + M + "R_mono",
                 "read " + M + "G_mono_drizzle_2x_autocrop.xisf", "read " + M + "H_mono.xisf",
-                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "rebuild 1", "rebuild 2", "rebuild 2" ],
+                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "read odd.xisf", "rebuild 1", "rebuild 2", "rebuild 2" ],
          status: "<b>Loaded 2 masters:</b> B (2x autocrop), R (full)  " +
                  "<i>(7 files, 5 named candidates, 4 opened, 2 skipped)</i>" +
                  "<br/><b>Filter from header, not name:</b> " + M + "G_mono_drizzle_2x_autocrop.xisf: " +
-                 "name says G, header says B",
+                 "name says G, header says B" +
+                 "<br/><b>Skipped, unreadable:</b> " + named + "/" + M + "H_mono.xisf: header could not be read",
          entries: [ "B | " + N + M + "G_mono_drizzle_2x_autocrop.xisf | " + M + "G_mono_drizzle_2x_autocrop.xisf" +
                     " | Blue |  | 2x | true | 100 | 80 | 2.5 | ",
                     OLD_L,
@@ -21239,7 +21240,7 @@ function runPipeTests()
          { channel: "H", source: "file", ref: "/h", label: "h" } ] );
       check( "UI.foldEntries: paths, views and the problems that refuse a run",
              folded,
-             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "" }, views: { R: "view_R" },
+             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "", OSC: "", OSCNB: "" }, views: { R: "view_R" },
                problems: [ "Unrecognised FILTER (missing) for b", "Unrecognised FILTER 'Weird' for w",
                            "Two images map to channel R: view_R and r2" ] } );
    } )();
@@ -21519,6 +21520,170 @@ function runPipeTests()
       check( "readImageInfo (real file): the second call is the cached object",
              [ Util.readImageInfo( path ) === info, cache[key] === info ], [ true, true ] );
       delete cache[key];
+   } )();
+
+   } if ( testGroup( "osc.discovery" ) ) {
+   ( function()
+   {
+      function cand( path, filter, extra )
+      {
+         var c = { path: path, filter: filter, colour: true, drizzle: "", autocrop: false, mtime: 1,
+                   numberOfChannels: 3, imagetyp: "Master Light" };
+         for ( var k in ( extra || {} ) ) c[k] = extra[k];
+         return c;
+      }
+      function paths( list ) { return list.map( function( c ) { return c.path; } ); }
+      var picks = Util.selectColourMasters( [
+         cand( "/m/a_uvir.xisf", "UV/IR Cut" ),
+         cand( "/m/b_lext.xisf", "L-eXtreme" ),
+         cand( "/m/b_lext_drizzle.xisf", "L-eXtreme", { drizzle: "2x" } ),
+         cand( "/m/c_duo.xisf", "Duo" ) ], {} );
+      check( "OSC pick", picks.OSC.path, "/m/a_uvir.xisf" );
+      check( "OSCNB pick prefers drizzle", picks.OSCNB.path, "/m/b_lext_drizzle.xisf" );
+      check( "unconfident candidate listed without a kind", paths( picks.unresolved ), [ "/m/c_duo.xisf" ] );
+      check( "newest wins within one variant",
+             Util.selectColourMasters( [ cand( "/m/Old.xisf", "UV/IR Cut", { mtime: 5 } ),
+                                         cand( "/m/New.xisf", "UV/IR Cut", { mtime: 9 } ) ], {} ).OSC.path,
+             "/m/New.xisf" );
+      var none = Util.selectColourMasters( [], {} );
+      check( "no candidates", [ none.OSC, none.OSCNB, none.unresolved ], [ null, null, [] ] );
+      check( "unsupported filter lands in unresolved",
+             paths( Util.selectColourMasters( [ cand( "/m/s.xisf", "ALP-T SII/Hb" ) ], {} ).unresolved ),
+             [ "/m/s.xisf" ] );
+      check( "a remembered choice routes an undetected candidate",
+             Util.selectColourMasters( [ cand( "/m/c_duo.xisf", "Duo" ) ], { "filter:duo": "dualband" } ).OSCNB.path,
+             "/m/c_duo.xisf" );
+      var pc = { "path:/m/Two.xisf": "dualband" };
+      var both = Util.selectColourMasters( [ cand( "/m/One.xisf", "" ), cand( "/m/Two.xisf", "" ) ], pc );
+      check( "a path choice applies only to that path",
+             [ both.OSC.path, both.OSCNB.path, both.unresolved.length ], [ "/m/One.xisf", "/m/Two.xisf", 0 ] );
+      check( "correction: colour name, mono header",
+             Util.colourCandidateCorrection( cand( "/m/x_color.xisf", "UV/IR", { numberOfChannels: 1 } ) ),
+             "/m/x_color.xisf: the name says colour but the image has 1 channel; it is used as a mono master" );
+      check( "correction: mono name, colour header",
+             Util.colourCandidateCorrection( cand( "/m/X_mono.xisf", "L", { colour: false } ) ),
+             "/m/X_mono.xisf: the name says mono but the image has 3 channels; it is used as a colour master" );
+      check( "correction: none", Util.colourCandidateCorrection( cand( "/m/y_color.xisf", "UV/IR" ) ), null );
+      check( "correction: mono name, mono header",
+             Util.colourCandidateCorrection( cand( "/m/z.xisf", "L", { colour: false, numberOfChannels: 1 } ) ), null );
+      // Entries route by channel count first, then by kind.
+      check( "entryChannel mono", Util.entryChannel( "Ha", 1, "/m/h", {} ),
+             { channel: "H", colour: false, kindSource: null } );
+      check( "entryChannel broadband colour", Util.entryChannel( "UV/IR Cut", 3, "/m/a", {} ),
+             { channel: "OSC", colour: true, kindSource: "detected" } );
+      check( "entryChannel dual-band colour", Util.entryChannel( "L-eXtreme", 3, "/m/b", {} ).channel, "OSCNB" );
+      var duo = Util.entryChannel( "Duo", 3, "/m/c", {} );
+      check( "entryChannel unconfident colour waits for a choice", [ duo.channel, duo.colour, duo.kindSource ],
+             [ null, true, "none" ] );
+      check( "entryChannel override moves a broadband-named master to OSCNB",
+             Util.entryChannel( "UV/IR Cut", 3, "/m/a", { "filter:uvircut": "dualband" } ),
+             { channel: "OSCNB", colour: true, kindSource: "choice" } );
+      check( "entryChannel unsupported kind has no slot", Util.entryChannel( "ALP-T SII/Hb", 3, "/m/s", {} ).channel, null );
+      check( "entryChannel other counts", [ Util.entryChannel( "Ha", 2, "/m/h", {} ), Util.entryChannel( "Ha", 4, "/m/h", {} ).channel ],
+             [ { channel: null, colour: false, kindSource: null }, null ] );
+      check( "a remembered path choice applies only to that path",
+             [ Util.entryChannel( "", 3, "/m/One.xisf", { "path:/m/One.xisf": "dualband" } ).channel,
+               Util.entryChannel( "", 3, "/m/Other.xisf", { "path:/m/One.xisf": "dualband" } ).channel ],
+             [ "OSCNB", "OSC" ] );
+      function ent( ref, filter, n, source )
+      {
+         var r = Util.entryChannel( filter, n, ref, {} );
+         return { source: source || "file", ref: ref, label: ref, filter: filter, numberOfChannels: n,
+                  channel: r.channel, colour: r.colour };
+      }
+      var folded = UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "nbview", "L-eXtreme", 3, "view" ) ], {} );
+      check( "foldEntries colour file and view", [ folded.paths.OSC, folded.views.OSCNB, folded.problems ],
+             [ "/m/a", "nbview", [] ] );
+      check( "foldEntries colour entry without a kind",
+             UI.foldEntries( [ ent( "/m/c", "Duo", 3 ) ], {} ).problems,
+             [ "choose Broadband or Dual-band Hα + OIII for /m/c" ] );
+      check( "foldEntries unsupported colour entry",
+             UI.foldEntries( [ ent( "/m/s", "ALP-T SII/Hb", 3 ) ], {} ).problems,
+             [ "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" ] );
+      check( "foldEntries keeps mono behaviour",
+             UI.foldEntries( [ ent( "/m/h", "Ha", 1 ) ], {} ).paths.H, "/m/h" );
+      check( "foldEntries unrecognised mono filter keeps its text",
+             UI.foldEntries( [ ent( "/m/w", "Weird", 1 ) ], {} ).problems, [ "Unrecognised FILTER 'Weird' for /m/w" ] );
+      var mixed = UI.foldEntries( [ ent( "/m/L", "L", 1 ), ent( "/m/a", "UV/IR Cut", 3 ) ], {} );
+      check( "foldEntries mono and colour fill both slots; the mix is refused later",
+             [ mixed.paths.L, mixed.paths.OSC, mixed.problems ], [ "/m/L", "/m/a", [] ] );
+      check( "foldEntries two colour entries for one slot",
+             UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "/m/B", "UVIR", 3 ) ], {} ).problems,
+             [ "Two images map to channel OSC: /m/a and /m/B" ] );
+      check( "foldEntries initialises the colour slots", UI.foldEntries( [], {} ).paths,
+             { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "" } );
+      check( "foldEntries a bad channel count is refused with its path",
+             UI.foldEntries( [ ent( "/m/two", "L", 2 ) ], {} ).problems,
+             [ Util.channelCountProblem( "/m/two", 2 ) ] );
+
+      // Folder plan
+      function rec( name, extra )
+      {
+         var r = { path: "/m/" + name, name: name, mtime: 1, created: 1 };
+         for ( var k in ( extra || {} ) ) r[k] = extra[k];
+         return r;
+      }
+      function crec( name )
+      {
+         var p = Util.parseColourMasterName( name );
+         return rec( name, { filter: p.filter, colour: true, drizzle: p.drizzle, autocrop: p.autocrop,
+                             numberOfChannels: 3 } );
+      }
+      var monoL = rec( "masterLight_FILTER-L_mono.xisf", { channel: "L", drizzle: "", autocrop: false } );
+      var scan = { named: [ monoL ], colourNamed: [], unreadable: [], unnamed: [ rec( "Stack_Final.xisf" ) ] };
+      var plan = UI.planFolderPicks( scan, {} );
+      check( "planFolderPicks: named mono winner, unnamed file present", [ plan.mono.L.path, plan.readUnnamed ],
+             [ "/m/masterLight_FILTER-L_mono.xisf", true ] );
+      var info = { keywords: [ { name: "FILTER", value: "UV/IR Cut" }, { name: "IMAGETYP", value: "Master Light" } ],
+                   width: 10, height: 10, numberOfChannels: 3 };
+      var reads = [];
+      UI.resolveUnnamedRecords( scan, {}, function( p ) { reads.push( p ); return info; } );
+      plan = UI.planFolderPicks( scan, {} );
+      check( "planFolderPicks: an unnamed colour master reaches the colour picks after resolution",
+             [ reads, plan.colour.OSC && plan.colour.OSC.path, plan.mono.L.path ],
+             [ [ "/m/Stack_Final.xisf" ], "/m/Stack_Final.xisf", "/m/masterLight_FILTER-L_mono.xisf" ] );
+      plan = UI.planFolderPicks( { named: [ monoL ],
+                                   colourNamed: [ crec( "masterLight_FILTER-L-eXtreme_color.xisf" ),
+                                                  crec( "masterLight_FILTER-UVIR_RGB.xisf" ) ],
+                                   unnamed: [] }, {} );
+      check( "planFolderPicks: named mono and colour winners together",
+             [ plan.mono.L.name, plan.colour.OSC.name, plan.colour.OSCNB.name, plan.unresolved, plan.readUnnamed ],
+             [ monoL.name, "masterLight_FILTER-UVIR_RGB.xisf", "masterLight_FILTER-L-eXtreme_color.xisf", [], false ] );
+      check( "planFolderPicks: both kinds present is refused by the mix message",
+             Util.colourMixProblem( { paths: { L: plan.mono.L.path, OSC: plan.colour.OSC.path }, views: {} } ).indexOf(
+                "colour masters cannot be combined with mono masters" ), 0 );
+      plan = UI.planFolderPicks( { named: [], colourNamed: [ crec( "Master_FILTER-Duo_color.xisf" ) ],
+                                   unnamed: [ rec( "x.xisf" ) ] }, {} );
+      check( "planFolderPicks: an undetected kind is listed without one and a missing slot asks for unnamed files",
+             [ paths( plan.unresolved ), plan.readUnnamed ], [ [ "/m/Master_FILTER-Duo_color.xisf" ], true ] );
+      check( "planFolderPicks: nothing unnamed reads nothing",
+             UI.planFolderPicks( { named: [], colourNamed: [], unnamed: [] }, {} ).readUnnamed, false );
+      // Unnamed resolution: failures reported and skipped, filled slots left alone
+      var scan2 = { named: [ monoL ], colourNamed: [], unreadable: [],
+                    unnamed: [ rec( "Bad.xisf" ), rec( "Throws.xisf" ), rec( "Second_L.xisf" ), rec( "Two.xisf" ) ] };
+      UI.resolveUnnamedRecords( scan2, {}, function( p )
+      {
+         if ( p == "/m/Throws.xisf" ) throw new Error( "unreadable" );
+         if ( p == "/m/Bad.xisf" ) return null;
+         if ( p == "/m/Two.xisf" ) return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 2 };
+         return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 1 };
+      } );
+      check( "resolveUnnamedRecords: failures are reported, never abort; a filled slot is left alone",
+             [ scan2.unreadable.length, scan2.named.length ], [ 3, 1 ] );
+      var cs = { named: [], colourNamed: [], unnamed: [], unreadable: [], total: 0, skipped: 0 };
+      [ "masterLight_FILTER-L-eXtreme_color_drizzle_2x.xisf", "MasterLight_FILTER-L_mono.xisf", "Stack.XISF" ]
+         .forEach( function( n ) { UI.classifyMasterFile( cs, "/m", { name: n, isDirectory: false } ); } );
+      check( "classifyMasterFile: a colour name is collected apart from the mono winners",
+             [ cs.colourNamed.map( function( r ) { return [ r.name, r.filter, r.drizzle ]; } ),
+               cs.named.map( function( r ) { return r.channel; } ), cs.unnamed.length, cs.total ],
+             [ [ [ "masterLight_FILTER-L-eXtreme_color_drizzle_2x.xisf", "L-eXtreme", "2x" ] ], [ "L" ], 1, 3 ] );
+      var scan3 = { named: [], colourNamed: [], unreadable: [], unnamed: [ rec( "Plain_L.xisf" ) ] };
+      UI.resolveUnnamedRecords( scan3, {}, function()
+      {
+         return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 1 };
+      } );
+      check( "resolveUnnamedRecords: a mono file fills a missing mono slot",
+             [ scan3.named.length, scan3.named[0].channel ], [ 1, "L" ] );
    } )();
 
    } if ( testGroup( "osc.header" ) ) {
