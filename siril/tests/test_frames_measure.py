@@ -585,15 +585,37 @@ def test_measure_batch_missing_pixel_size_is_not_restored(tmp_path) -> None:
     assert siril.commands[-1] == "setfindstar -pixelsize=3.76"
 
 
-def test_measure_batch_unreadable_settings_abandon_batch(tmp_path) -> None:
+def _assert_measured_with_current_settings(siril: "FakeSiril", results: dict, problem, notes: list[str]) -> None:
+    assert problem is None
+    assert all(v is not None for v in results.values())
+    assert "register fs_ -2pass" in siril.commands
+    assert not any(c.startswith("setfindstar reset") for c in siril.commands)
+    assert not any(c.startswith("setfindstar -focal") for c in siril.commands)
+    assert [n for n in notes if n == fm.DEFAULTS_WARNING] == [fm.DEFAULTS_WARNING]
+
+
+def test_measure_batch_without_config_call_measures_with_current_settings(tmp_path, monkeypatch) -> None:
+    names = _names(12, tmp_path)
+    wd0 = str(tmp_path / "siril_wd")
+    os.makedirs(wd0)
+    monkeypatch.delattr(FakeSiril, "get_siril_config")
+    siril = FakeSiril(wd0)
+    notes: list[str] = []
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"), log=notes.append)
+    _assert_measured_with_current_settings(siril, results, problem, notes)
+    assert results[names[0]]["fwhm"] == pytest.approx(3.07018)
+
+
+def test_measure_batch_raising_config_call_measures_with_current_settings(tmp_path) -> None:
+    names = _names(12, tmp_path)
     wd0 = str(tmp_path / "siril_wd")
     os.makedirs(wd0)
     siril = FakeSiril(wd0, config_error=True)
-    results, problem = fm.measure_batch(siril, _names(12, tmp_path), str(tmp_path / "work"))
-    assert results == {}
-    assert problem.startswith("cannot run Siril commands")
-    assert "register fs_ -2pass" not in siril.commands
-    assert not any(c.startswith("setfindstar reset") for c in siril.commands)
+    notes: list[str] = []
+    results, problem = fm.measure_batch(siril, names, str(tmp_path / "work"), log=notes.append)
+    _assert_measured_with_current_settings(siril, results, problem, notes)
+    assert siril.cwd == wd0
+    assert siril.commands[-1] == f'cd "{wd0}"'
 
 
 def test_measure_batch_cd_back_failure_is_logged_not_masking(tmp_path) -> None:

@@ -68,6 +68,9 @@ from loomsiril.siril_bridge import planes_from_pixeldata
 MEASURE_CONFIG = "setfindstar reset; register fs_ -2pass"  # goes into the cache key elsewhere
 SEQ = "fs_"
 
+DEFAULTS_WARNING = ("WARNING: the focal length or pixel size could not be read, so this measurement used Siril's "
+                    "current star-finder settings (no reset, nothing restored)")
+
 RESET_NOTE = ("setfindstar reset: sigma, radius, roundness, profile, relax, magnitude limits and convergence are "
               "reset for this batch and not restored (Siril does not report them); focal length and pixel size "
               "are restored")
@@ -282,10 +285,14 @@ def _cmd(siril: Any, text: str) -> None:
         raise _CommandFailed(f"{text}: {exc}") from exc
 
 
-def _read_prefs(siril: Any) -> dict[str, Any]:
-    """The star-finder focal length and pixel size, as Siril stores them (what ``setfindstar reset`` may change)."""
-    return {"focal_length": siril.get_siril_config("starfinder", "focal_length"),
-            "pixel_size": siril.get_siril_config("starfinder", "pixel_size")}
+def _read_prefs(siril: Any) -> Optional[dict[str, Any]]:
+    """The star-finder focal length and pixel size, as Siril stores them (what ``setfindstar reset`` may change).
+    None when either cannot be read (no such call, or it raises): then the reset is not sent at all."""
+    try:
+        return {"focal_length": siril.get_siril_config("starfinder", "focal_length"),
+                "pixel_size": siril.get_siril_config("starfinder", "pixel_size")}
+    except Exception:
+        return None
 
 
 def _restore_text(prefs: Mapping[str, Any]) -> Optional[str]:
@@ -377,7 +384,9 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
                                                                         Optional[str]]:
     """Measure one batch of up to 8 frames of one channel through Siril's registration.
 
-    Returns ``(results, problem)``. ``results`` maps each input path (as given) to its metrics, None when
+    Returns ``(results, problem)``. When the star-finder focal length or pixel size cannot be read, the batch is
+    measured with Siril's current star-finder settings: no reset is sent, nothing is restored, and the warning is
+    passed to ``log`` on each such batch (the caller reports it once per scan). ``results`` maps each input path (as given) to its metrics, None when
     unmeasurable. A frame that cannot be read (missing, no pixels, any error while linking it) is None and the
     others are measured as if it were not there; if no frame can be read, ``results`` is ``{}`` and ``problem``
     is None. ``problem`` is set only for a batch-wide failure (settings, working directory, sequence): then
@@ -407,13 +416,17 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
 
         seq: Optional[dict[str, Any]] = None
         wd0: Optional[str] = None
-        prefs: Optional[dict[str, Any]] = None
+        prefs = _read_prefs(siril)
+        restore: Optional[dict[str, Any]] = None  # set once the reset has been sent: only then is it undone
         try:
             wd0 = siril.get_siril_wd()
-            prefs = _read_prefs(siril)
             _cmd(siril, command_text("cd", quote_path(work_dir)))
-            _cmd(siril, command_text("setfindstar", "reset"))
-            note(RESET_NOTE)
+            if prefs is not None:
+                _cmd(siril, command_text("setfindstar", "reset"))
+                restore = prefs
+                note(RESET_NOTE)
+            else:
+                note(DEFAULTS_WARNING)
             try:
                 _cmd(siril, command_text("register", SEQ, "-2pass"))
             except _CommandFailed as exc:
@@ -425,7 +438,7 @@ def measure_batch(siril: Any, paths: list[str], work_dir: str,
         except Exception as exc:
             return {}, f"cannot run Siril commands: {exc}"
         finally:
-            _leave(siril, wd0, prefs, note)
+            _leave(siril, wd0, restore, note)
 
         layer = registration_layer(seq) if seq is not None else None
         results: dict[str, Optional[dict[str, Any]]] = {paths[i]: None for i in bad}
