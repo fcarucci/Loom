@@ -129,14 +129,18 @@ def pick_night(survey: D.Survey, card_root: str, siril: Any = None,
                log: Any = None, master: Any = None) -> Optional[Night]:
     """Shows the picker and returns the chosen night, or None on Cancel (the JS Dialog run).
 
-    With ``master`` (the caller's root) the picker is a window of that root, transient to it, and the root is left
+    With ``master`` (the caller's root) the picker is a window of that root, transient to it when it is on screen, and the root is left
     alone. Without it a hidden root of its own is made and destroyed.
     """
     if master is not None:
         dlg = NightDialog(master, survey, card_root)
         try:
-            dlg.top.transient(master)
-        except Exception:  # a withdrawn root cannot always be a transient parent: the picker is still usable
+            if master.winfo_viewable():  # a window transient to a withdrawn root stays withdrawn: not then
+                dlg.top.transient(master)
+            dlg.top.deiconify()
+            dlg.top.lift()
+            dlg.top.focus_force()
+        except Exception:  # a window manager that refuses these still shows the picker
             pass
         master.wait_window(dlg.top)
         return dlg.result

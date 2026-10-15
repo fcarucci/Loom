@@ -490,24 +490,67 @@ def test_script_tells_an_old_siril_before_installing_anything(script, stub, monk
     assert len(stub.STATE.messages) == 1 and "1.4" in stub.STATE.messages[0][1]
 
 
-def test_pick_night_with_a_master_uses_it_and_leaves_it_open(monkeypatch) -> None:
+@pytest.mark.parametrize("viewable", [True, False])
+def test_pick_night_with_a_master_uses_it_and_leaves_it_open(monkeypatch, viewable) -> None:
     made: list[Any] = []
 
     class Top:
         def transient(self, master: Any) -> None:
             made.append(("transient", master))
 
+        def deiconify(self) -> None:
+            made.append(("deiconify", None))
+
+        def lift(self) -> None:
+            made.append(("lift", None))
+
+        def focus_force(self) -> None:
+            made.append(("focus", None))
+
     class Dlg:
         def __init__(self, master: Any, survey: Any, card_root: str) -> None:
             self.top, self.result = Top(), {"night": 1}
             made.append(("dialog", master))
 
-    master = SimpleNamespace(wait_window=lambda top: made.append(("wait", top)))
+    master = SimpleNamespace(wait_window=lambda top: made.append(("wait", top)), winfo_viewable=lambda: viewable)
     monkeypatch.setattr(night_dialog_tk, "NightDialog", Dlg)
     monkeypatch.setattr(tk_theme, "themed_root", lambda *a, **k: pytest.fail("no second root"))
     got = night_dialog_tk.pick_night({}, "/card", master=master)
     assert got == {"night": 1}
-    assert [k for k, _ in made] == ["dialog", "transient", "wait"] and made[0][1] is master
+    kinds = [k for k, _ in made]
+    assert kinds == (["dialog", "transient"] if viewable else ["dialog"]) + ["deiconify", "lift", "focus", "wait"]
+    assert made[0][1] is master
+
+
+def test_pick_night_on_a_withdrawn_real_root_is_shown(monkeypatch, stub) -> None:
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk_theme.themed_root(stub.SirilInterface())
+    except tk.TclError:
+        pytest.skip("no display")
+    seen: dict[str, Any] = {}
+    real = night_dialog_tk.NightDialog
+
+    class Spy(real):
+        def __init__(self, *a: Any, **k: Any) -> None:
+            super().__init__(*a, **k)
+            seen["dlg"] = self
+
+    survey = {"sessions": [], "nights": [], "targets": [], "flatsBySession": {}, "unparseable": []}
+
+    def probe() -> None:
+        root.update()
+        seen["viewable"] = seen["dlg"].top.winfo_viewable()
+        seen["dlg"]._cancel()
+
+    monkeypatch.setattr(night_dialog_tk, "NightDialog", Spy)
+    try:
+        root.after(200, probe)
+        assert night_dialog_tk.pick_night(survey, "/card", master=root) is None
+        assert seen["viewable"] == 1
+        assert root.state() == "withdrawn"
+    finally:
+        tk_theme.close_root(root)
 
 
 def test_pick_night_without_a_master_makes_and_closes_its_own_root(monkeypatch) -> None:
