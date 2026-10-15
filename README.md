@@ -70,3 +70,7 @@ To try it, clone this repository, add `siril/Loom` to Siril's script folders (Pr
 what breaks.
 
 Licence: MIT, see [LICENSE](LICENSE).
+
+## Examples
+
+Fly-Through videos made with Loom, as examples of using it, are on the YouTube channel [Francesco Emanuele Carucci Photography](https://www.youtube.com/@francescoemanuelecarucciph7630).
