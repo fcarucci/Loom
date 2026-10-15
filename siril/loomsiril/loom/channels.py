@@ -668,15 +668,15 @@ def _compressed_image_header(fh: Any, path: str, primary: Mapping[str, Any]) -> 
 
     The data of every HDU passed over is skipped by its size, never read. None when there is no such extension.
     """
-    fh.seek(_data_size(primary), 1)
-    for _ in range(_MAX_HDUS):
-        try:
+    try:
+        fh.seek(_data_size(primary), 1)
+        for _ in range(_MAX_HDUS):
             ext = _read_hdu_header(fh, path)
-        except ValueError:
-            return None
-        if ext.get("XTENSION") == "BINTABLE" and ext.get("ZIMAGE") is True:
-            return ext
-        fh.seek(_data_size(ext), 1)
+            if ext.get("XTENSION") == "BINTABLE" and ext.get("ZIMAGE") is True:
+                return ext
+            fh.seek(_data_size(ext), 1)
+    except (ValueError, OSError):  # a corrupt or truncated file: no compressed image to report
+        return None
     return None
 
 

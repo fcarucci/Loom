@@ -206,3 +206,26 @@ def test_xisf_non_ascii_name(tmp_path: Path) -> None:
 def test_unknown_format_still_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         ch.read_header(_write(tmp_path, "x.bin", b"not an image at all"))
+
+
+def test_negative_size_extension_before_the_image_counts_as_empty(tmp_path: Path) -> None:
+    bad = _ext("IMAGE", 8, [-100000], pcount=0, gcount=1, blocks=0)
+    h = ch.read_header(_write(tmp_path, "m.fz", _fz([12, 7, 3], leads=bad)))
+    assert (h["channels"], h["width"], h["height"]) == (3, 12, 7)
+
+
+def test_negative_size_extension_alone_is_not_an_error(tmp_path: Path) -> None:
+    bad = _ext("IMAGE", 8, [-100000], pcount=0, gcount=1, blocks=0)
+    data = _header([_card("SIMPLE", True), _card("BITPIX", 16), _card("NAXIS", 0), _card("EXTEND", True)]) + bad
+    assert ch.read_header(_write(tmp_path, "bad.fz", data))["channels"] == 1
+
+
+def test_fz_skip_includes_the_padding_of_an_unaligned_data_part(tmp_path: Path) -> None:
+    decoy = b"".join([_card("XTENSION", "BINTABLE"), _card("ZIMAGE", True), _card("ZNAXIS", 3), _card("ZNAXIS1", 1),
+                       _card("ZNAXIS2", 1), _card("ZNAXIS3", 9), _card("END")])
+    cards = [_card("XTENSION", "BINTABLE"), _card("BITPIX", 8), _card("NAXIS", 2), _card("NAXIS1", 100),
+             _card("NAXIS2", 1), _card("PCOUNT", 0), _card("GCOUNT", 1)]
+    # 100 data bytes, then padding that starts with a decoy header: only a skip that rounds up to the block passes it
+    lead = _header(cards) + b"\x00" * 100 + decoy + b"\x00" * (BLOCK - 100 - len(decoy))
+    h = ch.read_header(_write(tmp_path, "m.fz", _fz([12, 7, 3], leads=lead)))
+    assert (h["channels"], h["width"], h["height"]) == (3, 12, 7)
