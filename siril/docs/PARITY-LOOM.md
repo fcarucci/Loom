@@ -134,6 +134,10 @@ Conventions that differ from the JavaScript on purpose:
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
+| `dialog.osc_kind_row` | `lib/UI.js:45` | P | `tests/loom/test_dialog.py` |
+| `dialog.sensor_palettes` | `lib/UI.js:77` | P | `tests/loom/test_dialog.py` |
+| `dialog.run_palettes` | `lib/UI.js:87` | P | `tests/loom/test_dialog.py` |
+| `dialog.merge_kept_palettes` | `lib/UI.js:155` | P | `tests/loom/test_dialog.py` |
 | `dialog.ToolRow` | `lib/UI.js` | S | - |
 | `dialog.wheel_units` | - | S | `tests/loom/test_dialog.py` |
 | `dialog.RunRequest` | `lib/UI.js` | S | `tests/loom/test_entry.py` |
