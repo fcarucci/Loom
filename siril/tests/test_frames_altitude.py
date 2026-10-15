@@ -176,6 +176,76 @@ def test_matches_rotation_matrices_on_random_cases():
             altitude_rotation(ra, dec, lat, lon, unix_ms), abs=1e-6)
 
 
+# external references and header rules
+
+MEEUS_1987_APR10_1921_UT_MS = 545080860000  # 1987-04-10T19:21:00Z
+
+
+def test_meeus_example_13b_altitude():
+    """Meeus, Astronomical Algorithms, example 13.b: altitude 15.1249 degrees.
+
+    Star RA 23h 09m 16.641s, Dec -6d 43' 11.61"; observer 38d 55' 17" N, 77d 03' 56" W; 1987 Apr 10, 19h 21m UT.
+    """
+    ra = (23 + 9 / 60 + 16.641 / 3600) * 15.0
+    dec = -(6 + 43 / 60 + 11.61 / 3600)
+    alt = altitude_deg(ra, dec, 38.9213, -77.0656, MEEUS_1987_APR10_1921_UT_MS)
+    assert alt == pytest.approx(15.1249, abs=0.01)
+
+
+def test_star_at_transit_from_published_sidereal_time():
+    """Meeus example 12.a: GMST at 1987 Apr 10 19h 21m UT is 8h 34m 57.0896s. At lon -77.0656 that gives LST
+    = GMST - 77.0656 / 15 h. A star on the meridian (RA = LST) at dec 10.0 is at altitude 90 - (38.9213 - 10.0).
+    """
+    gmst_h = 8 + 34 / 60 + 57.0896 / 3600
+    ra = (gmst_h - 77.0656 / 15.0) * 15.0
+    alt = altitude_deg(ra, 10.0, 38.9213, -77.0656, MEEUS_1987_APR10_1921_UT_MS)
+    assert alt == pytest.approx(90.0 - (38.9213 - 10.0), abs=0.1)
+    assert alt == pytest.approx(61.0787, abs=0.001)
+
+
+def test_date_only_gives_no_computed_altitude():
+    assert altitude_from_header(header(RA="10", DEC="20", DATE_OBS="2024-06-01", SITELAT="37",
+                                       SITELONG="-122")) is None
+
+
+def test_date_with_time_gives_computed_altitude():
+    assert altitude_from_header(header(RA="10", DEC="20", DATE_OBS="2024-06-01T00:00:00", SITELAT="37",
+                                       SITELONG="-122")) is not None
+
+
+def test_sexagesimal_in_ra_or_dec_is_not_read():
+    assert altitude_from_header(header(RA="05 32 58.7", DEC="22.0", DATE_OBS="2024-06-01T12:00:00",
+                                       SITELAT="37", SITELONG="-122")) is None
+    assert altitude_from_header(header(RA="83", DEC="+22:00:00", DATE_OBS="2024-06-01T12:00:00",
+                                       SITELAT="37", SITELONG="-122")) is None
+
+
+def test_pointing_families_are_not_mixed():
+    site = dict(DATE_OBS="2024-06-01T12:00:00", SITELAT="37", SITELONG="-122.5")
+    # RA+DEC numbers are one family; OBJCTRA is not used with them.
+    alt = altitude_from_header(header(RA="83", DEC="22", OBJCTRA="05 32 58", OBJCTDEC="+22 00 00", **site))
+    assert alt == pytest.approx(altitude_deg(83.0, 22.0, 37.0, -122.5, UNIX_MS_2024), abs=1e-9)
+    # A numeric RA with only OBJCTDEC is not a pointing.
+    assert altitude_from_header(header(RA="83", OBJCTDEC="+22 00 00", **site)) is None
+
+
+def test_obsgeo_fallback_for_site():
+    alt = altitude_from_header(header(RA="83", DEC="22", DATE_OBS="2024-06-01T12:00:00", OBSGEO_B="37",
+                                      OBSGEO_L="-122.5"))
+    assert alt == pytest.approx(altitude_deg(83.0, 22.0, 37.0, -122.5, UNIX_MS_2024), abs=1e-9)
+
+
+def test_sitelat_wins_over_obsgeo():
+    alt = altitude_from_header(header(RA="83", DEC="22", DATE_OBS="2024-06-01T12:00:00", SITELAT="37",
+                                      SITELONG="-122.5", OBSGEO_B="10", OBSGEO_L="0"))
+    assert alt == pytest.approx(altitude_deg(83.0, 22.0, 37.0, -122.5, UNIX_MS_2024), abs=1e-9)
+
+
+def test_site_suffix_is_not_parsed():
+    assert altitude_from_header(header(RA="83", DEC="22", DATE_OBS="2024-06-01T12:00:00", SITELAT="37 N",
+                                       SITELONG="122.5 W")) is None
+
+
 # sexagesimal
 
 def test_hours_sexagesimal_is_degrees():

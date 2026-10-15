@@ -8,14 +8,17 @@ Keyword order in :func:`altitude_from_header`; the first usable number wins:
 
 1. ``AIRMASS`` >= 1: altitude = asin(1 / AIRMASS), in degrees.
 2. ``CENTALT``, then ``OBJCTALT``: a number in (0, 90].
-3. Computed by :func:`altitude_deg` from the pointing and the time: ``RA`` and ``DEC`` (degrees), else
-   ``OBJCTRA`` (hours, sexagesimal) and ``OBJCTDEC`` (degrees, sexagesimal); ``DATE-OBS`` (UTC, through
-   :func:`loomsiril.frames_flags.obs_time`); site ``SITELAT`` and ``SITELONG`` (degrees, east positive; a number or
-   sexagesimal). The result is in (-90, 90].
+3. Computed by :func:`altitude_deg`. The pointing is one family, never mixed: ``RA`` and ``DEC`` as numbers in
+   degrees together, else ``OBJCTRA`` (hours) and ``OBJCTDEC`` (degrees) together as sexagesimal. A sexagesimal
+   string in ``RA`` or ``DEC`` is not read, and neither is a number in ``OBJCTRA`` or ``OBJCTDEC`` used with the
+   other family. The time is ``DATE-OBS`` through :func:`loomsiril.frames_flags.obs_time`, and it must carry a
+   time of day: a date alone is not midnight UTC, so it gives no computed altitude. The site is ``SITELAT`` and
+   ``SITELONG`` as a pair (degrees, east positive; a number or sexagesimal), else ``OBSGEO-B`` and ``OBSGEO-L`` as
+   a pair of numbers in degrees. Values suffixed with N, S, E or W are not parsed. The result is in (-90, 90].
 4. Otherwise None. An unparsable value is skipped, never raised.
 
 Accuracy: :func:`altitude_deg` applies no precession, nutation, aberration or refraction. For J2000 coordinates in
-the 2020s it is within about 0.3 degree of the true altitude, which the airmass correction tolerates.
+the 2020s it is within up to about 0.4 degree of the true altitude, which the airmass correction tolerates.
 """
 
 from __future__ import annotations
@@ -33,8 +36,10 @@ _J2000_JD = 2451545.0
 _UNIX_EPOCH_JD = 2440587.5
 _MS_PER_DAY = 86400000.0
 
-_NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\Z")
-_SEXAGESIMAL = re.compile(r"([+-]?)(\d+)(?:[ :](\d+)(?:[ :](\d+(?:\.\d*)?|\.\d+))?)?\Z")
+_NUMBER = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+_SEXAGESIMAL = re.compile(r"([+-]?)([0-9]+)(?:[ :]([0-9]+)(?:[ :]([0-9]+(?:\.[0-9]*)?|\.[0-9]+))?)?\Z")
+# A date with a time of day: "YYYY-MM-DDThh:mm..." (or a blank before the time). A date alone does not match.
+_HAS_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ][0-9]{2}:")
 
 
 def _bare(value: Any) -> Optional[str]:
@@ -46,7 +51,7 @@ def _bare(value: Any) -> Optional[str]:
 
 
 def _number(value: Any) -> Optional[float]:
-    """A keyword's value as a finite number, or None when it is not one."""
+    """A keyword's value as a finite number, or None when it is not one (a sexagesimal string is not)."""
     text = _bare(value)
     if text is None or _NUMBER.match(text) is None:
         return None
@@ -59,8 +64,8 @@ def parse_sexagesimal(text: Any, hours: bool) -> Optional[float]:
 
     ``hours`` says the field is in hours (``"00 42 44.3"`` is 10.6833 degrees); otherwise it is degrees
     (``"+41:16:09"`` is 41.2692). Fields are separated by a blank or a colon; a sign applies to the whole value; the
-    minutes and seconds must be below 60. A plain decimal number is read in the same unit as the field. Anything else
-    is None.
+    minutes and seconds must be below 60. A plain decimal number is read in the same unit as the field. Values
+    suffixed with N, S, E or W are not parsed. Anything else is None.
     """
     text = _bare(text)
     if text is None:
@@ -91,12 +96,30 @@ def _lookup(keyword: Keyword, name: str) -> Any:
         return None
 
 
-def _pointing_degrees(keyword: Keyword, name: str, fallback: str, hours_fallback: bool) -> Optional[float]:
-    """A pointing coordinate in degrees: ``name`` as a number, else ``fallback`` as sexagesimal (hours when asked)."""
-    direct = _number(_lookup(keyword, name))
-    if direct is not None:
-        return direct
-    return parse_sexagesimal(_lookup(keyword, fallback), hours_fallback)
+def _pointing(keyword: Keyword) -> Optional[tuple[float, float]]:
+    """The pointing (RA, Dec) in degrees from one family: RA+DEC numbers, else OBJCTRA+OBJCTDEC sexagesimal."""
+    ra = _number(_lookup(keyword, "RA"))
+    dec = _number(_lookup(keyword, "DEC"))
+    if ra is not None and dec is not None and -90 <= dec <= 90:
+        return ra, dec
+    ra = parse_sexagesimal(_lookup(keyword, "OBJCTRA"), True)
+    dec = parse_sexagesimal(_lookup(keyword, "OBJCTDEC"), False)
+    if ra is not None and dec is not None and -90 <= dec <= 90:
+        return ra, dec
+    return None
+
+
+def _site(keyword: Keyword) -> Optional[tuple[float, float]]:
+    """The site (latitude, east-positive longitude) in degrees: SITELAT+SITELONG, else OBSGEO-B+OBSGEO-L."""
+    lat = parse_sexagesimal(_lookup(keyword, "SITELAT"), False)
+    lon = parse_sexagesimal(_lookup(keyword, "SITELONG"), False)
+    if lat is not None and lon is not None and -90 <= lat <= 90:
+        return lat, lon
+    lat = _number(_lookup(keyword, "OBSGEO-B"))
+    lon = _number(_lookup(keyword, "OBSGEO-L"))
+    if lat is not None and lon is not None and -90 <= lat <= 90:
+        return lat, lon
+    return None
 
 
 def altitude_deg(ra_deg: float, dec_deg: float, lat_deg: float, lon_east_deg: float, unix_ms: float) -> float:
@@ -106,7 +129,7 @@ def altitude_deg(ra_deg: float, dec_deg: float, lat_deg: float, lon_east_deg: fl
     ``lon_east_deg`` the longitude, east positive; ``unix_ms`` is the time in ms since the Unix epoch (UTC). Uses
     GMST = 18.697374558 + 24.06570982441908 * (JD - 2451545.0) hours (mod 24), LST = GMST + longitude / 15, hour
     angle H = LST * 15 - RA, and sin(alt) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H). No precession, nutation,
-    aberration or refraction: about 0.3 degree for J2000 coordinates in the 2020s.
+    aberration or refraction: accurate to up to about 0.4 degree for J2000 coordinates in the 2020s.
     """
     jd = unix_ms / _MS_PER_DAY + _UNIX_EPOCH_JD
     gmst_hours = (18.697374558 + 24.06570982441908 * (jd - _J2000_JD)) % 24.0
@@ -135,20 +158,22 @@ def altitude_from_header(keyword: Keyword) -> Optional[float]:
         if alt is not None and 0 < alt <= 90:
             return alt
 
-    ra = _pointing_degrees(keyword, "RA", "OBJCTRA", True)
-    if ra is None:
+    pointing = _pointing(keyword)
+    if pointing is None:
         return None
-    dec = _pointing_degrees(keyword, "DEC", "OBJCTDEC", False)
-    if dec is None or not -90 <= dec <= 90:
-        return None
+    ra, dec = pointing
 
-    time_ms = obs_time(_lookup(keyword, "DATE-OBS"))
+    date_obs = _bare(_lookup(keyword, "DATE-OBS"))
+    if date_obs is None or _HAS_TIME.match(date_obs) is None:
+        return None
+    time_ms = obs_time(date_obs)
     if time_ms is None:
         return None
-    lat = parse_sexagesimal(_lookup(keyword, "SITELAT"), False)
-    lon = parse_sexagesimal(_lookup(keyword, "SITELONG"), False)
-    if lat is None or lon is None or not -90 <= lat <= 90:
+
+    site = _site(keyword)
+    if site is None:
         return None
+    lat, lon = site
 
     alt = altitude_deg(ra, dec, lat, lon, time_ms)
     return alt if -90 < alt <= 90 else None
