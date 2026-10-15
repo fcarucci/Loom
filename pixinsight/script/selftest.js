@@ -1071,7 +1071,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 334 );
+      check( "Steps: the member count", Object.keys( have ).length, 336 );
    }
 
    /*
@@ -21823,6 +21823,119 @@ function runPipeTests()
              [ Util.oscFilterInfo( "NBZex" ).haNm, Util.oscFilterInfo( "NBZex" ).oiiiNm ], [ 12, 12 ] );
    } )();
 
+   } if ( testGroup( "osc.load" ) ) {
+   ( function() {
+   check( "oscPlaneProblem constant plane",
+          Pipeline.oscPlaneProblem( { min: 0, max: 0, median: 0 }, 2, "/m/a.xisf" ),
+          "/m/a.xisf: plane 2 is constant (all values 0); the master looks broken" );
+   check( "oscPlaneProblem normal plane",
+          Pipeline.oscPlaneProblem( { min: 0.01, max: 0.9, median: 0.1 }, 0, "/m/a.xisf" ), null );
+   var sidecars = {};   // persists across loaders, like the cache directory
+   function fakeIo( cached )
+   {
+      var io = { opens: 0, stored: [], asked: [], loads: 0 };
+      io.openMaster = function() { io.opens++; return { id: "master", planes: 3 }; };
+      io.cacheLoad = function( key ) { io.loads++; return cached[key] ? { id: "cached_" + key } : null; };
+      io.cacheStore = function( key ) { io.stored.push( key ); cached[key] = true; };
+      io.planeWindow = function( master, plane ) { io.asked.push( plane ); return { id: "plane" + plane }; };
+      io.planeStats = function() { return { min: 0.01, max: 0.9, median: 0.1 }; };
+      io.writeSidecar = function( name, rec ) { sidecars[name] = JSON.stringify( rec ); };
+      io.readSidecar = function( name ) { return sidecars[name] ? JSON.parse( sidecars[name] ) : null; };
+      io.closeMaster = function() {};
+      return io;
+   }
+   var cache = {};
+   var io = fakeIo( cache );
+   var loader = Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io );
+   loader.planeWindow( 0 ); loader.planeWindow( 1 ); loader.planeWindow( 2 );
+   check( "loader opens the master once for three siblings", io.opens, 1 );
+   check( "loader stores every split plane", io.stored.length, 3 );
+   var io2 = fakeIo( cache );
+   var loader2 = Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io2 );
+   loader2.planeWindow( 1 );
+   check( "warm run does not open the master", io2.opens, 0 );
+   check( "warm run logs the cached plane statistics", loader2.validation(), loader.validation() );
+   check( "validation record holds three planes", loader2.validation().planes.length, 3 );
+   delete cache[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp", "broadband" ), 1 ) ];
+   var io3 = fakeIo( cache );
+   Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io3 ).planeWindow( 1 );
+   check( "a missing split plane reopens the master once", io3.opens, 1 );
+   // Cache policy: no cache means no persistent reads or writes, one open, planes kept in memory.
+   var off = Config.defaults(); off.useCache = false;
+   var ioOff = Pipeline.oscCacheIo( off, fakeIo( {} ) );
+   var lOff = Pipeline.oscGroupLoader( "OSC", { path: "/m/z.xisf", fingerprint: "fz" }, "broadband", null, ioOff );
+   lOff.planeWindow( 0 ); lOff.planeWindow( 2 );
+   check( "cache off: one open, nothing stored", [ ioOff.base.opens, ioOff.base.stored.length ], [ 1, 0 ] );
+   check( "cache off: statistics kept in memory", lOff.validation().planes.length, 3 );
+   var ign = Config.defaults(); ign.useCache = true; ign.ignoreCache = true;
+   var warmCache = {}; warmCache[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fy", "broadband" ), 0 ) ] = true;
+   var ioIgn = Pipeline.oscCacheIo( ign, fakeIo( warmCache ) );
+   Pipeline.oscGroupLoader( "OSC", { path: "/m/y.xisf", fingerprint: "fy" }, "broadband", null, ioIgn ).planeWindow( 0 );
+   check( "ignore cache: cached plane not reused, cache refreshed", [ ioIgn.base.opens, ioIgn.base.stored.length ], [ 1, 3 ] );
+   var cache4 = {}, io4 = fakeIo( cache4 );
+   var nb = Pipeline.oscGroupLoader( "OSCNB", { path: "/m/n.xisf", fingerprint: "fn" }, "dualband", null, io4 );
+   nb.planeWindow( 0 ); nb.planeWindow( 1 );
+   check( "OSCNB stores two planes", io4.stored.length, 2 );
+   check( "OSCNB never extracts plane 2", io4.asked.indexOf( 2 ), -1 );
+   check( "OSCNB validation still holds three planes", nb.validation().planes.length, 3 );
+
+   // A constant plane is refused, naming it, and nothing is stored.
+   var ioBad = fakeIo( {} );
+   ioBad.planeStats = function( master, plane )
+   { return plane == 1 ? { min: 0.5, max: 0.5, median: 0.5 } : { min: 0.01, max: 0.9, median: 0.1 }; };
+   var msg = null;
+   try { Pipeline.oscGroupLoader( "OSC", { path: "/m/bad.xisf", fingerprint: "fb" }, "broadband", null, ioBad ).planeWindow( 0 ); }
+   catch ( e ) { msg = e.message; }
+   check( "a constant plane throws the plane problem", msg,
+          "/m/bad.xisf: plane 1 is constant (all values 0.5); the master looks broken" );
+   check( "a constant plane stores nothing", ioBad.stored.length, 0 );
+
+   // The same plane asked twice in one run: the same window, no second cache read.
+   var io5 = fakeIo( { } );
+   var l5 = Pipeline.oscGroupLoader( "OSC", { path: "/m/t.xisf", fingerprint: "ft" }, "broadband", null, io5 );
+   var first = l5.planeWindow( 1 ), loadsAfterFirst = io5.loads;
+   var second = l5.planeWindow( 1 );
+   check( "planeWindow twice returns one window", first === second, true );
+   check( "planeWindow twice reads the cache once", io5.loads, loadsAfterFirst );
+
+   // The group's log line.
+   check( "oscGroupLogLine", Pipeline.oscGroupLogLine( "OSCNB", { path: "/m/n.xisf" }, "dualband", "L-eXtreme",
+             { planes: [ { min: 0.1, max: 0.9, median: 0.2 }, { min: 0, max: 1, median: 0.5 }, { min: 0, max: 1, median: 0.5 } ] } ),
+          "OSC n.xisf: dualband, filter L-eXtreme, planes H/O, min/max/median 0.10000/0.90000/0.20000, 0.00000/1.00000/0.50000, 0.00000/1.00000/0.50000" );
+
+   if ( IN_PIXINSIGHT )
+   {
+      // Steps.extractPlane on a 3x2 image whose planes hold distinct values.
+      var src = new ImageWindow( 3, 2, 3, 32, true, true, "loom_osc_extract_src" );
+      var out = null;
+      try
+      {
+         src.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < 3; ++c )
+            for ( var y = 0; y < 2; ++y )
+               for ( var x = 0; x < 3; ++x )
+                  src.mainView.image.setSample( ( c + 1 ) * 0.1 + y * 0.01 + x * 0.001, x, y, c );
+         src.mainView.endProcess();
+         out = Steps.extractPlane( src.mainView, 1, "loom_osc_extract_out" );
+         var img = out.mainView.image;
+         check( "extractPlane: one 32-bit channel of the same size",
+                [ img.width, img.height, img.numberOfChannels ], [ 3, 2, 1 ] );
+         check( "extractPlane: the plane's own values",
+                [ img.sample( 0, 0 ), img.sample( 2, 1 ) ].map( function( v ) { return v.toFixed( 3 ); } ),
+                [ "0.200", "0.212" ] );
+         check( "extractPlane: FILTER names the plane", Util.keywordValue( out.keywords, "FILTER" ), "G" );
+         check( "extractPlane: LOOMSRC names the plane", /\|plane:1$/.test( Util.keywordValue( out.keywords, "LOOMSRC" ) ), true );
+         var st = Steps.planeStats( src.mainView, 2 );
+         check( "planeStats: min and max of a plane",
+                [ st.min.toFixed( 3 ), st.max.toFixed( 3 ) ], [ "0.300", "0.312" ] );
+      }
+      finally
+      {
+         if ( out != null ) out.forceClose();
+         src.forceClose();
+      }
+   }
+   } )();
    } if ( testGroup( "coreversion" ) ) {
    /*
     * The refusal on a core older than Util.MIN_CORE, per entry point: the

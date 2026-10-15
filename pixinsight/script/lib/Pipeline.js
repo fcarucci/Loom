@@ -1878,6 +1878,16 @@ Pipeline.loadChannels = function( config, reg )
          chans[key] = Pipeline.lazyFileChannel( key, config.paths[key], reg );
    }
 
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      var kind = config.oscKinds ? config.oscKinds[slot] : null;
+      if ( !kind )
+         throw new Error( "internal: the kind of " + slot + " was not resolved by preflight" );
+      var members = Pipeline.oscColourChannels( slot, kind, config, reg );
+      for ( var m in members )
+         chans[m] = members[m];
+   } );
+
    return chans;
 };
 
@@ -1967,6 +1977,313 @@ Pipeline.lazyFileChannel = function( key, path, reg )
                Util.log( "load", this.key + " <- " + this.path );
                return win;
             } };
+};
+
+/*
+ * A stage's complaint about one plane of a colour master, or null. A plane
+ * whose maximum equals its minimum (all zero, or any single value) holds
+ * no image.
+ */
+Pipeline.oscPlaneProblem = function( stats, plane, path )
+{
+   if ( stats.max == stats.min )
+      return path + ": plane " + plane + " is constant (all values " + stats.min +
+             "); the master looks broken";
+   return null;
+};
+
+// The sidecar record of a first load: the statistics of planes 0 to 2.
+Pipeline.oscValidationRecord = function( statsList )
+{
+   return { planes: statsList.map( function( s )
+   {
+      return { min: s.min, max: s.max, median: s.median };
+   } ) };
+};
+
+/*
+ * The run's cache policy over a colour loader's io. The wrapped io stays as
+ * `base`; every other member delegates to it. No cache: nothing is read or
+ * written persistently. Ignore cache: nothing is read, everything is written
+ * (the cache is refreshed), as the stages do.
+ */
+Pipeline.oscCacheIo = function( config, base )
+{
+   var io = { base: base };
+   Object.keys( base ).forEach( function( k )
+   {
+      if ( typeof base[k] == "function" )
+         io[k] = function() { return base[k].apply( base, arguments ); };
+   } );
+   var off = !config.useCache;
+   var noRead = off || !!config.ignoreCache;
+   if ( noRead )
+   {
+      io.cacheLoad = function() { return null; };
+      io.readSidecar = function() { return null; };
+   }
+   if ( off )
+   {
+      io.cacheStore = function() {};
+      io.writeSidecar = function() {};
+   }
+   return io;
+};
+
+/*
+ * One loader per colour master, shared by its sibling channels. The master is
+ * opened at most once, and only when a requested plane is not already in the
+ * cache; on that open every plane is measured and checked, the verdict goes to
+ * the sidecar, and the planes the slot uses are cached and kept for the
+ * siblings. `source` is { path, fingerprint } (a view's path is its id).
+ */
+Pipeline.oscGroupLoader = function( slot, source, kind, reg, io )
+{
+   var gid = Pipeline.oscGroupIdentity( source.fingerprint, kind );
+   var members = Pipeline.OSC_RECIPES[slot];
+   var names = {};
+   for ( var m in members )
+      names[ members[m] ] = m;
+   var handed = {};      // plane -> window given out this run
+   var kept = {};        // plane -> extracted window nobody has taken yet
+   var record = null;    // this run's own record, for when no sidecar can be read
+   var waiting = [];
+   var loader = { opens: 0 };
+
+   function channelName( plane )
+   {
+      var n = names[plane];
+      return n == "H" ? "Ha" : n == "O" ? "OIII" : n;
+   }
+
+   function announce()
+   {
+      var rec = loader.validation();
+      if ( rec == null )
+         return;
+      var fns = waiting;
+      waiting = [];
+      fns.forEach( function( f ) { f( rec ); } );
+   }
+
+   function openAndSplit()
+   {
+      loader.opens++;
+      var master = io.openMaster( source.path );
+      try
+      {
+         var stats = [];
+         for ( var p = 0; p < 3; ++p )
+            stats.push( io.planeStats( master, p ) );
+         for ( var q = 0; q < 3; ++q )
+         {
+            var problem = Pipeline.oscPlaneProblem( stats[q], q, source.path );
+            if ( problem != null )
+               throw new Error( problem );
+         }
+         record = Pipeline.oscValidationRecord( stats );
+         io.writeSidecar( Pipeline.oscValidateName( gid ), record );
+         for ( var n in names )
+         {
+            var plane = +n;
+            var w = io.planeWindow( master, plane, channelName( plane ) );
+            io.cacheStore( Pipeline.oscSiblingKey( gid, plane ), w,
+                           { channel: names[n], stage: "split",
+                             params: { recipe: "plane:" + plane } } );
+            if ( handed[plane] || kept[plane] != null )
+            {
+               // a sibling already has this plane; the new copy is only for the cache
+               try { if ( io.closeWindow ) io.closeWindow( w ); }
+               catch ( e ) {}
+            }
+            else
+               kept[plane] = w;
+         }
+      }
+      finally { io.closeMaster( master ); }
+      announce();
+   }
+
+   loader.planeWindow = function( plane )
+   {
+      if ( handed[plane] )
+         return handed[plane];
+      if ( kept[plane] == null )
+      {
+         var hit = io.cacheLoad( Pipeline.oscSiblingKey( gid, plane ), channelName( plane ) );
+         if ( hit != null )
+            kept[plane] = hit;
+         else
+            openAndSplit();
+      }
+      handed[plane] = kept[plane];
+      delete kept[plane];
+      return handed[plane];
+   };
+
+   // The sidecar's record, or this run's own when the sidecar cannot be read.
+   loader.validation = function()
+   {
+      var rec = io.readSidecar( Pipeline.oscValidateName( gid ) );
+      return rec != null ? rec : record;
+   };
+
+   // Calls fn( record ) once, as soon as a record exists (now, or after the first load).
+   loader.whenValidated = function( fn )
+   {
+      waiting.push( fn );
+      announce();
+   };
+
+   // Drops the extracted planes nobody took.
+   loader.release = function()
+   {
+      for ( var p in kept )
+      {
+         try { if ( io.closeWindow ) io.closeWindow( kept[p] ); }
+         catch ( e ) {}
+         delete kept[p];
+      }
+   };
+
+   return loader;
+};
+
+// The log line of one colour group, from its validation record.
+Pipeline.oscGroupLogLine = function( slot, source, kind, filter, rec )
+{
+   var file = source.path.split( /[\\/]/ ).pop();
+   var members = Object.keys( Pipeline.OSC_RECIPES[slot] );
+   var values = rec.planes.map( function( p )
+   {
+      return p.min.toFixed( 5 ) + "/" + p.max.toFixed( 5 ) + "/" + p.median.toFixed( 5 );
+   } ).join( ", " );
+   return "OSC " + file + ": " + kind + ", filter " + filter + ", planes " +
+          members.join( "/" ) + ", min/max/median " + values;
+};
+
+// The production io of a colour loader. A view's own window is never closed.
+Pipeline.oscProductionIo = function( slot, source, isView, reg )
+{
+   var recipes = Pipeline.OSC_RECIPES[slot];
+   function sidecarPath( name ) { return Cache.dir() + "/" + name; }
+   var io = {};
+   io.openMaster = function( path )
+   {
+      if ( isView )
+      {
+         var vw = ImageWindow.windowById( path );
+         if ( vw == null || vw.isNull )
+            throw new Error( "View no longer open for " + slot + ": " + path );
+         return vw;
+      }
+      var ws = ImageWindow.open( path );
+      if ( ws.length == 0 )
+         throw new Error( "Could not open " + slot + ": " + path );
+      reg.add( ws[0] );
+      return ws[0];
+   };
+   io.closeMaster = function( master )
+   {
+      if ( isView )
+         return;
+      reg.forget( master );
+      master.forceClose();
+   };
+   io.planeWindow = function( master, plane, name )
+   {
+      return reg.add( Steps.extractPlane( master.mainView, plane,
+                                          Util.freeWindowId( name + "_work" ), name ) );
+   };
+   io.planeStats = function( master, plane ) { return Steps.planeStats( master.mainView, plane ); };
+   io.cacheLoad = function( key, name )
+   {
+      var w = Cache.load( key, Util.freeWindowId( name + "_work" ) );
+      return w == null ? null : reg.add( w );
+   };
+   io.cacheStore = function( key, window, meta ) { Cache.store( key, window, meta ); };
+   io.closeWindow = function( w ) { reg.forget( w ); w.forceClose(); };
+   io.writeSidecar = function( name, rec )
+   {
+      try
+      {
+         Util.ensureDirectory( Cache.dir() );
+         File.writeTextFile( sidecarPath( name ), JSON.stringify( rec ) );
+      }
+      catch ( e ) { Util.warn( "load", "could not write " + name + ": " + e ); }
+   };
+   io.readSidecar = function( name )
+   {
+      try
+      {
+         var p = sidecarPath( name );
+         if ( !File.exists( p ) )
+            return null;
+         var rec = JSON.parse( File.readTextFile( p ) );
+         return rec && rec.planes && rec.planes.length == 3 ? rec : null;
+      }
+      catch ( e ) { return null; }
+   };
+   return io;
+};
+
+/*
+ * The lazy channels of one colour slot, one per member, sharing one loader.
+ * Nothing is opened here. Each has the fields Pipeline.lazyFileChannel
+ * returns plus group and plane; sourceKey and currentKey are the sibling key.
+ */
+Pipeline.oscColourChannels = function( slot, kind, config, reg )
+{
+   var viewId = config.views && config.views[slot];
+   var source, keywords;
+   if ( viewId )
+   {
+      var vw = ImageWindow.windowById( viewId );
+      if ( vw == null || vw.isNull )
+         throw new Error( "View no longer open for " + slot + ": " + viewId );
+      source = { path: viewId, fingerprint: Cache.fingerprintView( vw.mainView ) };
+      keywords = vw.keywords;
+   }
+   else
+   {
+      var fp = Cache.fingerprintFile( config.paths[slot] );
+      if ( fp == null )
+         throw new Error( "Could not read " + slot + ": " + config.paths[slot] );
+      source = { path: config.paths[slot], fingerprint: fp };
+      keywords = Util.readImageInfo( config.paths[slot] ).keywords;
+   }
+   var filter = Util.keywordValue( keywords, "FILTER" );
+   var instrume = Util.keywordValue( keywords, "INSTRUME" );
+   var gid = Pipeline.oscGroupIdentity( source.fingerprint, kind );
+   var io = Pipeline.oscCacheIo( config, Pipeline.oscProductionIo( slot, source, !!viewId, reg ) );
+   var loader = Pipeline.oscGroupLoader( slot, source, kind, reg, io );
+   loader.whenValidated( function( rec )
+   {
+      Util.log( "load", Pipeline.oscGroupLogLine( slot, source, kind, filter, rec ) );
+   } );
+
+   var chans = {};
+   Util.COLOUR_MEMBERS[slot].forEach( function( key )
+   {
+      var plane = Pipeline.OSC_RECIPES[slot][key];
+      var sibling = Pipeline.oscSiblingKey( gid, plane );
+      chans[key] = { key: key, path: source.path, window: null, view: null,
+                     filter: filter, instrume: instrume,
+                     sourceKey: sibling, currentKey: sibling,
+                     group: slot, plane: plane,
+                     load: function()
+                     {
+                        if ( this.window != null )
+                           return this.window;
+                        var win = loader.planeWindow( this.plane );
+                        win.mainView.id = Util.freeWindowId( this.key + "_work" );
+                        this.window = win;
+                        this.view = win.mainView;
+                        Util.log( "load", this.key + " <- " + this.path + " (plane " + this.plane + ")" );
+                        return win;
+                     } };
+   } );
+   return chans;
 };
 
       /*

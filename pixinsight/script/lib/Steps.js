@@ -2342,6 +2342,73 @@ Steps.combineRGB = function( rView, gView, bView, id )
    return w;
 };
 
+/*
+ * Minimum, maximum and median of one channel of a view's image. The
+ * image's channel selection is put back as it was found.
+ */
+Steps.planeStats = function( view, plane )
+{
+   var img = view.image;
+   var saved = img.selectedChannel;
+   try
+   {
+      img.selectedChannel = plane;
+      return { min: img.minimum(), max: img.maximum(), median: img.median() };
+   }
+   finally { img.selectedChannel = saved; }
+};
+
+/*
+ * One channel of a colour view as a new one-channel 32-bit float window of
+ * the same size. Keywords and the astrometric solution come along; FILTER
+ * names the channel (R, G, B, Ha, OIII, as exports name them) and LOOMSRC
+ * records the source file name and the plane. `filterName` is optional:
+ * without it the plane number gives R, G or B.
+ */
+Steps.extractPlane = function( view, plane, newId, filterName )
+{
+   var src = view.image;
+   var srcWin = view.window;
+   var name = filterName || [ "R", "G", "B" ][plane];
+   var fileName = view.id;
+   try
+   {
+      if ( srcWin.filePath && srcWin.filePath.length > 0 )
+         fileName = File.extractName( srcWin.filePath ) + File.extractExtension( srcWin.filePath );
+   }
+   catch ( e ) { fileName = view.id; }
+
+   var w = new ImageWindow( src.width, src.height, 1, 32, true, false, newId );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   var saved = src.selectedChannel;
+   try
+   {
+      src.selectedChannel = plane;
+      w.mainView.image.assign( src );
+   }
+   finally { src.selectedChannel = saved; }
+   w.mainView.endProcess();
+
+   var kws = srcWin.keywords.filter( function( k )
+   {
+      return k.name != "FILTER" && k.name != "LOOMSRC";
+   } );
+   kws.push( new FITSKeyword( "FILTER", "'" + name + "'", "channel of the colour master" ) );
+   kws.push( new FITSKeyword( "LOOMSRC", "'" + fileName + "|plane:" + plane + "'", "colour master and plane" ) );
+   w.keywords = kws;
+
+   try
+   {
+      if ( srcWin.hasAstrometricSolution )
+         w.copyAstrometricSolution( srcWin );
+   }
+   catch ( e )
+   {
+      Util.warn( "load", name + " - could not copy astrometric solution: " + e );
+   }
+   return w;
+};
+
 /* ---------------------------------------------------------------------------
  * Sharpening: aberration correction, star reduction, detail.
  *
