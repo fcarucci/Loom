@@ -1,17 +1,17 @@
 """Which way round siril-cli's ``load_image_from_file(path, with_pixels=True)`` returns the rows of an XISF file.
 
-Result (siril-cli 1.4.4, Docker image; see the test ``test_siril_returns_xisf_rows_in_order``): XISF rows are
-RESULT_PLACEHOLDER.
+Result (siril-cli 1.4.4, Docker image): Siril returns XISF rows BOTTOM-UP, as it does for FITS. The file's top rows
+(0..7, value 60000) come back as the last rows of the array (40..47), and the bright pixel (file row 40) comes back at
+array row 7. Full data: uint16, shape (48, 64). Preview: uint8, shape (48, 64), the same row order (the 1000 rows
+autostretch to 65; the 60000 rows and the bright pixel to 255). So the XISF case needs the same top-down flip as the
+FITS case in loomsiril/frames_copy.py and loomsiril/frames_render.py; neither needs a separate XISF path.
 
-The FITS rows were already shown to be bottom-up (evidence/master-flat-probe.md, P3). This file settles the XISF case
-on a minimal file written here, without a library: a 64 x 48 UInt16 mono image whose top 8 rows (file rows 0..7) hold
-60000, whose other rows hold 1000, and whose single pixel at x=3, y=40 (file row 40) holds 65000. The XISF row order
-(top-down) is the one the file stores; loomsiril/frames_copy.py and loomsiril/frames_render.py turn Siril's rows
-top-down themselves, so this decides whether they must flip XISF data.
+The probe file is a 64 x 48 UInt16 mono XISF 1.0 written here without a library: top 8 rows (file rows 0..7) 60000,
+other rows 1000, one pixel at x=3, y=40 (file row 40) 65000. The header is read back with
+loomsiril.loom.xisf.read_xisf_header in a plain test; Siril is run through tests/loom/siril_run.run_pyscript in the
+one test marked siril (skipped where siril-cli is absent).
 
-No JS function is ported here; the file is a probe. Pixels and header are read back with
-loomsiril.loom.xisf.read_xisf_header in a plain test, and Siril is run through tests/loom/siril_run.run_pyscript
-in the one test marked siril (skipped where siril-cli is absent).
+No JS function is ported here; this file is a probe.
 """
 
 from __future__ import annotations
@@ -88,7 +88,20 @@ _KEYS = [
     "preview.shape", "preview.dtype", "preview.mean_rows_0_7", "preview.mean_rows_40_47", "preview.max_at_xy",
     "preview.max_value",
 ]
-EXPECTED_SIRIL_FACTS: dict = {}  # filled from the Docker run; placeholder for the first run
+EXPECTED_SIRIL_FACTS = {
+    "full.shape": [HEIGHT, WIDTH],
+    "full.dtype": "uint16",
+    "full.mean_rows_0_7": 1125.0,  # file rows 40..47: 511 of 1000 plus one bright pixel
+    "full.mean_rows_40_47": 60000.0,  # file rows 0..7
+    "full.max_at_xy": [BRIGHT_X, TOP_ROWS - 1],
+    "full.max_value": float(BRIGHT_VALUE),
+    "preview.shape": [HEIGHT, WIDTH],
+    "preview.dtype": "uint8",
+    "preview.mean_rows_0_7": 65.37109375,
+    "preview.mean_rows_40_47": 255.0,
+    "preview.max_at_xy": [BRIGHT_X, TOP_ROWS - 1],
+    "preview.max_value": 255.0,
+}
 
 # The Siril side: prints what it sees, one key=<json> line per fact; the test reads them back with run.value().
 _SIRIL_SCRIPT = '''
