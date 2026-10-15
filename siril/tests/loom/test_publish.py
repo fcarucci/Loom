@@ -470,7 +470,9 @@ def test_a_source_that_cannot_be_quoted_is_a_warning_and_the_result_is_still_sav
     outputs = publish.publish(ops, {"RGB": rgb}, {}, tmp_path / "out", _builtin_plan(), log,
                               sources={"RGB": 'OSC a"b.xisf planes 0,1,2'})
     assert os.path.exists(outputs["RGB"])
-    assert any("LOOMSRC" in text for text in _texts(lines, "warn"))
+    assert any("LOOMSRC" in text and "empty" in text for text in _texts(lines, "warn"))
+    assert [c for c in ops.transcript if "LOOMSRC" in c] == ['update_key LOOMSRC "" "colour master and planes"']
+    assert _verbs(ops)[-1] == "save"
 
 
 def test_tiff_and_psb_exports_carry_no_loomsrc(tmp_path: Path) -> None:

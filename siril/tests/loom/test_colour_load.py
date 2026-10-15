@@ -484,10 +484,12 @@ def test_fit_loomsrc_is_ascii_safe() -> None:
     assert _fit("OSC ", ("\u00e9.xisf",), " plane 0") == "OSC ?.xisf plane 0"
 
 
-def test_fit_loomsrc_matches_the_channel_plate_value() -> None:
+def test_the_channel_plate_value_is_unchanged() -> None:
     from loomsiril.loom.colour_load import _loomsrc
-    for name in ("m31.fits", "x" * 90 + ".fits", "'" * 70 + "end.fits", "caf\u00e9" * 20 + ".xisf"):
-        assert _fit((name,), "|plane:2") == _loomsrc("/d/" + name, 2)
+    assert _loomsrc("/d/m31.fits", 2) == "m31.fits|plane:2"
+    assert _loomsrc("/d/" + "x" * 90 + ".fits", 2) == "..." + "x" * 52 + ".fits|plane:2"
+    assert _loomsrc("/d/" + "'" * 70 + "end.fits", 0) == "..." + "'" * 24 + "end.fits|plane:0"
+    assert _loomsrc("/d/caf\u00e9.xisf", 1) == "caf?.xisf|plane:1"
 
 
 def test_composite_loomsrc_names_the_master_and_planes_like_the_oracle() -> None:

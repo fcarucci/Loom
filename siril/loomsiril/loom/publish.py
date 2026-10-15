@@ -79,7 +79,7 @@ def publish(
 
     ``sources`` maps a result name to its LOOMSRC value (the colour master's file and planes: the composite and the
     palettes of a colour run). The keyword is written on those results in their FITS form, replacing any earlier
-    value; a value Siril cannot take is a warning and the result is still saved. The TIFF and PSB exports hold no FITS
+    value; a value Siril cannot take is a warning, the keyword is left empty (never a stale value), and the result is still saved. The TIFF and PSB exports hold no FITS
     keywords and carry none.
 
     The plates are visited in :func:`naming.ordered_output_keys` order. Each is saved under a unique name in
@@ -97,7 +97,9 @@ def publish(
             try:
                 ops.update_key(LOOM_SOURCE_KEYWORD, sources[name], LOOM_SOURCE_COMMENT)
             except ValueError as exc:
-                log("warn", f"{name}: the source (LOOMSRC) was not recorded ({exc})")
+                # Siril cannot take the value: blank the keyword, so a value left on a cached plate cannot survive
+                ops.update_key(LOOM_SOURCE_KEYWORD, "", LOOM_SOURCE_COMMENT)
+                log("warn", f"{name}: the source (LOOMSRC) could not be recorded and is left empty ({exc})")
         assignment = icc.assignment_for(_is_colour(plate), plan)
         ops.icc_assign(assignment.target)
         log("info", icc.assignment_log(name, assignment))

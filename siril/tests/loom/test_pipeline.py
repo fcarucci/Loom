@@ -699,3 +699,66 @@ def test_a_palette_from_mono_channels_logs_neither_line(tmp_path: Path, monkeypa
     state.load_channels()
     state.build_palettes({"H": "h.fits", "S": "s.fits", "O": "o.fits"}, _COMMON, None)
     assert not any("approximation" in t or "from OSCNB" in t for t in lines)
+
+
+def _plate(tmp_path: Path, name: str, planes: int) -> str:
+    path = tmp_path / "plates" / f"{name}.fits"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_fits(path, [np.full(SHAPE, 0.5, np.float32) for _ in range(planes)], {}, bitpix=-32)
+    return str(path)
+
+
+def _loomsrc_commands(cr: "_ColourRun") -> list[str]:
+    return [t for t in cr.ctx.ops.transcript if t.startswith("update_key LOOMSRC")]
+
+
+def test_publish_results_writes_loomsrc_on_the_composite_and_the_palette_cold_and_warm(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband", palettes=["HOO"], outputDir=str(tmp_path / "out"))
+    cr.cfg["paths"]["OSCNB"] = cr.master
+    cr.cfg["oscKinds"] = {"OSC": "broadband", "OSCNB": "dualband"}
+    from loomsiril.loom import icc
+    cr.run.plan = icc.profile_plan([])
+    cr.run.load_channels()
+    rgb, hoo, mono = _plate(tmp_path, "rgb", 3), _plate(tmp_path, "hoo", 3), _plate(tmp_path, "l", 1)
+    expected = ['update_key LOOMSRC "OSC n.fits planes 0,1,2" "colour master and planes"',
+                'update_key LOOMSRC "OSCNB n.fits plane 0; OSCNB n.fits plane 1" "colour master and planes"']
+    for _run in ("cold", "warm"):
+        before = len(cr.ctx.ops.transcript)
+        cr.run.publish_results({"RGB": rgb, "HOO": hoo, "L": mono})
+        added = cr.ctx.ops.transcript[before:]
+        assert [t for t in added if t.startswith("update_key LOOMSRC")] == expected
+    assert len(_loomsrc_commands(cr)) == 4
+
+
+def test_build_rgb_hands_the_loomsrc_to_the_rgb_runners(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband")
+    _spy_chain(monkeypatch)
+    seen: list[Any] = []
+    real = pipeline.stages_colour.rgb_runners
+
+    def spy(ctx: Any, plates: Any, config: Any, lum: Any, factors: Any, loomsrc: Any = None) -> Any:
+        seen.append(loomsrc)
+        return real(ctx, plates, config, lum, factors, loomsrc)
+
+    monkeypatch.setattr(pipeline.stages_colour, "rgb_runners", spy)
+    cr.run.load_channels()
+    cr.run.build_rgb({"R": "r", "G": "g", "B": "b"}, _COMMON, None, INSTRUME)
+    assert seen == ["OSC n.fits planes 0,1,2"]
+
+
+def test_build_palettes_hands_the_loomsrc_to_the_palette_runners(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, palettes=["HOO"])
+    _spy_chain(monkeypatch)
+    seen: list[Any] = []
+    real = pipeline.stages_colour.palette_runners
+
+    def spy(ctx: Any, pal: Any, plates: Any, config: Any, names: Any, loomsrc: Any = None) -> Any:
+        seen.append(loomsrc)
+        return real(ctx, pal, plates, config, names, loomsrc)
+
+    monkeypatch.setattr(pipeline.stages_colour, "palette_runners", spy)
+    cr.run.load_channels()
+    cr.run.build_palettes({"H": "h.fits", "O": "o.fits"}, _COMMON, None)
+    assert seen == ["OSCNB n.fits plane 0; OSCNB n.fits plane 1"]
