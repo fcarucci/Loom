@@ -705,6 +705,56 @@ Util.FILTER_NAMES = [ { token: "halpha", exact: "ha", channel: "H" },
                       { token: "green",  exact: null, channel: "G" },
                       { token: "blue",   exact: null, channel: "B" } ];
 
+Util.normaliseFilter = function( value )
+{
+   if ( value == null )
+      return "";
+   // Greek line names are spelt out before punctuation is removed, so
+   // "Hα/OIII" and "Ha/OIII" (and "Hβ" and "Hb") meet in the table.
+   return String( value ).toLowerCase()
+      .replace( /α/g, "a" ).replace( /β/g, "b" )
+      .replace( /[^a-z0-9]/g, "" );
+};
+
+/*
+ * Colour-camera filters by full normalised model name. Passbands are the
+ * manufacturer's Ha and OIII bandwidths in nm. An entry whose line pair is
+ * not Ha/OIII is "unsupported": its H and O planes would not hold Ha and OIII.
+ */
+Util.OSC_FILTERS = [
+   { match: "lextreme",     name: "L-eXtreme",       kind: "dualband",    haNm: 7,   oiiiNm: 7 },
+   { match: "lultimate",    name: "L-Ultimate",      kind: "dualband",    haNm: 3,   oiiiNm: 3 },
+   { match: "lenhance",     name: "L-eNhance",       kind: "dualband",    haNm: 10,  oiiiNm: 24 },
+   { match: "lenhanced",    name: "L-eNhance",       kind: "dualband",    haNm: 10,  oiiiNm: 24 },
+   { match: "alpthaoiii",   name: "ALP-T Ha/OIII",   kind: "dualband",    haNm: 5,   oiiiNm: 5 },
+   { match: "alpthaoiii5nm",name: "ALP-T Ha/OIII",   kind: "dualband",    haNm: 5,   oiiiNm: 5 },
+   { match: "alptsiihb",    name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
+   { match: "alptsiihbeta", name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
+   { match: "nbz",          name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 }
+];
+Util.OSC_BROADBAND = [ "uvir", "uvircut", "ircut", "uvirblock", "lpro", "cls", "clsccd", "lrgb" ];
+Util.OSC_FAMILIES  = [ "duo", "dual", "dualband", "tri", "triad", "quad", "alpt" ];
+
+Util.oscFilterInfo = function( filterValue )
+{
+   var f = Util.normaliseFilter( filterValue );
+   for ( var i = 0; i < Util.OSC_FILTERS.length; ++i )
+      if ( Util.OSC_FILTERS[i].match == f )
+      {
+         var m = Util.OSC_FILTERS[i];
+         return { kind: m.kind, name: m.name, confident: m.kind != "unsupported",
+                  haNm: m.haNm, oiiiNm: m.oiiiNm };
+      }
+   if ( f.length == 0 || Util.OSC_BROADBAND.indexOf( f ) >= 0 )
+      return { kind: "broadband", name: f.length == 0 ? "" : String( filterValue ).trim(),
+               confident: true, haNm: null, oiiiNm: null };
+   for ( var j = 0; j < Util.OSC_FAMILIES.length; ++j )
+      if ( f.indexOf( Util.OSC_FAMILIES[j] ) == 0 )
+         return { kind: "dualband", name: String( filterValue ).trim(), confident: false,
+                  haNm: null, oiiiNm: null };
+   return null;
+};
+
 /*
  * The selection list is remembered between runs. Entries serialise as
  * one record per line, "source<TAB>ref" -- tab and newline are the two

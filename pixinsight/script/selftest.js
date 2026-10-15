@@ -21516,6 +21516,45 @@ function runPipeTests()
              list( [ "a", "b", "c" ], 2, "/r" ), [] );
    } )();
 
+   } if ( testGroup( "osc.detect" ) ) {
+   ( function()
+   {
+      // Known models win over family aliases; matching ignores case and punctuation.
+      var ext = Util.oscFilterInfo( "L-eXtreme" );
+      check( "oscFilterInfo L-eXtreme kind", ext.kind, "dualband" );
+      check( "oscFilterInfo L-eXtreme confident", ext.confident, true );
+      check( "oscFilterInfo L-eXtreme passbands", [ ext.haNm, ext.oiiiNm ], [ 7, 7 ] );
+      check( "oscFilterInfo spelling variants agree",
+             [ "L eXtreme", "l-extreme", "LeXtreme", "L_eXtreme" ].map( function( n ) {
+                return Util.oscFilterInfo( n ).name; } ),
+             [ "L-eXtreme", "L-eXtreme", "L-eXtreme", "L-eXtreme" ] );
+      check( "oscFilterInfo L-Ultimate passbands",
+             [ Util.oscFilterInfo( "L-Ultimate" ).haNm, Util.oscFilterInfo( "L-Ultimate" ).oiiiNm ], [ 3, 3 ] );
+      check( "oscFilterInfo ALP-T Ha/OIII supported",
+             Util.oscFilterInfo( "ALP-T Ha/OIII" ).kind, "dualband" );
+      check( "oscFilterInfo ALP-T SII/Hb unsupported",
+             Util.oscFilterInfo( "ALP-T SII/Hb" ).kind, "unsupported" );
+      check( "oscFilterInfo Greek spellings",
+             [ Util.oscFilterInfo( "ALP-T Hα/OIII" ).kind, Util.oscFilterInfo( "ALP-T Hα/OIII" ).haNm,
+               Util.oscFilterInfo( "ALP-T SII/Hβ" ).kind ],
+             [ "dualband", 5, "unsupported" ] );
+      // Broadband names and an absent FILTER are broadband, confidently.
+      check( "oscFilterInfo UV/IR", Util.oscFilterInfo( "UV/IR Cut" ).kind, "broadband" );
+      check( "oscFilterInfo L-Pro", Util.oscFilterInfo( "L-Pro" ).kind, "broadband" );
+      check( "oscFilterInfo empty FILTER", [ Util.oscFilterInfo( "" ).kind, Util.oscFilterInfo( "" ).confident ],
+             [ "broadband", true ] );
+      check( "oscFilterInfo absent FILTER", Util.oscFilterInfo( null ).kind, "broadband" );
+      // Family aliases are dual-band but not confident.
+      check( "oscFilterInfo family alias", [ Util.oscFilterInfo( "Duo Narrowband" ).kind,
+                                             Util.oscFilterInfo( "Duo Narrowband" ).confident ],
+             [ "dualband", false ] );
+      check( "oscFilterInfo quad alias", Util.oscFilterInfo( "Quad band" ).confident, false );
+      check( "oscFilterInfo unknown", Util.oscFilterInfo( "Astronomik Deep-Sky" ), null );
+      check( "normaliseFilter", Util.normaliseFilter( " L-eXtreme 2\" " ), "lextreme2" );
+      check( "oscFilterInfo unsupported is not confident", Util.oscFilterInfo( "ALP-T SII/Hb" ).confident, false );
+      check( "oscFilterInfo known model beats family prefix", Util.oscFilterInfo( "ALP-T Ha/OIII" ).confident, true );
+   } )();
+
    } if ( testGroup( "coreversion" ) ) {
    /*
     * The refusal on a core older than Util.MIN_CORE, per entry point: the
