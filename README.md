@@ -1,3 +1,5 @@
+![Loom: the Elephant Trunk Nebula](pixinsight/docs/images/banner.jpg)
+
 # Loom
 
 Loom takes integrated narrowband and broadband masters to finished plates, and turns a finished image into a push-in
