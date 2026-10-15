@@ -9,7 +9,7 @@ so a row or a settings object reads the same on both sides. JS ``undefined`` has
 returns it (``parseLimit`` on invalid text) this returns :data:`UNDEFINED`.
 
 Out of this module, by design: anomaly flags, grouping by filter and the file lists (loomsiril.frames_groups,
-frames_flags, frames_files), plot geometry (not ported here).
+frames_flags, frames_files), plot geometry (not ported here). ``round_display`` is Frames.round (Frames.js 904-912).
 ``new_channel`` returns the channel without ``flags``; the caller adds them. ``NO_FILTER`` and
 ``auto_reject_allowed`` live here because ``recompute`` needs them; the grouping in loomsiril.frames_groups imports them.
 """
@@ -482,7 +482,7 @@ def round_display(v: float) -> str:
         return number_str(v)
     a = abs(v)
     if a >= 100:
-        return str(int(js_round(v)))
+        return number_str(js_round(v))  # String(Math.round(v)): exponent form from 1e21 up, like JS
     if a >= 1:
         return to_fixed(v, 2)
     return to_precision(v, 3)

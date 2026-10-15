@@ -297,7 +297,8 @@ module.exports = function( js )
    pure( "display_limit/auto_inactive", "displayLimit", [ "psfSNR", GATES25, DS ] );
    pure( "display_limit/no_gates", "displayLimit", [ "fwhm", null, DS ] );
 
-   [ 0, 0.5, 1.005, 1.5, 2.675, 9.999, 99.99, 100, 123.456, -150.5, 0.000123456, 0.0000001234, -0.25, 1e-7, 0.9999, NaN, Infinity, -Infinity ]
+   [ 0, 0.5, 1.005, 1.5, 2.675, 9.999, 99.99, 100, 123.456, -150.5, 0.000123456, 0.0000001234, -0.25, 1e-7, 0.9999, NaN, Infinity, -Infinity,
+        1e21, -1e21, 123456789012345678901234, -0, -0.4 ]
       .forEach( ( v, i ) => pure( "round/" + i, "round", [ v ] ) );
 
    /* ---- outcomes, counts, phases -------------------------------------------------------------- */
@@ -390,7 +391,15 @@ module.exports = function( js )
    F.recompute( MAN );
    MAN.rows[3].override = "rescued";
    MAN.rows[0].override = "condemned";
-   const MANIFEST = F.buildManifest( MAN.rows );
+   /* buildManifest stamps Date.now() into `created`: the clock is pinned while it runs, so the record is the same on
+      every run. */
+   function withClock( t, fn )
+   {
+      const now = Date.now;
+      Date.now = () => t;
+      try { return fn(); } finally { Date.now = now; }
+   }
+   const MANIFEST = withClock( 1700000000000, () => F.buildManifest( MAN.rows ) );
    cases["build_manifest/entries"] = { fn: "buildManifest", args: norm( [ MAN.rows ] ), out: norm( { entries: MANIFEST.entries } ) };
    mut( "manifest/record_first", "recordOutcome", [ MANIFEST, PATHS[0], "deleted", "" ] );
    const AFTER_ONE = structuredClone( MANIFEST );
