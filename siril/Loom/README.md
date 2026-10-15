@@ -28,6 +28,11 @@ starless and stars files (TIFF or FITS, top-down, same size and channel count as
 target, duration, fps, presets and output folder, then Render. The result box lists the videos, or the ffmpeg command
 when ffmpeg is not found.
 
+## Loom Frame Selector (loom_frame_selector.py)
+
+`loom_frame_selector.py` is a thin Siril 1.4 script: it offers the nights of an ASIAIR card if one is plugged in, else asks for a
+folder of subframes, measures them and opens the review dialog. Install it as above (not run inside Siril yet).
+
 ## Loom (loom_preprocess.py)
 
 `loom_preprocess.py` is the Loom pipeline script: masters in, finished plates out. The top-level README has the full
