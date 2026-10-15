@@ -274,3 +274,12 @@ def test_set_selected_repaints_only_when_the_selection_changes(tk_root, monkeypa
     plot.set_selected(None)  # None is -1: a change, so one more repaint, and no ring left
     assert calls == [1, 1]
     assert "oval" not in {plot.type(item) for item in plot.find_all()}
+
+
+def test_paint_on_a_destroyed_widget_does_nothing(tk_root) -> None:
+    plot = _plot(tk_root)
+    plot.set_series(rows_of([10, 20, 30]), METRIC, None)
+    plot.destroy()
+    plot.paint()                                    # the widget is gone: no TclError
+    plot.set_selected(2)
+    plot.set_series(rows_of([1, 2]), METRIC, None)

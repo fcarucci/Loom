@@ -295,13 +295,20 @@ class FramesPlot(_CanvasBase):  # type: ignore[misc]
             self.on_pick(int(i))
 
     def paint(self) -> None:
-        """Clears the canvas and draws :func:`layout` for its current size (paint, 4387-4401)."""
-        W = self.winfo_width()
-        H = self.winfo_height()
-        self.geom = hit_geometry(self.rows, self.metric, self.band, W, H)
-        self.delete("all")
-        for shape in layout(self.rows, self.metric, self.band, self.selected, W, H):
-            self._draw(shape)
+        """Clears the canvas and draws :func:`layout` for its current size (paint, 4387-4401).
+
+        A widget that has been destroyed (a repaint queued before the window went) is left alone, as the JS guards
+        its paint: the Tk error is swallowed and nothing is drawn.
+        """
+        try:
+            W = self.winfo_width()
+            H = self.winfo_height()
+            self.geom = hit_geometry(self.rows, self.metric, self.band, W, H)
+            self.delete("all")
+            for shape in layout(self.rows, self.metric, self.band, self.selected, W, H):
+                self._draw(shape)
+        except tk.TclError:
+            return
 
     def _draw(self, s: Shape) -> None:
         kind = s["kind"]
