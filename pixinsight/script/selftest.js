@@ -21794,6 +21794,52 @@ function runPipeTests()
                 .indexOf( "1 named candidates" ) >= 0, true );
       check( "nothing loaded", UI.scanSummary( scan, { opened: 0, skipped: 0, corrected: [], unreadable: [] }, [] )
                 .indexOf( "No masters with a readable FILTER keyword" ) >= 0, true );
+
+      // applyOscKind leaves an entry that is not available alone
+      var gone = ent( "/m/gone.xisf", "L-eXtreme", { channel: "OSC", unavailable: true } ), here = ent( "/m/here.xisf", "", { channel: "OSC" } );
+      UI.applyOscKind( [ gone, here ], {}, here, 2 );
+      check( "an unavailable entry keeps its slot", [ gone.channel, here.channel ], [ "OSC", "OSCNB" ] );
+
+      // the kept palettes: a stub settings store, the construction merge, the commit strip
+      function stubStore( initial )
+      {
+         var data = {};
+         if ( initial != null ) data[Config.SETTINGS_PREFIX + "palettesKept"] = initial;
+         return { data: data, settings: {
+            read: function( k ) { return data[k] === undefined ? null : data[k]; },
+            write: function( k, type, v ) { data[k] = v; } } };
+      }
+      var kk = Config.SETTINGS_PREFIX + "palettesKept";
+      var st = stubStore( null );
+      check( "nothing kept reads as empty", UI.readKeptPalettes( st ), [] );
+      UI.writeKeptPalettes( [ "SHO", "HSO" ], st );
+      check( "kept palettes are written as a list", st.data[kk], "SHO,HSO" );
+      check( "and read back", UI.readKeptPalettes( st ), [ "SHO", "HSO" ] );
+      check( "unknown names are dropped on read", UI.readKeptPalettes( stubStore( "SHO,Bogus" ) ), [ "SHO" ] );
+      check( "a failing store reads as empty", UI.readKeptPalettes( { settings: { read: function() { throw new Error( "x" ); } } } ), [] );
+      check( "construction merge adds the kept ones once", UI.mergeKeptPalettes( [ "HOO", "SHO" ], [ "SHO", "HSO" ] ),
+             [ "HOO", "SHO", "HSO" ] );
+      check( "construction merge with nothing kept", UI.mergeKeptPalettes( [ "HOO" ], [] ), [ "HOO" ] );
+
+      // commit() on a dialog stand-in: the real method, a stub store behind the settings
+      var realStore = Config.pixinsightStore;
+      function commitWith( palettes, entries, store )
+      {
+         var cfg = Config.defaults(); cfg.palettes = palettes.slice();
+         var fake = { config: cfg, entries: entries, projectEdit: { text: "" } };
+         Config.pixinsightStore = function() { return store; };
+         try { var ok = UI.SelectDialog.prototype.commit.call( fake ); }
+         finally { Config.pixinsightStore = realStore; }
+         return { ok: ok, palettes: cfg.palettes };
+      }
+      var colourEntry = ent( "/m/a.xisf", "UV/IR Cut", { channel: "OSC" } );
+      var monoEntry = ent( "/m/l.xisf", "L", { colour: false, numberOfChannels: 1, channel: "L" } );
+      var cst = stubStore( null );
+      var cr = commitWith( [ "SHO", "HOO", "HSO" ], [ colourEntry ], cst );
+      check( "a colour run drops SHO and HSO from the run", [ cr.ok, cr.palettes ], [ true, [ "HOO" ] ] );
+      check( "and keeps them in Settings", cst.data[kk], "SHO,HSO" );
+      var mr = commitWith( [ "SHO", "HOO" ], [ monoEntry ], cst );
+      check( "a mono run keeps its palettes and clears the kept ones", [ mr.palettes, cst.data[kk] ], [ [ "SHO", "HOO" ], "" ] );
    } )();
 
    } if ( testGroup( "osc.header" ) ) {

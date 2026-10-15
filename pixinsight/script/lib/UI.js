@@ -132,23 +132,30 @@ UI.scanSummary = function( scan, confirm, added )
  */
 UI.KEPT_PALETTES_KEY = "palettesKept";
 
-UI.readKeptPalettes = function()
+UI.readKeptPalettes = function( store )
 {
    try
    {
-      var text = Config.pixinsightStore().settings.read( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String );
+      var text = ( store || Config.pixinsightStore() ).settings.read( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String );
       return text ? String( text ).split( "," ).filter( function( x ) { return Util.PALETTES[x] != null; } ) : [];
    }
    catch ( e ) { return []; }
 };
 
-UI.writeKeptPalettes = function( list )
+UI.writeKeptPalettes = function( list, store )
 {
    try
    {
-      Config.pixinsightStore().settings.write( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String, list.join( "," ) );
+      ( store || Config.pixinsightStore() ).settings.write( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String, list.join( "," ) );
    }
    catch ( e ) {}
+};
+
+/* The palettes ticked now plus the kept ones not ticked, in that order. */
+UI.mergeKeptPalettes = function( palettes, kept )
+{
+   var have = palettes || [];
+   return have.concat( ( kept || [] ).filter( function( k ) { return have.indexOf( k ) < 0; } ) );
 };
 
 UI.filterCurvesOf = function( key )
@@ -1407,9 +1414,7 @@ UI.SelectDialog = class extends Dialog
       var paletteItems = [ this.paletteLabel ];
 
       // SHO/HSO ticked for an earlier colour run, where they were left out of the run
-      var kept = UI.readKeptPalettes();
-      config.palettes = ( config.palettes || [] ).concat( kept.filter( function( k )
-         { return ( config.palettes || [] ).indexOf( k ) < 0; } ) );
+      config.palettes = UI.mergeKeptPalettes( config.palettes, UI.readKeptPalettes() );
 
       var palettes = Util.paletteNames();
       for ( var pi = 0; pi < palettes.length; ++pi )
@@ -1429,6 +1434,9 @@ UI.SelectDialog = class extends Dialog
          {
             box.onCheck = function( checked )
             {
+               // a programmatic change while the box is greyed is not the user's choice
+               if ( !box.enabled )
+                  return;
                var list = self.config.palettes || [];
                var at = list.indexOf( name );
                if ( checked && at < 0 ) list.push( name );
@@ -2796,6 +2804,7 @@ UI.SelectDialog = class extends Dialog
       this.kindPanel.sizer = new VerticalSizer;
       this.kindPanel.sizer.spacing = 2;
       this.kindRows = [];
+      this.kindShown = 0;
       this.kindPanel.visible = false;
    }
 
@@ -2847,6 +2856,12 @@ UI.SelectDialog = class extends Dialog
          this.kindRows[j].box.visible = false;
       }
       this.kindPanel.visible = colour.length > 0;
+      // the list of controls grew or shrank: the dialog follows it
+      if ( colour.length != this.kindShown )
+      {
+         this.kindShown = colour.length;
+         try { this.adjustToContents(); } catch ( e ) {}
+      }
    }
 
    /*
