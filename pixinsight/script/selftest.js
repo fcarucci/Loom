@@ -21686,6 +21686,116 @@ function runPipeTests()
              [ scan3.named.length, scan3.named[0].channel ], [ 1, "L" ] );
    } )();
 
+   } if ( testGroup( "osc.ui" ) ) {
+   ( function()
+   {
+      var c = Config.defaults(); c.paths.OSC = "/m/a.xisf";
+      var s = Util.oscControlState( c );
+      check( "mono boxes greyed with reason", [ s.monoEnabled, s.monoReason ],
+             [ false, "colour and mono masters cannot be combined" ] );
+      check( "SHO/HSO greyed with reason", [ s.shoHsoEnabled, s.shoHsoReason ],
+             [ false, "needs SII, which a colour camera cannot separate from Ha" ] );
+      check( "sensor row instead of R/G/B filter boxes", [ s.sensorRowVisible, s.rgbFilterRowsVisible ], [ true, false ] );
+      var m = Config.defaults(); m.paths.L = "/m/l.xisf";
+      var t = Util.oscControlState( m );
+      check( "mono run unchanged", [ t.monoEnabled, t.shoHsoEnabled, t.sensorRowVisible, t.rgbFilterRowsVisible ],
+             [ true, true, false, true ] );
+      var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf";
+      var u = Util.oscControlState( nb );
+      check( "OSCNB alone: no sensor row, SHO/HSO and mono greyed",
+             [ u.sensorRowVisible, u.shoHsoEnabled, u.monoEnabled, u.rgbFilterRowsVisible ], [ false, false, false, true ] );
+      var both = Config.defaults(); both.paths.OSC = "/m/a.xisf"; both.paths.OSCNB = "/m/n.xisf";
+      check( "OSC + OSCNB: sensor row visible, SHO/HSO greyed",
+             [ Util.oscControlState( both ).sensorRowVisible, Util.oscControlState( both ).shoHsoEnabled ], [ true, false ] );
+      var bare = { paths: { L: "/m/l.xisf" } };
+      var v = Util.oscControlState( bare );
+      check( "paths without colour keys is a mono run", [ v.monoEnabled, v.shoHsoEnabled, v.sensorRowVisible ], [ true, true, false ] );
+      check( "no config at all is a mono run", Util.oscControlState( null ).monoEnabled, true );
+      var viewOnly = Config.defaults(); viewOnly.views.OSC = "osc1";
+      check( "an open colour view counts as supplied", Util.oscControlState( viewOnly ).sensorRowVisible, true );
+
+      // the kind control of one masters-list row
+      function ent( ref, filter, extra )
+      {
+         var e = { source: "file", ref: ref, label: ref, filter: filter, channel: null, colour: true, numberOfChannels: 3 };
+         for ( var k in ( extra || {} ) ) e[k] = extra[k];
+         return e;
+      }
+      var r1 = UI.oscKindRow( ent( "/m/a.xisf", "UV/IR Cut" ), {} );
+      check( "kind row: detected broadband is preset, no detected link",
+             [ r1.index, r1.enabled, r1.detectedLink ], [ 1, true, false ] );
+      var r2 = UI.oscKindRow( ent( "/m/b.xisf", "L-eXtreme" ), {} );
+      check( "kind row: detected dual-band", [ r2.index, r2.enabled ], [ 2, true ] );
+      var r3 = UI.oscKindRow( ent( "/m/c.xisf", "Mystery" ), {} );
+      check( "kind row: an unrecognised filter has no kind", [ r3.index, r3.enabled, r3.detectedLink ], [ 0, true, false ] );
+      var r4 = UI.oscKindRow( ent( "/m/c.xisf", "" ), { "path:/m/c.xisf": "dualband" } );
+      check( "kind row: a remembered choice shows with its detected link", [ r4.index, r4.detectedLink ], [ 2, true ] );
+      var r5 = UI.oscKindRow( ent( "/m/d.xisf", "ALP-T SII/Hb" ), {} );
+      check( "kind row: an unsupported filter is disabled", [ r5.index, r5.enabled ], [ 0, false ] );
+      check( "kind items", UI.OSC_KIND_ITEMS, [ "", "Broadband", "Dual-band Hα + OIII" ] );
+
+      // a change writes the choice, moves the entry, and a reset restores detection
+      var choices = {}, e1 = ent( "/m/c.xisf", "", { channel: "OSC" } ), e2 = ent( "/m/other.xisf", "", { channel: "OSC" } );
+      var key = UI.applyOscKind( [ e1, e2 ], choices, e1, 2 );
+      check( "choice keyed by path, entry moved to OSCNB, the other file untouched",
+             [ key, choices, e1.channel, e2.channel ], [ "path:/m/c.xisf", { "path:/m/c.xisf": "dualband" }, "OSCNB", "OSC" ] );
+      UI.applyOscKind( [ e1, e2 ], choices, e1, 1 );
+      check( "changed to broadband: moves to OSC", [ choices["path:/m/c.xisf"], e1.channel ], [ "broadband", "OSC" ] );
+      UI.applyOscKind( [ e1, e2 ], choices, e1, "detected" );
+      check( "detected: the key is deleted and the detected slot is back", [ choices, e1.channel ], [ {}, "OSC" ] );
+      var e5 = ent( "/m/q.xisf", "Mystery" );
+      UI.applyOscKind( [ e5 ], choices, e5, 2 );
+      check( "an unrecognised filter is remembered by its name", [ Object.keys( choices ), e5.channel ],
+             [ [ "filter:" + Util.normaliseFilter( "Mystery" ) ], "OSCNB" ] );
+      UI.applyOscKind( [ e5 ], choices, e5, "detected" );
+      check( "and forgotten again: no slot", [ Object.keys( choices ).length, e5.channel ], [ 0, null ] );
+      var e3 = ent( "/m/lx.xisf", "L-eXtreme", { channel: "OSCNB" } );
+      UI.applyOscKind( [ e3 ], choices, e3, 1 );
+      check( "a detected dual-band overridden to broadband", [ choices["filter:" + Util.normaliseFilter( "L-eXtreme" )], e3.channel ],
+             [ "broadband", "OSC" ] );
+      UI.applyOscKind( [ e3 ], choices, e3, "detected" );
+      check( "detected restores the detection", [ Object.keys( choices ).length, e3.channel ], [ 0, "OSCNB" ] );
+      var e4 = ent( "/m/mono.xisf", "L", { colour: false, numberOfChannels: 1, channel: "L" } );
+      UI.applyOscKind( [ e4 ], choices, e4, 1 );
+      check( "a mono entry is never recomputed", e4.channel, "L" );
+
+      // SHO and HSO are not applied to a colour run
+      check( "colour run drops the palettes that need SII", UI.runPalettes( [ "SHO", "HOO", "HSO" ], true ), [ "HOO" ] );
+      check( "mono run keeps them", UI.runPalettes( [ "SHO", "HOO", "HSO" ], false ), [ "SHO", "HOO", "HSO" ] );
+      check( "the dropped ones are the remembered ones", UI.sensorPalettes( [ "SHO", "HOO", "HSO" ] ), [ "SHO", "HSO" ] );
+
+      // t10 follow-up 1: a colour-named one-channel file with an unrecognised FILTER
+      var route1 = Util.entryChannel( "Mystery", 1, "/m/x_color.xisf", {} );
+      check( "unrecognised colour-named mono: no correction printed",
+             UI.candidateCorrection( { path: "/m/x_color.xisf", colour: true }, 1, route1 ), null );
+      check( "unrecognised colour-named mono: listed with its FILTER value",
+             UI.unrecognisedFilterNote( "/m/x_color.xisf", "Mystery" ),
+             "/m/x_color.xisf: unrecognised FILTER 'Mystery'" );
+      check( "missing FILTER is said so", UI.unrecognisedFilterNote( "/m/y.xisf", null ),
+             "/m/y.xisf: unrecognised FILTER (missing)" );
+      var route2 = Util.entryChannel( "L", 1, "/m/z_color.xisf", {} );
+      check( "recognised colour-named mono keeps the correction",
+             UI.candidateCorrection( { path: "/m/z_color.xisf", colour: true }, 1, route2 ),
+             "/m/z_color.xisf: the name says colour but the image has 1 channel; it is used as a mono master" );
+      check( "colour master mismatch still corrected",
+             UI.candidateCorrection( { path: "/m/w.xisf", colour: false }, 3,
+                                     Util.entryChannel( "UV/IR Cut", 3, "/m/w.xisf", {} ) ),
+             "/m/w.xisf: the name says mono but the image has 3 channels; it is used as a colour master" );
+
+      // t10 follow-up 2: the scan summary counts mono-named and colour-named candidates
+      var scan = { total: 5, skipped: 1, named: [ { name: "a" } ], colourNamed: [ { name: "b" } ], unreadable: [] };
+      var confirm = { opened: 2, skipped: 0, corrected: [], unreadable: [ "/m/x_color.xisf: unrecognised FILTER 'Mystery'" ] };
+      var text = UI.scanSummary( scan, confirm, [ "L (full)" ] );
+      check( "summary counts both kinds of named candidate", text.indexOf( "2 named candidates" ) >= 0, true );
+      check( "summary lists the unrecognised file under Skipped, unreadable",
+             text.indexOf( "<b>Skipped, unreadable:</b> /m/x_color.xisf: unrecognised FILTER 'Mystery'" ) >= 0, true );
+      check( "summary without colour candidates still counts",
+             UI.scanSummary( { total: 1, skipped: 0, named: [ 1 ], unreadable: [] }, { opened: 1, skipped: 0, corrected: [], unreadable: [] }, [ "L" ] )
+                .indexOf( "1 named candidates" ) >= 0, true );
+      check( "nothing loaded", UI.scanSummary( scan, { opened: 0, skipped: 0, corrected: [], unreadable: [] }, [] )
+                .indexOf( "No masters with a readable FILTER keyword" ) >= 0, true );
+   } )();
+
    } if ( testGroup( "osc.header" ) ) {
    ( function()
    {

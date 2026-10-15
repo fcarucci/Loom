@@ -763,6 +763,27 @@ Util.effectiveOscKind = function( slot, filterValue, path, choices )
 };
 
 /*
+ * Which dialog controls a colour master changes. Any colour master greys the
+ * mono boxes and the palettes that need SII; the sensor colour filters
+ * replace the R, G and B filter boxes only while OSC (not OSCNB) is
+ * supplied. Reasons are empty while the control is enabled.
+ */
+Util.oscControlState = function( config )
+{
+   var colour = Util.colourSupplied( config );
+   var any = colour.length > 0;
+   var osc = colour.indexOf( "OSC" ) >= 0;
+   return {
+      monoEnabled: !any,
+      monoReason: any ? "colour and mono masters cannot be combined" : "",
+      shoHsoEnabled: !any,
+      shoHsoReason: any ? "needs SII, which a colour camera cannot separate from Ha" : "",
+      sensorRowVisible: osc,
+      rgbFilterRowsVisible: !osc
+   };
+};
+
+/*
  * Maps a FITS FILTER keyword value to one of the seven channel keys, or
  * null when it cannot be recognised. The owner's masters carry bare
  * single letters ("L", "H", "O", ...), but filter wheels are commonly
