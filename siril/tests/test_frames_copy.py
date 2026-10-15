@@ -531,6 +531,8 @@ def test_names_differing_only_in_case_are_refused_where_the_destination_folds_ca
 
 def test_names_differing_only_in_case_are_written_where_the_destination_keeps_case(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if _folds_case(tmp_path / "probe"):
+        pytest.skip("this file system folds case: a.fit and A.fit are one file here (default APFS on macOS)")
     monkeypatch.setattr(C, "_CASE_FOLD", False)
     monkeypatch.setattr(C, "folds_case", lambda folder: False)
     a = _fits(tmp_path / "one" / "a.fit")
