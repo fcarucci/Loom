@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-15
+
 ### Added
 
 - **One-shot colour (OSC) cameras in `Loom/loom_preprocess.py`**, as in the PixInsight version: debayered colour masters, one broadband and/or one Hα + OIII dual-band master per run, split into channels when loaded, with the detected kind overridable and remembered, HOO only (SHO and HSO are refused), and no mixing of colour and mono masters. With a broadband colour master (`OSC`), the Siril SPCC call takes the OSC sensor plus the front and low-pass filters; a run with only a dual-band master (`OSCNB`) needs no sensor and sends no SPCC names.
