@@ -51,7 +51,7 @@ What it is: the Loom pipeline and Fly-Through as Siril 1.4 Python scripts (`siri
 `siril/Loom/loom_fly_through.py`), written in numpy and scipy from the PixInsight JavaScript. Plate solving and
 colour calibration (SPCC) run in Siril. Gradient removal, aberration correction, sharpening, star extraction and noise
 reduction use external tools when they are installed: GraXpert, SyQon Studio, StarNet2, and the RC-Astro command-line
-tools, which need their own licence. Loom for Siril works with mono cameras and filters: it needs calibrated, stacked masters per filter (R, G, B, optionally L, H, S, O). One-shot colour (OSC) cameras are not supported yet.
+tools, which need their own licence. Loom for Siril takes calibrated, stacked masters: mono masters per filter (R, G, B, optionally L, H, S, O), or one-shot colour (OSC) masters (one broadband and/or one Hα + OIII dual-band).
 
 How it differs from the PixInsight scripts:
 
