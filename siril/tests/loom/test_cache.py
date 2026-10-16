@@ -156,15 +156,37 @@ def test_crop_and_halo_tags_match_loom(oracle) -> None:
 def test_clean_white_balance_key_matches_loom(oracle) -> None:
     cases = oracle("loom_cache")["cases"]
     keys = {"R": "kR", "G": "kG", "B": "kB"}
-    assert clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro") == cases["clean_wb_no_filters"]
-    assert clean_white_balance_key(keys, COMMON, {"R": "Ha", "L": "Lum"}, None) == cases["clean_wb_named_filters"]
-    assert clean_white_balance_key(keys, COMMON, None, None) == cases["clean_wb_unset_filters"]
+    assert clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", "refK") == cases["clean_wb_no_filters"]
+    assert clean_white_balance_key(keys, COMMON, {"R": "Ha", "L": "Lum"}, None, "refK") == \
+        cases["clean_wb_named_filters"]
+    assert clean_white_balance_key(keys, COMMON, None, None, "refK") == cases["clean_wb_unset_filters"]
+    assert clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", "refL") == cases["clean_wb_other_reference"]
+    assert clean_white_balance_key(keys, COMMON, {}, "ZWO ASI2600MM Pro", None) == cases["clean_wb_null_reference"]
+
+
+def test_clean_white_balance_key_of_a_colour_run_matches_loom(oracle) -> None:
+    cases = oracle("loom_cache")["cases"]
+    keys = {"R": "kR", "G": "kG", "B": "kB"}
+    sensor = {"R": "Sony Color Sensor R", "G": "Sony Color Sensor G", "B": "Sony Color Sensor B"}
+    assert clean_white_balance_key(keys, COMMON, None, None, "refK", osc_sensor=sensor) == cases["clean_wb_osc"]
+    assert clean_white_balance_key(keys, COMMON, None, None, "refL", osc_sensor=sensor) == \
+        cases["clean_wb_osc_other_reference"]
+    assert clean_white_balance_key(keys, COMMON, None, None, "refK", osc_sensor={}) == cases["clean_wb_osc_no_sensor"]
+
+
+def test_the_calibration_identity_changes_the_key_and_none_leaves_it_alone(oracle) -> None:
+    keys = {"R": "kR", "G": "kG", "B": "kB"}
+    plain = clean_white_balance_key(keys, COMMON, {}, None, "refK")
+    assert clean_white_balance_key(keys, COMMON, {}, None, "refK", calibration=None) == plain
+    one = clean_white_balance_key(keys, COMMON, {}, None, "refK", calibration="osc|a")
+    two = clean_white_balance_key(keys, COMMON, {}, None, "refK", calibration="osc|b")
+    assert len({plain, one, two}) == 3
 
 
 def test_clean_white_balance_key_raises_for_a_missing_key(oracle) -> None:
     cases = oracle("loom_cache")["cases"]
     with pytest.raises(ValueError) as info:
-        clean_white_balance_key({"R": "kR", "G": "", "B": "kB"}, COMMON, {}, None)
+        clean_white_balance_key({"R": "kR", "G": "", "B": "kB"}, COMMON, {}, None, "refK")
     assert str(info.value) == cases["clean_wb_missing_error"]
 
 

@@ -7,7 +7,9 @@
    "B": "",
    "H": "",
    "S": "",
-   "O": ""
+   "O": "",
+   "OSC": "",
+   "OSCNB": ""
   },
   "views": {},
   "savedList": "",
@@ -40,7 +42,14 @@
   "autoUpdate": true,
   "useCache": true,
   "cacheDir": "",
-  "ignoreCache": false
+  "ignoreCache": false,
+  "oscKinds": {},
+  "oscSensor": {
+   "R": "",
+   "G": "",
+   "B": ""
+  },
+  "oscKindChoices": {}
  },
  "load": {
   "empty": {
@@ -52,6 +61,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -64,6 +75,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -104,7 +117,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -137,7 +152,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "every Settings key set": {
@@ -149,6 +171,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -161,6 +185,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -200,7 +226,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "/m/a.xisf;/m/b.xisf",
@@ -241,7 +269,16 @@
     "autoUpdate": false,
     "useCache": false,
     "cacheDir": "/Volumes/X/cache",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "Sony Color Sensor R",
+     "G": "Sony Color Sensor G",
+     "B": "Sony Color Sensor B"
+    },
+    "oscKindChoices": {
+     "filter:duo": "dualband"
+    }
    }
   },
   "legacy useGraXpert true, Settings only": {
@@ -253,6 +290,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -265,6 +304,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -305,7 +346,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -339,6 +382,13 @@
     "useCache": true,
     "cacheDir": "",
     "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {},
     "useGraXpert": true
    }
   },
@@ -351,6 +401,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -363,6 +415,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -403,7 +457,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -437,6 +493,13 @@
     "useCache": true,
     "cacheDir": "",
     "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {},
     "useGraXpert": false
    }
   },
@@ -449,6 +512,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -462,6 +527,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -502,7 +569,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -536,6 +605,13 @@
     "useCache": true,
     "cacheDir": "",
     "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {},
     "useGraXpert": true
    }
   },
@@ -548,6 +624,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -561,6 +639,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -601,7 +681,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -635,6 +717,13 @@
     "useCache": true,
     "cacheDir": "",
     "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {},
     "useGraXpert": false
    }
   },
@@ -647,6 +736,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -659,6 +750,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -699,7 +792,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -732,7 +827,124 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
+   }
+  },
+  "malformed OSC choices are ignored": {
+   "log": [
+    "Parameters.has path_L",
+    "Parameters.has path_R",
+    "Parameters.has path_G",
+    "Parameters.has path_B",
+    "Parameters.has path_H",
+    "Parameters.has path_S",
+    "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
+    "Parameters.has savedList",
+    "Parameters.has smoothing",
+    "Parameters.has gradientTool",
+    "Parameters.has useGraXpert",
+    "Parameters.has graxpertNarrowband",
+    "Parameters.has useCache",
+    "Parameters.has autoUpdate",
+    "Settings.read Loom/savedList String",
+    "Settings.read Loom/filter_L String",
+    "Settings.read Loom/filter_R String",
+    "Settings.read Loom/filter_G String",
+    "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
+    "Settings.read Loom/palettes String",
+    "Settings.read Loom/narrowbandNormalize Boolean",
+    "Settings.read Loom/graxpertNarrowband Boolean",
+    "Settings.read Loom/narrowbandBandwidth Double",
+    "Settings.read Loom/reduceHalos Boolean",
+    "Settings.read Loom/projectName String",
+    "Settings.read Loom/exportPsb Boolean",
+    "Settings.read Loom/separateLStars Boolean",
+    "Settings.read Loom/keepLinear Boolean",
+    "Settings.read Loom/exportDir String",
+    "Settings.read Loom/stretchMethod String",
+    "Settings.read Loom/stretch Boolean",
+    "Settings.read Loom/marsPath String",
+    "Settings.read Loom/starTool String",
+    "Settings.read Loom/noiseTool String",
+    "Settings.read Loom/noiseLevel String",
+    "Settings.read Loom/noiseLevelL String",
+    "Settings.read Loom/sharpenTool String",
+    "Settings.read Loom/starReduction String",
+    "Settings.read Loom/detailLevel String",
+    "Settings.read Loom/parallaxFamily String",
+    "Settings.read Loom/gradientTool String",
+    "Settings.read Loom/useGraXpert Boolean",
+    "Settings.read Loom/autoUpdate Boolean",
+    "Settings.read Loom/useCache Boolean",
+    "Settings.read Loom/smoothing Double",
+    "Settings.read Loom/cacheDir String",
+    "Cache.setDir \"\"",
+    "Steps.studioAvailable -> false",
+    "Steps.migrateConfig undefined",
+    "Cache.disableIfDirMissing -> false"
+   ],
+   "config": {
+    "paths": {
+     "L": "",
+     "R": "",
+     "G": "",
+     "B": "",
+     "H": "",
+     "S": "",
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
+    },
+    "views": {},
+    "savedList": "",
+    "filters": {},
+    "gradientTool": "GraXpert",
+    "graxpertNarrowband": false,
+    "smoothing": 0.5,
+    "validateOnly": false,
+    "keepWindowsOnError": false,
+    "palettes": [],
+    "narrowbandBandwidth": 3,
+    "narrowbandNormalize": true,
+    "reduceHalos": false,
+    "sharpenTool": "none",
+    "parallaxFamily": "classic",
+    "stretch": false,
+    "stretchMethod": "mtf",
+    "keepLinear": false,
+    "separateLStars": false,
+    "exportPsb": false,
+    "projectName": "",
+    "exportDir": "",
+    "marsPath": "",
+    "starTool": "none",
+    "noiseTool": "none",
+    "noiseLevel": "medium",
+    "noiseLevelL": "",
+    "starReduction": "none",
+    "detailLevel": "none",
+    "autoUpdate": true,
+    "useCache": true,
+    "cacheDir": "",
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "narrowbandBandwidth 0": {
@@ -744,6 +956,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -756,6 +970,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -796,7 +1012,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -829,7 +1047,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "narrowbandBandwidth negative": {
@@ -841,6 +1066,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -853,6 +1080,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -893,7 +1122,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -926,7 +1157,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "Parameters and Settings disagree on every dual key": {
@@ -938,6 +1176,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.getReal smoothing",
@@ -954,6 +1194,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -993,7 +1235,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1026,7 +1270,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "Parameters only, every name": {
@@ -1045,6 +1296,10 @@
     "Parameters.getString path_S",
     "Parameters.has path_O",
     "Parameters.getString path_O",
+    "Parameters.has path_OSC",
+    "Parameters.getString path_OSC",
+    "Parameters.has path_OSCNB",
+    "Parameters.getString path_OSCNB",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1061,6 +1316,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1101,7 +1358,9 @@
      "B": "/m/B.xisf",
      "H": "/m/H.xisf",
      "S": "",
-     "O": "/m/O.xisf"
+     "O": "/m/O.xisf",
+     "OSC": "/m/rgb.xisf",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "/m/list",
@@ -1134,7 +1393,14 @@
     "autoUpdate": false,
     "useCache": false,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "palettes with empty entries": {
@@ -1146,6 +1412,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1158,6 +1426,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1198,7 +1468,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1233,7 +1505,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "savedList empty in Parameters, set in Settings": {
@@ -1245,6 +1524,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1258,6 +1539,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1298,7 +1581,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "/s/list",
@@ -1331,7 +1616,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "savedList in both: Parameters wins": {
@@ -1343,6 +1635,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1355,6 +1649,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1395,7 +1691,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "/p/list",
@@ -1428,7 +1726,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "cache folder missing: the cache is off for this launch": {
@@ -1440,6 +1745,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1452,6 +1759,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1492,7 +1801,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1525,7 +1836,14 @@
     "autoUpdate": true,
     "useCache": false,
     "cacheDir": "/Volumes/Gone/cache",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "cache folder missing but the cache already off": {
@@ -1537,6 +1855,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1549,6 +1869,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1589,7 +1911,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1622,7 +1946,14 @@
     "autoUpdate": true,
     "useCache": false,
     "cacheDir": "/Volumes/Gone/cache",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "Studio found, Prism 2.0 offered: the old Prism name maps up": {
@@ -1634,6 +1965,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1646,6 +1979,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1687,7 +2022,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1720,7 +2057,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "Studio found, Prism 2.0 refused: 2.0 maps down to Essential": {
@@ -1732,6 +2076,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1744,6 +2090,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1785,7 +2133,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1818,7 +2168,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "Studio not found: 2.0 stays": {
@@ -1830,6 +2187,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1842,6 +2201,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1882,7 +2243,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -1915,7 +2278,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   },
   "retired Studio Parallax (correct only)": {
@@ -1927,6 +2297,8 @@
     "Parameters.has path_H",
     "Parameters.has path_S",
     "Parameters.has path_O",
+    "Parameters.has path_OSC",
+    "Parameters.has path_OSCNB",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1939,6 +2311,8 @@
     "Settings.read Loom/filter_R String",
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
+    "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
     "Settings.read Loom/graxpertNarrowband Boolean",
@@ -1979,7 +2353,9 @@
      "B": "",
      "H": "",
      "S": "",
-     "O": ""
+     "O": "",
+     "OSC": "",
+     "OSCNB": ""
     },
     "views": {},
     "savedList": "",
@@ -2012,7 +2388,14 @@
     "autoUpdate": true,
     "useCache": true,
     "cacheDir": "",
-    "ignoreCache": false
+    "ignoreCache": false,
+    "oscKinds": {},
+    "oscSensor": {
+     "R": "",
+     "G": "",
+     "B": ""
+    },
+    "oscKindChoices": {}
    }
   }
  },
@@ -2026,6 +2409,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2064,7 +2449,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "every field set": {
@@ -2076,6 +2463,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"/m/O.xisf\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"/m/list\"",
     "Parameters.set smoothing 0.3",
     "Parameters.set gradientTool \"SyQon Studio Deep Gradient\"",
@@ -2114,7 +2503,9 @@
     "Settings.write Loom/filter_L String \"Antlia L\"",
     "Settings.write Loom/filter_R String \"Antlia R\"",
     "Settings.write Loom/filter_G String \"Antlia G\"",
-    "Settings.write Loom/filter_B String \"Antlia B\""
+    "Settings.write Loom/filter_B String \"Antlia B\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"Sony Color Sensor R\\\",\\\"G\\\":\\\"Sony Color Sensor G\\\",\\\"B\\\":\\\"Sony Color Sensor B\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{\\\"filter:duonarrowband\\\":\\\"dualband\\\",\\\"path:/m/x.xisf\\\":\\\"broadband\\\"}\""
    ]
   },
   "empty strings and a zero bandwidth": {
@@ -2126,6 +2517,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2164,7 +2557,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "optional fields undefined": {
@@ -2176,6 +2571,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2214,7 +2611,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "filters partly set": {
@@ -2226,6 +2625,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2264,7 +2665,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"Antlia R\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "legacy useGraXpert true, no gradientTool": {
@@ -2276,6 +2679,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2314,7 +2719,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "legacy useGraXpert false, no gradientTool": {
@@ -2326,6 +2733,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2364,7 +2773,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
   "nothing but paths: the as-is fields are written undefined": {
@@ -2376,6 +2787,8 @@
     "Parameters.set path_H \"\"",
     "Parameters.set path_S \"\"",
     "Parameters.set path_O \"\"",
+    "Parameters.set path_OSC \"\"",
+    "Parameters.set path_OSCNB \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing undefined",
     "Parameters.set gradientTool \"none\"",
@@ -2414,7 +2827,9 @@
     "Settings.write Loom/filter_L String \"\"",
     "Settings.write Loom/filter_R String \"\"",
     "Settings.write Loom/filter_G String \"\"",
-    "Settings.write Loom/filter_B String \"\""
+    "Settings.write Loom/filter_B String \"\"",
+    "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   }
  },
@@ -2426,7 +2841,9 @@
    "B": "/m/B.xisf",
    "H": "",
    "S": "",
-   "O": "/m/O.xisf"
+   "O": "/m/O.xisf",
+   "OSC": "",
+   "OSCNB": ""
   },
   "views": {},
   "savedList": "/m/list",
@@ -2467,6 +2884,16 @@
   "autoUpdate": false,
   "useCache": false,
   "cacheDir": "/Volumes/X/cache",
-  "ignoreCache": false
+  "ignoreCache": false,
+  "oscKinds": {},
+  "oscSensor": {
+   "R": "Sony Color Sensor R",
+   "G": "Sony Color Sensor G",
+   "B": "Sony Color Sensor B"
+  },
+  "oscKindChoices": {
+   "filter:duonarrowband": "dualband",
+   "path:/m/x.xisf": "broadband"
+  }
  }
 }

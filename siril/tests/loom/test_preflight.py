@@ -7,11 +7,14 @@ tools, so nothing touches the disk, the network or a tool.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from loomsiril.loom import levels as lv
 from loomsiril.loom import preflight as pf
+from loomsiril.loom.siril_ops import spcc_names
 from loomsiril.loom.tools.resolver import Found
 
 L = "/data/L.fits"
@@ -21,9 +24,13 @@ B = "/data/B.fits"
 H = "/data/H.fits"
 S = "/data/S.fits"
 O = "/data/O.fits"
+OSC = "/data/osc.fits"
+OSCNB = "/data/oscnb.fits"
 MISSING = "/data/missing.fits"
 SOLVED_KEYWORDS = ("CTYPE1", "CRVAL1")
-SPCC = {"redfilter": ["Red"], "greenfilter": ["Green"], "bluefilter": ["Blue"], "monosensor": []}
+SPCC = {"redfilter": ["Red"], "greenfilter": ["Green"], "bluefilter": ["Blue"], "monosensor": [],
+        "oscsensor": ["Sony IMX571", "Canon EOS 20D"], "oscfilter": ["No filter", "Antlia ALP-T"],
+        "osclpf": ["Full spectrum (no filter)", "Baader UV/IR Cut"]}
 
 
 def _filter_of(path: str) -> str | None:
@@ -34,7 +41,7 @@ HINTS = (("RA", "10.0"), ("DEC", "20.0"), ("FOCALLEN", "500"), ("XPIXSZ", "3.8")
 
 
 def header(path: str, *, filter_value: str | None = "default", solved: bool = False,
-           hints: Sequence[tuple[str, str]] = HINTS) -> dict[str, Any]:
+           hints: Sequence[tuple[str, str]] = HINTS, channels: Any = 1) -> dict[str, Any]:
     """A synthetic FITS header: FILTER, then the plate-solving hints in the header (not in the config)."""
     keywords: list[dict[str, Any]] = []
     value = _filter_of(path) if filter_value == "default" else filter_value
@@ -43,7 +50,7 @@ def header(path: str, *, filter_value: str | None = "default", solved: bool = Fa
     keywords.extend({"name": n, "value": v} for n, v in hints)
     if solved:
         keywords.extend({"name": n, "value": "1"} for n in SOLVED_KEYWORDS)
-    return {"format": "fits", "keywords": keywords, "width": 10, "height": 10}
+    return {"format": "fits", "keywords": keywords, "width": 10, "height": 10, "channels": channels}
 
 
 def base_config(**over: Any) -> dict[str, Any]:
@@ -69,7 +76,7 @@ def found_for(*tools: str) -> dict[str, Any]:
 def make(config: Mapping[str, Any], *, present: Sequence[str] = (), missing_files: Sequence[str] = (),
          unreadable: Sequence[str] = (), headers: Mapping[str, dict[str, Any]] | None = None,
          rejection: Mapping[str, str] | None = None, headless: bool = True, **kw: Any) -> pf.Preflight:
-    files = {p for p in (L, R, G, B, H, S, O, MISSING) if p not in missing_files}
+    files = {p for p in (L, R, G, B, H, S, O, OSC, OSCNB, MISSING) if p not in missing_files}
     hdrs = dict(headers or {})
 
     def read_header(path: str) -> dict[str, Any]:
@@ -517,3 +524,219 @@ def test_graxpert_readiness_is_not_asked_when_the_script_is_not_found() -> None:
         "GraXpert not found (choose another gradient tool to proceed without): gone",
     ]
     assert calls == []
+
+
+# ---- colour masters: the JavaScript order (mix, palette, channel counts, kinds), then the Siril sensor rule ----------
+
+SENSOR = {"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}
+NO_PATHS = {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""}
+
+
+def colour_config(**over: Any) -> dict[str, Any]:
+    paths = dict(NO_PATHS)
+    paths.update(over.pop("paths", {}))
+    cfg = base_config(paths=paths, filters={}, oscSensor=dict(SENSOR))
+    cfg.update(over)
+    return cfg
+
+
+def test_a_broadband_colour_master_alone_is_clean_and_fills_its_kind() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs, spcc_database="/db")) == []
+    assert cfg["oscKinds"] == {"OSC": "broadband"}
+
+
+def test_a_dual_band_master_alone_gives_hoo_and_needs_no_sensor() -> None:
+    hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"])
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+    assert cfg["oscKinds"] == {"OSCNB": "dualband"}
+    no_sensor = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"], oscSensor={"sensor": "", "frontFilter": "",
+                                                                                   "lpf": ""})
+    assert pf.preflight(make(no_sensor, headers=hdrs)) == []
+
+
+def test_a_colour_run_without_a_sensor_is_refused_when_the_key_is_missing_too() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    del cfg["oscSensor"]
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == [
+        "choose the sensor colour filters for the colour master (SPCC section)"]
+
+
+def test_colour_with_mono_gives_the_mix_text_first_then_the_input_names() -> None:
+    cfg = colour_config(paths={"OSC": "/data/sub/osc.fits", "L": L})
+    out = pf.preflight(make(cfg, headers={OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}))
+    assert out[0] == ("colour masters cannot be combined with mono masters; choose either the colour masters or the "
+                      "mono masters (colour: OSC=osc.fits; mono: L=L.fits)")
+
+
+def test_colour_with_mono_reports_the_mix_after_the_selection_rules() -> None:
+    cfg = colour_config(paths={"OSC": OSC, "L": OSC})
+    out = pf.preflight(make(cfg, headers={OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}))
+    assert out[0] == "Same file selected for L and OSC: " + OSC
+    assert out[1].startswith("colour masters cannot be combined with mono masters;")
+
+
+def test_sho_and_hso_are_refused_for_a_colour_run_including_a_saved_choice() -> None:
+    hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    for palette in ("SHO", "HSO"):
+        cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO", palette])
+        assert pf.preflight(make(cfg, headers=hdrs)) == [
+            "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO"]
+
+
+def test_a_three_channel_file_in_a_mono_slot_is_refused() -> None:
+    cfg = base_config()
+    hdrs = {R: header(R, channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == [
+        R + " is a colour master (3 channels); a mono slot needs a one-channel master"]
+
+
+def test_a_one_channel_file_in_a_colour_slot_is_refused() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=1)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == [
+        OSC + " is a mono master (1 channel); a colour slot needs a three-channel master"]
+
+
+def test_a_two_channel_fits_is_refused_in_a_mono_and_a_colour_slot() -> None:
+    assert pf.preflight(make(base_config(), headers={L: header(L, channels=2)})) == [
+        L + " has 2 channels; Loom takes mono (1) or colour (3) masters"]
+    cfg = colour_config(paths={"OSC": OSC})
+    assert pf.preflight(make(cfg, headers={OSC: header(OSC, filter_value="x", channels=2)})) == [
+        OSC + " has 2 channels; Loom takes mono (1) or colour (3) masters"]
+
+
+def test_an_unconfident_filter_asks_for_a_kind_and_a_saved_choice_answers() -> None:
+    hdrs = {OSC: header(OSC, filter_value="Mystery", channels=3)}
+    cfg = colour_config(paths={"OSC": OSC})
+    assert pf.preflight(make(cfg, headers=hdrs)) == ["choose Broadband or Dual-band H\u03b1 + OIII for " + OSC]
+    cfg = colour_config(paths={"OSC": OSC}, oscKindChoices={"filter:mystery": "broadband"})
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+    assert cfg["oscKinds"] == {"OSC": "broadband"}
+
+
+def test_an_unsupported_filter_is_refused_whatever_was_chosen() -> None:
+    hdrs = {OSCNB: header(OSCNB, filter_value="ALP-T SII/Hb", channels=3)}
+    cfg = colour_config(paths={"OSCNB": OSCNB}, oscKindChoices={"filter:alptsiihb": "dualband"})
+    assert pf.preflight(make(cfg, headers=hdrs)) == [
+        "this filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported"]
+
+
+def test_a_kind_that_does_not_match_its_slot_is_refused() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    out = pf.preflight(make(cfg, headers={OSC: header(OSC, filter_value="L-eXtreme", channels=3)}))
+    assert out == [OSC + " is a dual-band colour master; the broadband slot needs a Broadband master"]
+
+
+def test_each_colour_header_is_read_once_and_a_missing_file_is_reported_once() -> None:
+    reads: list[str] = []
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+
+    def read(path: str) -> dict[str, Any]:
+        reads.append(path)
+        return hdrs[path]
+
+    cfg = colour_config(paths={"OSC": OSC})
+    assert pf.preflight(make(cfg, read_header=read)) == []
+    assert reads == [OSC]
+    cfg = colour_config(paths={"OSCNB": MISSING})
+    assert pf.preflight(make(cfg, missing_files=[MISSING])) == [f"File not found for OSCNB: {MISSING}"]
+
+
+def test_a_colour_master_without_a_solution_or_hints_is_not_plate_solvable() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3, hints=())}
+    out = pf.preflight(make(cfg, headers=hdrs))
+    assert out == [f"Plate solving not possible for OSC: {OSC} (no solution in its header; missing hints in its "
+                   "header: RA/DEC, FOCALLEN, XPIXSZ)"]
+
+
+def test_a_colour_run_needs_the_spcc_database_only_for_its_palettes_and_an_rgb_set() -> None:
+    cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"])
+    hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    out = pf.preflight(make(cfg, headers=hdrs, spcc_database=None))
+    assert out == ["Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
+
+
+def test_a_broadband_colour_run_needs_the_spcc_database_folder_too() -> None:
+    cfg = colour_config(paths={"OSC": OSC})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs, spcc_database=None)) == [
+        "Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
+
+
+# ---- colour masters: the OSC names are looked up in Siril's SPCC database before the run -------------------------------
+
+
+def _osc_problems(sensor: dict[str, str], **kw: Any) -> list[str]:
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor=sensor)
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
+    return pf.preflight(make(cfg, headers=hdrs, **kw))
+
+
+def test_known_osc_names_are_clean_and_the_none_names_are_substituted() -> None:
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}) == []
+    assert _osc_problems({"sensor": "Canon EOS 20D", "frontFilter": "Antlia ALP-T", "lpf": "Baader UV/IR Cut"}) == []
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "No filter",
+                          "lpf": "Full spectrum (no filter)"}) == []
+
+
+def test_each_unknown_osc_name_is_reported_with_the_wording_of_the_command_check() -> None:
+    out = _osc_problems({"sensor": "Sony IMX999", "frontFilter": "Nope", "lpf": "Nada"})
+    assert out == ["sensor 'Sony IMX999' is not in Siril's SPCC database",
+                   "front filter 'Nope' is not in Siril's SPCC database",
+                   "low-pass filter 'Nada' is not in Siril's SPCC database"]
+
+
+def test_a_sensor_entry_name_is_not_a_model() -> None:
+    assert _osc_problems({"sensor": "Sony IMX571 Red", "frontFilter": "", "lpf": ""}) == [
+        "sensor 'Sony IMX571 Red' is not in Siril's SPCC database"]
+
+
+def test_the_osc_names_are_read_from_a_database_folder(tmp_path: Path) -> None:
+    folder = tmp_path / "siril-spcc-database"
+    folder.mkdir()
+    entries = [
+        {"type": "OSC_SENSOR", "name": "Sony IMX571 Red", "model": "Sony IMX571", "channel": "RED"},
+        {"type": "OSC_FILTER", "name": "No filter"}, {"type": "OSC_FILTER", "name": "Antlia ALP-T"},
+        {"type": "OSC_LPF", "name": "Full spectrum (no filter)"},
+    ]
+    (folder / "osc.json").write_text(json.dumps(entries), encoding="utf-8")
+    lookup = {"spcc_database": str(folder), "spcc_names": lambda kind: spcc_names(kind, folder)}
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "Antlia ALP-T", "lpf": ""}, **lookup) == []
+    assert _osc_problems({"sensor": "Sony IMX571", "frontFilter": "Antlia OIII", "lpf": ""}, **lookup) == [
+        "front filter 'Antlia OIII' is not in Siril's SPCC database"]
+
+
+def test_a_missing_database_gives_the_one_database_message_and_no_name_problems() -> None:
+    out = _osc_problems({"sensor": "Sony IMX999", "frontFilter": "Nope", "lpf": "Nada"}, spcc_database=None)
+    assert out == ["Siril's SPCC database folder is missing: open Siril's GUI once so it downloads its SPCC database"]
+
+
+def test_an_oscnb_only_run_does_not_check_the_osc_names() -> None:
+    cfg = colour_config(paths={"OSCNB": OSCNB}, palettes=["HOO"],
+                        oscSensor={"sensor": "Sony IMX571", "frontFilter": "Nope", "lpf": ""})
+    hdrs = {OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+
+
+def test_an_osc_and_oscnb_run_checks_the_names_and_needs_the_sensor() -> None:
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3),
+            OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    cfg = colour_config(paths={"OSC": OSC, "OSCNB": OSCNB}, palettes=["HOO"],
+                        oscSensor={"sensor": "Sony IMX571", "frontFilter": "Nope", "lpf": ""})
+    assert pf.preflight(make(cfg, headers=hdrs)) == ["front filter 'Nope' is not in Siril's SPCC database"]
+
+
+def test_a_mono_run_does_not_look_up_the_osc_names() -> None:
+    calls: list[str] = []
+
+    def names(kind: str) -> list[str]:
+        calls.append(kind)
+        return SPCC.get(kind, [])
+
+    assert pf.preflight(make(base_config(oscSensor={"sensor": "Nope"}), spcc_names=names)) == []
+    assert not any(k.startswith("osc") for k in calls)

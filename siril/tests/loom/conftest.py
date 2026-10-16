@@ -3,6 +3,8 @@
 * ``loom_master``: factory ``loom_master(channel="L", **kw)`` -> ``synth.Master`` (tests/loom/synth.py).
 * ``loom_master_file``: factory ``loom_master_file(tmp_dir, channel="L", name=None, **kw)`` -> path of the master
   written as 32-bit float FITS.
+* Every network-marked test gets Siril's SPCC database and the local star catalogue SPCC reads first
+  (``network_runs.ensure_spcc_database``, ``network_runs.ensure_local_gaia_catalogue``).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from typing import Any, Callable
 import pytest
 
 from . import synth
+from .network_runs import ensure_local_gaia_catalogue, ensure_spcc_database
 
 
 @pytest.fixture
@@ -27,3 +30,12 @@ def loom_master_file() -> Callable[..., Path]:
         return synth.write_master(Path(tmp_dir) / (name or f"master_{channel}.fits"), m)
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def _spcc_database_for_network_tests(request: pytest.FixtureRequest) -> None:
+    """Installs the SPCC database and checks the local star catalogue before any network-marked test (skipped
+    network tests never get here)."""
+    if request.node.get_closest_marker("network") is not None:
+        ensure_spcc_database()
+        ensure_local_gaia_catalogue()

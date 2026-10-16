@@ -61,7 +61,7 @@ Config.pixinsightStore = function()
  * differently -- paths and filters, palettes, the gradient tool and its
  * legacy useGraXpert twin, a bandwidth that must be positive, the
  * savedList fallback -- stays as code in Config.load, its helpers and
- * Config.save, and ignoreCache is never persisted at all. The ORDER of reads and
+ * Config.save, and ignoreCache and oscKinds are never persisted at all. The ORDER of reads and
  * writes is the order of the lists passed to loadFields and saveFields
  * there; the fixture in ci/fixtures/config.json pins it.
  */
@@ -126,7 +126,7 @@ Config.saveFields = function( config, store, names )
 Config.defaults = function()
 {
    return {
-      paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "" },
+      paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "" },
       views: {},
       savedList: "",
       filters: {},
@@ -183,7 +183,13 @@ Config.defaults = function()
       cacheDir: "",
       // Not persisted -- "for this run" is exactly what it means; it must
       // not silently stay on across sessions.
-      ignoreCache: false
+      ignoreCache: false,
+      // Per run, never persisted: preflight fills { OSC: kind, OSCNB: kind }.
+      oscKinds: {},
+      // The sensor's three Siril curve names, remembered between runs.
+      oscSensor: { R: "", G: "", B: "" },
+      // Remembered broadband/dualband answers, keyed by Util.oscKindKey.
+      oscKindChoices: {}
    };
 };
 
@@ -201,9 +207,10 @@ Config.loadParameter = function( config, parameters, name, get )
 Config.loadParameters = function( config, store )
 {
    var p = store.parameters;
-   for ( var i = 0; i < Util.CHANNELS.length; ++i )
+   var pathKeys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var i = 0; i < pathKeys.length; ++i )
    {
-      var key = Util.CHANNELS[i];
+      var key = pathKeys[i];
       if ( p.has( "path_" + key ) )
          config.paths[key] = p.getString( "path_" + key );
       // Views are not saveable process-instance state -- an open view id
@@ -286,6 +293,7 @@ Config.load = function( store )
    }
 
    Config.loadFilters( config, store );
+   Config.loadOscChoices( config, store );
 
    var pal = store.settings.read( K + "palettes", DataType_String );
    if ( pal != null && pal.length > 0 )
@@ -346,10 +354,13 @@ Config.load = function( store )
 Config.save = function( config, store )
 {
    var K = Config.SETTINGS_PREFIX;
-   for ( var i = 0; i < Util.CHANNELS.length; ++i )
+   var pathKeys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var i = 0; i < pathKeys.length; ++i )
    {
-      var key = Util.CHANNELS[i];
-      store.parameters.set( "path_" + key, config.paths[key] );
+      var key = pathKeys[i];
+      // a config from the dialog may lack the colour keys; Parameters.set must not get undefined
+      store.parameters.set( "path_" + key,
+                            Util.COLOUR_SLOTS.indexOf( key ) >= 0 ? ( config.paths[key] || "" ) : config.paths[key] );
    }
    store.parameters.set( "savedList", config.savedList || "" );
    store.parameters.set( "smoothing", config.smoothing );
@@ -374,6 +385,7 @@ Config.save = function( config, store )
       "sharpenTool", "starReduction", "detailLevel", "parallaxFamily", "useCache", "autoUpdate", "cacheDir",
       "smoothing", "savedList" ] );
    Config.saveFilters( config, store );
+   Config.saveOscChoices( config, store );
 };
 
 /*
@@ -387,4 +399,53 @@ Config.saveFilters = function( config, store )
    for ( var i = 0; i < fk.length; ++i )
       store.settings.write( Config.SETTINGS_PREFIX + "filter_" + fk[i], DataType_String,
                             ( config.filters && config.filters[fk[i]] ) ? config.filters[fk[i]] : "" );
+};
+
+/*
+ * The remembered colour-camera answers: the sensor's curve names and the
+ * broadband/dualband choices, each as JSON text. Anything that does not
+ * parse to the expected shape leaves the default; never throws.
+ */
+Config.loadOscChoices = function( config, store )
+{
+   function readJson( name )
+   {
+      try
+      {
+         var text = store.settings.read( Config.SETTINGS_PREFIX + name, DataType_String );
+         return ( text != null && String( text ).length > 0 ) ? JSON.parse( text ) : null;
+      }
+      catch ( e )
+      {
+         return null;
+      }
+   }
+   function plain( v ) { return v !== null && typeof v == "object" && !Array.isArray( v ); }
+
+   var sensor = readJson( "oscSensor" );
+   if ( plain( sensor ) && typeof sensor.R == "string" && typeof sensor.G == "string" && typeof sensor.B == "string" )
+      config.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
+
+   var choices = readJson( "oscKindChoices" );
+   if ( plain( choices ) )
+   {
+      config.oscKindChoices = {};
+      for ( var k in choices )
+         if ( Object.prototype.hasOwnProperty.call( choices, k ) &&
+              ( choices[k] === "broadband" || choices[k] === "dualband" ) )
+            config.oscKindChoices[k] = choices[k];
+   }
+};
+
+/*
+ * The remembered colour-camera answers alone, to Settings, like the
+ * filter choices: written the moment a choice changes as well as on Run.
+ */
+Config.saveOscChoices = function( config, store )
+{
+   var d = Config.defaults();
+   store.settings.write( Config.SETTINGS_PREFIX + "oscSensor", DataType_String,
+                         JSON.stringify( config.oscSensor || d.oscSensor ) );
+   store.settings.write( Config.SETTINGS_PREFIX + "oscKindChoices", DataType_String,
+                         JSON.stringify( config.oscKindChoices || d.oscKindChoices ) );
 };

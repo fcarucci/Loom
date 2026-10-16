@@ -1458,6 +1458,10 @@ Steps.linearFit = function( view, referenceView )
  * leaving Ha with 23 levels of 16-bit range across the nebula -- which is
  * why NarrowbandNormalization posterised, and why the palette went green.
  */
+/*
+ * bandwidthNm is one number for all three channels, or { R, G, B } when the
+ * channels' lines differ in width (a palette from a colour master).
+ */
 Steps.spccNarrowband = function( view, palette, bandwidthNm )
 {
    Util.reportStage( "narrowband SPCC \u2192 " + ( palette || view.id ) );
@@ -1465,23 +1469,31 @@ Steps.spccNarrowband = function( view, palette, bandwidthNm )
    if ( wl == null )
       throw new Error( "No emission-line mapping for palette " + palette );
 
-   var bw = parseFloat( bandwidthNm );
-   if ( !isFinite( bw ) || bw <= 0 )
-      bw = 3.0;   // SPCC's own default
+   // One number for all three channels, or { R, G, B }.
+   function bandwidthOf( v )
+   {
+      var b = parseFloat( v );
+      return ( !isFinite( b ) || b <= 0 ) ? 3.0 : b;   // SPCC's own default
+   }
+   var per = ( bandwidthNm != null && typeof bandwidthNm == "object" );
+   var bwR = bandwidthOf( per ? bandwidthNm.R : bandwidthNm ),
+       bwG = bandwidthOf( per ? bandwidthNm.G : bandwidthNm ),
+       bwB = bandwidthOf( per ? bandwidthNm.B : bandwidthNm );
 
    Util.log( "spcc", palette + " narrowband: R=" + wl[0].channel + " " + wl[0].nm +
                      "nm, G=" + wl[1].channel + " " + wl[1].nm +
                      "nm, B=" + wl[2].channel + " " + wl[2].nm +
-                     "nm, bandwidth " + bw + "nm" );
+                     ( per ? "nm, bandwidths R " + bwR + "nm, G " + bwG + "nm, B " + bwB + "nm"
+                           : "nm, bandwidth " + bwR + "nm" ) );
 
    var P = new SpectrophotometricColorCalibration;
    P.applyCalibration = true;
    P.narrowbandMode = true;
    P.neutralizeBackground = true;
 
-   P.redFilterWavelength   = wl[0].nm;   P.redFilterBandwidth   = bw;
-   P.greenFilterWavelength = wl[1].nm;   P.greenFilterBandwidth = bw;
-   P.blueFilterWavelength  = wl[2].nm;   P.blueFilterBandwidth  = bw;
+   P.redFilterWavelength   = wl[0].nm;   P.redFilterBandwidth   = bwR;
+   P.greenFilterWavelength = wl[1].nm;   P.greenFilterBandwidth = bwG;
+   P.blueFilterWavelength  = wl[2].nm;   P.blueFilterBandwidth  = bwB;
 
    P.generateGraphs = false;
    P.generateStarMaps = false;
@@ -2342,6 +2354,122 @@ Steps.combineRGB = function( rView, gView, bView, id )
    return w;
 };
 
+/*
+ * Minimum, maximum and median of one channel of a view's image. The
+ * image's channel selection is put back as it was found.
+ */
+Steps.planeStats = function( view, plane )
+{
+   var img = view.image;
+   var saved = img.selectedChannel;
+   try
+   {
+      img.selectedChannel = plane;
+      return { min: img.minimum(), max: img.maximum(), median: img.median() };
+   }
+   finally { img.selectedChannel = saved; }
+};
+
+/*
+ * One channel of a colour view as a new one-channel 32-bit float window of
+ * the same size. Keywords and the astrometric solution come along; FILTER
+ * names the channel (R, G, B, Ha, OIII, as exports name them) and LOOMSRC
+ * records the source file name and the plane. `filterName` is optional:
+ * without it the plane number gives R, G or B.
+ */
+Steps.extractPlane = function( view, plane, newId, filterName )
+{
+   var src = view.image;
+   var srcWin = view.window;
+   var name = filterName || [ "R", "G", "B" ][plane];
+   var fileName = view.id;
+   try
+   {
+      if ( srcWin.filePath && srcWin.filePath.length > 0 )
+         fileName = File.extractName( srcWin.filePath ) + File.extractExtension( srcWin.filePath );
+   }
+   catch ( e ) { fileName = view.id; }
+
+   var w = new ImageWindow( src.width, src.height, 1, 32, true, false, newId );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   var saved = src.selectedChannel;
+   try
+   {
+      src.selectedChannel = plane;
+      w.mainView.image.assign( src );   // copies the selected channel
+   }
+   finally { src.selectedChannel = saved; }
+   w.mainView.endProcess();
+
+   var kws = srcWin.keywords.filter( function( k )
+   {
+      return k.name != "FILTER" && k.name != "LOOMSRC";
+   } );
+   kws.push( new FITSKeyword( "FILTER", "'" + name + "'", "channel of the colour master" ) );
+   kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( fileName + "|plane:" + plane ), "colour master and plane" ) );
+   w.keywords = kws;
+
+   try
+   {
+      if ( srcWin.hasAstrometricSolution )
+         w.copyAstrometricSolution( srcWin );
+   }
+   catch ( e )
+   {
+      Util.warn( "load", name + " - could not copy astrometric solution: " + e );
+   }
+   return w;
+};
+
+/*
+ * A three-channel 32-bit float window whose channel i is the image of
+ * views[i] (the same view may appear twice). The planes must have one size.
+ * Keywords and the astrometric solution come from the first view.
+ */
+Steps.combinePlanes = function( views, newId )
+{
+   var w0 = views[0].image.width, h0 = views[0].image.height;
+   for ( var i = 1; i < views.length; ++i )
+      if ( views[i].image.width != w0 || views[i].image.height != h0 )
+         throw new Error( "combinePlanes: the planes differ in size" );
+
+   var w = new ImageWindow( w0, h0, 3, 32, true, true, newId );
+   w.mainView.beginProcess( UndoFlag_NoSwapFile );
+   var dst = w.mainView.image;
+   try
+   {
+      for ( var c = 0; c < 3; ++c )
+      {
+         var src = views[c].image;
+         var saved = src.selectedChannel;
+         try
+         {
+            src.selectedChannel = 0;
+            dst.selectedChannel = c;
+            dst.apply( src );   // replaces the selected channel
+         }
+         finally { src.selectedChannel = saved; }
+      }
+   }
+   finally
+   {
+      dst.resetSelections();
+      w.mainView.endProcess();
+   }
+   var first = views[0].window;
+   w.keywords = first.keywords;
+   try
+   {
+      if ( first.hasAstrometricSolution )
+         w.copyAstrometricSolution( first );
+   }
+   catch ( e )
+   {
+      Util.warn( "register", "combined planes - could not copy astrometric solution: " + e );
+   }
+   return w;
+};
+
 /* ---------------------------------------------------------------------------
  * Sharpening: aberration correction, star reduction, detail.
  *
@@ -2769,6 +2897,12 @@ Steps.exportTiff16 = function( window, dir, name )
                   window, Util.freeWindowId( Steps.syqonSanitizeFileName( name ) + "_export" ) );
    try
    {
+      // Provenance (LOOMSRC) is carried by the XISF and FITS results and the run log. A TIFF
+      // written for other applications most likely cannot hold FITS keywords, and the non-strict
+      // save drops what it cannot store, so this copy is harmless and not relied on.
+      var srcKw = Util.loomSourceKeywords( window );
+      if ( srcKw.length > 0 )
+         clone.keywords = srcKw;
       clone.setSampleFormat( 16, false );
       clone.saveAs( path, false/*queryOptions*/, false/*allowMessages*/,
                     false/*strict*/, false/*verifyOverwrite*/ );
@@ -4000,6 +4134,12 @@ Steps.exportPsb = function( results, dir, name )
       var c = Steps.syqonCloneWindowForProcessing(
                  entry.window, Util.freeWindowId(
                     Steps.syqonSanitizeFileName( entry.name ) + "_psb" ) );
+      // A PSB has no per-layer keyword store, and provenance is carried by the XISF and FITS
+      // results and the run log: TIFF and PSB exports for other applications do not carry it.
+      // The copy is harmless and not relied on.
+      var srcKw = Util.loomSourceKeywords( entry.window );
+      if ( srcKw.length > 0 )
+         c.keywords = srcKw;
       c.setSampleFormat( 16, false );
       clones.push( c );
       entry.window = c;

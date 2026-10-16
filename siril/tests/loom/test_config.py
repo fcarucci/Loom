@@ -16,6 +16,7 @@ from loomsiril.loom import config as cfg
 LOOM_TYPE = {"bool": "bool", "string": "str", "double": "float"}
 LOOM_ONLY = {"views", "marsPath", "autoUpdate"}
 PORT_ONLY = {"spccSensor", "outputDir", "stretchTarget"}
+PORT_SHAPE = {"oscSensor"}  # Loom has the key too, in another shape on purpose: Siril SPCC database names
 
 
 def _cases(oracle: Any) -> dict[str, Any]:
@@ -45,7 +46,7 @@ def test_defaults_keys_are_loom_minus_dropped_plus_port_keys(oracle) -> None:
 def test_defaults_equal_loom_for_every_kept_field(oracle) -> None:
     loom = _cases(oracle)["defaults"]
     port = cfg.defaults()
-    for key in set(loom) - LOOM_ONLY:
+    for key in set(loom) - LOOM_ONLY - PORT_SHAPE:
         assert port[key] == loom[key], key
     assert port["cacheDir"] == "" and port["spccSensor"] == ""
 
@@ -303,7 +304,7 @@ def test_round_trip_preserves_configuration(tmp_path: Path) -> None:
             "narrowbandBandwidth": 6.5,
             "filters": {"R": "Johnson R"},
             "palettes": ["HOO", "SHO"],
-            "paths": {"L": "/a.fits", "R": "", "G": "", "B": "", "H": "", "S": "", "O": ""},
+            "paths": {"L": "/a.fits", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
             "gradientTool": "SyQon Studio Deep Gradient",
             "smoothing": 0.25,
             "cacheDir": "/var/cache/loom",
@@ -436,3 +437,85 @@ def test_deeply_nested_file_gives_defaults_with_warning(tmp_path: Path) -> None:
     _write(tmp_path, "[" * 100000 + "]" * 100000)
     assert cfg.load(tmp_path, warn) == cfg.defaults()
     assert len(seen) == 1
+
+
+# ---- OSC keys -----------------------------------------------------------------------------------------------------
+
+OSC_SENSOR_DEFAULT = {"sensor": "", "frontFilter": "", "lpf": ""}
+
+
+def test_osc_defaults_equal_loom_except_the_port_shape(oracle) -> None:
+    loom = _cases(oracle)["defaults"]
+    port = cfg.defaults()
+    for key in ("oscKinds", "oscKindChoices"):
+        assert key in loom and port[key] == loom[key] == {}, key
+    assert port["paths"]["OSC"] == "" and port["paths"]["OSCNB"] == ""
+    assert port["paths"] == loom["paths"]
+    assert port["oscSensor"] == OSC_SENSOR_DEFAULT
+    assert loom["oscSensor"] != port["oscSensor"]
+    assert PORT_SHAPE <= set(loom)
+
+
+def test_osc_keys_round_trip(tmp_path: Path) -> None:
+    c = cfg.defaults()
+    c["paths"]["OSC"] = "/data/osc.xisf"
+    c["paths"]["OSCNB"] = "/data/oscnb.fits.fz"
+    c["oscKindChoices"] = {"k1": "broadband", "k2": "dualband"}
+    c["oscSensor"] = {"sensor": "ZWO ASI2600MC", "frontFilter": "Optolong L-Pro", "lpf": ""}
+    cfg.save(c, tmp_path)
+    seen, warn = _warnings()
+    back = cfg.load(tmp_path, warn)
+    assert seen == []
+    assert back["paths"]["OSC"] == "/data/osc.xisf" and back["paths"]["OSCNB"] == "/data/oscnb.fits.fz"
+    assert back["oscKindChoices"] == c["oscKindChoices"]
+    assert back["oscSensor"] == c["oscSensor"]
+
+
+def test_osc_kinds_is_never_persisted(tmp_path: Path) -> None:
+    c = cfg.defaults()
+    c["oscKinds"] = {"OSC": "broadband"}
+    cfg.save(c, tmp_path)
+    assert "oscKinds" not in json.loads(Path(cfg.config_path(tmp_path)).read_text(encoding="utf-8"))
+    assert cfg.load(tmp_path)["oscKinds"] == {}
+    _write(tmp_path, {"oscKinds": {"OSC": "dualband"}})
+    seen, warn = _warnings()
+    assert cfg.load(tmp_path, warn)["oscKinds"] == {}
+    assert seen == []
+
+
+@pytest.mark.parametrize("stored", [[], "broadband", 3, True])
+def test_osc_kind_choices_not_an_object_warns_and_falls_back(tmp_path: Path, stored: Any) -> None:
+    _write(tmp_path, {"oscKindChoices": stored})
+    seen, warn = _warnings()
+    assert cfg.load(tmp_path, warn)["oscKindChoices"] == {}
+    assert len(seen) == 1 and "oscKindChoices" in seen[0]
+
+
+def test_osc_kind_choices_bad_entries_are_dropped_with_a_warning(tmp_path: Path) -> None:
+    _write(tmp_path, {"oscKindChoices": {"a": "broadband", "b": "narrowband", "c": 1, "d": "dualband"}})
+    seen, warn = _warnings()
+    assert cfg.load(tmp_path, warn)["oscKindChoices"] == {"a": "broadband", "d": "dualband"}
+    assert len(seen) == 2 and all("oscKindChoices" in s for s in seen)
+
+
+@pytest.mark.parametrize("stored", [[], "x", 3, True])
+def test_osc_sensor_not_an_object_warns_and_falls_back(tmp_path: Path, stored: Any) -> None:
+    _write(tmp_path, {"oscSensor": stored})
+    seen, warn = _warnings()
+    assert cfg.load(tmp_path, warn)["oscSensor"] == OSC_SENSOR_DEFAULT
+    assert len(seen) == 1 and "oscSensor" in seen[0]
+
+
+def test_osc_sensor_unknown_keys_and_non_text_values_are_dropped(tmp_path: Path) -> None:
+    _write(tmp_path, {"oscSensor": {"sensor": "IMX571", "R": "x", "lpf": 5, "frontFilter": "UV/IR"}})
+    seen, warn = _warnings()
+    got = cfg.load(tmp_path, warn)["oscSensor"]
+    assert got == {"sensor": "IMX571", "frontFilter": "UV/IR", "lpf": ""}
+    assert len(seen) == 2 and all("oscSensor" in s for s in seen)
+
+
+def test_osc_paths_are_accepted_from_a_file(tmp_path: Path) -> None:
+    _write(tmp_path, {"paths": {"OSC": "/a/b.xisf", "OSCNB": "/a/c.xisf"}})
+    seen, warn = _warnings()
+    got = cfg.load(tmp_path, warn)["paths"]
+    assert got["OSC"] == "/a/b.xisf" and got["OSCNB"] == "/a/c.xisf" and seen == []

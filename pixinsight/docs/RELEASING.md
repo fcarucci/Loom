@@ -14,7 +14,7 @@ cd pixinsight && ci/release.sh <version> --key-dir <folder> [--push]
 - The password file is read by PixInsight itself and never copied. Keep it outside the repository and `chmod 600` it.
 - `--push`: also push `main` and the tag to `origin` and `github`. Without it, nothing leaves the machine and the push command is printed.
 
-Before running it, merge the work to `main` and describe it under `## [Unreleased]` in `CHANGELOG.md`.
+Before running it, merge the work to `main` and describe it under `## [Unreleased]` in `CHANGELOG.md` and in `../siril/CHANGELOG.md`.
 
 Standing rules:
 
@@ -34,11 +34,11 @@ Standing rules:
 It then:
 
 1. checks it is on a clean `main` and the tag is new;
-2. turns `[Unreleased]` into the dated `[<version>]` section and sets `Util.LOOM_VERSION`;
+2. turns `[Unreleased]` into the dated `[<version>]` section and sets `Util.LOOM_VERSION`, and does the same for the Siril port: `siril/CHANGELOG.md` gets its dated section and `loomsiril.__version__` is set (`ci/release-prep.js`; an empty `[Unreleased]` section in either changelog stops the release);
 3. runs the test suite as 1.9.5 and as 1.9.4;
 4. signs `Loom.js`, `FrameSelector.js` and `FlyThrough.js` (`ci/sign.sh`), writing the `.xsgn` files and `ci/signed-tree.sha256`;
 5. builds the update repository (`ci/repository.sh`), signs its `updates.xri` (`ci/sign.sh --xml`) and puts the result in `repo/`;
-6. commits `Loom <version>` (scripts, signatures, `repo/`) and creates the SSH-signed annotated tag `v<version>` and verifies it;
+6. commits `Loom <version>` (scripts, signatures, `repo/`, `siril/CHANGELOG.md`, `siril/loomsiril/__init__.py`) and creates the SSH-signed annotated tag `v<version>` and verifies it;
 7. with `--push`, pushes. CI then checks the signatures and that `repo/` is signed and holds exactly the tagged sources, builds the release zip, and publishes `repo/` as the update repository. CI does not build or sign the repository.
 
 ## Why signing is local

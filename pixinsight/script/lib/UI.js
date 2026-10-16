@@ -33,6 +33,131 @@ UI.seededFilterNames = function()
    return seeded;
 };
 
+/* The kind control's items: no kind, then the two a colour master can be. */
+UI.OSC_KIND_ITEMS = [ "", "Broadband", "Dual-band H\u03b1 + OIII" ];
+
+/*
+ * How one colour master's kind control looks: the item shown (an index into
+ * UI.OSC_KIND_ITEMS), whether it can be changed (not for a filter known to
+ * be unsupported), and whether a remembered choice is overriding detection,
+ * which is when the "detected" link has something to restore.
+ */
+UI.oscKindRow = function( entry, choices )
+{
+   var k = Util.effectiveOscKind( null, entry.filter, entry.ref, choices );
+   return { index: k.kind == "broadband" ? 1 : k.kind == "dualband" ? 2 : 0,
+            enabled: k.kind != "unsupported",
+            detectedLink: k.source == "choice" };
+};
+
+/*
+ * Applies a kind picked for `entry`: item 1 broadband, item 2 dual-band; item
+ * 0 or "detected" forgets the remembered choice. Writes
+ * choices[ Util.oscKindKey( filter, ref ) ] and recomputes the slot of every
+ * colour entry, since one choice keyed by a filter name covers every master
+ * with that filter. Returns the key. The caller saves the choices and
+ * repaints.
+ */
+UI.applyOscKind = function( entries, choices, entry, kind )
+{
+   var key = Util.oscKindKey( entry.filter, entry.ref );
+   if ( kind === 1 || kind === 2 )
+      choices[key] = kind === 1 ? "broadband" : "dualband";
+   else
+      delete choices[key];
+   entries.forEach( function( e )
+   {
+      if ( e.colour && !e.unavailable )
+         e.channel = Util.entryChannel( e.filter, e.numberOfChannels, e.ref, choices ).channel;
+   } );
+   return key;
+};
+
+/* The palettes that need SII, which a colour camera cannot separate from Ha. */
+UI.sensorPalettes = function( palettes )
+{
+   return ( palettes || [] ).filter( function( p )
+   {
+      var need = Util.paletteChannels( p );
+      return need != null && need.indexOf( "S" ) >= 0;
+   } );
+};
+
+/* The palettes a run builds: all of them, minus the SII ones for a colour run. */
+UI.runPalettes = function( palettes, colourRun )
+{
+   var drop = colourRun ? UI.sensorPalettes( palettes ) : [];
+   return ( palettes || [] ).filter( function( p ) { return drop.indexOf( p ) < 0; } );
+};
+
+/*
+ * The correction line for a scanned candidate whose name and header disagree
+ * about colour, or null. A one-channel file whose FILTER is not recognised
+ * gets none: it is not used as a mono master either, so saying it is would
+ * be wrong; UI.unrecognisedFilterNote reports it instead.
+ */
+UI.candidateCorrection = function( p, numberOfChannels, route )
+{
+   if ( !route.colour && route.channel == null )
+      return null;
+   return Util.colourCandidateCorrection( { path: p.path, colour: !!p.colour, numberOfChannels: numberOfChannels } );
+};
+
+/* The scan summary line for a master that is skipped for its FILTER. */
+UI.unrecognisedFilterNote = function( path, filter )
+{
+   return path + ": unrecognised FILTER " + ( filter == null || filter === "" ? "(missing)" : "'" + filter + "'" );
+};
+
+/* The status text a folder scan leaves behind. */
+UI.scanSummary = function( scan, confirm, added )
+{
+   var named = ( scan.named || [] ).length + ( scan.colourNamed || [] ).length;
+   var detail = "<i>(" + scan.total + " files, " + named +
+                " named candidates, " + confirm.opened + " opened, " +
+                ( scan.skipped + confirm.skipped ) + " skipped)</i>";
+   var unreadable = ( scan.unreadable || [] ).concat( confirm.unreadable || [] );
+   var tail = ( confirm.corrected.length ? "<br/><b>Filter from header, not name:</b> " +
+                                           confirm.corrected.join( "; " ) : "" ) +
+              ( unreadable.length ? "<br/><b>Skipped, unreadable:</b> " + unreadable.join( "; " ) : "" );
+   return added.length
+      ? ( "<b>Loaded " + added.length + " master" + ( added.length == 1 ? "" : "s" ) +
+          ":</b> " + added.slice().sort().join( ", " ) + "  " + detail + tail )
+      : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail + tail );
+};
+
+/*
+ * SHO/HSO ticked for a mono run stay in Settings while a colour run leaves
+ * them out of its configuration; this is where they wait.
+ */
+UI.KEPT_PALETTES_KEY = "palettesKept";
+
+UI.readKeptPalettes = function( store )
+{
+   try
+   {
+      var text = ( store || Config.pixinsightStore() ).settings.read( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String );
+      return text ? String( text ).split( "," ).filter( function( x ) { return Util.PALETTES[x] != null; } ) : [];
+   }
+   catch ( e ) { return []; }
+};
+
+UI.writeKeptPalettes = function( list, store )
+{
+   try
+   {
+      ( store || Config.pixinsightStore() ).settings.write( Config.SETTINGS_PREFIX + UI.KEPT_PALETTES_KEY, DataType_String, list.join( "," ) );
+   }
+   catch ( e ) {}
+};
+
+/* The palettes ticked now plus the kept ones not ticked, in that order. */
+UI.mergeKeptPalettes = function( palettes, kept )
+{
+   var have = palettes || [];
+   return have.concat( ( kept || [] ).filter( function( k ) { return have.indexOf( k ) < 0; } ) );
+};
+
 UI.filterCurvesOf = function( key )
 {
    var curves = [];
@@ -382,18 +507,33 @@ UI.hiddenEntriesNote = function( missing, skipped )
  * problems that refuse a run: duplicate channels and unrecognised
  * filters. Unavailable entries are ignored.
  */
-UI.foldEntries = function( entries )
+UI.foldEntries = function( entries, choices )
 {
    var paths = {}, views = {}, seen = {}, problems = [];
-   for ( var k = 0; k < Util.CHANNELS.length; ++k )
+   var slots = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var k = 0; k < slots.length; ++k )
    {
-      paths[Util.CHANNELS[k]] = "";
+      paths[slots[k]] = "";
    }
    for ( var i = 0; i < entries.length; ++i )
    {
       var e = entries[i];
       if ( e.unavailable )
          continue;   // remembered but not currently available; simply ignored
+      if ( e.channel === null && e.colour )
+      {
+         var kind = Util.effectiveOscKind( null, e.filter, e.ref, choices );
+         problems.push( kind.kind == "unsupported"
+            ? "this filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported"
+            : "choose Broadband or Dual-band H\u03b1 + OIII for " + e.ref );
+         continue;
+      }
+      if ( e.channel === null && typeof e.numberOfChannels == "number" &&
+           Util.channelCountProblem( e.ref, e.numberOfChannels ) != null )
+      {
+         problems.push( Util.channelCountProblem( e.ref, e.numberOfChannels ) );
+         continue;
+      }
       if ( e.channel === null )
       {
          problems.push( "Unrecognised FILTER " +
@@ -437,12 +577,25 @@ UI.classifyMasterFile = function( scan, dir, found )
    }
 
    var rec = UI.masterFileRecord( dir, found );
+   // A colour name is collected apart from the mono winners; its header decides.
+   var colourName = Util.parseColourMasterName( name );
+   if ( colourName.colour )
+   {
+      rec.filter = colourName.filter;
+      rec.colour = true;
+      rec.drizzle = colourName.drizzle;
+      rec.autocrop = colourName.autocrop;
+      rec.numberOfChannels = 3;
+      scan.colourNamed.push( rec );
+      return;
+   }
    var parsed = Util.parseMasterName( name );
    if ( parsed != null && parsed.channel != null )
    {
       rec.channel  = parsed.channel;
       rec.drizzle  = parsed.drizzle;
       rec.autocrop = parsed.autocrop;
+      rec.colour   = false;
       scan.named.push( rec );
    }
    else
@@ -481,24 +634,100 @@ UI.fileLabel = function( path )
  * A masters-list entry for a file, from its header. An unreadable file is
  * still listed -- with no filter, so the list shows it as a problem.
  */
-UI.fileEntry = function( path )
+UI.fileEntry = function( path, choices )
 {
    var info = null;
    try { info = Util.readImageInfo( path ); } catch ( e ) { info = null; }
    var kws = info ? info.keywords : null;
    var filter = kws ? Util.keywordValue( kws, "FILTER" ) : null;
+   var n = info ? ( info.numberOfChannels == null ? 1 : info.numberOfChannels ) : null;
+   var route = Util.entryChannel( filter, n, path, choices );
    return {
       source: "file",
       ref: path,
       label: UI.fileLabel( path ),
       filter: filter,
       instrume: kws ? Util.keywordValue( kws, "INSTRUME" ) : null,
-      channel: Util.channelFromFilter( filter ),
+      channel: route.channel,
+      colour: route.colour,
+      numberOfChannels: n,
       width: info ? info.width : 0,
       height: info ? info.height : 0,
       drizzle: Util.masterDrizzleLabel( info ),
       created: Util.fileCreatedMs( path )
    };
+};
+
+/*
+ * What a folder scan yields before any header is read: the mono winners from
+ * the names, the colour winners per slot (candidates with no kind yet listed
+ * apart), and whether unnamed files must be header-read -- when any mono slot
+ * or either colour slot has no named winner.
+ */
+UI.planFolderPicks = function( scan, choices )
+{
+   var mono = Util.selectMasters( scan.named || [] );
+   var cp = Util.selectColourMasters( scan.colourNamed || [], choices );
+   var missing = Util.CHANNELS.some( function( k ) { return mono[k] == null; } ) ||
+                 cp.OSC == null || cp.OSCNB == null;
+   return { mono: mono, colour: { OSC: cp.OSC, OSCNB: cp.OSCNB }, unresolved: cp.unresolved,
+            readUnnamed: missing && ( scan.unnamed || [] ).length > 0 };
+};
+
+/*
+ * Reads the headers of the unnamed files and promotes into scan.named
+ * (mono) or scan.colourNamed (three channels) those that fill a slot with no
+ * named winner. `readInfo( path )` is the header reader. A file whose header
+ * cannot be read, or has a channel count Loom does not take, is listed in
+ * scan.unreadable and skipped; it never stops the scan.
+ */
+UI.resolveUnnamedRecords = function( scan, choices, readInfo )
+{
+   var plan = UI.planFolderPicks( scan, choices );
+   if ( scan.unreadable == null )
+      scan.unreadable = [];
+   var unnamed = scan.unnamed || [];
+   for ( var u = 0; u < unnamed.length; ++u )
+   {
+      var rec = unnamed[u];
+      var info = null;
+      try { info = readInfo( rec.path ); } catch ( e ) { info = null; }
+      if ( info == null )
+      {
+         scan.unreadable.push( rec.path + ": header could not be read" );
+         continue;
+      }
+      var n = info.numberOfChannels == null ? 1 : info.numberOfChannels;   // a header that does not say is one channel
+      var bad = Util.channelCountProblem( rec.path, n );
+      if ( bad != null )
+      {
+         scan.unreadable.push( bad );
+         continue;
+      }
+      var filter = Util.keywordValue( info.keywords, "FILTER" );
+      rec.autocrop = Util.isAutocropName( rec.name );
+      rec.drizzle = Util.masterDrizzleLabel( info );
+      if ( n == 3 )
+      {
+         var slot = Util.entryChannel( filter, n, rec.path, choices ).channel;
+         if ( slot != null && plan.colour[slot] != null )
+            continue;   // that slot already has a named winner
+         rec.filter = filter == null ? "" : filter;
+         rec.colour = true;
+         rec.numberOfChannels = 3;
+         scan.colourNamed.push( rec );
+      }
+      else
+      {
+         var ch = Util.channelFromFilter( filter );
+         if ( ch == null || plan.mono[ch] != null )
+            continue;
+         rec.channel = ch;
+         rec.colour = false;
+         rec.numberOfChannels = 1;
+         scan.named.push( rec );
+      }
+   }
 };
 
 /*
@@ -684,6 +913,7 @@ UI.SelectDialog = class extends Dialog
 
    var projectRow = this.buildProjectRow( config );
    var listButtons = this.buildMasterList();
+   this.buildKindPanel();
 
    // ---- options ----
 
@@ -713,6 +943,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( projectRow );
    this.sizer.add( this.info );
    this.sizer.add( this.tree, 100 );
+   this.sizer.add( this.kindPanel );
    this.sizer.add( listButtons );
    this.sizer.add( this.progress );
    this.sizer.add( this.status );
@@ -753,6 +984,7 @@ UI.SelectDialog = class extends Dialog
    this.updateSharpenEnabled();
    this.updateNoiseEnabled();
    this.updatePaletteVisibility();
+   this.updateOscControls();
    // the stretch-dependent controls start out matching the checkbox
    this.updateStretchEnabled();
 
@@ -988,6 +1220,8 @@ UI.SelectDialog = class extends Dialog
        * transmission curve -- so the real filter has to be chosen here.
        */
       this.filterCombos = {};
+      this.filterLabels = {};
+      this.filterRowControls = {};
       var filterRows = new VerticalSizer;
       filterRows.spacing = 4;
 
@@ -999,9 +1233,14 @@ UI.SelectDialog = class extends Dialog
       for ( var fi = 0; fi < bb.length; ++fi )
       {
          var fk = bb[fi];
-         var flabel = UI.label( this, fk + " filter:", 100 );
+         /*
+          * Each row is a Control of its own, so the R, G and B rows can be
+          * hidden as a unit while a colour master is used.
+          */
+         var frow = new Control( this );
+         var flabel = UI.label( frow, fk + " filter:", 100 );
 
-         var fcombo = new ComboBox( this );
+         var fcombo = new ComboBox( frow );
          fcombo.setScaledMinWidth( 260 );
          var curves = UI.filterCurvesOf( fk );
          for ( var ci = 0; ci < curves.length; ++ci )
@@ -1027,10 +1266,47 @@ UI.SelectDialog = class extends Dialog
                   self.config.filters[key] = combo.itemText( combo.currentItem );
             }
          } )( fk, fcombo );
-            this.filterCombos[fk] = fcombo;
+         this.filterCombos[fk] = fcombo;
+         this.filterLabels[fk] = flabel;
+         this.filterRowControls[fk] = frow;
 
-         filterRows.add( UI.row( 4, [ flabel, fcombo, "stretch" ] ) );
+         frow.sizer = UI.row( 4, [ flabel, fcombo, "stretch" ] );
+         filterRows.add( frow );
       }
+
+      /*
+       * The sensor's three colour-filter curves, in place of the R, G and B
+       * filter rows while a broadband colour master (OSC) is used. A first
+       * blank item keeps "not chosen" visible, so a combo never shows a
+       * curve that was not written to the configuration.
+       */
+      this.sensorRow = new Control( this );
+      this.sensorCombos = {};
+      var sensorItems = [ UI.label( this.sensorRow, "Sensor colour filters:", 140 ) ];
+      Util.RGB_GROUP.forEach( function( ch )
+      {
+         var scombo = new ComboBox( self.sensorRow );
+         scombo.setScaledMinWidth( 150 );
+         scombo.toolTip = "<p>The sensor's " + ch + " colour-filter curve, used to calibrate the colour master.</p>";
+         scombo.addItem( "" );
+         var scurves = UI.filterCurvesOf( ch );
+         var saved = ( config.oscSensor || {} )[ch] || "";
+         scurves.forEach( function( cv ) { scombo.addItem( cv.name ); } );
+         for ( var sk = 0; sk < scurves.length; ++sk )
+            if ( scurves[sk].name == saved )
+               scombo.currentItem = sk + 1;
+         scombo.onItemSelected = function( i )
+         {
+            if ( !self.config.oscSensor ) self.config.oscSensor = { R: "", G: "", B: "" };
+            self.config.oscSensor[ch] = scombo.itemText( i );
+            Config.saveOscChoices( self.config, Config.pixinsightStore() );
+         };
+         self.sensorCombos[ch] = scombo;
+         sensorItems.push( UI.label( self.sensorRow, ch + ":", 14 ), scombo, 6 );
+      } );
+      this.sensorRow.sizer = UI.row( 4, sensorItems.concat( "stretch" ) );
+      this.sensorRow.visible = false;
+      filterRows.add( this.sensorRow );
 
       this.filterHeading = new Label( this );
       this.filterHeading.useRichText = true;
@@ -1134,7 +1410,11 @@ UI.SelectDialog = class extends Dialog
        * side by side is the usual reason to build any of them.
        */
       this.paletteChecks = {};
+      this.paletteTips = {};
       var paletteItems = [ this.paletteLabel ];
+
+      // SHO/HSO ticked for an earlier colour run, where they were left out of the run
+      config.palettes = UI.mergeKeptPalettes( config.palettes, UI.readKeptPalettes() );
 
       var palettes = Util.paletteNames();
       for ( var pi = 0; pi < palettes.length; ++pi )
@@ -1149,10 +1429,14 @@ UI.SelectDialog = class extends Dialog
                       ". Built alongside the RGB composite, and not flux- or " +
                       "colour-calibrated: a palette is an aesthetic mapping, " +
                       "not a photometric rendition.";
+         this.paletteTips[pname] = cb.toolTip;
          ( function( name, box )
          {
             box.onCheck = function( checked )
             {
+               // a programmatic change while the box is greyed is not the user's choice
+               if ( !box.enabled )
+                  return;
                var list = self.config.palettes || [];
                var at = list.indexOf( name );
                if ( checked && at < 0 ) list.push( name );
@@ -1939,8 +2223,18 @@ UI.SelectDialog = class extends Dialog
       if ( this.runButton == null )
          return;
       var n = Util.runnableEntryCount( this.entries );
-      this.runButton.enabled = !this.busy && n > 0;
-      this.runButton.toolTip = ( n > 0 )
+      // colour and mono masters cannot be run together: say so and keep Run off
+      var mix = null;
+      try
+      {
+         var folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices );
+         mix = Util.colourMixProblem( { paths: folded.paths, views: folded.views } );
+      }
+      catch ( e ) { mix = null; }
+      this.runButton.enabled = !this.busy && n > 0 && mix == null;
+      this.runButton.toolTip = ( mix != null )
+         ? "<p>" + mix + "</p>"
+         : ( n > 0 )
          ? "<p>Process the masters listed above.</p>"
          : "<p>Add at least one master first \u2014 " +
            "<b>Scan Masters Folder</b> or <b>Add Files</b>.</p>";
@@ -1988,13 +2282,20 @@ UI.SelectDialog = class extends Dialog
          return;
       }
 
-      var picks = Util.selectMasters( scan.named );
-      // Only fall back to opening unnamed files when a channel is missing.
-      if ( Object.keys( picks ).length == 0 && scan.unnamed.length > 0 )
-         picks = this.resolveUnnamedMasters( scan );
+      var choices = ( this.config || {} ).oscKindChoices;
+      var plan = UI.planFolderPicks( scan, choices );
+      // Open unnamed files when a mono or colour slot has no named winner.
+      if ( plan.readUnnamed )
+         plan = this.resolveUnnamedMasters( scan );
+
+      // mono and colour picks go through one confirmation, by header
+      var picks = {};
+      Object.keys( plan.mono ).forEach( function( k ) { picks[k] = plan.mono[k]; } );
+      Util.COLOUR_SLOTS.forEach( function( k ) { if ( plan.colour[k] != null ) picks[k] = plan.colour[k]; } );
+      plan.unresolved.forEach( function( c, i ) { picks["unresolved:" + i] = c; } );
 
       var confirm = this.confirmMasters( picks, scan.named );
-      var added = this.adoptMasters( confirm.confirmed );
+      var added = this.adoptMasters( confirm.confirmed, confirm.unresolved );
 
       this.rebuild();
       this.reportScan( scan, confirm, added );
@@ -2006,37 +2307,32 @@ UI.SelectDialog = class extends Dialog
     */
    scanMasterFolder( dir )
    {
-      var scan = { named: [], unnamed: [], total: 0, skipped: 0 };
+      var scan = { named: [], colourNamed: [], unnamed: [], unreadable: [], total: 0, skipped: 0 };
       if ( !File.directoryExists( dir ) )
          return null;
       // Util.findEntries: hidden files (macOS's "._name" twins) are never candidates
-      Util.findEntries( dir + "/*" ).forEach( function( e ) { UI.classifyMasterFile( scan, dir, e ); } );
+      Util.findEntries( dir + "/*" ).forEach( function( e )
+      {
+         // a name that cannot be parsed is reported and skipped, never fatal
+         try { UI.classifyMasterFile( scan, dir, e ); }
+         catch ( x ) { scan.unreadable.push( String( e && e.name ) + ": name could not be read" ); }
+      } );
 
       return scan;
    }
 
    /*
     * Files whose names carry no FILTER token are deferred: they are only
-    * opened if some channel ended up with no candidate at all, so an
-    * oddly-named master is still found without paying for it every time.
-    * Promotes whatever it can identify into `scan.named` and re-picks.
+    * opened when some mono slot or colour slot ended up with no named
+    * winner, so an oddly-named master is still found without paying for it
+    * every time. Fills only the missing slots (a three-channel file becomes
+    * a colour candidate) and returns the plan again.
     */
    resolveUnnamedMasters( scan )
    {
-      for ( var u = 0; u < scan.unnamed.length; ++u )
-      {
-         var rec = scan.unnamed[u];
-         var ui = null;
-         try { ui = Util.readImageInfo( rec.path ); } catch ( e ) { ui = null; }
-         if ( ui == null ) continue;
-         var uc = Util.channelFromFilter( Util.keywordValue( ui.keywords, "FILTER" ) );
-         if ( uc == null ) continue;
-         rec.channel  = uc;
-         rec.drizzle  = Util.masterDrizzleLabel( ui );
-         rec.autocrop = Util.isAutocropName( rec.name );
-         scan.named.push( rec );
-      }
-      return Util.selectMasters( scan.named );
+      var choices = ( this.config || {} ).oscKindChoices;
+      UI.resolveUnnamedRecords( scan, choices, function( p ) { return Util.readImageInfo( p ); } );
+      return UI.planFolderPicks( scan, choices );
    }
 
    /*
@@ -2045,7 +2341,8 @@ UI.SelectDialog = class extends Dialog
     */
    confirmMasters( picks, named )
    {
-      var confirmed = {}, opened = 0, skipped = 0, corrected = [];
+      var confirmed = {}, unresolved = [], opened = 0, skipped = 0, corrected = [], unreadable = [];
+      var choices = ( this.config || {} ).oscKindChoices;
       var keys = Object.keys( picks );
       /*
        * The candidate list is known before any measuring starts, so the
@@ -2064,7 +2361,10 @@ UI.SelectDialog = class extends Dialog
             try { info = Util.readImageInfo( p.path ); } catch ( e ) { info = null; }
             ++opened;
             if ( info == null )
+            {
+               unreadable.push( p.path + ": header could not be read" );
                continue;
+            }
 
             var kws = info.keywords;
             if ( !Util.isMasterLight( p.name, Util.keywordValue( kws, "IMAGETYP" ) ) )
@@ -2073,11 +2373,46 @@ UI.SelectDialog = class extends Dialog
                continue;
             }
 
-            var filter = Util.keywordValue( kws, "FILTER" );
-            var channel = Util.channelFromFilter( filter );
-            if ( channel == null )
+            // the channel count decides mono or colour; the header, not the name
+            var n = info.numberOfChannels == null ? 1 : info.numberOfChannels;
+            var bad = Util.channelCountProblem( p.path, n );
+            if ( bad != null )
+            {
+               unreadable.push( bad );
                continue;
-            if ( channel != p.channel )
+            }
+            var filter = Util.keywordValue( kws, "FILTER" );
+            var route = Util.entryChannel( filter, n, p.path, choices );
+            var fix = UI.candidateCorrection( p, n, route );
+            if ( fix != null )
+               corrected.push( fix );
+
+            if ( route.colour )
+            {
+               var centry = this.colourMaster( p, info, route, filter );
+               if ( route.channel == null )
+               {
+                  unresolved.push( centry );
+                  continue;
+               }
+               var cprev = confirmed[route.channel];
+               if ( cprev == null ||
+                    Util.masterVariantRank( centry.drizzle, centry.autocrop ) >
+                    Util.masterVariantRank( cprev.drizzle, cprev.autocrop ) )
+               {
+                  confirmed[route.channel] = centry;
+                  this.showMaster( centry );
+               }
+               continue;
+            }
+
+            var channel = route.channel;
+            if ( channel == null )
+            {
+               unreadable.push( UI.unrecognisedFilterNote( p.path, filter ) );
+               continue;
+            }
+            if ( channel != p.channel && p.channel != null && !fix )
                corrected.push( p.name + ": name says " + p.channel +
                                ", header says " + channel );
 
@@ -2100,8 +2435,35 @@ UI.SelectDialog = class extends Dialog
          this.setBusy( null );
       }
 
-      return { confirmed: confirmed, opened: opened,
-               skipped: skipped, corrected: corrected };
+      return { confirmed: confirmed, unresolved: unresolved, opened: opened,
+               skipped: skipped, corrected: corrected, unreadable: unreadable };
+   }
+
+   /*
+    * A colour master's entry. Its channel is the slot its kind gives it, or
+    * null while the kind is still to be chosen. It is not measured here: the
+    * quality figures compare mono stacks of one channel.
+    */
+   colourMaster( p, info, route, filter )
+   {
+      return {
+         source: "file",
+         ref: p.path,
+         label: File.extractName( p.path ) + File.extractExtension( p.path ),
+         filter: filter,
+         instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
+         channel: route.channel,
+         colour: true,
+         numberOfChannels: 3,
+         width: info.width,
+         height: info.height,
+         drizzle: Util.masterDrizzleLabel( info ),
+         autocrop: p.autocrop,
+         mtime: p.mtime,
+         created: p.created,
+         quality: null,
+         delta: null
+      };
    }
 
    /*
@@ -2123,6 +2485,8 @@ UI.SelectDialog = class extends Dialog
          filter: filter,
          instrume: Util.keywordValue( info.keywords, "INSTRUME" ),
          channel: channel,
+         colour: false,
+         numberOfChannels: 1,
          width: info.width,
          height: info.height,
          drizzle: Util.masterDrizzleLabel( info ),
@@ -2175,7 +2539,7 @@ UI.SelectDialog = class extends Dialog
     * Take the confirmed masters into the entry list, one per channel,
     * displacing whatever held that channel before.
     */
-   adoptMasters( confirmed )
+   adoptMasters( confirmed, unresolved )
    {
       var added = [], ckeys = Object.keys( confirmed );
       for ( var c = 0; c < ckeys.length; ++c )
@@ -2190,20 +2554,21 @@ UI.SelectDialog = class extends Dialog
          added.push( ckeys[c] + " (" + ( pick.drizzle ? pick.drizzle + " " : "" ) +
                      ( pick.autocrop ? "autocrop" : "full" ) + ")" );
       }
+      // colour masters with no kind yet have no slot to displace; each is listed once
+      var open = unresolved || [];
+      for ( var u = 0; u < open.length; ++u )
+      {
+         var cu = open[u];
+         this.entries = this.entries.filter( function( e ) { return !( e.source == "file" && e.ref == cu.ref ); } );
+         this.entries.push( cu );
+         added.push( cu.label + " (choose a kind)" );
+      }
       return added;
    }
 
    reportScan( scan, confirm, added )
    {
-      var detail = "<i>(" + scan.total + " files, " + scan.named.length +
-                   " named candidates, " + confirm.opened + " opened, " +
-                   ( scan.skipped + confirm.skipped ) + " skipped)</i>";
-      this.status.text = added.length
-         ? ( "<b>Loaded " + added.length + " master" + ( added.length == 1 ? "" : "s" ) +
-             ":</b> " + added.sort().join( ", " ) + "  " + detail +
-             ( confirm.corrected.length ? "<br/><b>Filter from header, not name:</b> " +
-                                          confirm.corrected.join( "; " ) : "" ) )
-         : ( "<b>No masters with a readable FILTER keyword in that folder.</b>  " + detail );
+      this.status.text = UI.scanSummary( scan, confirm, added );
    }
 
    addFiles( paths )
@@ -2222,7 +2587,7 @@ UI.SelectDialog = class extends Dialog
                this.setBusy( Util.scanProgressMessage( "Reading masters", UI.fileLabel( paths[i] ),
                                                        i+1, paths.length ),
                              Util.stepProgress( i+1, paths.length, 0, 1 ) );
-            this.entries.push( UI.fileEntry( paths[i] ) );
+            this.entries.push( UI.fileEntry( paths[i], ( this.config || {} ).oscKindChoices ) );
             // each row as it is read, not all of them at the end
             if ( report )
                this.rebuild();
@@ -2251,13 +2616,17 @@ UI.SelectDialog = class extends Dialog
 
       var kws = view.window.keywords;
       var filter = Util.keywordValue( kws, "FILTER" );
+      var n = view.image.numberOfChannels;
+      var route = Util.entryChannel( filter, n, view.id, ( this.config || {} ).oscKindChoices );
       this.entries.push( {
          source: "view",
          ref: view.id,
          label: view.id,
          filter: filter,
          instrume: Util.keywordValue( kws, "INSTRUME" ),
-         channel: Util.channelFromFilter( filter ),
+         channel: route.channel,
+         colour: route.colour,
+         numberOfChannels: n,
          width: view.image.width,
          height: view.image.height,
          drizzle: Util.masterDrizzleLabel( { keywords: kws,
@@ -2390,17 +2759,10 @@ UI.SelectDialog = class extends Dialog
     */
    updatePaletteVisibility()
    {
-      var hasNarrowband = false;
-      for ( var i = 0; i < this.entries.length; ++i )
+      var hasNarrowband = Util.NARROWBAND.some( function( k )
       {
-         var e = this.entries[i];
-         if ( !e.unavailable && e.channel != null &&
-              Util.NARROWBAND.indexOf( e.channel ) >= 0 )
-         {
-            hasNarrowband = true;
-            break;
-         }
-      }
+         return this.suppliedNow().indexOf( k ) >= 0;
+      }, this );
       this.paletteGroup.visible = hasNarrowband;
       // The bandwidth only matters when a palette can be built, so it
       // follows the palette controls rather than sitting there unexplained.
@@ -2411,6 +2773,145 @@ UI.SelectDialog = class extends Dialog
       // dialog: Control.visible reports EFFECTIVE visibility, which is
       // false for any child while the dialog itself is not on screen.
       return hasNarrowband;
+   }
+
+   /* The channels the list supplies, colour masters expanded to their members. */
+   suppliedNow()
+   {
+      var folded = null;
+      try { folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices ); }
+      catch ( e ) { folded = null; }
+      return folded ? Util.suppliedChannels( { paths: folded.paths, views: folded.views } ) : [];
+   }
+
+   /* The list as a configuration (paths and views), for the controls that follow it. */
+   suppliedConfig()
+   {
+      var folded = null;
+      try { folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices ); }
+      catch ( e ) { folded = null; }
+      return folded ? { paths: folded.paths, views: folded.views } : { paths: {}, views: {} };
+   }
+
+   /*
+    * The kind control of each colour master in the list: one row per colour
+    * entry under the list. The rows are made once and reused, so a row
+    * whose control is handling a change is never destroyed under it.
+    */
+   buildKindPanel()
+   {
+      this.kindPanel = new Control( this );
+      this.kindPanel.sizer = new VerticalSizer;
+      this.kindPanel.sizer.spacing = 2;
+      this.kindRows = [];
+      this.kindShown = 0;
+      this.kindPanel.visible = false;
+   }
+
+   addKindRow()
+   {
+      var self = this;
+      var row = { entry: null };
+      row.box = new Control( this.kindPanel );
+      row.name = new Label( row.box );
+      row.name.minWidth = 300;
+      row.combo = new ComboBox( row.box );
+      UI.OSC_KIND_ITEMS.forEach( function( t ) { row.combo.addItem( t ); } );
+      row.combo.onItemSelected = function( i ) { self.chooseOscKind( row.entry, i ); };
+      row.link = new Label( row.box );
+      row.link.useRichText = true;
+      row.link.text = "<u>detected</u>";
+      row.link.toolTip = "<p>Forget the remembered kind and use what the filter name says.</p>";
+      row.link.cursor = new Cursor( StdCursor_PointingHand );
+      row.link.onMouseRelease = function() { self.chooseOscKind( row.entry, "detected" ); };
+      row.box.sizer = UI.row( 6, [ row.name, row.combo, row.link, "stretch" ] );
+      this.kindPanel.sizer.add( row.box );
+      this.kindRows.push( row );
+      return row;
+   }
+
+   /* Shows the kind control of every colour master in the list. */
+   updateKindRows()
+   {
+      var colour = this.entries.filter( function( e ) { return e.colour && !e.unavailable; } );
+      var choices = ( this.config || {} ).oscKindChoices || {};
+      for ( var i = 0; i < colour.length; ++i )
+      {
+         var row = i < this.kindRows.length ? this.kindRows[i] : this.addKindRow();
+         var e = colour[i], k = UI.oscKindRow( e, choices );
+         row.entry = e;
+         row.name.text = e.label + "  \u2014  " + ( e.filter ? e.filter : "(no FILTER)" );
+         row.combo.currentItem = k.index;
+         row.combo.enabled = k.enabled;
+         row.combo.toolTip = k.enabled
+            ? "<p>Broadband or dual-band H\u03b1 + OIII. Your choice is remembered for this filter name, " +
+              "or for this file when it has no FILTER name, and always wins over detection.</p>"
+            : "<p>This filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported.</p>";
+         row.link.visible = k.detectedLink;
+         row.box.visible = true;
+      }
+      for ( var j = colour.length; j < this.kindRows.length; ++j )
+      {
+         this.kindRows[j].entry = null;
+         this.kindRows[j].box.visible = false;
+      }
+      this.kindPanel.visible = colour.length > 0;
+      // the list of controls grew or shrank: the dialog follows it
+      if ( colour.length != this.kindShown )
+      {
+         this.kindShown = colour.length;
+         try { this.adjustToContents(); } catch ( e ) {}
+      }
+   }
+
+   /*
+    * A kind picked for a colour master (an item of the control, or
+    * "detected"): remembered at once, the master moves to its slot, the
+    * list repaints.
+    */
+   chooseOscKind( entry, kind )
+   {
+      if ( entry == null )
+         return;
+      if ( !this.config.oscKindChoices )
+         this.config.oscKindChoices = {};
+      UI.applyOscKind( this.entries, this.config.oscKindChoices, entry, kind );
+      try { Config.saveOscChoices( this.config, Config.pixinsightStore() ); } catch ( e ) {}
+      this.rebuild();
+   }
+
+   /*
+    * The controls a colour master changes (Util.oscControlState): the
+    * mono filter boxes and the SII palettes are greyed with the reason,
+    * and the sensor colour filters stand in for the R, G, B filter rows.
+    * Nothing here edits the configuration: a remembered SHO or HSO stays
+    * in it for mono runs.
+    */
+   updateOscControls()
+   {
+      var state = Util.oscControlState( this.suppliedConfig() );
+      var self = this;
+      Object.keys( this.filterCombos ).forEach( function( k )
+      {
+         self.filterCombos[k].enabled = state.monoEnabled;
+         self.filterLabels[k].enabled = state.monoEnabled;
+         self.filterCombos[k].toolTip = state.monoEnabled ? "" : "<p>" + state.monoReason + "</p>";
+      } );
+      Util.RGB_GROUP.forEach( function( k ) { self.filterRowControls[k].visible = state.rgbFilterRowsVisible; } );
+      this.sensorRow.visible = state.sensorRowVisible;
+
+      var sii = UI.sensorPalettes( Util.paletteNames() );
+      Util.paletteNames().forEach( function( name )
+      {
+         var box = self.paletteChecks[name];
+         if ( sii.indexOf( name ) < 0 )
+            return;
+         box.enabled = state.shoHsoEnabled;
+         box.checked = state.shoHsoEnabled && ( self.config.palettes || [] ).indexOf( name ) >= 0;
+         box.toolTip = state.shoHsoEnabled ? self.paletteTips[name]
+                                           : "<p>" + state.shoHsoReason + "</p>";
+      } );
+      return state;
    }
 
    /* Repaints the list and the status line. */
@@ -2445,6 +2946,8 @@ UI.SelectDialog = class extends Dialog
       // a scan's progress line stays until the scan writes its own summary
       if ( !this.busy )
          this.updateStatus( counts );
+      this.updateKindRows();
+      this.updateOscControls();
       this.updatePaletteVisibility();
    }
 
@@ -2509,7 +3012,7 @@ UI.SelectDialog = class extends Dialog
        */
       try { this.config.projectName = this.projectEdit.text.trim(); }
       catch ( e ) {}
-      var folded = UI.foldEntries( this.entries );
+      var folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices );
       var paths = folded.paths, views = folded.views, problems = folded.problems;
 
       if ( problems.length )
@@ -2517,6 +3020,15 @@ UI.SelectDialog = class extends Dialog
          new MessageBox( problems.join( "\n" ), "Loom", StdIcon_Error, StdButton_Ok ).execute();
          return false;
       }
+
+      /*
+       * A colour run leaves SHO and HSO out; they wait in Settings for the
+       * next mono run, which clears them once it has them back.
+       */
+      var colourRun = Util.colourSupplied( { paths: paths, views: views } ).length > 0;
+      var palettes = this.config.palettes || [];
+      UI.writeKeptPalettes( colourRun ? UI.sensorPalettes( palettes ) : [] );
+      this.config.palettes = UI.runPalettes( palettes, colourRun );
 
       this.config.paths = paths;
       this.config.views = views;

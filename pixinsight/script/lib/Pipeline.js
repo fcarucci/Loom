@@ -39,9 +39,10 @@ Pipeline.gradientToolProblems = function( config )
 Pipeline.preflightChannels = function( config )
 {
    var problems = [];
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+   var keys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var j = 0; j < keys.length; ++j )
    {
-      var key = Util.CHANNELS[j];
+      var key = keys[j];
       if ( config.views && config.views[key] )
          problems = problems.concat( Pipeline.preflightView( key, config.views[key] ) );
       else if ( config.paths[key] )
@@ -58,6 +59,17 @@ Pipeline.preflightChannels = function( config )
 Pipeline.preflight = function( config )
 {
    var problems = Util.validateSelection( config.paths, config.views );
+
+   var mix = Util.colourMixProblem( config );
+   if ( mix != null )
+      problems.push( mix );
+   var palette = Pipeline.oscPaletteProblem( config );
+   if ( palette != null )
+      problems.push( palette );
+   var infoOf = Pipeline.oscInfoOf( config );
+   problems = problems.concat( Pipeline.inputChannelProblems( config, infoOf ) );
+   problems = problems.concat( Pipeline.oscKindProblems( config, infoOf ) );
+   problems = problems.concat( Pipeline.oscSensorProblems( config ) );
 
    for ( var i = 0; i < Pipeline.REQUIRED_PROCESSES.length; ++i )
    {
@@ -94,10 +106,8 @@ Pipeline.preflight = function( config )
  */
 Pipeline.narrowbandSupplied = function( config )
 {
-   return Util.NARROWBAND.filter( function( k )
-   {
-      return Util.channelSupplied( config.paths || {}, config.views || {}, k );
-   } );
+   var supplied = Util.suppliedChannels( config );
+   return Util.NARROWBAND.filter( function( k ) { return supplied.indexOf( k ) >= 0; } );
 };
 
 /*
@@ -149,10 +159,8 @@ Pipeline.reportSkippedPalettes = function( config )
  */
 Pipeline.marsProblems = function( config )
 {
-   var broadband = Util.BROADBAND.filter( function( k )
-   {
-      return ( config.views && config.views[k] ) || config.paths[k];
-   } );
+   var supplied = Util.suppliedChannels( config );
+   var broadband = Util.BROADBAND.filter( function( k ) { return supplied.indexOf( k ) >= 0; } );
    if ( broadband.length == 0 )
       return [];
    var mgc = Steps.configuredMGC( config.marsPath );
@@ -191,6 +199,151 @@ Pipeline.preflightPath = function( key, path )
       return [ "No FILTER keyword in " + key + ": " + path +
                " (SPFC cannot proceed; the script will not guess a filter)" ];
    return [];
+};
+
+/*
+ * A colour camera cannot separate SII from Ha, so the palettes that need
+ * SII cannot be built from a colour master.
+ */
+Pipeline.oscPaletteProblem = function( config )
+{
+   if ( Util.colourSupplied( config ).length == 0 )
+      return null;
+   var pals = config.palettes || [];
+   if ( pals.indexOf( "SHO" ) >= 0 || pals.indexOf( "HSO" ) >= 0 )
+      return "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO";
+   return null;
+};
+
+/*
+ * Channel-count problems of the mono slots. infoOf( slot ) gives
+ * { path, numberOfChannels, ... } or null; colour slots are left to
+ * oscKindProblems.
+ */
+Pipeline.inputChannelProblems = function( config, infoOf )
+{
+   var problems = [];
+   Util.monoSupplied( config ).forEach( function( key )
+   {
+      var info = infoOf( key );
+      if ( info == null )
+         return;
+      var path = info.path || ( config.paths && config.paths[key] ) || ( config.views && config.views[key] );
+      if ( typeof info.numberOfChannels != "number" )
+         problems.push( "could not read the channel count of " + path );
+      else if ( info.numberOfChannels == 3 )
+         problems.push( path + " is a colour master (3 channels); a mono slot needs a one-channel master" );
+      else if ( info.numberOfChannels != 1 )
+         problems.push( Util.channelCountProblem( path, info.numberOfChannels ) );
+   } );
+   return problems;
+};
+
+/*
+ * The checks of the colour slots: three channels, a kind (broadband or
+ * dual-band) that is known and matches the slot. The kind found is left in
+ * config.oscKinds for the run.
+ */
+Pipeline.oscKindProblems = function( config, infoOf )
+{
+   var problems = [];
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      var info = infoOf( slot );
+      if ( info == null )
+         return;
+      // never an empty key: a blank-filter choice is stored under the path
+      var path = info.path || ( config.paths && config.paths[slot] ) || ( config.views && config.views[slot] );
+      if ( typeof info.numberOfChannels != "number" )
+      {
+         problems.push( "could not read the channel count of " + path );
+         return;
+      }
+      if ( info.numberOfChannels == 1 )
+      {
+         problems.push( path + " is a mono master (1 channel); a colour slot needs a three-channel master" );
+         return;
+      }
+      if ( info.numberOfChannels != 3 )
+      {
+         problems.push( Util.channelCountProblem( path, info.numberOfChannels ) );
+         return;
+      }
+      var k = Util.effectiveOscKind( slot, info.filter, path, config.oscKindChoices );
+      if ( k.kind == "unsupported" )
+         problems.push( "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" );
+      else if ( k.source == "none" )
+         problems.push( "choose Broadband or Dual-band Hα + OIII for " + path );
+      else if ( slot == "OSCNB" && k.kind == "broadband" )
+         problems.push( path + " is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master" );
+      else if ( slot == "OSC" && k.kind == "dualband" )
+         problems.push( path + " is a dual-band colour master; the broadband slot needs a Broadband master" );
+      else
+      {
+         if ( !config.oscKinds )
+            config.oscKinds = {};
+         config.oscKinds[slot] = k.kind;
+      }
+   } );
+   return problems;
+};
+
+/*
+ * A function of the slot giving what preflight needs to know of its master:
+ * { filter, path, numberOfChannels, width, height }, or null when there is
+ * nothing to read (preflightView and preflightPath report the absence).
+ * A file is read by its header only, and never when it is missing.
+ */
+Pipeline.oscInfoOf = function( config )
+{
+   return function( slot )
+   {
+      var id = config.views && config.views[slot];
+      if ( id )
+      {
+         var w = ImageWindow.windowById( id );
+         if ( w == null || w.isNull )
+            return null;
+         var img = w.mainView.image;
+         return { filter: Util.keywordValue( w.keywords, "FILTER" ), path: id,
+                  numberOfChannels: img.numberOfChannels, width: img.width, height: img.height };
+      }
+      var path = config.paths && config.paths[slot];
+      if ( !path || !File.exists( path ) )
+         return null;
+      var info = Util.readImageInfo( path );
+      return { filter: Util.keywordValue( info.keywords, "FILTER" ), path: path,
+               numberOfChannels: info.numberOfChannels, width: info.width, height: info.height };
+   };
+};
+
+/*
+ * The colour camera's sensor checks. A colour master (OSC) is calibrated
+ * against the three sensor colour-filter curves in config.oscSensor, so all
+ * three must be chosen and each must exist in filters.xspd. A run without
+ * OSC (mono, or OSCNB alone) has no sensor to choose. curveExists( name,
+ * channel ) can be injected; production asks the filter database.
+ */
+Pipeline.oscSensorProblems = function( config, curveExists )
+{
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) < 0 )
+      return [];
+   var sensor = config.oscSensor || {};
+   var trio = Util.RGB_GROUP;
+   for ( var t = 0; t < trio.length; ++t )
+      if ( !sensor[trio[t]] )
+         return [ "choose the sensor colour filters for the colour master (SPCC section)" ];
+
+   var exists = curveExists || function( name, channel )
+   {
+      return Steps.filterCurveByName( name, channel ) != null;
+   };
+   var problems = [];
+   for ( var c = 0; c < trio.length; ++c )
+      if ( !exists( sensor[trio[c]], trio[c] ) )
+         problems.push( "sensor colour filter curve '" + sensor[trio[c]] +
+                        "' is not in filters.xspd" );
+   return problems;
 };
 
 /*
@@ -794,6 +947,65 @@ Pipeline.buildStageKeys = function( sourceKey, params )
 };
 
 /*
+ * The plane each colour master contributes, per kind. The index is the
+ * plane in the master's pixel order; the key is the logical channel it
+ * becomes. OSC is broadband (R, G, B); OSCNB is dual-band: H is plane 0 and
+ * O is plane 1 (green) alone, see the design's Splitting section.
+ */
+Pipeline.OSC_RECIPES = { OSC: { R: 0, G: 1, B: 2 }, OSCNB: { H: 0, O: 1 } };
+
+/*
+ * The identity of one colour group: the master's fingerprint plus its kind.
+ * Everything that keys a sibling, the group registration or the validation
+ * sidecar starts from it. The identity is hashed before it is used as a key,
+ * since its text holds a fingerprint and is never a file name.
+ */
+Pipeline.oscGroupIdentity = function( fingerprint, kind )
+{
+   return fingerprint + "|osc:" + kind;
+};
+
+/*
+ * The source key of one sibling plane of a colour group. Hashed so the key
+ * keeps the cache's hexadecimal form, which is a valid file name on every
+ * platform, whatever the master's path or view id holds.
+ */
+Pipeline.oscSiblingKey = function( groupIdentity, plane )
+{
+   return Cache.hash( groupIdentity + "|plane:" + plane );
+};
+
+/*
+ * The name of the validation sidecar for a colour group. The sidecar keeps
+ * the first load's verdict and plane statistics, so a cache hit logs the same
+ * values without reopening the master. Hashed for the same reason as the keys.
+ */
+Pipeline.oscValidateName = function( groupIdentity )
+{
+   return Cache.hash( groupIdentity + "|validate" ) + ".osc.json";
+};
+
+/*
+ * The cache key of a grouped registration: the hash of the sibling keys in
+ * plane order, chained with the stage and its parameters (the reference and
+ * the plane mapping). One changed sibling changes the key, so the whole group
+ * registers again, since one transform drives all of its planes.
+ */
+Pipeline.oscGroupRegisterKey = function( stage, siblingKeysInPlaneOrder, params )
+{
+   return Cache.chainKey( Cache.hash( siblingKeysInPlaneOrder.join( "|" ) ), stage, params );
+};
+
+/*
+ * The cache key of one registered sibling plane, derived from its group's
+ * registration key. Hashed like the other keys, for the same reason.
+ */
+Pipeline.oscRegisteredSiblingKey = function( groupKey, plane )
+{
+   return Cache.hash( groupKey + "|plane:" + plane );
+};
+
+/*
  * The stage to restart from: the LATEST entry that is complete AND
  * actually loads, with its companion already in hand.
  *
@@ -1112,20 +1324,31 @@ Pipeline.cropHalosTag = function( common, config )
 
 /*
  * The measurement's cache key, from the three pre-correction keys, the
- * crop, the filters and the instrument. Throws if a channel has no key.
+ * crop, the reference (refKey, the reference's cache key), and the sensor.
+ * An OSC run keys on its sensor curves and the QE curve, not on the mono
+ * filters; a mono run keys on its filters and instrument as before. The
+ * reference is in the key for both, so replacing it measures again. Throws
+ * if a channel has no key; a null refKey is hashed as "null".
  */
-Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume )
+Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume, refKey )
 {
    var trio = Util.RGB_GROUP;
    for ( var t = 0; t < trio.length; ++t )
       if ( !chans[trio[t]].cleanKey )
          throw new Error( "no pre-correction cache key for " + trio[t] );
 
+   var response;
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
+      response = "|osc:" + JSON.stringify( config.oscSensor || {} ) +
+                 "|qe:" + Util.IDEAL_QE_CURVE_NAME;
+   else
+      response = "|" + JSON.stringify( config.filters || {} ) +
+                 "|" + String( lumInstrume );
+
    return Cache.hash( "cleanwb|" + chans.R.cleanKey + "|" +
                       chans.G.cleanKey + "|" + chans.B.cleanKey +
-                      Pipeline.cropTag( common ) +
-                      "|" + JSON.stringify( config.filters || {} ) +
-                      "|" + String( lumInstrume ) );
+                      Pipeline.cropTag( common ) + response +
+                      "|ref:" + String( refKey ) );
 };
 
 /* The gains cached by an earlier measurement, or null to measure again. */
@@ -1204,11 +1427,54 @@ Pipeline.registerCleanChannel = function( cleanKey, k, config, refView, refFinge
    return registered.mainView;
 };
 
+/*
+ * One OSC plane's pre-correction result, cropped to the common area (the
+ * crop Pipeline.cropToCommonArea applies to the corrected planes, once), as
+ * a view. The window it opens is pushed onto `temps` for the caller to
+ * release.
+ */
+Pipeline.cropCleanChannel = function( cleanKey, k, common, temps )
+{
+   var w = Cache.load( cleanKey, Util.freeWindowId( k + "_cleanref" ) );
+   if ( w == null )
+      throw new Error( "the pre-correction result for " + k +
+                       " is not in the cache" );
+   temps.push( w );
+   Steps.cropTo( w.mainView, common );
+   return w.mainView;
+};
+
+/*
+ * How the clean planes reach the reference frame: "identity" when they are
+ * the OSC planes and the reference is OSC's own G (they already sit on it,
+ * so only the crop applies), "mono" for the per-channel registration. A
+ * colour run's reference is always its OSC G (Pipeline.registerToReference);
+ * any other reference there is a programming error, not a case to handle.
+ */
+Pipeline.cleanRegistrationPlan = function( refKey, groups )
+{
+   if ( !groups || !groups.OSC )
+      return "mono";
+   if ( groups.OSC.indexOf( refKey ) < 0 )
+      throw new Error( "internal: with OSC in the run the reference must be its G (got " +
+                       refKey + ")" );
+   return "identity";
+};
+
+/*
+ * `refKey` is the registration reference's channel key (not its cache key,
+ * which is `refFingerprint`); it only decides how the planes are brought to
+ * the reference, see Pipeline.cleanRegistrationPlan.
+ */
 Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
-                                              lumInstrume, refView, refFingerprint )
+                                              lumInstrume, refView, refFingerprint, refKey )
 {
    var trio = Util.RGB_GROUP;
-   var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume );
+   var plan = Pipeline.cleanRegistrationPlan( refKey, Pipeline.oscChannelGroups( chans ) );
+   if ( plan == "identity" )
+      lumInstrume = null;
+   var cacheKey = Pipeline.cleanWhiteBalanceKey( chans, config, common, lumInstrume,
+                                                              refFingerprint );
    var cachePath = Pipeline.cleanWhiteBalanceCachePath( cacheKey );
 
    var cached = Pipeline.cachedCleanWhiteBalance( config, cachePath, cacheKey );
@@ -1220,8 +1486,10 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
    try
    {
       for ( var i = 0; i < trio.length; ++i )
-         cleanViews[trio[i]] = Pipeline.registerCleanChannel( chans[trio[i]].cleanKey, trio[i],
-                                                              config, refView, refFingerprint, temps );
+         cleanViews[trio[i]] = plan == "identity"
+            ? Pipeline.cropCleanChannel( chans[trio[i]].cleanKey, trio[i], common, temps )
+            : Pipeline.registerCleanChannel( chans[trio[i]].cleanKey, trio[i],
+                                             config, refView, refFingerprint, temps );
 
       var refId = Util.freeWindowId( "RGB_cleanref" );
       var refWin = Steps.combineRGB( cleanViews.R, cleanViews.G,
@@ -1229,8 +1497,9 @@ Pipeline.measureCleanWhiteBalance = function( chans, config, reg, common,
       temps.push( refWin );
 
       Steps.solve( refWin.mainView );
-      Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, config.filters || {} );
-      Steps.spccRGB( refWin.mainView, lumInstrume, config.filters || {} );
+      var refFilters = Pipeline.effectiveFilters( config );
+      Steps.spfc( refWin.mainView, null, "RGB", lumInstrume, refFilters );
+      Steps.spccRGB( refWin.mainView, lumInstrume, refFilters );
 
       var factors = Steps.readWhiteBalanceFactors( refWin.mainView );
       if ( factors == null )
@@ -1468,6 +1737,7 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
    var map = Util.PALETTES[pal];
    var pId = Util.freeWindowId( pal );
    Util.log( "palette", pal + ": R=" + map[0] + " G=" + map[1] + " B=" + map[2] );
+   Pipeline.logPaletteSources( pal, chans, config );
 
    /*
     * The palette is a cached chain, exactly like the RGB composite.
@@ -1490,10 +1760,27 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                                chans[map[2]].currentKey +
                                Pipeline.cropHalosTag( common, config ) );
 
+   /*
+    * The bandwidth drives the emission-line calibration directly, and the
+    * value in the key is the one handed to Steps.spccNarrowband. A mono run
+    * passes the run's single number. A palette from a colour master's
+    * channels passes one bandwidth per output channel, from the filter
+    * table, so a different filter re-runs the calibration.
+    */
+   var bandwidth = config.narrowbandBandwidth;
+   if ( chans[map[0]].group == "OSCNB" || chans[map[1]].group == "OSCNB" ||
+        chans[map[2]].group == "OSCNB" )
+   {
+      bandwidth = Pipeline.oscNarrowbandBandwidths( config,
+                     { filter: chans[map[0]].filter || chans[map[1]].filter || chans[map[2]].filter } );
+      Util.log( "palette", pal + ": approximation: H and O from a colour master are not single lines; " +
+                           "bandwidths R " + bandwidth.R + "nm, G " + bandwidth.G + "nm, B " +
+                           bandwidth.B + "nm" );
+   }
+
    var palParams = {
       paletteCombine: {},
-      // bandwidth drives the emission-line calibration directly
-      paletteSpcc: { palette: pal, bandwidth: config.narrowbandBandwidth }
+      paletteSpcc: { palette: pal, bandwidth: bandwidth }
    };
    /*
     * Omitted entirely when off, rather than carried with an enabled
@@ -1536,7 +1823,7 @@ Pipeline.buildPalette = function( pal, chans, config, reg, common )
                Util.log( "solve", pal + ": no inherited solution, solving" );
                Steps.solve( h.view );
             }
-            Steps.spccNarrowband( h.view, pal, config.narrowbandBandwidth );
+            Steps.spccNarrowband( h.view, pal, bandwidth );
          }
          catch ( e )
          {
@@ -1614,11 +1901,11 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
       solveRGB: {},
       // the filters and QE curve drive both calibrations, exactly as
       // for the per-channel SPFC
-      spfcRGB:  { filters: config.filters || {}, instrume: lumInstrume },
+      spfcRGB:  { filters: Pipeline.effectiveFilters( config ), instrume: lumInstrume },
       // The white balance source is part of the key: factors measured
       // on uncorrected channels give different pixels from SPCC run
       // directly on the corrected composite.
-      spccRGB:  { filters: config.filters || {}, instrume: lumInstrume,
+      spccRGB:  { filters: Pipeline.effectiveFilters( config ), instrume: lumInstrume,
                   whiteBalance: cleanFactors ? cleanFactors : "direct" }
    };
    var finishing = Pipeline.finishingStages( "RGB", "composite", Pipeline.RGB_FINISHING,
@@ -1635,19 +1922,11 @@ Pipeline.buildRGB = function( chans, config, reg, common, lumInstrume, cleanFact
          h.view = h.window.mainView;
          reg.add( h.window );
       },
-      solveRGB: function( h ) { Steps.solve( h.view ); },
-      spfcRGB:  function( h )
-      {
-         Steps.spfc( h.view, null, "RGB", lumInstrume, config.filters || {} );
-      },
-      spccRGB:  function( h )
-      {
-         if ( cleanFactors != null )
-            Steps.applyWhiteBalance( h.view, cleanFactors );
-         else
-            Steps.spccRGB( h.view, lumInstrume, config.filters || {} );
-      }
+      solveRGB: function( h ) { Steps.solve( h.view ); }
    };
+   var calibration = Pipeline.rgbCalibrationRunners( config, lumInstrume, cleanFactors );
+   rgbRunners.spfcRGB = calibration.spfcRGB;
+   rgbRunners.spccRGB = calibration.spccRGB;
    Pipeline.appendStages( rgbRunners, finishing.runners );
 
    Pipeline.checkAbort( "combining and calibrating RGB" );
@@ -1676,6 +1955,16 @@ Pipeline.loadChannels = function( config, reg )
       else if ( config.paths[key] )
          chans[key] = Pipeline.lazyFileChannel( key, config.paths[key], reg );
    }
+
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      var kind = config.oscKinds ? config.oscKinds[slot] : null;
+      if ( !kind )
+         throw new Error( "internal: the kind of " + slot + " was not resolved by preflight" );
+      var members = Pipeline.oscColourChannels( slot, kind, config, reg );
+      for ( var m in members )
+         chans[m] = members[m];
+   } );
 
    return chans;
 };
@@ -1768,6 +2057,319 @@ Pipeline.lazyFileChannel = function( key, path, reg )
             } };
 };
 
+/*
+ * A stage's complaint about one plane of a colour master, or null. A plane
+ * whose maximum equals its minimum (all zero, or any single value) holds
+ * no image.
+ */
+Pipeline.oscPlaneProblem = function( stats, plane, path )
+{
+   if ( stats.max == stats.min )
+      return path + ": plane " + plane + " is constant (all values " + stats.min +
+             "); the master looks broken";
+   return null;
+};
+
+// The sidecar record of a first load: the statistics of planes 0 to 2.
+Pipeline.oscValidationRecord = function( statsList )
+{
+   return { planes: statsList.map( function( s )
+   {
+      return { min: s.min, max: s.max, median: s.median };
+   } ) };
+};
+
+/*
+ * The run's cache policy over a colour loader's io. The wrapped io stays as
+ * `base`; every other member delegates to it. No cache: nothing is read or
+ * written persistently. Ignore cache: nothing is read, everything is written
+ * (the cache is refreshed), as the stages do.
+ */
+Pipeline.oscCacheIo = function( config, base )
+{
+   var io = { base: base };
+   Object.keys( base ).forEach( function( k )
+   {
+      if ( typeof base[k] == "function" )
+         io[k] = function() { return base[k].apply( base, arguments ); };
+   } );
+   var off = !config.useCache;
+   var noRead = off || !!config.ignoreCache;
+   if ( noRead )
+   {
+      io.cacheLoad = function() { return null; };
+      io.readSidecar = function() { return null; };
+   }
+   if ( off )
+   {
+      io.cacheStore = function() {};
+      io.writeSidecar = function() {};
+   }
+   return io;
+};
+
+/*
+ * One loader per colour master, shared by its sibling channels. The master is
+ * opened at most once, and only when a requested plane is not already in the
+ * cache; on that open every plane is measured and checked, the verdict goes to
+ * the sidecar, and the planes the slot uses are cached and kept for the
+ * siblings. `source` is { path, fingerprint } (a view's path is its id).
+ */
+Pipeline.oscGroupLoader = function( slot, source, kind, reg, io )
+{
+   var gid = Pipeline.oscGroupIdentity( source.fingerprint, kind );
+   var members = Pipeline.OSC_RECIPES[slot];
+   var names = {};
+   for ( var m in members )
+      names[ members[m] ] = m;
+   var handed = {};      // plane -> window given out this run
+   var kept = {};        // plane -> extracted window nobody has taken yet
+   var record = null;    // this run's own record, for when no sidecar can be read
+   var waiting = [];
+   var loader = { opens: 0 };
+
+   function channelName( plane )
+   {
+      var n = names[plane];
+      return n == "H" ? "Ha" : n == "O" ? "OIII" : n;
+   }
+
+   function announce()
+   {
+      var rec = loader.validation();
+      if ( rec == null )
+         return;
+      var fns = waiting;
+      waiting = [];
+      fns.forEach( function( f ) { f( rec ); } );
+   }
+
+   function openAndSplit()
+   {
+      loader.opens++;
+      var master = io.openMaster( source.path );
+      try
+      {
+         var stats = [];
+         for ( var p = 0; p < 3; ++p )
+            stats.push( io.planeStats( master, p ) );
+         for ( var q = 0; q < 3; ++q )
+         {
+            var problem = Pipeline.oscPlaneProblem( stats[q], q, source.path );
+            if ( problem != null )
+               throw new Error( problem );
+         }
+         record = Pipeline.oscValidationRecord( stats );
+         io.writeSidecar( Pipeline.oscValidateName( gid ), record );
+         for ( var n in names )
+         {
+            var plane = +n;
+            if ( handed[plane] )
+               continue;   // a sibling already holds it, and its cache entry exists
+            var w = io.planeWindow( master, plane, channelName( plane ) );
+            io.cacheStore( Pipeline.oscSiblingKey( gid, plane ), w,
+                           { channel: names[n], stage: "split",
+                             params: { recipe: "plane:" + plane } } );
+            kept[plane] = w;
+         }
+      }
+      finally { io.closeMaster( master ); }
+      announce();
+   }
+
+   loader.planeWindow = function( plane )
+   {
+      if ( handed[plane] )
+         return handed[plane];
+      if ( kept[plane] == null )
+      {
+         var hit = io.cacheLoad( Pipeline.oscSiblingKey( gid, plane ), channelName( plane ) );
+         if ( hit != null )
+            kept[plane] = hit;
+         else
+            openAndSplit();
+      }
+      handed[plane] = kept[plane];
+      delete kept[plane];
+      return handed[plane];
+   };
+
+   // The sidecar's record, or this run's own when the sidecar cannot be read.
+   loader.validation = function()
+   {
+      var rec = io.readSidecar( Pipeline.oscValidateName( gid ) );
+      return rec != null ? rec : record;
+   };
+
+   // Calls fn( record ) once, as soon as a record exists (now, or after the first load).
+   loader.whenValidated = function( fn )
+   {
+      waiting.push( fn );
+      announce();
+   };
+
+   // Drops the extracted planes nobody took.
+   loader.release = function()
+   {
+      for ( var p in kept )
+      {
+         try { if ( io.closeWindow ) io.closeWindow( kept[p] ); }
+         catch ( e ) {}
+         delete kept[p];
+      }
+   };
+
+   return loader;
+};
+
+/*
+ * The id a plane's working window takes: <key>_work, or the next free
+ * suffix. A window already holding the base id is not asked to move off
+ * itself.
+ */
+Pipeline.oscWorkingId = function( currentId, key, exists )
+{
+   var base = key + "_work";
+   return currentId == base ? currentId : Util.uniqueWindowId( base, exists );
+};
+
+// The log line of one colour group, from its validation record.
+Pipeline.oscGroupLogLine = function( slot, source, kind, filter, rec )
+{
+   var file = source.path.split( /[\\/]/ ).pop();
+   var members = Object.keys( Pipeline.OSC_RECIPES[slot] );
+   var values = rec.planes.map( function( p )
+   {
+      return p.min.toFixed( 5 ) + "/" + p.max.toFixed( 5 ) + "/" + p.median.toFixed( 5 );
+   } ).join( ", " );
+   return "OSC " + file + ": " + kind + ", filter " + filter + ", planes " +
+          members.join( "/" ) + ", min/max/median " + values;
+};
+
+// The production io of a colour loader. A view's own window is never closed.
+Pipeline.oscProductionIo = function( slot, source, isView, reg )
+{
+   var recipes = Pipeline.OSC_RECIPES[slot];
+   function sidecarPath( name ) { return Cache.dir() + "/" + name; }
+   var io = {};
+   io.openMaster = function( path )
+   {
+      if ( isView )
+      {
+         var vw = ImageWindow.windowById( path );
+         if ( vw == null || vw.isNull )
+            throw new Error( "View no longer open for " + slot + ": " + path );
+         return vw;
+      }
+      var ws = ImageWindow.open( path );
+      if ( ws.length == 0 )
+         throw new Error( "Could not open " + slot + ": " + path );
+      reg.add( ws[0] );
+      return ws[0];
+   };
+   io.closeMaster = function( master )
+   {
+      if ( isView )
+         return;
+      reg.forget( master );
+      master.forceClose();
+   };
+   io.planeWindow = function( master, plane, name )
+   {
+      return reg.add( Steps.extractPlane( master.mainView, plane,
+                                          Util.freeWindowId( name + "_work" ), name ) );
+   };
+   io.planeStats = function( master, plane ) { return Steps.planeStats( master.mainView, plane ); };
+   io.cacheLoad = function( key, name )
+   {
+      var w = Cache.load( key, Util.freeWindowId( name + "_work" ) );
+      return w == null ? null : reg.add( w );
+   };
+   io.cacheStore = function( key, window, meta ) { Cache.store( key, window, meta ); };
+   io.closeWindow = function( w ) { reg.forget( w ); w.forceClose(); };
+   io.writeSidecar = function( name, rec )
+   {
+      try
+      {
+         Util.ensureDirectory( Cache.dir() );
+         File.writeTextFile( sidecarPath( name ), JSON.stringify( rec ) );
+      }
+      catch ( e ) { Util.warn( "load", "could not write " + name + ": " + e ); }
+   };
+   io.readSidecar = function( name )
+   {
+      try
+      {
+         var p = sidecarPath( name );
+         if ( !File.exists( p ) )
+            return null;
+         var rec = JSON.parse( File.readTextFile( p ) );
+         return rec && rec.planes && rec.planes.length == 3 ? rec : null;
+      }
+      catch ( e ) { return null; }
+   };
+   return io;
+};
+
+/*
+ * The lazy channels of one colour slot, one per member, sharing one loader.
+ * Nothing is opened here. Each has the fields Pipeline.lazyFileChannel
+ * returns plus group and plane; sourceKey and currentKey are the sibling key.
+ */
+Pipeline.oscColourChannels = function( slot, kind, config, reg )
+{
+   var viewId = config.views && config.views[slot];
+   var source, keywords;
+   if ( viewId )
+   {
+      var vw = ImageWindow.windowById( viewId );
+      if ( vw == null || vw.isNull )
+         throw new Error( "View no longer open for " + slot + ": " + viewId );
+      source = { path: viewId, fingerprint: Cache.fingerprintView( vw.mainView ) };
+      keywords = vw.keywords;
+   }
+   else
+   {
+      var fp = Cache.fingerprintFile( config.paths[slot] );
+      if ( fp == null )
+         throw new Error( "Could not read " + slot + ": " + config.paths[slot] );
+      source = { path: config.paths[slot], fingerprint: fp };
+      keywords = Util.readImageInfo( config.paths[slot] ).keywords;
+   }
+   var filter = Util.keywordValue( keywords, "FILTER" );
+   var instrume = Util.keywordValue( keywords, "INSTRUME" );
+   var gid = Pipeline.oscGroupIdentity( source.fingerprint, kind );
+   var io = Pipeline.oscCacheIo( config, Pipeline.oscProductionIo( slot, source, !!viewId, reg ) );
+   var loader = Pipeline.oscGroupLoader( slot, source, kind, reg, io );
+   loader.whenValidated( function( rec )
+   {
+      Util.log( "load", Pipeline.oscGroupLogLine( slot, source, kind, filter, rec ) );
+   } );
+
+   var chans = {};
+   Util.COLOUR_MEMBERS[slot].forEach( function( key )
+   {
+      var plane = Pipeline.OSC_RECIPES[slot][key];
+      var sibling = Pipeline.oscSiblingKey( gid, plane );
+      chans[key] = { key: key, path: source.path, window: null, view: null,
+                     filter: filter, instrume: instrume,
+                     sourceKey: sibling, currentKey: sibling,
+                     group: slot, plane: plane,
+                     load: function()
+                     {
+                        if ( this.window != null )
+                           return this.window;
+                        var win = loader.planeWindow( this.plane );
+                        win.mainView.id = Pipeline.oscWorkingId( win.mainView.id, this.key, Util.windowIdExists );
+                        this.window = win;
+                        this.view = win.mainView;
+                        Util.log( "load", this.key + " <- " + this.path + " (plane " + this.plane + ")" );
+                        return win;
+                     } };
+   } );
+   return chans;
+};
+
       /*
        * One session, one camera. WBPP's autocrop drops INSTRUME from the
        * headers it rewrites, and a channel without a camera silently gets
@@ -1780,6 +2382,11 @@ Pipeline.lazyFileChannel = function( key, path, reg )
 Pipeline.inheritInstrument = function( chans )
 {
    var ckeys = Object.keys( chans ), known = [];
+   // A colour master's channels are calibrated against Ideal QE: they
+   // neither give nor take a camera.
+   for ( var gi = 0; gi < ckeys.length; ++gi )
+      if ( chans[ckeys[gi]].group )
+         return;
    for ( var ci = 0; ci < ckeys.length; ++ci )
       known.push( chans[ckeys[ci]].instrume );
    var common = Util.commonInstrument( known );
@@ -1836,7 +2443,10 @@ Pipeline.correctBroadband = function( chans, config, reg )
 Pipeline.broadbandStages = function( bk, bc, config )
 {
    var chosenFilter = config.filters ? config.filters[bk] : null;
-   var qe = Steps.deviceCurveForImage( bc.instrume );
+   // A colour master is calibrated against Ideal QE, not its camera's curve,
+   // so the camera's curve is not looked up (and not logged) for it.
+   var isOsc = ( bc.group == "OSC" );
+   var qe = isOsc ? null : Steps.deviceCurveForImage( bc.instrume );
    var mgcCfg = Steps.configuredMGC( config.marsPath );
    var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
                    mgcCfg.marsDatabaseFiles.slice().sort() : [];
@@ -1845,7 +2455,8 @@ Pipeline.broadbandStages = function( bk, bc, config )
       solve: {},
       // channel key + chosen filter + resolved QE curve name: anything
       // that changes what SPFC actually calibrates against.
-      spfc: { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
+      spfc: isOsc ? Pipeline.oscSpfcParams( bk, config )
+                      : { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
       // the MARS database file list, not just "MGC ran" -- a different
       // database gives a different correction from the same input.
       mgc: { marsFiles: marsFiles },
@@ -1882,8 +2493,14 @@ Pipeline.broadbandRunners = function( channel, config )
       solve: function( c ) { Steps.solve( c.view ); },
       spfc: function( c )
       {
-         Steps.spfc( c.view, c.filter, channel, c.instrume,
-                     config.filters ? config.filters[channel] : null );
+         // A colour master: the sensor's curve, and no camera, which
+         // Steps.deviceCurveForImage turns into the Ideal QE curve.
+         if ( c.group == "OSC" )
+            Steps.spfc( c.view, c.filter, channel, null,
+                        Pipeline.oscSpfcParams( channel, config ).filter );
+         else
+            Steps.spfc( c.view, c.filter, channel, c.instrume,
+                        config.filters ? config.filters[channel] : null );
       },
       mgc: function( c ) { Steps.mgc( c.view, config.marsPath ); },
       graxpert: function( c ) { Steps.removeGradient( c.view, config ); },
@@ -1897,6 +2514,75 @@ Pipeline.broadbandRunners = function( channel, config )
                              Pipeline.studioFamily( config ) );
       }
    };
+};
+
+/*
+ * What SPFC calibrates a colour master's channel against: the sensor's
+ * colour-filter curve for that channel and the Ideal QE curve (the sensor
+ * curves already carry the sensor's response, so a camera QE on top would
+ * count it twice).
+ */
+Pipeline.oscSpfcParams = function( channel, config )
+{
+   return { channel: channel, filter: ( config.oscSensor || {} )[channel],
+            qe: Util.IDEAL_QE_CURVE_NAME };
+};
+
+/*
+ * The filters the composite and the clean reference are calibrated with:
+ * config.filters, with R, G and B replaced by the sensor curves when a
+ * colour master is used. A copy; config.filters is never changed.
+ */
+Pipeline.effectiveFilters = function( config )
+{
+   var out = {}, own = config.filters || {};
+   Object.keys( own ).forEach( function( k ) { out[k] = own[k]; } );
+   if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
+   {
+      var sensor = config.oscSensor || {};
+      Util.RGB_GROUP.forEach( function( k ) { out[k] = sensor[k]; } );
+   }
+   return out;
+};
+
+/*
+ * The RGB composite's two calibration runners. With clean white-balance
+ * factors the composite is corrected by them (Steps.spccRGB is not run);
+ * without, SPCC runs on the composite itself.
+ */
+Pipeline.rgbCalibrationRunners = function( config, lumInstrume, cleanFactors )
+{
+   return {
+      spfcRGB: function( h )
+      {
+         Steps.spfc( h.view, null, "RGB", lumInstrume, Pipeline.effectiveFilters( config ) );
+      },
+      spccRGB: function( h )
+      {
+         if ( cleanFactors != null )
+            Steps.applyWhiteBalance( h.view, cleanFactors );
+         else
+            Steps.spccRGB( h.view, lumInstrume, Pipeline.effectiveFilters( config ) );
+      }
+   };
+};
+
+/*
+ * Narrowband SPCC bandwidths for a palette built from a dual-band colour
+ * master, one per output channel: HOO is R = Ha, G = OIII, B = OIII. The
+ * filter table gives each line's bandwidth; a filter it does not know (or
+ * that has none) falls back to the run's narrowband bandwidth. info.filter
+ * is the master's FILTER keyword.
+ */
+Pipeline.oscNarrowbandBandwidths = function( config, info )
+{
+   var fi = Util.oscFilterInfo( info ? info.filter : null );
+   function pick( nm )
+   {
+      return ( typeof nm == "number" && isFinite( nm ) && nm > 0 ) ? nm : config.narrowbandBandwidth;
+   }
+   var ha = pick( fi ? fi.haNm : null ), oiii = pick( fi ? fi.oiiiNm : null );
+   return { R: ha, G: oiii, B: oiii };
 };
 
 /*
@@ -2019,6 +2705,59 @@ Pipeline.bestMeasuredChannel = function( ranked, quality )
 };
 
 /*
+ * How the channels of a colour run are registered. `groups` maps a colour
+ * slot to its members ( { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } );
+ * only members in `present` count. The reference is OSC's G, else OSCNB's H;
+ * its own group is already on the reference grid (identity). Any other group
+ * is one entry: its members and the planes of the temporary image that is
+ * registered in one go (R,G,B for OSC; H,O,O for OSCNB, whose third plane
+ * repeats O). Channels outside every group are listed under mono.
+ */
+Pipeline.oscRegistrationPlan = function( present, groups )
+{
+   var slots = [ "OSC", "OSCNB" ];
+   var used = {}, byslot = {};
+   slots.forEach( function( slot )
+   {
+      var members = ( groups && groups[slot] || [] ).filter( function( k ) { return present.indexOf( k ) >= 0; } );
+      if ( members.length > 0 )
+      {
+         byslot[slot] = members;
+         members.forEach( function( k ) { used[k] = true; } );
+      }
+   } );
+   var refSlot = byslot.OSC ? "OSC" : byslot.OSCNB ? "OSCNB" : null;
+   var plan = { ref: null, identity: [], groups: [],
+                mono: present.filter( function( k ) { return !used[k]; } ) };
+   if ( refSlot == null )
+      return plan;
+   plan.ref = refSlot == "OSC" ? "G" : "H";
+   plan.identity = byslot[refSlot].slice();
+   slots.forEach( function( slot )
+   {
+      if ( !byslot[slot] || slot == refSlot )
+         return;
+      plan.groups.push( { slot: slot, members: byslot[slot].slice(),
+                          planes: slot == "OSC" ? [ "R", "G", "B" ] : [ "H", "O", "O" ] } );
+   } );
+   return plan;
+};
+
+/*
+ * What a grouped registration does given the cache: "register" (combine,
+ * register, store, split), "split" (the group image is cached but a split
+ * is not: split it again) or "load" (every split is cached). With the cache
+ * off or ignored nothing is read, so it always registers. `policy` is
+ * { useCache, ignoreCache } from the configuration.
+ */
+Pipeline.oscGroupCacheAction = function( groupCached, splitsCached, policy )
+{
+   if ( !policy.useCache || policy.ignoreCache || !groupCached )
+      return "register";
+   return splitsCached.every( function( c ) { return !!c; } ) ? "load" : "split";
+};
+
+/*
  * The channel every other channel is registered to.
  *
  * `present` lists the channel keys in the run; `quality` maps a key to
@@ -2053,9 +2792,15 @@ Pipeline.bestMeasuredChannel = function( ranked, quality )
  * REGISTRATION_FALLBACK_ORDER, never by object or argument order, so the
  * same inputs always give the same reference and the same cache keys.
  */
-Pipeline.registrationReference = function( present, quality )
+Pipeline.registrationReference = function( present, quality, groups )
 {
    quality = quality || {};
+   if ( groups )
+   {
+      var plan = Pipeline.oscRegistrationPlan( present, groups );
+      if ( plan.ref != null )
+         return { key: plan.ref, reason: "colour group reference" };
+   }
    if ( present.indexOf( "L" ) >= 0 )
       return { key: "L", reason: "L is present, and L is always the reference" };
 
@@ -2121,9 +2866,193 @@ Pipeline.registrationQuality = function( chans )
  */
 Pipeline.compositeInstrument = function( chans, refKey )
 {
+   // A colour master's composite is calibrated against the sensor curves
+   // and Ideal QE (no camera). A light-pollution filter in front of the
+   // camera is not modelled by that; say so, and carry on.
+   var oscKeys = Object.keys( chans ).filter( function( k ) { return chans[k].group == "OSC"; } );
+   if ( oscKeys.length > 0 )
+   {
+      var fi = Util.oscFilterInfo( chans[oscKeys[0]].filter );
+      if ( fi && [ "lpro", "cls", "clsccd" ].indexOf(
+                Util.normaliseFilter( Util.oscModelName( chans[oscKeys[0]].filter ) ) ) >= 0 )
+         Util.log( "spcc", "colour calibration does not model the " + fi.name +
+                           " filter in front of the camera" );
+   }
+   if ( refKey && chans[refKey] && chans[refKey].group == "OSC" )
+      return null;
    if ( chans.L )
       return chans.L.instrume;
    return ( refKey && chans[refKey] ) ? chans[refKey].instrume : null;
+};
+
+/*
+ * The colour groups of a run, from the channels' own `group` fields: a map
+ * of slot to members in plane order, or null when no channel has one.
+ */
+Pipeline.oscChannelGroups = function( chans )
+{
+   var groups = null;
+   Object.keys( Pipeline.OSC_RECIPES ).forEach( function( slot )
+   {
+      var members = Util.COLOUR_MEMBERS[slot].filter( function( k ) { return chans[k] && chans[k].group == slot; } );
+      if ( members.length > 0 )
+      {
+         groups = groups || {};
+         groups[slot] = members;
+      }
+   } );
+   return groups;
+};
+
+/*
+ * `keywords` with FILTER and LOOMSRC set for one member of a colour master:
+ * the channel name, and the master's file name with the plane, as
+ * Steps.extractPlane writes them for the unregistered plane.
+ */
+Pipeline.oscSplitKeywords = function( keywords, filterName, fileName, plane )
+{
+   var kws = ( keywords || [] ).filter( function( k ) { return k.name != "FILTER" && k.name != "LOOMSRC"; } );
+   kws.push( new FITSKeyword( "FILTER", "'" + filterName + "'", "channel of the colour master" ) );
+   kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( fileName + "|plane:" + plane ), "colour master and plane" ) );
+   return kws;
+};
+
+/*
+ * Registers one colour group onto the reference as a single image, so its
+ * siblings share one transform. The siblings are combined in plane order,
+ * registered with one Steps.register call, and split again; the group image
+ * is what the cache keeps (authoritative), each split under a key derived
+ * from it. The cache policy is the run's: off reads and writes nothing,
+ * ignored reads nothing but writes. The members' views and currentKey are
+ * replaced by the registered splits.
+ */
+Pipeline.oscRegisterGroup = function( chans, entry, refView, refFingerprint, config, reg )
+{
+   var members = entry.members;
+   var names = { R: "R", G: "G", B: "B", H: "Ha", O: "OIII" };
+   var key = Pipeline.oscGroupRegisterKey( "registerGroup",
+                members.map( function( k ) { return chans[k].currentKey; } ),
+                { ref: refFingerprint, planes: entry.planes.join( "," ) } );
+   var splitKeys = members.map( function( k, i ) { return Pipeline.oscRegisteredSiblingKey( key, i ); } );
+   var policy = { useCache: !!config.useCache, ignoreCache: !!config.ignoreCache };
+   var write = policy.useCache;
+   var label = members.join( "/" );
+
+   function claim( w ) { return reg.add( w ); }
+   function release( w )
+   {
+      reg.forget( w );
+      try { w.forceClose(); }
+      catch ( e ) { Util.warn( "register", "could not close " + w.mainView.id + ": " + e ); }
+   }
+   // Replace each member's window with its registered split, which takes
+   // the member's own FILTER and LOOMSRC (the group image has one header)
+   // and the working id the old window held.
+   function adopt( wins )
+   {
+      members.forEach( function( k, i )
+      {
+         var ch = chans[k];
+         if ( ch.window != null )
+         {
+            release( ch.window );
+            ch.window = null;
+         }
+      } );
+      members.forEach( function( k, i )
+      {
+         var ch = chans[k];
+         var want = k + "_work";
+         wins[i].keywords = Pipeline.oscSplitKeywords( wins[i].keywords, names[k],
+                                                       ch.path.split( /[\\/]/ ).pop(), ch.plane );
+         if ( wins[i].mainView.id != want )
+            wins[i].mainView.id = Util.freeWindowId( want );
+         ch.window = wins[i];
+         ch.view = wins[i].mainView;
+         ch.currentKey = splitKeys[i];
+      } );
+   }
+   function splitFrom( groupWin )
+   {
+      return members.map( function( k, i )
+      {
+         var w = claim( Steps.extractPlane( groupWin.mainView, i, Util.freeWindowId( k + "_work" ), names[k] ) );
+         w.keywords = Pipeline.oscSplitKeywords( w.keywords, names[k],
+                                                 chans[k].path.split( /[\\/]/ ).pop(), chans[k].plane );
+         if ( write )
+            Cache.store( splitKeys[i], w, { channel: k, stage: "registerGroup",
+                                            params: { plane: i, planes: entry.planes.join( "," ) } } );
+         return w;
+      } );
+   }
+
+   var action = policy.useCache && !policy.ignoreCache
+              ? Pipeline.oscGroupCacheAction( Cache.lookup( key ) != null,
+                                              splitKeys.map( function( s ) { return Cache.lookup( s ) != null; } ),
+                                              policy )
+              : "register";
+
+   if ( action == "load" )
+   {
+      var loaded = [];
+      for ( var i = 0; i < members.length; ++i )
+      {
+         var w = Cache.load( splitKeys[i], Util.freeWindowId( members[i] + "_work" ) );
+         if ( w == null ) break;
+         loaded.push( claim( w ) );
+      }
+      if ( loaded.length == members.length )
+      {
+         Util.log( "cache", label + " registerGroup HIT" );
+         adopt( loaded );
+         return;
+      }
+      loaded.forEach( release );
+      action = "split";
+   }
+   if ( action == "split" )
+   {
+      var cachedGroup = Cache.load( key, Util.freeWindowId( "register_group" ) );
+      if ( cachedGroup != null )
+      {
+         claim( cachedGroup );
+         Util.log( "cache", label + " registerGroup HIT (split again)" );
+         var parts;
+         try { parts = splitFrom( cachedGroup ); }
+         finally { release( cachedGroup ); }
+         adopt( parts );
+         return;
+      }
+   }
+
+   Util.log( "cache", label + " registerGroup MISS" );
+   var views = entry.planes.map( function( k ) { return Pipeline.ensureLoaded( chans[k] ).view; } );
+   var combined = claim( Steps.combinePlanes( views, Util.freeWindowId( "register_group" ) ) );
+   var registered = null, parts2;
+   try
+   {
+      registered = claim( Steps.register( combined.mainView, refView ) );
+      if ( write )
+         Cache.store( key, registered, { channel: label, stage: "registerGroup",
+                                         params: { ref: refFingerprint, planes: entry.planes.join( "," ) } } );
+      // The old working copies go first so the splits can take their ids.
+      members.forEach( function( k )
+      {
+         if ( chans[k].window != null )
+         {
+            release( chans[k].window );
+            chans[k].window = null;
+         }
+      } );
+      parts2 = splitFrom( registered );
+   }
+   finally
+   {
+      release( combined );
+      if ( registered != null )
+         release( registered );
+   }
+   adopt( parts2 );
 };
 
 Pipeline.registerToReference = function( chans, config, reg )
@@ -2132,8 +3061,13 @@ Pipeline.registerToReference = function( chans, config, reg )
    for ( var p = 0; p < Util.CHANNELS.length; ++p )
       if ( chans[Util.CHANNELS[p]] )
          present.push( Util.CHANNELS[p] );
+   // Colour groups first: their reference needs no star measurements, and a
+   // colour master's siblings share a path that registrationQuality reads.
+   var groups = Pipeline.oscChannelGroups( chans );
+   var plan = groups ? Pipeline.oscRegistrationPlan( present, groups ) : null;
    var choice = Pipeline.registrationReference( present,
-                                                Pipeline.registrationQuality( chans ) );
+                                                groups ? {} : Pipeline.registrationQuality( chans ),
+                                                groups );
    var refKey = choice.key;
    if ( refKey == null )
       throw new Error( "No channels to register." );
@@ -2165,10 +3099,21 @@ Pipeline.registerToReference = function( chans, config, reg )
     * is exactly what it always was, so existing caches stay valid.
     */
    var refFingerprint = chans[refKey].currentKey;
+   var skip = {};
+   if ( plan )
+   {
+      plan.identity.forEach( function( k ) { skip[k] = true; } );
+      plan.groups.forEach( function( entry )
+      {
+         Pipeline.oscRegisterGroup( chans, entry, refView, refFingerprint, config, reg );
+         entry.members.forEach( function( k ) { skip[k] = true; } );
+         Pipeline.checkAbort( "registered " + entry.slot );
+      } );
+   }
    for ( var c = 0; c < Util.CHANNELS.length; ++c )
    {
       var ck = Util.CHANNELS[c];
-      if ( ck == refKey || !chans[ck] ) continue;
+      if ( ck == refKey || !chans[ck] || skip[ck] ) continue;
       /*
        * Swap the channel over to its registered window; the original
        * working copy is finished with. Without this the pipeline would
@@ -2388,7 +3333,7 @@ Pipeline.balanceNarrowband = function( chans, config )
        * did not, so this stays.
        */
 Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
-                                       lumInstrume, refView, refFingerprint )
+                                       lumInstrume, refView, refFingerprint, refKey )
 {
    var cleanFactors = null;
    if ( chans.R && chans.G && chans.B &&
@@ -2397,7 +3342,7 @@ Pipeline.cleanWhiteBalance = function( chans, config, reg, common,
       try
       {
          cleanFactors = Pipeline.measureCleanWhiteBalance(
-            chans, config, reg, common, lumInstrume, refView, refFingerprint );
+            chans, config, reg, common, lumInstrume, refView, refFingerprint, refKey );
       }
       catch ( e )
       {
@@ -2574,6 +3519,155 @@ Pipeline.retainResults = function( results, chans, rgb, paletteWins, reg )
    Pipeline.forgetKeepers( results, chans, rgb, paletteWins, keep, reg );
 
    return keep;
+};
+
+/*
+ * What each logical channel of a colour master really holds, for the run log.
+ * Hbeta rides in the OIII band and, on a quad-band filter, SII rides in the
+ * Ha band: neither is a single line.
+ */
+Pipeline.OSC_LINE_NOTES = { H: "Ha, plus SII for quad-band", O: "OIII with H\u03b2" };
+
+/*
+ * The log line that says where a palette built from a dual-band colour master
+ * gets its channels, or "" when the run has no such master (a mono palette,
+ * or an RGB colour master, which builds no palette). `infos` is keyed by
+ * colour slot: { OSCNB: { name } }, name being the filter's model name.
+ */
+Pipeline.oscPaletteSources = function( config, infos, palette )
+{
+   var pal = palette || "HOO";
+   if ( Util.colourSupplied( config ).indexOf( "OSCNB" ) < 0 || !Util.PALETTES[pal] )
+      return "";
+   var info = infos && infos.OSCNB;
+   var from = "OSCNB" + ( info && info.name ? " " + info.name : "" );
+   var parts = [];
+   var need = Util.paletteChannels( pal );
+   for ( var i = 0; i < need.length; ++i )
+   {
+      if ( !Pipeline.OSC_LINE_NOTES[need[i]] )
+         return "";
+      parts.push( need[i] + " from " + from + " (" + Pipeline.OSC_LINE_NOTES[need[i]] + ")" );
+   }
+   return pal + ": " + parts.join( ", " );
+};
+
+/*
+ * Logs the sources line once for a palette whose channels come from a colour
+ * master, from the channel records the palette is built from. Returns the line
+ * ("" and nothing logged for a mono palette).
+ */
+Pipeline.logPaletteSources = function( palette, chans, config )
+{
+   var map = Util.PALETTES[palette] || [];
+   var from = null;
+   for ( var i = 0; i < map.length; ++i )
+      if ( chans[map[i]] && chans[map[i]].group == "OSCNB" )
+         from = chans[map[i]];
+   if ( from == null )
+      return "";
+   var fi = Util.oscFilterInfo( from.filter );
+   var line = Pipeline.oscPaletteSources( config, { OSCNB: { name: fi ? fi.name : "" } }, palette );
+   if ( line.length > 0 )
+      Util.log( "palette", line );
+   return line;
+};
+
+/*
+ * Provenance of the final exports. The values name the colour master FILE and
+ * its planes as the configuration holds them, never a working window, a work
+ * folder or a cache key, whatever stage the pixels came through.
+ */
+Pipeline.oscChannelSource = function( chan )
+{
+   if ( chan == null || !chan.group )
+      return null;
+   return String( chan.path ).split( /[\\\/]/ ).pop() + "|plane:" + chan.plane;
+};
+
+/*
+ * One value naming the source planes of a composite or a palette, from the
+ * channels `keys` of `chans` that come from a colour master (null when none
+ * does). Per master the planes are listed together ("OSC f planes 0,1,2")
+ * unless `perPlane`, when each distinct plane is its own entry
+ * ("OSCNB f plane 0; OSCNB f plane 1").
+ */
+Pipeline.oscSourceText = function( chans, keys, perPlane )
+{
+   var order = [], byMaster = {}, seen = {};
+   keys.forEach( function( k )
+   {
+      var c = chans[k];
+      if ( !c || !c.group )
+         return;
+      var head = c.group + " " + String( c.path ).split( /[\\\/]/ ).pop();
+      var id = head + "|" + c.plane;
+      if ( seen[id] )
+         return;
+      seen[id] = true;
+      if ( !byMaster[head] )
+      {
+         byMaster[head] = [];
+         order.push( head );
+      }
+      byMaster[head].push( c.plane );
+   } );
+   if ( order.length == 0 )
+      return null;
+   var parts = [];
+   order.forEach( function( head )
+   {
+      var planes = byMaster[head];
+      if ( perPlane )
+         planes.forEach( function( p ) { parts.push( head + " plane " + p ); } );
+      else
+         parts.push( head + ( planes.length == 1 ? " plane " : " planes " ) + planes.join( "," ) );
+   } );
+   return parts.join( "; " );
+};
+
+// Sets LOOMSRC on a result window, replacing any earlier value; other keywords are kept.
+Pipeline.setSource = function( win, value )
+{
+   if ( value == null || !Pipeline.windowIsUsable( win ) )
+      return;
+   try
+   {
+      var kws = ( win.keywords || [] ).filter( function( k ) { return k.name != "LOOMSRC"; } );
+      kws.push( new FITSKeyword( "LOOMSRC", Util.fitsString( value ), "colour master and planes" ) );
+      win.keywords = kws;
+   }
+   catch ( e ) { Util.warn( "output", "could not record the source of " + win.mainView.id + ": " + e ); }
+};
+
+/*
+ * Stamps LOOMSRC on every result that comes from a colour master: each
+ * channel with its starless, stars and linear companions, the RGB composite,
+ * and every palette. A mono result is not touched, so a mono run's outputs
+ * are what they were.
+ */
+Pipeline.stampSources = function( results, chans )
+{
+   function stamp( name, value ) { if ( results[name] ) Pipeline.setSource( results[name], value ); }
+   Object.keys( chans ).forEach( function( k )
+   {
+      var v = Pipeline.oscChannelSource( chans[k] );
+      [ "", "_starless", "_stars", "_linear" ].forEach( function( sfx ) { stamp( k + sfx, v ); } );
+   } );
+   function allColour( keys ) { return keys.every( function( k ) { return chans[k] && chans[k].group; } ); }
+   if ( allColour( [ "R", "G", "B" ] ) )
+   {
+      var rgb = Pipeline.oscSourceText( chans, [ "R", "G", "B" ], false );
+      [ "RGB", "RGB_starless", "RGB_stars", "RGB_linear" ].forEach( function( n ) { stamp( n, rgb ); } );
+   }
+   Object.keys( Util.PALETTES ).forEach( function( p )
+   {
+      var map = Util.PALETTES[p];
+      if ( !allColour( map ) )
+         return;
+      var v = Pipeline.oscSourceText( chans, map, true );
+      [ "", "_starless", "_stars", "_linear" ].forEach( function( sfx ) { stamp( p + sfx, v ); } );
+   } );
 };
 
 /*
@@ -2814,7 +3908,7 @@ Pipeline.run = function( config )
       var lumInstrume = Pipeline.compositeInstrument( chans, ref.refKey );
 
       var cleanFactors = Pipeline.cleanWhiteBalance( chans, config, reg, common,
-                                                     lumInstrume, refView, refFingerprint );
+                                                     lumInstrume, refView, refFingerprint, ref.refKey );
 
       var rgb = Pipeline.buildRGB( chans, config, reg, common,
                                    lumInstrume, cleanFactors );
@@ -2843,6 +3937,9 @@ Pipeline.run = function( config )
        * composites already carry the RGB working space; the mono plates
        * carried nothing at all and opened untagged.
        */
+      // Colour results name their master file and planes; mono ones are left alone.
+      Pipeline.stampSources( results, chans );
+
       for ( var rk in results )
          if ( results[rk] && Pipeline.windowIsUsable( results[rk] ) )
             Steps.assignProfile( results[rk], rk );

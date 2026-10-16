@@ -11,24 +11,31 @@ from __future__ import annotations
 import math
 import os
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
+
 from loomsiril.io_fits import read_fits, write_fits
 
 from . import imageops
+from .colour_load import _PLANE_NAMES, _loomsrc
 from .siril_ops import SirilOps
 from .stagekit import StageFailed, run_siril_stage
 
 __all__ = [
+    "GROUP_REGISTER_LAYER",
     "balance_narrowband",
     "common_crop_rect",
     "crop_plate",
+    "group_register_params",
     "match_halos",
     "measure_psf_sigma",
+    "member_split_header",
     "register_channels",
+    "register_group_image",
     "register_stage_params",
 ]
 
@@ -45,6 +52,9 @@ _LINEAR_FIT_HIGH = 0.92
 _CHANNEL_ORDER: tuple[str, ...] = ("L", "R", "G", "B", "H", "S", "O")
 _NARROWBAND: tuple[str, ...] = ("H", "S", "O")
 _SEQUENCE = "reg"
+#: The channel of the colour sequence the stars are found on when a colour group is registered as one image: the
+#: green plane of an ``OSC`` group image, the first plane (H) of an ``OSCNB`` one (whose reference is expanded from G).
+GROUP_REGISTER_LAYER: dict[str, int] = {"OSC": 1, "OSCNB": 0}
 
 
 def register_stage_params(ref_chain_key: str) -> dict[str, Any]:
@@ -105,6 +115,87 @@ def register_channels(ops: SirilOps, plates: Mapping[str, str], ref: str, work_d
         out[ch] = os.fspath(target)
         log(f"register: {ch} registered to {out[ch]}")
     return out
+
+
+def group_register_params(ref_chain_key: str, planes: Sequence[str]) -> dict[str, Any]:
+    """The cache parameters of a grouped registration: the reference's chain key and the group image's planes.
+
+    ``planes`` are the channel letters of the group image in plane order (``R,G,B`` or ``H,O,O``).
+    """
+    return {"ref": ref_chain_key, "planes": ",".join(planes)}
+
+
+def member_split_header(header: Mapping[str, Any], member: str, master_path: Any, plane: int) -> dict[str, Any]:
+    """``header`` with the FILTER and LOOMSRC of one member of a colour master, as the unregistered plate has them.
+
+    Both come from the master (the channel's name, the master's file name and the plane), never from the header of
+    the group image the member was registered in: that image is temporary and carries the first member's keywords.
+    """
+    out = {k: v for k, v in header.items() if k not in ("FILTER", "LOOMSRC")}
+    out["FILTER"] = _PLANE_NAMES.get(member, member)
+    out["LOOMSRC"] = _loomsrc(os.fspath(master_path), plane)
+    return out
+
+
+def _remove_exact(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def register_group_image(ops: SirilOps, ref_plate: Any, group_plates: Sequence[Any], layer: int, work_dir: Any,
+                         log: Callable[[str], Any]) -> tuple[list[np.ndarray], dict[str, Any]]:
+    """Register three plates onto the reference as one colour image, so they share one transform.
+
+    The reference plate is expanded to three identical channels (``rgbcomp``) and the three ``group_plates`` (plane
+    order, a plane may repeat: ``H, O, O``) are combined the same way. Siril links the two images in a fresh
+    ``register-<n>`` folder under ``work_dir`` (the reference first), registers them with ``-layer=<layer>`` and the
+    registered group image is read back: ``(planes, header)``. Every temporary file is removed by name, and the
+    folder with them, whether or not the registration worked.
+    """
+    if len(group_plates) != 3:
+        raise ValueError(f"a colour group image has three planes, got {len(group_plates)}")
+    work = Path(os.fspath(work_dir))
+    folder = _fresh_folder(work)
+    folder.mkdir(parents=True)
+    ref_stem, group_stem = folder / "01_ref", folder / "02_group"
+    produced = folder / f"r_{_SEQUENCE}_00002.fit"
+    # what ``link`` and ``register`` leave in the folder (measured on Siril 1.4): the sequence and its conversion
+    # record, the two links to the frames, the registered frames and the star lists in the ``cache`` folder
+    temporaries = [folder / f"{_SEQUENCE}_.seq", folder / f"r_{_SEQUENCE}_.seq", folder / f"{_SEQUENCE}_conversion.txt",
+                   folder / f"r_{_SEQUENCE}_00001.fit", produced]
+    for index in (1, 2):
+        temporaries += [folder / f"{_SEQUENCE}_{index:05d}.fit", folder / "cache" / f"{_SEQUENCE}_{index:05d}.lst"]
+    previous = ops.wd()
+    try:
+        ref_image = os.fspath(ops.rgbcomp(ref_plate, ref_plate, ref_plate, ref_stem))
+        group_image = os.fspath(ops.rgbcomp(group_plates[0], group_plates[1], group_plates[2], group_stem))
+        temporaries += [Path(ref_image), Path(group_image)]
+        ops.cd(folder)
+        try:
+            ops.link_sequence(_SEQUENCE)
+            ops.setref(_SEQUENCE, 1)
+            ops.register(_SEQUENCE, layer=layer)
+        finally:
+            ops.cd(previous)
+        if not produced.exists():
+            raise StageFailed("register failed on the colour group: Siril produced no registered frame for it (its "
+                              "own output is in the console just above)")
+        planes, header = read_fits(os.fspath(produced))
+        if len(planes) != 3:
+            raise StageFailed(f"register failed on the colour group: the registered image has {len(planes)} "
+                              "channels, not 3")
+        log("register: colour group registered as one image")
+        return planes, header
+    finally:
+        for path in temporaries:
+            _remove_exact(path)
+        for leftover in (folder / "cache", folder):
+            try:
+                leftover.rmdir()
+            except OSError:
+                pass  # something Siril wrote that is not listed above: the run's work folder is removed at the end
 
 
 def _percent_text(value: float) -> str:

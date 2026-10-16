@@ -42,7 +42,7 @@ Conventions that differ from the JavaScript on purpose:
 | `cache.file_source_key` | `Cache.fingerprintFile` | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.crop_tag` | `lib/Pipeline.js:1103` | V | `tests/loom/test_cache.py` |
 | `cache.crop_halos_tag` | `lib/Pipeline.js:1108` | V | `tests/loom/test_cache.py` |
-| `cache.clean_white_balance_key` | `lib/Pipeline.js:1117` | V | `tests/loom/test_cache.py` |
+| `cache.clean_white_balance_key` | `Pipeline.cleanWhiteBalanceKey` (`lib/Pipeline.js:1333`) | V | `tests/loom/test_cache.py` |
 | `cache.rgb_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.palette_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
 | `cache.lstars_source_key` | - | P | `tests/acceptance/test_loom_pr4_cache.py` |
@@ -66,9 +66,9 @@ Conventions that differ from the JavaScript on purpose:
 |---|---|---|---|
 | `channels.is_broadband` | `lib/Util.js:440` | P | - |
 | `channels.keyword_value` | `lib/Util.js:450` | P | `tests/loom/test_channels.py` |
-| `channels.channel_supplied` | `lib/Util.js:614` | P | - |
-| `channels.channel_group_problems` | `lib/Util.js:625` | P | - |
-| `channels.duplicate_file_problems` | `lib/Util.js:645` | P | - |
+| `channels.channel_supplied` | `Util.channelSupplied` (`lib/Util.js:634`) | P | - |
+| `channels.channel_group_problems` | `Util.channelGroupProblems` (`lib/Util.js:645`) | P | - |
+| `channels.duplicate_file_problems` | `Util.duplicateFileProblems` (`lib/Util.js:666`) | P | - |
 | `channels.validate_selection` | `lib/Util.js:603` | P | `tests/loom/test_channels.py` |
 | `channels.channel_from_filter` | `lib/Util.js:670` | P | `tests/loom/test_xisf.py` |
 | `channels.serialize_entries` | `lib/Util.js:713` | P | `tests/loom/test_channels.py` |
@@ -95,23 +95,38 @@ Conventions that differ from the JavaScript on purpose:
 | `channels.extract_directory` | `lib/Pipeline.js:232` | P | - |
 | `channels.project_name_from_path` | `lib/Pipeline.js:227` | P | `tests/loom/test_channels.py` |
 | `channels.project_name_for` | `lib/Pipeline.js:248` | P | `tests/loom/test_channels.py` |
-| `channels.narrowband_supplied` | `lib/Pipeline.js:95` | P | - |
+| `channels.narrowband_supplied` | `Pipeline.narrowbandSupplied` (`lib/Pipeline.js:107`) | P | - |
 | `channels.wanted_palettes` | `lib/Pipeline.js:110` | P | - |
 | `channels.report_skipped_palettes` | `lib/Pipeline.js:127` | P | - |
-| `channels.inherit_instrument` | `lib/Pipeline.js:1780` | P | `tests/loom/test_channels.py` |
-| `channels.read_header` | `lib/Util.js:468` | P | `tests/loom/test_channels.py` |
+| `channels.inherit_instrument` | `Pipeline.inheritInstrument` (`lib/Pipeline.js:2382`) | P | `tests/loom/test_channels.py` |
+| `channels.read_header` | `Util.readHeader` (`lib/Util.js:488`) | P | `tests/loom/test_channels.py` |
 | `channels.scan_masters` | - | P | `tests/loom/test_channels.py` |
+
+## loomsiril/loom/colour_load.py
+
+| Function | JavaScript (Loom) | Status | Test |
+|---|---|---|---|
+| `colour_load.ColourGroupLoader` | `Pipeline.oscGroupLoader` (`lib/Pipeline.js:2118`) | P | `tests/loom/test_colour_load.py` |
+| `colour_load.group_log_line` | `Pipeline.oscGroupLogLine` (`lib/Pipeline.js:2237`) | P | `tests/loom/test_colour_load.py` |
+| `colour_load.plane_statistics` | `Steps.planeStats` | S | `tests/loom/test_colour_load.py` |
+| `colour_load.is_plain_fits` | - | S | `tests/loom/test_colour_load.py` |
+| `colour_load.fit_loomsrc` | `lib/Util.js:fitsString` (value of the keyword, trimmed to a card) | S | `tests/loom/test_colour_load.py` |
+| `colour_load.composite_loomsrc` | `Pipeline.oscSourceText` (`lib/Pipeline.js:3595`) | S | `tests/loom/test_colour_load.py` |
+
+`ColourGroupLoader` writes the `LOOMSRC` keyword of a plate differently from Loom when the master's name is long (see
+[Deviations](#deviations)); `fit_loomsrc` is the one trim, shared with the composite and the palettes, whose values
+`composite_loomsrc` builds from Loom's own text (`osc.osc_source_text`).
 
 ## loomsiril/loom/config.py
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
-| `config.defaults` | `lib/Config.js:68-98` | V | `tests/loom/test_config.py` |
+| `config.defaults` | `Config.defaults` (`lib/Config.js:126`) | V | `tests/loom/test_config.py` |
 | `config.config_path` | `lib/Config.js:238-390` | S | `tests/loom/test_config.py` |
 | `config.gradient_tool_of` | `lib/StepsSyqon.js:1483-1490` | R | `tests/loom/test_config.py` |
 | `config.supported_noise_level` | `lib/Steps.js:2135-2140` | R | `tests/loom/test_config.py` |
 | `config.migrate_config` | `lib/Config.js:238-390` | V | `tests/loom/test_config.py` |
-| `config.apply_options` | `lib/Config.js:238-390` | P | - |
+| `config.apply_options` | `Config.loadParameters` (`lib/Config.js:207`) | P | - |
 | `config.load` | `lib/Config.js:238-390` | S | `tests/loom/test_config.py` |
 | `config.save` | `lib/Config.js:238-390` | S | `tests/loom/test_config.py` |
 
@@ -119,6 +134,10 @@ Conventions that differ from the JavaScript on purpose:
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
+| `dialog.osc_kind_row` | `lib/UI.js:45` | P | `tests/loom/test_dialog.py` |
+| `dialog.sensor_palettes` | `lib/UI.js:77` | P | `tests/loom/test_dialog.py` |
+| `dialog.run_palettes` | `lib/UI.js:87` | P | `tests/loom/test_dialog.py` |
+| `dialog.merge_kept_palettes` | `lib/UI.js:155` | P | `tests/loom/test_dialog.py` |
 | `dialog.ToolRow` | `lib/UI.js` | S | - |
 | `dialog.wheel_units` | - | S | `tests/loom/test_dialog.py` |
 | `dialog.RunRequest` | `lib/UI.js` | S | `tests/loom/test_entry.py` |
@@ -239,12 +258,59 @@ Conventions that differ from the JavaScript on purpose:
 | `nbnorm.normalize` | `lib/Steps.js:2162-2199` | R | `tests/loom/test_nbnorm.py` |
 | `nbnorm.sky_level` | - | S | `tests/loom/test_nbnorm.py` |
 
+## loomsiril/loom/osc.py
+
+The colour-master (OSC) rules. Every row marked P is replayed against `tests/oracle/loom_osc.json` (recorded by
+`tools/oracle/loom_osc.js`) in `tests/loom/test_osc.py`. `colour_run` and `js_config` are the port's own helpers. A row whose Test column is `-` is replayed by the oracle
+test through the module (it looks the function up by name), so no test file calls it by its own name.
+
+| Function | JavaScript (Loom) | Status | Test |
+|---|---|---|---|
+| `osc.normalise_filter` | `Util.normaliseFilter` (`lib/Util.js:845`) | P | - |
+| `osc.osc_model_name` | `Util.oscModelName` (`lib/Util.js:884`) | P | - |
+| `osc.osc_filter_info` | `Util.oscFilterInfo` (`lib/Util.js:893`) | P | `tests/loom/test_pipeline.py` |
+| `osc.parse_colour_master_name` | `Util.parseColourMasterName` (`lib/Util.js:1849`) | P | - |
+| `osc.channel_count_problem` | `Util.channelCountProblem` (`lib/Util.js:1489`) | P | - |
+| `osc.channel_supplied` | `Util.channelSupplied` (`lib/Util.js:634`) | P | - |
+| `osc.colour_supplied` | `Util.colourSupplied` (`lib/Util.js:691`) | P | `tests/loom/test_osc.py` |
+| `osc.mono_supplied` | `Util.monoSupplied` (`lib/Util.js:699`) | P | - |
+| `osc.supplied_channels` | `Util.suppliedChannels` (`lib/Util.js:708`) | P | - |
+| `osc.colour_mix_problem` | `Util.colourMixProblem` (`lib/Util.js:724`) | P | - |
+| `osc.osc_kind_key` | `Util.oscKindKey` (`lib/Util.js:747`) | P | `tests/loom/test_osc.py` |
+| `osc.effective_osc_kind` | `Util.effectiveOscKind` (`lib/Util.js:758`) | P | - |
+| `osc.entry_channel` | `Util.entryChannel` (`lib/Util.js:1891`) | P | - |
+| `osc.select_colour_masters` | `Util.selectColourMasters` (`lib/Util.js:1908`) | P | - |
+| `osc.colour_candidate_correction` | `Util.colourCandidateCorrection` (`lib/Util.js:1941`) | P | - |
+| `osc.osc_palette_problem` | `Pipeline.oscPaletteProblem` (`lib/Pipeline.js:208`) | P | - |
+| `osc.input_channel_problems` | `Pipeline.inputChannelProblems` (`lib/Pipeline.js:223`) | P | - |
+| `osc.osc_kind_problems` | `Pipeline.oscKindProblems` (`lib/Pipeline.js:247`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_group_identity` | `Pipeline.oscGroupIdentity` (`lib/Pipeline.js:963`) | P | `tests/loom/test_pipeline.py` |
+| `osc.osc_sibling_key` | `Pipeline.oscSiblingKey` (`lib/Pipeline.js:973`) | P | `tests/loom/test_colour_load.py` |
+| `osc.osc_validate_name` | `Pipeline.oscValidateName` (`lib/Pipeline.js:983`) | P | `tests/loom/test_colour_load.py` |
+| `osc.osc_group_register_key` | `Pipeline.oscGroupRegisterKey` (`lib/Pipeline.js:994`) | P | `tests/loom/test_stages_geometry.py` |
+| `osc.osc_registered_sibling_key` | `Pipeline.oscRegisteredSiblingKey` (`lib/Pipeline.js:1003`) | P | `tests/loom/test_stages_geometry.py` |
+| `osc.osc_plane_problem` | `Pipeline.oscPlaneProblem` (`lib/Pipeline.js:2065`) | P | - |
+| `osc.osc_validation_record` | `Pipeline.oscValidationRecord` (`lib/Pipeline.js:2074`) | P | - |
+| `osc.osc_narrowband_bandwidths` | `Pipeline.oscNarrowbandBandwidths` (`lib/Pipeline.js:2577`) | P | - |
+| `osc.narrowband_bandwidths` | `Pipeline.oscNarrowbandBandwidths` (`lib/Pipeline.js:2577`) | P | - |
+| `osc.osc_registration_plan` | `Pipeline.oscRegistrationPlan` (`lib/Pipeline.js:2716`) | P | `tests/loom/test_osc.py` |
+| `osc.clean_registration_plan` | `Pipeline.cleanRegistrationPlan` (`lib/Pipeline.js:1454`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_group_cache_action` | `Pipeline.oscGroupCacheAction` (`lib/Pipeline.js:2753`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_channel_groups` | `Pipeline.oscChannelGroups` (`lib/Pipeline.js:2892`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_sensor_problems` | `Pipeline.oscSensorProblems` (`lib/Pipeline.js:327`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_control_state` | `Util.oscControlState` (`lib/Util.js:785`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_palette_sources` | `Pipeline.oscPaletteSources` (`lib/Pipeline.js:3537`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_channel_source` | `Pipeline.oscChannelSource` (`lib/Pipeline.js:3581`) | P | `tests/loom/test_osc.py` |
+| `osc.osc_source_text` | `Pipeline.oscSourceText` (`lib/Pipeline.js:3595`) | P | `tests/loom/test_osc.py` |
+| `osc.colour_run` | - | S | `tests/loom/test_osc.py` |
+| `osc.js_config` | - | S | `tests/loom/test_osc.py` |
+
 ## loomsiril/loom/pipeline.py
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
 | `pipeline.RunReport` | `lib/Pipeline.js:2762-2888` | P | - |
-| `pipeline.run` | `lib/Pipeline.js:2762` | P | `tests/loom/integration/test_pipeline_offline.py` |
+| `pipeline.run` | `Pipeline.run` (`lib/Pipeline.js:3856`) | P | `tests/loom/integration/test_pipeline_offline.py` |
 
 ## loomsiril/loom/preflight.py
 
@@ -252,7 +318,7 @@ Conventions that differ from the JavaScript on purpose:
 |---|---|---|---|
 | `preflight.Preflight` | `lib/Pipeline.js:25-94` | S | `tests/loom/test_preflight.py` |
 | `preflight.required_tools` | `lib/Pipeline.js:25-94` | S | `tests/loom/test_preflight.py` |
-| `preflight.preflight` | `lib/Pipeline.js:58` | S | `tests/loom/test_preflight.py` |
+| `preflight.preflight` | `Pipeline.preflight` (`lib/Pipeline.js:59`) | S | `tests/loom/test_preflight.py` |
 | `preflight.validate_only_report` | - | S | `tests/loom/test_preflight.py` |
 
 ## loomsiril/loom/psb.py
@@ -301,7 +367,7 @@ Conventions that differ from the JavaScript on purpose:
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
-| `publish.publish` | `lib/Pipeline.js:592-626` | S | `tests/loom/integration/test_publish.py` |
+| `publish.publish` | `Pipeline.publish` (`lib/Pipeline.js:750`) | S | `tests/loom/integration/test_publish.py` |
 | `publish.leave_main_result` | `lib/Pipeline.js:592-626` | S | `tests/loom/integration/test_publish.py` |
 | `publish.export` | `lib/Pipeline.js:630-650` | S | `tests/loom/test_publish.py` |
 | `publish.export_psb` | `lib/Pipeline.js:630-650` | S | - |
@@ -343,7 +409,8 @@ Conventions that differ from the JavaScript on purpose:
 | `siril_ops.SirilOps` | - | S | `tests/loom/test_stages_geometry.py` |
 | `siril_ops.SirilCommandOps` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
 | `siril_ops.RecordingOps` | - | S | `tests/loom/test_siril_ops.py` |
-| `siril_ops.spcc_names` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
+| `siril_ops.spcc_names` | `Pipeline.effectiveFilters` (`lib/Pipeline.js:2536`) | S | `tests/loom/integration/test_siril_ops_cli.py` |
+| `siril_ops.spcc_narrowband_names` | - | S | `tests/loom/test_siril_ops.py` |
 | `siril_ops.spcc_database_candidates` | - | S | `tests/loom/integration/test_siril_ops_cli.py` |
 | `siril_ops.siril_data_dir` | - | S | `tests/loom/test_siril_ops.py` |
 
@@ -361,12 +428,13 @@ Conventions that differ from the JavaScript on purpose:
 
 | Function | JavaScript (Loom) | Status | Test |
 |---|---|---|---|
-| `stages_colour.rgb_stage_params` | `lib/Pipeline.js:1453-1666` | P | `tests/loom/test_stages_colour.py` |
-| `stages_colour.palette_stage_params` | `lib/Pipeline.js:1453-1666` | P | `tests/loom/test_stages_colour.py` |
-| `stages_colour.rgb_spcc_names` | `lib/Pipeline.js:1453-1666` | S | `tests/loom/test_stages_colour.py` |
-| `stages_colour.rgb_runners` | `lib/Pipeline.js:1453-1666` | S | `tests/loom/test_stages_colour.py` |
-| `stages_colour.palette_runners` | `lib/Pipeline.js:1453-1666` | S | `tests/loom/test_stages_colour.py` |
-| `stages_colour.measure_clean_white_balance` | `lib/Pipeline.js:1207` | R | `tests/loom/test_stages_colour.py` |
+| `stages_colour.calibration_identity` | `Pipeline.cleanWhiteBalanceKey` (`lib/Pipeline.js:1333`) | S | `tests/loom/test_stages_colour.py` |
+| `stages_colour.rgb_stage_params` | `Pipeline.buildRGB` (`lib/Pipeline.js:1871`) | P | `tests/loom/test_stages_colour.py` |
+| `stages_colour.palette_stage_params` | `Pipeline.buildPalette` (`lib/Pipeline.js:1722`) | P | `tests/loom/test_stages_colour.py` |
+| `stages_colour.rgb_spcc_names` | `Pipeline.effectiveFilters` (`lib/Pipeline.js:2536`) | S | `tests/loom/test_stages_colour.py` |
+| `stages_colour.rgb_runners` | `Pipeline.rgbCalibrationRunners` (`lib/Pipeline.js:2553`) | S | `tests/loom/test_stages_colour.py` |
+| `stages_colour.palette_runners` | `Pipeline.buildPalette` (`lib/Pipeline.js:1722`) | S | `tests/loom/test_stages_colour.py` |
+| `stages_colour.measure_clean_white_balance` | `Pipeline.measureCleanWhiteBalance` (`lib/Pipeline.js:1469`) | R | `tests/loom/test_stages_colour.py` |
 
 ## loomsiril/loom/stages_correct.py
 
@@ -395,6 +463,9 @@ Conventions that differ from the JavaScript on purpose:
 | `stages_geometry.measure_psf_sigma` | `lib/Steps.js:3572-3661` | S | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.match_halos` | `lib/Pipeline.js:2274` | P | `tests/loom/test_stages_geometry.py` |
 | `stages_geometry.balance_narrowband` | `lib/Pipeline.js:2337` | P | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.group_register_params` | `Pipeline.oscRegisterGroup` (`lib/Pipeline.js:2929`) | P | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.member_split_header` | `Pipeline.oscSplitKeywords` (`lib/Pipeline.js:2912`) | P | `tests/loom/test_stages_geometry.py` |
+| `stages_geometry.register_group_image` | `Pipeline.oscRegisterGroup` (`lib/Pipeline.js:2929`) | R | `tests/loom/test_stages_geometry.py` |
 
 ## loomsiril/loom/stages_subsky.py
 
@@ -591,12 +662,18 @@ Python function in the last column, and the reason is under [Deviations](#deviat
 These are the places where the port does not do what Loom does, or does it another way. Each is tested or
 documented where it is implemented.
 
+- `LOOMSRC` of a colour plate: `io_fits` has no CONTINUE long strings, so a value longer than the 68 characters a card holds (measured after doubling apostrophes) keeps the end of the master's name behind `...`; the filter, suffix, extension and `|plane:n` survive. PixInsight writes the full name.
+- `LOOMSRC` of a composite or a palette (RGB, SHO, HOO, HSO and their starless, stars and linear companions, in FITS form only; TIFF and PSB exports hold no FITS keywords and carry none, and a mono product carries none): the value is Loom's text (`OSC <file> planes 0,1,2`, `OSCNB <file> plane 0; OSCNB <file> plane 1`) and is byte-identical to PixInsight's whenever it fits the 68-character card (measured after doubling apostrophes). When it does not, `colour_load.fit_loomsrc` trims inside the file names only, keeping the end of each name behind `...`, never the group word, `plane`/`planes` or the plane list; several file names each get an equal share of what the rest of the value leaves. Non-ASCII characters in a name become `?`. PixInsight writes the full name.
+- `oscSensor` has another shape. Loom keeps one sensor curve name per channel (`{ R, G, B }`, three PixInsight colour-filter curves). Siril's SPCC database names an OSC sensor by its model and two optional filters, so the option is `{ sensor, frontFilter, lpf }` (the sensor model, the front filter name and the low-pass filter name; the last two empty for "none"). Loom's functions that read `oscSensor` only compare the three names, so `osc.js_config` gives `sensor` to R, G and B before replaying them; the sensor check (`osc.osc_sensor_problems`) is parity only, and the run's own check (`preflight`) asks for a sensor model only when a broadband colour master is in the run (an `OSCNB` master alone needs none and its narrowband SPCC call sends no names).
+- The calibration identity is Siril's own. Loom keys the clean white balance on the sensor choice and the ideal QE curve (`Pipeline.cleanWhiteBalanceKey`). A Siril colour calibration depends on every spectral argument it sends, so `stages_colour.calibration_identity` (`osc|sensor=<model>|front=<name>|lpf=<name>` with the "none" entries filled in, or `mono|sensor=...|R=...|G=...|B=...`) is appended to the key of the white-balance measurement (`cache.clean_white_balance_key`) and to the parameters of the colour calibration stages. Changing the sensor, the front filter or the low-pass filter therefore re-runs the colour calibration and nothing before it. Without an identity the key is Loom's byte for byte.
+- A colour master in a format `read_fits` cannot take (a `.fz` tile-compressed FITS or an XISF) is converted once through Siril (the same ingest as a mono master, by content and not by name) to a temporary FITS file, read, and the temporary file removed. PixInsight opens every format directly.
 - SPFC dropped (Spectrophotometric Flux Calibration): it needs Gaia XP spectra, which are not available offline.
 - MGC replaced by Siril subsky degree 2 when the gradient tool is none (never on H, S or O): each broadband channel runs `subsky 2` with 20 samples and tolerance 1.0 in place of Loom's gradient correction.
 - MultiscaleAdaptiveStretch replaced by Siril GHS (autoghs, D 4.5, fixed values); saved configurations migrate to it.
 - MLDenoise dropped; Siril denoise added (`denoise -mod 0.6/1.0/1.0`), in the linear slot.
 - An unknown stretch method raises an error. Loom falls back to MTF; the migration of saved options prevents the case.
 - Registration uses Siril's homography with lanczos4 interpolation, and keeps the reference frame bit-identical.
+- A colour group is registered as one image like Loom's, but Siril cannot mix one- and three-channel images in a sequence: the reference plate is expanded to three identical channels with `rgbcomp`, the group image is `(R, G, B)` or `(H, O, O)`, and the stars are found on one layer (`-layer=1` for an `OSC` group, `-layer=0` for `OSCNB`). The temporary frames are removed by name afterwards.
 - SPCC white-balance factors are recovered by fitting, not read from the colour calibration result.
 - TIFF export goes through `io_tiff` (Siril's `savetif` converts colours).
 - The fallback ICC profile for a mono image is Siril's built-in sRGB profile (Gray).

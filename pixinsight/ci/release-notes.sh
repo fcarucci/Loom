@@ -39,10 +39,10 @@ for Updates** to get the next release.
 ### Siril (experimental)
 
 Needs Siril 1.4 with Python scripting. The Siril port is not part of the
-attached zip or the update repository: it is installed from a clone. It works
-with mono cameras and filters: it needs calibrated, stacked masters per filter
-(R, G, B, optionally L, H, S, O). One-shot colour (OSC) cameras are not
-supported yet.
+attached zip or the update repository: it is installed from a clone. It takes
+calibrated, stacked masters: mono masters per filter (R, G, B, optionally L, H,
+S, O), or one-shot colour (OSC) masters, which are broadband and Hα + OIII
+dual-band colour masters.
 
 1. \`git clone --branch v$v https://github.com/fcarucci/Loom\` (any checkout
    of the repository works). This creates a folder named \`Loom\` in the

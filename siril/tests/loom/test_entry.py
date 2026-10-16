@@ -757,6 +757,23 @@ def test_dialog_cancel_still_saves_what_the_dialog_shows(stub, script, fake_run,
     assert fake_run.calls == []
 
 
+def test_the_final_save_is_the_last_write_and_a_late_autosave_is_dropped(
+        stub, script, fake_run, preflight_calls, tools, tmp_path):
+    stub.STATE.cli = False
+    seen: dict[str, Any] = {}
+
+    def ask(model, siril, image_loaded):
+        model.set_path("R", str(tmp_path / "R.fits"))
+        seen["model"], seen["stale"] = model, model.snapshot_options()   # an autosave still on its way
+        model.set_path("R", str(tmp_path / "R2.fits"))
+        return None
+
+    assert script.main(argv=[], ask=ask, show=_progress_free) == 0
+    seen["model"].save_options(seen["stale"])   # the autosave thread gets to write after the window closed
+    saved = json.loads((Path(stub.STATE.configdir) / "loomsiril" / "loom.json").read_text(encoding="utf-8"))
+    assert saved["paths"]["R"] == str(tmp_path / "R2.fits")
+
+
 def test_dialog_preflight_problems_are_one_error_box(
         stub, script, fake_run, preflight_calls, tools, tmp_path):
     stub.STATE.cli = False

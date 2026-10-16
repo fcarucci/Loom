@@ -54,8 +54,10 @@ const { preprocess, defines } = require( "./preprocess.js" ).createPreprocessor(
    const gateTestsPassed = require( "./check-refs.test.js" ).run( { quiet: true, inSuite: true } );
    const groupArgsPassed = require( "./test-groups.test.js" ).run( { quiet: true } );
    const signaturesPassed = require( "./check-signatures.test.js" ).run( { quiet: true } );
+   const releasePrepPassed = require( "./release-prep.test.js" ).run( { quiet: true } );
    const releaseNotesPassed = require( "./release-notes.test.js" ).run( { quiet: true } );
-   if ( !gatePassed || !gateTestsPassed || !groupArgsPassed || !signaturesPassed || !releaseNotesPassed )
+   if ( !gatePassed || !gateTestsPassed || !groupArgsPassed || !signaturesPassed || !releasePrepPassed ||
+        !releaseNotesPassed )
       process.exit( 1 );
 }
 

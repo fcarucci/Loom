@@ -5,6 +5,7 @@ The model needs no display and no tkinter. The view test skips where tkinter can
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from loomsiril.loom import channels as ch
 from loomsiril.loom import config as cfg
 from loomsiril.loom import dialog as dl
 from loomsiril.loom import levels as lv
+from loomsiril.loom import osc
 from loomsiril.loom.tools.resolver import Found
 
 
@@ -1258,3 +1260,505 @@ def test_saved_filters_survive_an_unreadable_spcc_database_and_names_are_read_on
     assert len(reads) == before                                            # cached
     other = dl.DialogModel.from_config(config(filters={"R": "Gone"}), all_found(), spcc_names=lambda kind: ["Baader R"])
     assert other.filter_name("R") == ""                                    # a database that lacks it still clears it
+
+
+# ---- colour masters: the kind control, the greyed controls, the sensor row ------------------------------------------
+
+KIND_LABELS = ["", "Broadband", "Dual-band " + "H\u03b1 + OIII"]
+MONO_REASON = "colour and mono masters cannot be combined"
+SHO_REASON = "needs SII, which a colour camera cannot separate from Ha"
+SENSOR_NAMES = {"oscsensor": ["Canon EOS R", "Sony IMX571"],
+                "oscfilter": ["Astronomik UV-IR", "No filter"],
+                "osclpf": ["Full spectrum (no filter)", "Sony IMX571 LPF"]}
+
+
+def _spcc(kind: str) -> list[str]:
+    return list(SENSOR_NAMES.get(kind, []))
+
+
+def _colour(path: str, filter_value: Any = "L-eXtreme", slot: str | None = "OSCNB", **extra: Any) -> dict[str, Any]:
+    base = {"path": path, "name": Path(path).name, "filter": filter_value, "instrume": "cam", "channel": slot,
+            "colour": True, "numberOfChannels": 3, "width": 2000, "height": 1000, "drizzle": "x1", "autocrop": False,
+            "mtime": 1_700_000_000.0}
+    base.update(extra)
+    return base
+
+
+def _result(colour: dict[str, Any] | None = None, unresolved: list[dict[str, Any]] | None = None,
+            confirmed: dict[str, Any] | None = None, corrected: list[str] | None = None) -> dict[str, Any]:
+    return {"confirmed": confirmed or {}, "colour": {"OSC": None, "OSCNB": None, **(colour or {})},
+            "unresolved": unresolved or [], "corrected": corrected or [], "skipped": 0, "unreadable": [], "total": 1}
+
+
+def _colour_model(result: dict[str, Any], store: Any = None, **overrides: Any) -> dl.DialogModel:
+    model = dl.DialogModel.from_config(config(**overrides), all_found(), store=store, spcc_names=_spcc)
+    assert model.scan_masters("/m", scanner=lambda folder: result) is True
+    return model
+
+
+def test_the_kind_items_are_none_broadband_and_dual_band() -> None:
+    assert [text for _value, text in dl.KIND_ITEMS] == KIND_LABELS
+    assert [value for value, _text in dl.KIND_ITEMS] == ["", "broadband", "dualband"]
+
+
+def test_a_kind_row_shows_the_detected_kind_and_whether_it_can_change() -> None:
+    row = dl.osc_kind_row({"filter": "L-eXtreme", "path": "/m/a.fits"}, {})
+    assert row == {"kind": "dualband", "enabled": True, "detected_link": False}
+    unknown = dl.osc_kind_row({"filter": "Mystery 9000", "path": "/m/a.fits"}, {})
+    assert unknown == {"kind": "", "enabled": True, "detected_link": False}
+    unsupported = dl.osc_kind_row({"filter": "ALP-T SII", "path": "/m/a.fits"}, {"filter:alptsii": "broadband"})
+    assert unsupported["enabled"] is False and unsupported["kind"] == ""
+    chosen = dl.osc_kind_row({"filter": "L-eXtreme", "path": "/m/a.fits"},
+                             {osc.osc_kind_key("L-eXtreme", "/m/a.fits"): "broadband"})
+    assert chosen == {"kind": "broadband", "enabled": True, "detected_link": True}
+
+
+def test_a_scan_lists_colour_masters_with_the_detected_filter_and_kind() -> None:
+    result = _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC"),
+                             "OSCNB": _colour("/m/nb.fits", "L-eXtreme", "OSCNB")})
+    model = _colour_model(result)
+    assert (model.path("OSC"), model.path("OSCNB")) == ("/m/osc.fits", "/m/nb.fits")
+    rows = {r["channel"]: r for r in model.master_rows()}
+    assert list(rows["OSC"]) == ["channel", "path", *dl.MASTER_COLUMNS]
+    assert (rows["OSC"]["Filter"], rows["OSC"]["Kind"]) == ("UV/IR Cut", "Broadband")
+    assert (rows["OSCNB"]["Filter"], rows["OSCNB"]["Kind"]) == ("L-eXtreme", KIND_LABELS[2])
+    assert rows["OSC"]["Size"] == "2000 x 1000"
+    cr = {r["path"]: r for r in model.colour_rows()}
+    assert cr["/m/nb.fits"]["kind"] == "dualband" and cr["/m/nb.fits"]["enabled"] is True
+    assert cr["/m/nb.fits"]["detected_link"] is False
+
+
+def test_a_scan_clears_colour_slots_the_folder_has_no_master_for() -> None:
+    model = dl.DialogModel.from_config(config(paths={"OSC": "/old/osc.fits", "OSCNB": "/old/nb.fits"}), all_found())
+    model.scan_masters("/m", scanner=lambda folder: _result(colour={"OSCNB": _colour("/m/nb.fits")}))
+    assert (model.path("OSC"), model.path("OSCNB")) == ("", "/m/nb.fits")
+
+
+def test_the_default_scan_passes_the_remembered_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+
+    def fake_scan(folder: str, **kwargs: Any) -> dict[str, Any]:
+        seen.append((folder, kwargs.get("choices")))
+        return _result()
+
+    monkeypatch.setattr(ch, "scan_masters", fake_scan)
+    model = dl.DialogModel.from_config(config(oscKindChoices={"filter:duo": "dualband"}), all_found())
+    assert model.scan_masters("/m") is True
+    assert seen == [("/m", {"filter:duo": "dualband"})]
+
+
+def test_an_unresolved_master_is_listed_with_no_kind_and_a_scan_says_to_choose() -> None:
+    unknown = _colour("/m/mystery.fits", "Mystery 9000", None)
+    model = _colour_model(_result(unresolved=[unknown], corrected=["/m/x.fits: the name says mono but the image has "
+                                                                    "3 channels; it is used as a colour master"]))
+    assert model.path("OSC") == "" and model.path("OSCNB") == ""
+    row = model.colour_rows()[0]
+    assert (row["path"], row["kind"], row["enabled"], row["slot"]) == ("/m/mystery.fits", "", True, "")
+    notices = model.take_notices()
+    assert any("Broadband or Dual-band" in n and "mystery.fits" in n for n in notices)
+    assert any("it is used as a colour master" in n for n in notices)
+    assert model.master_rows()[0]["Kind"] == "" and model.master_rows()[0]["Filter"] == "Mystery 9000"
+
+
+def test_choosing_a_kind_remembers_it_saves_at_once_and_routes_the_master() -> None:
+    saved: list[dict[str, Any]] = []
+    model = _colour_model(_result(unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)]))
+    model.persist = saved.append
+    model.set_osc_kind("/m/mystery.fits", "dualband")
+    key = osc.osc_kind_key("Mystery 9000", "/m/mystery.fits")
+    assert model.to_config()["oscKindChoices"] == {key: "dualband"}
+    assert len(saved) == 1 and saved[0]["oscKindChoices"] == {key: "dualband"}   # saved at once, not after a delay
+    assert model.path("OSCNB") == "/m/mystery.fits" and model.path("OSC") == ""
+    row = model.colour_rows()[0]
+    assert (row["kind"], row["slot"], row["detected_link"]) == ("dualband", "OSCNB", True)
+    model.set_osc_kind("/m/mystery.fits", "broadband")   # a master moves to the other slot
+    assert (model.path("OSC"), model.path("OSCNB")) == ("/m/mystery.fits", "")
+    assert len(saved) == 2
+
+
+def test_detected_forgets_the_remembered_choice_and_re_routes() -> None:
+    entry = _colour("/m/duo.fits", "L-eXtreme", "OSC")
+    model = _colour_model(_result(colour={"OSC": entry}),
+                          oscKindChoices={osc.osc_kind_key("L-eXtreme", "/m/duo.fits"): "broadband"})
+    assert model.colour_rows()[0]["detected_link"] is True
+    model.set_osc_kind("/m/duo.fits", "detected")
+    assert model.to_config()["oscKindChoices"] == {}
+    row = model.colour_rows()[0]
+    assert (row["kind"], row["detected_link"], row["slot"]) == ("dualband", False, "OSCNB")
+    assert (model.path("OSC"), model.path("OSCNB")) == ("", "/m/duo.fits")
+    model.set_osc_kind("/m/duo.fits", "")   # the empty item is the same reset
+    assert model.to_config()["oscKindChoices"] == {}
+
+
+def test_one_choice_by_filter_name_covers_every_master_with_that_filter_but_a_blank_filter_is_keyed_by_path() -> None:
+    a, b = _colour("/m/a.fits", "Mystery 9000", None), _colour("/m/b.fits", "Mystery 9000", None)
+    c, d = _colour("/m/c.fits", "", "OSC"), _colour("/m/d.fits", None, "OSCNB")
+    model = _colour_model(_result(unresolved=[a, b]))
+    model.take_notices()
+    model.set_osc_kind("/m/a.fits", "broadband")
+    kinds = {r["path"]: r["kind"] for r in model.colour_rows()}
+    assert kinds == {"/m/a.fits": "broadband", "/m/b.fits": "broadband"}
+    assert list(model.to_config()["oscKindChoices"]) == ["filter:mystery9000"]
+    assert model.path("OSC") == "/m/a.fits"                  # one slot, the master chosen first keeps it
+    assert [r["slot"] for r in model.colour_rows()] == ["OSC", ""]
+    assert "Not used" in model.colour_rows()[1]["reason"]
+    assert any("b.fits is not used" in n for n in model.take_notices())   # the other is named as not used
+    blank = _colour_model(_result(colour={"OSC": c, "OSCNB": d}))
+    blank.set_osc_kind("/m/c.fits", "dualband")
+    assert list(blank.to_config()["oscKindChoices"]) == ["path:/m/c.fits"]
+    assert blank.path("OSCNB") == "/m/c.fits" and blank.path("OSC") == "/m/d.fits"   # d has its own key: unchanged
+
+
+def test_a_remembered_choice_is_keyed_on_the_path_as_given_never_resolved_or_case_folded() -> None:
+    lower, upper = "/Users/me/masters/m31.fits", "/Users/me/Masters/M31.fits"
+    model = _colour_model(_result(unresolved=[_colour(lower, "", None)]))
+    model.set_osc_kind(lower, "dualband")
+    assert list(model.to_config()["oscKindChoices"]) == ["path:" + lower]
+    other = _colour_model(_result(colour={"OSC": _colour(upper, "", "OSC")}), oscKindChoices=model.to_config()["oscKindChoices"])
+    assert other.colour_rows()[0]["detected_link"] is False   # the other spelling has no remembered choice
+    assert other.colour_rows()[0]["kind"] == "broadband"      # a blank filter detects as broadband
+
+
+def test_a_file_name_that_is_not_utf8_does_not_crash_the_list_or_the_save() -> None:
+    bad = os.fsdecode(b"/m/caf\xe9 \xff.fits")
+    model = _colour_model(_result(unresolved=[_colour(bad, "Mystery 9000", None)]))
+    model.set_osc_kind(bad, "broadband")
+    assert model.path("OSC") == bad
+    rows = model.master_rows()
+    assert rows[0]["path"] == bad
+    assert isinstance(model.run_reasons(), list)
+    import json
+    json.dumps(model.to_config())   # the options file keeps it
+
+
+def test_an_unsupported_filter_cannot_be_given_a_kind() -> None:
+    model = _colour_model(_result(unresolved=[_colour("/m/alpt.fits", "ALP-T SII", None)]))
+    row = model.colour_rows()[0]
+    assert row["enabled"] is False and row["kind"] == "" and row["reason"]
+    with pytest.raises(ValueError):
+        model.set_osc_kind("/m/alpt.fits", "broadband")
+    assert model.to_config()["oscKindChoices"] == {}
+    assert model.master_rows()[0]["Kind"] == "Not supported"
+
+
+def test_an_unknown_master_or_kind_is_refused() -> None:
+    model = _colour_model(_result(colour={"OSC": _colour("/m/a.fits", "UV/IR Cut", "OSC")}))
+    with pytest.raises(KeyError):
+        model.set_osc_kind("/m/other.fits", "broadband")
+    with pytest.raises(ValueError):
+        model.set_osc_kind("/m/a.fits", "tricolour")
+
+
+def test_saved_colour_paths_fill_the_list_and_choices_survive_a_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "duo.fits"
+    path.write_bytes(b"")
+    first = dl.DialogModel.from_config(config(paths={"OSCNB": str(path)}), all_found())
+    assert first.restore_masters(scanner=lambda folder: _result(colour={"OSCNB": _colour(str(path), "Mystery 9000")})) is True
+    first.set_osc_kind(str(path), "dualband")
+    reopened = dl.DialogModel.from_config(first.to_config(), all_found())
+    assert reopened.restore_masters(scanner=lambda folder: _result(unresolved=[_colour(str(path), "Mystery 9000", None)])) is True
+    row = reopened.colour_rows()[0]
+    assert (row["path"], row["kind"], row["detected_link"]) == (str(path), "dualband", True)
+    assert reopened.to_config()["oscKindChoices"] == first.to_config()["oscKindChoices"]
+
+
+def test_a_path_whose_header_was_never_read_keeps_its_slot_when_another_master_changes(tmp_path: Path) -> None:
+    saved: list[dict[str, Any]] = []
+    model = dl.DialogModel.from_config(config(paths=_paths(OSC="/x/my_osc.fits", OSCNB="/x/duo.fits")), all_found())
+    model.persist = saved.append
+    model.set_osc_kind("/x/my_osc.fits", "broadband")
+    assert (model.path("OSC"), model.path("OSCNB")) == ("/x/my_osc.fits", "/x/duo.fits")
+    assert all(p["paths"]["OSCNB"] == "/x/duo.fits" for p in saved)
+    rows = {r["path"]: r for r in model.colour_rows()}
+    assert rows["/x/duo.fits"]["kind"] == "dualband" and rows["/x/duo.fits"]["slot"] == "OSCNB"   # from its slot
+    assert rows["/x/duo.fits"]["enabled"] is True
+    model.set_osc_kind("/x/duo.fits", "broadband")   # its own change moves it, and it claims the slot first
+    assert model.path("OSC") == "/x/duo.fits"
+
+
+def test_the_changed_master_claims_a_slot_even_when_it_is_not_first_in_the_list() -> None:
+    held = _colour("/m/uvir.fits", "UV/IR Cut", "OSC")
+    model = _colour_model(_result(colour={"OSC": held}, unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)]))
+    model.set_osc_kind("/m/mystery.fits", "broadband")
+    assert model.path("OSC") == "/m/mystery.fits"
+    assert [r["path"] for r in model.colour_rows() if r["slot"] == ""] == ["/m/uvir.fits"]
+
+
+def test_a_choice_made_while_a_scan_ran_routes_the_scanned_masters() -> None:
+    model = dl.DialogModel.from_config(config(), all_found())
+    scanned = _result(unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)])
+    before = model.kind_choices()
+    model._kind_choices[osc.osc_kind_key("Mystery 9000", "/m/mystery.fits")] = "dualband"   # picked mid-scan
+    assert model.scan_masters("/m", scanner=lambda folder: scanned, routed_with=before) is True
+    assert model.path("OSCNB") == "/m/mystery.fits"
+    other = dl.DialogModel.from_config(config(), all_found())
+    assert other.scan_masters("/m", scanner=lambda folder: scanned, routed_with=other.kind_choices()) is True
+    assert other.path("OSCNB") == "" and other.colour_rows()[0]["slot"] == ""
+
+
+def test_saves_are_one_at_a_time_and_an_older_snapshot_never_overwrites_a_newer_one() -> None:
+    active = {"now": 0, "max": 0}
+    written: list[Any] = []
+
+    def slow(options: dict[str, Any]) -> None:
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        time.sleep(0.05)
+        written.append(options["oscKindChoices"])
+        active["now"] -= 1
+
+    model = _colour_model(_result(unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)]))
+    model.persist = slow
+    stale = model.snapshot_options()
+    worker = threading.Thread(target=lambda: model.save_options(model.snapshot_options()))
+    worker.start()
+    model.set_osc_kind("/m/mystery.fits", "dualband")
+    worker.join()
+    model.save_options(stale)   # a late autosave of the older options
+    assert active["max"] == 1
+    assert written[-1] != {} and written[-1] == {"filter:mystery9000": "dualband"}
+
+
+# ---- the controls a colour master changes --------------------------------------------------------------------------
+
+
+def _paths(**given: str) -> dict[str, str]:
+    return {**cfg.defaults()["paths"], **given}
+
+
+def test_a_mono_run_leaves_every_control_live() -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(R="/m/R.fits", H="/m/H.fits")), all_found(), spcc_names=_spcc)
+    assert all(model.filter_enabled(k) for k in "RGB")
+    assert model.filter_reason() == ""
+    assert model.filter_rows_visible() is True and model.sensor_row_visible() is False
+    assert all(model.palette_enabled(p) and model.palette_reason(p) == "" for p in ch.palette_names())
+
+
+def test_a_colour_master_greys_the_mono_filter_boxes_and_sho_hso_with_the_reasons() -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(OSC="/m/osc.fits")), all_found(), spcc_names=_spcc)
+    assert not any(model.filter_enabled(k) for k in "RGB")
+    assert model.filter_reason() == MONO_REASON
+    for palette in ("SHO", "HSO"):
+        assert model.palette_enabled(palette) is False and model.palette_reason(palette) == SHO_REASON
+    assert model.palette_enabled("HOO") is True and model.palette_reason("HOO") == ""
+    state = osc.osc_control_state({"paths": model.to_config()["paths"]})
+    assert (model.filter_reason(), model.palette_reason("SHO")) == (state["monoReason"], state["shoHsoReason"])
+
+
+def test_the_sensor_row_follows_osc_only_and_oscnb_alone_hides_it() -> None:
+    osc_only = dl.DialogModel.from_config(config(paths=_paths(OSC="/m/osc.fits")), all_found(), spcc_names=_spcc)
+    assert osc_only.sensor_row_visible() is True and osc_only.filter_rows_visible() is False
+    both = dl.DialogModel.from_config(config(paths=_paths(OSC="/m/osc.fits", OSCNB="/m/nb.fits")), all_found())
+    assert both.sensor_row_visible() is True
+    narrow = dl.DialogModel.from_config(config(paths=_paths(OSCNB="/m/nb.fits")), all_found(), spcc_names=_spcc)
+    assert narrow.sensor_row_visible() is False       # an OSCNB-only run sends no SPCC names, so it needs no sensor
+    assert narrow.filter_rows_visible() is True        # the R, G, B rows stay (greyed) as in the PixInsight dialog
+    assert not any(narrow.filter_enabled(k) for k in "RGB")
+
+
+def test_the_controls_follow_the_list_as_masters_come_and_go() -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), spcc_names=_spcc)
+    assert model.sensor_row_visible() is False
+    model.scan_masters("/m", scanner=lambda folder: _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC")}))
+    assert model.sensor_row_visible() is True and model.filter_enabled("R") is False
+    model.scan_masters("/m", scanner=lambda folder: _result(confirmed={"R": _entry("R", "/m/R.fits")}))
+    assert model.sensor_row_visible() is False and model.filter_enabled("R") is True
+
+
+def test_the_palette_group_shows_for_a_dual_band_master() -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(OSCNB="/m/nb.fits")), all_found())
+    assert model.palettes_visible() is True
+    assert dl.DialogModel.from_config(config(paths=_paths(OSC="/m/osc.fits")), all_found()).palettes_visible() is False
+    assert dl.DialogModel.from_config(config(paths=_paths(L="/m/L.fits")), all_found()).palettes_visible() is False
+
+
+# ---- SHO and HSO through a colour run --------------------------------------------------------------------------
+
+
+def test_sensor_palettes_run_palettes_and_merge_kept_palettes() -> None:
+    assert dl.sensor_palettes(["SHO", "HOO", "HSO"]) == ["SHO", "HSO"]
+    assert dl.sensor_palettes(None) == []
+    assert dl.run_palettes(["SHO", "HOO", "HSO"], True) == ["HOO"]
+    assert dl.run_palettes(["SHO", "HOO"], False) == ["SHO", "HOO"]
+    assert dl.merge_kept_palettes(["HOO"], ["SHO", "HOO"]) == ["HOO", "SHO"]
+    assert dl.merge_kept_palettes(None, None) == []
+
+
+def test_a_greyed_palette_ignores_a_programmatic_change_and_shows_unticked() -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(OSCNB="/m/nb.fits"), palettes=["SHO", "HOO"]), all_found())
+    model.set_palette("HSO", True)
+    assert model.palette_selected("HSO") is False
+    model.set_palette("SHO", False)
+    assert model.palette_selected("SHO") is True                  # the greyed box did not take the change
+    assert model.palette_shown("SHO") is False and model.palette_shown("HOO") is True
+    model.set_palette("HOO", False)
+    assert model.palette_selected("HOO") is False
+
+
+def test_a_colour_run_leaves_sho_hso_out_keeps_them_and_a_mono_run_gets_them_back() -> None:
+    store = FakeStore()
+    colour = dl.DialogModel.from_config(config(paths=_paths(OSCNB="/m/nb.fits"), palettes=["SHO", "HOO", "HSO"],
+                                               outputDir="/out"), all_found(), store=store)
+    assert colour.to_config()["palettes"] == ["SHO", "HOO", "HSO"]        # what the options file holds is untouched
+    request = colour.run_request()
+    assert request.config["palettes"] == ["HOO"]                            # the colour run never dead-ends on the palette error
+    assert osc.osc_palette_problem(request.config) is None
+    assert store.flags[dl.KEPT_PALETTES_FLAG] == ["SHO", "HSO"]
+    # a headless run reads the options file: SHO with a colour master still fails the check
+    assert osc.osc_palette_problem(colour.to_config()) is not None
+    # the next dialog opens from what the run saved (no SHO or HSO) and gets them back from the store
+    saved = dict(request.config, outputDir=request.output_dir)
+    mono = dl.DialogModel.from_config(dict(saved, paths=_paths(R="/m/R.fits", G="/m/G.fits", B="/m/B.fits")),
+                                      all_found(), store=store)
+    assert mono.to_config()["palettes"] == ["HOO", "SHO", "HSO"]
+    assert mono.palette_shown("SHO") is True
+    assert mono.run_request().config["palettes"] == ["HOO", "SHO", "HSO"]
+    assert store.flags[dl.KEPT_PALETTES_FLAG] == []                         # a mono run has them back: nothing is kept
+
+
+def test_a_mono_run_without_a_kept_store_is_unchanged_and_a_palette_unticked_is_not_resurrected() -> None:
+    store = FakeStore()
+    store.flags[dl.KEPT_PALETTES_FLAG] = ["SHO", "bogus"]
+    model = dl.DialogModel.from_config(config(paths=_paths(R="/m/R.fits"), palettes=["HOO"]), all_found(), store=store)
+    assert model.to_config()["palettes"] == ["HOO", "SHO"]                  # only a known palette comes back
+    model.set_palette("SHO", False)
+    assert store.flags[dl.KEPT_PALETTES_FLAG] == []
+    again = dl.DialogModel.from_config(model.to_config(), all_found(), store=store)
+    assert again.to_config()["palettes"] == ["HOO"]
+    plain = dl.DialogModel.from_config(config(palettes=["SHO"]), all_found())     # no store at all
+    assert plain.to_config()["palettes"] == ["SHO"]
+
+
+def test_the_preflight_sees_the_run_palettes_of_a_colour_run() -> None:
+    seen: list[Any] = []
+    model = dl.DialogModel.from_config(config(paths=_paths(OSC="/m/osc.fits"), palettes=["SHO"], outputDir="/out"),
+                                       all_found(), preflight=lambda request: seen.append(request.config["palettes"]) or [])
+    assert model.run_reasons() == [] and seen == [[]]
+
+
+# ---- the sensor colour filters ---------------------------------------------------------------------------------------
+
+
+def test_the_sensor_boxes_list_siril_database_names_with_the_none_entries() -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), spcc_names=_spcc)
+    assert model.osc_sensor_pairs("sensor") == [("", "(choose)"), ("Canon EOS R", "Canon EOS R"),
+                                                  ("Sony IMX571", "Sony IMX571")]
+    assert model.osc_sensor_pairs("frontFilter") == [("", "No filter"), ("Astronomik UV-IR", "Astronomik UV-IR")]
+    assert model.osc_sensor_pairs("lpf") == [("", "Full spectrum (no filter)"), ("Sony IMX571 LPF", "Sony IMX571 LPF")]
+    with pytest.raises(KeyError):
+        model.osc_sensor_pairs("gain")
+
+
+def test_a_sensor_choice_is_saved_with_the_options_and_reopens() -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), spcc_names=_spcc)
+    model.set_osc_sensor("sensor", "Sony IMX571")
+    model.set_osc_sensor("frontFilter", "Astronomik UV-IR")
+    model.set_osc_sensor("lpf", "Sony IMX571 LPF")
+    saved = model.to_config()
+    assert saved["oscSensor"] == {"sensor": "Sony IMX571", "frontFilter": "Astronomik UV-IR", "lpf": "Sony IMX571 LPF"}
+    again = dl.DialogModel.from_config(saved, all_found(), spcc_names=_spcc)
+    assert again.osc_sensor_value("sensor") == "Sony IMX571" and again.take_notices() == []
+    assert again.to_config() == saved
+    model.set_osc_sensor("frontFilter", "No filter")          # the none entry is the blank choice
+    assert model.to_config()["oscSensor"]["frontFilter"] == ""
+    model.set_osc_sensor("lpf", "")
+    assert model.osc_sensor_value("lpf") == ""
+
+
+def test_a_sensor_name_siril_does_not_hold_is_refused_and_a_saved_one_is_cleared_with_a_notice() -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), spcc_names=_spcc)
+    with pytest.raises(ValueError):
+        model.set_osc_sensor("sensor", "Sony IMX999")
+    with pytest.raises(KeyError):
+        model.set_osc_sensor("gain", "x")
+    stale = dl.DialogModel.from_config(config(oscSensor={"sensor": "Gone", "frontFilter": "Gone too", "lpf": ""}),
+                                       all_found(), spcc_names=_spcc)
+    assert stale.to_config()["oscSensor"] == {"sensor": "", "frontFilter": "", "lpf": ""}
+    assert len([n for n in stale.take_notices() if "SPCC database" in n]) == 2
+    unread = dl.DialogModel.from_config(config(oscSensor={"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}),
+                                        all_found(), spcc_names=lambda kind: [])   # a database that cannot be read
+    assert unread.to_config()["oscSensor"]["sensor"] == "Sony IMX571"             # keeps what was saved
+
+
+def test_the_osc_names_are_read_from_the_database_once_each() -> None:
+    reads: list[str] = []
+
+    def names(kind: str) -> list[str]:
+        reads.append(kind)
+        return _spcc(kind)
+
+    model = dl.DialogModel.from_config(config(), all_found(), spcc_names=names)
+    for _ in range(3):
+        model.osc_sensor_pairs("sensor"), model.osc_sensor_pairs("frontFilter"), model.osc_sensor_pairs("lpf")
+    assert sorted(r for r in reads if r.startswith("osc")) == ["oscfilter", "osclpf", "oscsensor"]
+
+
+def test_the_colour_choices_round_trip_through_a_second_open() -> None:
+    source = config(oscKindChoices={"filter:duo": "dualband", "path:/m/x.fits": "broadband"},
+                    oscSensor={"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}, paths=_paths(OSC="/m/osc.fits"))
+    model = dl.DialogModel.from_config(source, all_found(), spcc_names=_spcc)
+    assert model.to_config() == source
+    assert dl.DialogModel.from_config(model.to_config(), all_found(), spcc_names=_spcc).to_config() == source
+
+
+# ---- the views -------------------------------------------------------------------------------------------------------
+
+
+def _shown(widget: Any) -> bool:
+    """Whether a widget is laid out (grid_remove forgets the position, so grid_info is empty)."""
+    return bool(widget.grid_info())
+
+
+def test_the_view_shows_the_kind_control_the_sensor_row_and_the_greyed_boxes(tk_root: Any) -> None:
+    result = _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC")},
+                     unresolved=[_colour("/m/mystery.fits", "Mystery 9000", None)])
+    store = FakeStore()
+    model = dl.DialogModel.from_config(config(palettes=["SHO", "HOO"]), all_found(), resolver=FakeResolver(), store=store,
+                                       spcc_names=_spcc)
+    model.scan_masters("/m", scanner=lambda folder: result)
+    view = dl.LoomDialog(tk_root, model)
+    tk_root.update()
+    assert _shown(view._sensor_frame) and not _shown(view._combos["filter:R"][0])
+    rows = [r for r in view._kind_rows if _shown(r["frame"])]
+    assert len(rows) == 2
+    assert rows[0]["combo"].get() == "Broadband" and rows[1]["combo"].get() == ""
+    assert "disabled" in view._palette_boxes["SHO"].state()
+    assert "disabled" not in view._palette_boxes["HOO"].state()
+    assert MONO_REASON in view._filter_reason.get() and SHO_REASON in view._palette_reason.get()
+    assert "disabled" in view._combos["filter:R"][0].state()
+    assert "disabled" not in rows[0]["combo"].state()
+    # picking a kind from the control writes the choice and moves the master
+    rows[1]["combo"].set(KIND_LABELS[2])
+    rows[1]["combo"].event_generate("<<ComboboxSelected>>")
+    tk_root.update()
+    assert model.path("OSCNB") == "/m/mystery.fits"
+    assert model.to_config()["oscKindChoices"] == {osc.osc_kind_key("Mystery 9000", "/m/mystery.fits"): "dualband"}
+    view.top.destroy()
+
+
+def test_the_view_hides_the_sensor_row_for_a_dual_band_only_run_and_fills_it_from_the_database(tk_root: Any) -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(OSCNB="/m/nb.fits")), all_found(), resolver=FakeResolver(),
+                                       spcc_names=_spcc)
+    view = dl.LoomDialog(tk_root, model)
+    tk_root.update()
+    assert not _shown(view._sensor_frame) and _shown(view._combos["filter:R"][0])
+    model.scan_masters("/m", scanner=lambda folder: _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC")}))
+    view._sync()
+    tk_root.update()
+    assert _shown(view._sensor_frame) and not _shown(view._combos["filter:R"][0])
+    assert list(view._sensor_combos["sensor"]["values"]) == ["(choose)", "Canon EOS R", "Sony IMX571"]
+    view._sensor_combos["sensor"].set("Sony IMX571")
+    view._sensor_combos["sensor"].event_generate("<<ComboboxSelected>>")
+    assert model.to_config()["oscSensor"]["sensor"] == "Sony IMX571"
+    view.top.destroy()
+
+
+def test_the_view_disables_the_kind_control_of_an_unsupported_filter(tk_root: Any) -> None:
+    model = dl.DialogModel.from_config(config(), all_found(), resolver=FakeResolver(), spcc_names=_spcc)
+    model.scan_masters("/m", scanner=lambda folder: _result(unresolved=[_colour("/m/alpt.fits", "ALP-T SII", None),
+                                                                      _colour("/m/mystery.fits", "Mystery 9000", None)]))
+    view = dl.LoomDialog(tk_root, model)
+    tk_root.update()
+    rows = [r for r in view._kind_rows if _shown(r["frame"])]
+    assert "disabled" in rows[0]["combo"].state() and "disabled" not in rows[1]["combo"].state()
+    view.top.destroy()

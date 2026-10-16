@@ -30,7 +30,9 @@ from loomsiril import starnet_licence
 from loomsiril.loom import channels as ch
 from loomsiril.loom import config as cfg
 from loomsiril.loom import levels as lv
+from loomsiril.loom import osc
 from loomsiril.loom.cache import CacheStore, default_cache_dir
+from loomsiril.loom.siril_ops import OSC_NO_FRONT_FILTER, OSC_NO_LPF
 
 #: The message the dialog shows before a run replaces the image loaded in Siril.
 REPLACE_CONFIRM_TEXT = "The image loaded in Siril will be replaced"
@@ -107,6 +109,27 @@ SMOOTHING_RANGE: tuple[float, float] = (0.0, 1.0)
 #: The SPCC sensor kind Siril's database reader takes for the camera sensor.
 SENSOR_KIND = "monosensor"
 
+#: The kind control's items of a colour master: (remembered value, text). The empty item is no kind: what the
+#: filter name says (the "detected" reset) or, when it says nothing, nothing chosen yet.
+KIND_ITEMS: tuple[tuple[str, str], ...] = (("", ""), ("broadband", "Broadband"),
+                                           ("dualband", "Dual-band H\u03b1 + OIII"))
+
+#: The text of the kind column for a filter that cannot be a colour master (only H\u03b1/OIII dual-band filters are).
+KIND_UNSUPPORTED_TEXT = "Not supported"
+UNSUPPORTED_REASON = "This filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported."
+
+#: The ToolStore flag that keeps SHO/HSO ticked for a mono run while a colour run leaves them out.
+KEPT_PALETTES_FLAG = "palettesKept"
+
+#: The sensor colour filters: option key -> (the kind Siril's database reader takes, what the dialog calls it).
+_OSC_SENSOR_KINDS: dict[str, tuple[str, str]] = {"sensor": ("oscsensor", "sensor"),
+                                                 "frontFilter": ("oscfilter", "front filter"),
+                                                 "lpf": ("osclpf", "low-pass filter")}
+#: The entries Siril's database holds for "no filter in front" and "no low-pass filter": the blank choice.
+_OSC_NONE_NAMES: dict[str, str] = {"frontFilter": OSC_NO_FRONT_FILTER, "lpf": OSC_NO_LPF}
+#: What the sensor box offers while no sensor is chosen (a colour run needs one).
+SENSOR_UNSET_TEXT = "(choose)"
+
 #: Options whose enabled state depends on another option (stretch, sharpening, noise, cache).
 _STRETCH_CONTROLS = ("keepLinear", "stretchMethod", "exportDir", "exportPsb")
 
@@ -122,6 +145,33 @@ FoundMap = Mapping[str, Any]
 PreflightFn = Callable[["RunRequest"], Sequence[str]]
 #: Injected SPCC lookup: a kind ("redfilter", "greenfilter", "bluefilter") in, the names in Siril's folder out.
 SpccFn = Callable[[str], Sequence[str]]
+
+
+def osc_kind_row(entry: Mapping[str, Any], choices: Any) -> dict[str, Any]:
+    """How one colour master's kind control looks (``UI.oscKindRow``): the kind shown ("" for none), whether it can
+    be changed (not for a filter known to be unsupported), and whether a remembered choice overrides the detection,
+    which is when the "detected" link has something to restore."""
+    k = osc.effective_osc_kind(None, entry.get("filter"), entry.get("path"), choices)
+    return {"kind": k["kind"] if k["kind"] in ("broadband", "dualband") else "",
+            "enabled": k["kind"] != "unsupported",
+            "detected_link": k["source"] == "choice"}
+
+
+def sensor_palettes(palettes: Optional[Sequence[str]]) -> list[str]:
+    """The palettes that need SII, which a colour camera cannot separate from Ha (``UI.sensorPalettes``)."""
+    return [p for p in (palettes or []) if "S" in (ch.palette_channels(p) or [])]
+
+
+def run_palettes(palettes: Optional[Sequence[str]], colour_run: bool) -> list[str]:
+    """The palettes a run builds: all of them, minus the SII ones for a colour run (``UI.runPalettes``)."""
+    drop = sensor_palettes(palettes) if colour_run else []
+    return [p for p in (palettes or []) if p not in drop]
+
+
+def merge_kept_palettes(palettes: Optional[Sequence[str]], kept: Optional[Sequence[str]]) -> list[str]:
+    """The palettes ticked now plus the kept ones not ticked, in that order (``UI.mergeKeptPalettes``)."""
+    have = list(palettes or [])
+    return have + [k for k in (kept or []) if k not in have]
 
 
 @dataclass(frozen=True)
@@ -213,6 +263,14 @@ class DialogModel:
         self.persist: Optional[Callable[[dict[str, Any]], None]] = None
         self._spcc_cache: dict[str, list[str]] = {}
         self._scan: Optional[dict[str, Any]] = None
+        #: The colour masters the list knows, by the path as configured (never resolved or case-folded).
+        self._colour_known: dict[str, dict[str, Any]] = {}
+        #: Colour masters with no slot: their kind is still to be chosen, or another master holds their slot.
+        self._unused: list[dict[str, Any]] = []
+        self._kept_memory: list[str] = []
+        self._save_lock = threading.Lock()
+        self._save_seq = 0
+        self._saved_seq = 0
         self._output_dir = ""
 
         self._found: dict[str, Any] = {tool_id: None for tool_id in TOOL_LABELS}
@@ -229,12 +287,16 @@ class DialogModel:
         self._paths: dict[str, Any] = dict(source.get("paths") or {})
         self._output_dir = str(source.get("outputDir") or "")
         self._filters: dict[str, Any] = dict(source.get("filters") or {})
-        self._palettes: list[str] = list(source.get("palettes") or [])
+        # SHO/HSO ticked for an earlier colour run, which left them out of its options, come back with the options
+        self._palettes: list[str] = merge_kept_palettes(source.get("palettes") or [], self._read_kept())
 
         migrated = cfg.migrate_config(copy.deepcopy(merged), warn=self._notices.append,
                                       studio_found=self._has("syqon-cli"),
                                       studio_prism2_unavailable=self._prism2_unavailable)
         self._v = {key: copy.deepcopy(migrated.get(key)) for key in _VALUE_KEYS}
+        self._kind_choices: dict[str, str] = {str(k): str(v) for k, v in (migrated.get("oscKindChoices") or {}).items()}
+        self._osc_sensor: dict[str, str] = {key: str((migrated.get("oscSensor") or {}).get(key) or "")
+                                            for key in _OSC_SENSOR_KINDS}
         self._settle()
 
         # A stored acceptance counts only when it is the current revision; a stale one is asked again.
@@ -279,7 +341,7 @@ class DialogModel:
 
     def set_path(self, channel: str, path: str) -> None:
         """Chooses the file for ``channel``; an empty path clears it."""
-        if channel not in ch.CHANNELS:
+        if channel not in ch.CHANNELS and channel not in osc.COLOUR_SLOTS:
             raise KeyError(f"not a channel: {channel}")
         self._paths[channel] = str(path or "")
         self._invalidate()
@@ -349,14 +411,249 @@ class DialogModel:
     def palette_selected(self, palette: str) -> bool:
         return palette in self._palettes
 
+    def palette_shown(self, palette: str) -> bool:
+        """Whether the palette's box is ticked on screen: chosen, and not greyed out by a colour master."""
+        return palette in self._palettes and self.palette_enabled(palette)
+
     def set_palette(self, palette: str, on: bool) -> None:
-        """Ticks or unticks a palette; only palettes the dialog offers are kept."""
+        """Ticks or unticks a palette; only palettes the dialog offers are kept.
+
+        A greyed palette (SHO or HSO while a colour master is listed) ignores the change: it is not the user's
+        choice, and the remembered tick must reach the next mono run.
+        """
         if palette not in ch.palette_names():
             raise ValueError(f"not a palette Loom knows: {palette}")
+        if not self.palette_enabled(palette):
+            return
         if on and palette not in self._palettes:
             self._palettes.append(palette)
         elif not on and palette in self._palettes:
             self._palettes.remove(palette)
+            self._write_kept([k for k in self._read_kept() if k != palette])
+        self._invalidate()
+
+    # ---- colour masters: the controls they change --------------------------------------------------------------
+
+    def _osc_state(self) -> dict[str, Any]:
+        """``osc.osc_control_state`` of the master list (Siril's own difference is documented on the sensor row)."""
+        return osc.osc_control_state({"paths": self._paths})
+
+    def _colour_run(self) -> bool:
+        return bool(osc.colour_supplied({"paths": self._paths}))
+
+    def filter_enabled(self, key: str) -> bool:
+        """Whether the R, G or B filter box is live: not while a colour master is listed."""
+        if key not in _FILTER_KINDS:
+            raise KeyError(f"not a filter key: {key}")
+        return bool(self._osc_state()["monoEnabled"])
+
+    def filter_reason(self) -> str:
+        """Why the mono filter boxes are greyed ("" while they are live)."""
+        return str(self._osc_state()["monoReason"])
+
+    def filter_rows_visible(self) -> bool:
+        """The R, G and B filter rows show unless OSC is listed: the sensor colour filters stand in for them."""
+        return bool(self._osc_state()["rgbFilterRowsVisible"])
+
+    def sensor_row_visible(self) -> bool:
+        """The "Sensor colour filters" row shows only while OSC is listed. An OSCNB-only run sends Siril no SPCC
+        names (a narrowband SPCC in a fresh session takes none), so it needs no sensor."""
+        return bool(self._osc_state()["sensorRowVisible"])
+
+    def palette_enabled(self, palette: str) -> bool:
+        """Whether the palette's box is live: SHO and HSO need SII, so a colour master greys them."""
+        if palette not in ch.palette_names():
+            raise ValueError(f"not a palette Loom knows: {palette}")
+        return palette not in sensor_palettes([palette]) or bool(self._osc_state()["shoHsoEnabled"])
+
+    def palette_reason(self, palette: str) -> str:
+        """Why the palette's box is greyed ("" while it is live)."""
+        return "" if self.palette_enabled(palette) else str(self._osc_state()["shoHsoReason"])
+
+    def _read_kept(self) -> list[str]:
+        """The palettes a colour run left out and a mono run has yet to get back."""
+        try:
+            raw = self._store.get_flag(KEPT_PALETTES_FLAG) if self._store is not None else self._kept_memory
+        except (OSError, ValueError):
+            raw = None
+        known = ch.palette_names()
+        return [p for p in (raw if isinstance(raw, list) else []) if p in known]
+
+    def _write_kept(self, names: Sequence[str]) -> None:
+        if self._store is None:
+            self._kept_memory = list(names)
+            return
+        try:
+            self._store.set_flag(KEPT_PALETTES_FLAG, list(names))
+        except (OSError, ValueError):
+            pass
+
+    # ---- colour masters: kind ----------------------------------------------------------------------------------
+
+    def snapshot_options(self) -> tuple[int, dict[str, Any]]:
+        """The options as they are now with a sequence number; call it on the thread that changes the model and hand
+        both to :meth:`save_options`."""
+        self._save_seq += 1
+        return self._save_seq, self.to_config()
+
+    def save_options(self, snapshot: tuple[int, dict[str, Any]]) -> None:
+        """Writes a snapshot through ``persist``. One writer at a time (the file is replaced through one temporary
+        name), and a snapshot older than the one last written is dropped, so a late autosave cannot undo a change."""
+        if self.persist is None:
+            return
+        number, options = snapshot
+        with self._save_lock:
+            if number < self._saved_seq:
+                return
+            self._saved_seq = number
+            self.persist(options)
+
+    def save_final(self, options: dict[str, Any], write: Callable[[dict[str, Any]], None]) -> None:
+        """The last save, when the window closes: written through ``write`` behind the same lock, and after it every
+        older snapshot (an autosave still running) is dropped, so nothing undoes these options."""
+        with self._save_lock:
+            self._save_seq += 1
+            self._saved_seq = self._save_seq
+            write(options)
+
+    def kind_choices(self) -> dict[str, str]:
+        """The remembered kinds (``oscKindChoices``), for a scan to route colour masters by."""
+        return dict(self._kind_choices)
+
+    def _colour_list(self) -> list[tuple[dict[str, Any], str]]:
+        """Every colour master of the list with its slot ("" when it has none): slots first, then the unused."""
+        out: list[tuple[dict[str, Any], str]] = []
+        for slot in osc.COLOUR_SLOTS:
+            path = self.path(slot)
+            if path:
+                known = self._colour_known.get(path)
+                if known is None:
+                    # a path typed or browsed to: its header was never read, so its filter is not known
+                    known = self._colour_known[path] = {
+                        "path": path, "name": os.path.basename(path), "filter": "", "colour": True,
+                        "numberOfChannels": 3, "drizzle": "", "autocrop": False, "unread": True}
+                out.append((known, slot))
+        out.extend((entry, "") for entry in self._unused)
+        return out
+
+    def _kind_look(self, entry: Mapping[str, Any], slot: str) -> dict[str, Any]:
+        """``osc_kind_row`` of a listed master. A master whose header was never read has no filter to detect from:
+        unless a choice was remembered for it, it shows the kind of the slot it sits in."""
+        look = osc_kind_row(entry, self._kind_choices)
+        if entry.get("unread") and not look["detected_link"]:
+            look["kind"] = {"OSC": "broadband", "OSCNB": "dualband"}.get(slot, "")
+            look["enabled"] = True
+        return look
+
+    def colour_rows(self) -> list[dict[str, Any]]:
+        """One row per colour master for the kind control: its path, name, detected filter, slot, kind ("" none),
+        the kind's text, whether it can change, whether "detected" has a remembered choice to forget, and a reason
+        when the master cannot be used as listed."""
+        rows: list[dict[str, Any]] = []
+        held = {slot: entry for entry, slot in self._colour_list() if slot}
+        for entry, slot in self._colour_list():
+            look = self._kind_look(entry, slot)
+            reason = ""
+            if not look["enabled"]:
+                reason = UNSUPPORTED_REASON
+            elif not look["kind"]:
+                reason = f"Choose Broadband or {KIND_ITEMS[2][1]} for {entry.get('name')}."
+            elif not slot:
+                target = self._route(entry, "")
+                other = held.get(target or "")
+                reason = f"Not used: {other.get('name')} is the {target} master." if other is not None else ""
+            rows.append({"path": entry["path"], "name": str(entry.get("name") or ""),
+                         "filter": "" if entry.get("filter") is None else str(entry.get("filter")),
+                         "slot": slot, "kind": look["kind"], "kind_label": dict(KIND_ITEMS)[look["kind"]],
+                         "enabled": look["enabled"], "detected_link": look["detected_link"], "reason": reason,
+                         "key": osc.osc_kind_key(entry.get("filter"), entry["path"])})
+        return rows
+
+    def set_osc_kind(self, path: str, kind: str) -> None:
+        """Gives a colour master its kind: "broadband" or "dualband" is remembered (under ``osc_kind_key``, so one
+        choice covers every master with that filter name), "" or "detected" forgets it. Saved at once; the master
+        moves to its slot. ValueError for a filter that cannot be a colour master (it has no kind to choose)."""
+        found = next(((entry, slot) for entry, slot in self._colour_list() if entry["path"] == path), None)
+        if found is None:
+            raise KeyError(f"not a colour master of the list: {path}")
+        target = found[0]
+        if kind not in ("", "detected", "broadband", "dualband"):
+            raise ValueError(f"not a kind: {kind}")
+        if not self._kind_look(target, found[1])["enabled"]:
+            raise ValueError(UNSUPPORTED_REASON)
+        key = osc.osc_kind_key(target.get("filter"), path)
+        if kind in ("broadband", "dualband"):
+            self._kind_choices[key] = kind
+        else:
+            self._kind_choices.pop(key, None)
+        self._reroute(target)
+        self._invalidate()
+        self.save_options(self.snapshot_options())
+
+    def _route(self, entry: Mapping[str, Any], slot: str) -> Optional[str]:
+        """The slot a listed master's kind says (None when it has none). A master whose header was never read keeps
+        the slot it sits in unless a remembered choice says otherwise."""
+        if entry.get("unread") and slot and osc_kind_row(entry, self._kind_choices)["detected_link"] is False:
+            return slot
+        return osc.entry_channel(entry.get("filter"), 3, entry["path"], self._kind_choices)["channel"]
+
+    def _reroute(self, first: Optional[Mapping[str, Any]]) -> None:
+        """Puts every colour master in the slot its kind now says; the one just changed claims its slot first, and a
+        master whose slot is held stays listed as unused, with a notice."""
+        listed = self._colour_list()
+        entries = [entry for entry, _slot in listed]
+        slot_of = {id(entry): slot for entry, slot in listed}
+        claimed: dict[str, dict[str, Any]] = {}
+        unused: list[dict[str, Any]] = []
+        for entry in [e for e in entries if e is first] + [e for e in entries if e is not first]:
+            slot = self._route(entry, slot_of[id(entry)])
+            if slot is not None and slot in claimed:
+                self._notices.append(f"{entry.get('name')} is not used: {claimed[slot].get('name')} is the {slot} master")
+            if slot is None or slot in claimed:
+                unused.append(entry)
+            else:
+                claimed[slot] = entry
+        for slot in osc.COLOUR_SLOTS:
+            self._paths[slot] = claimed[slot]["path"] if slot in claimed else ""
+        self._unused = [e for e in entries if any(e is u for u in unused)]
+        self._colour_known = {e["path"]: e for e in entries}
+
+    # ---- colour masters: the sensor colour filters -------------------------------------------------------------
+
+    def osc_sensor_pairs(self, key: str) -> list[tuple[str, str]]:
+        """The (value, text) items of the sensor, front filter or low-pass filter box: Siril's database names, the
+        sensor by model. The front and low-pass boxes start with the database's own "none" entry as the blank
+        choice."""
+        if key not in _OSC_SENSOR_KINDS:
+            raise KeyError(f"not a sensor colour filter: {key}")
+        names = self._choices(_OSC_SENSOR_KINDS[key][0])
+        none = _OSC_NONE_NAMES.get(key)
+        first = (("", none) if none is not None else ("", SENSOR_UNSET_TEXT))
+        pairs = [first] + [(n, n) for n in names if n != none]
+        saved = self._osc_sensor[key]
+        if saved and saved != none and saved not in names:
+            pairs.append((saved, saved))   # a database that could not be read: what was saved still shows
+        return pairs
+
+    def osc_sensor_value(self, key: str) -> str:
+        """The choice of one sensor box ("" for the sensor not chosen and for a filter entry that says none)."""
+        if key not in _OSC_SENSOR_KINDS:
+            raise KeyError(f"not a sensor colour filter: {key}")
+        saved = self._osc_sensor[key]
+        return "" if saved == _OSC_NONE_NAMES.get(key) else saved
+
+    def set_osc_sensor(self, key: str, name: str) -> None:
+        """Chooses the OSC sensor, front filter or low-pass filter; a name Siril's database does not hold is
+        refused, and the database's "none" entry is the blank choice."""
+        if key not in _OSC_SENSOR_KINDS:
+            raise KeyError(f"not a sensor colour filter: {key}")
+        name = str(name or "")
+        if name == _OSC_NONE_NAMES.get(key):
+            name = ""
+        names = self._choices(_OSC_SENSOR_KINDS[key][0])
+        if name and names and name not in names:
+            raise ValueError(f"{name} is not in Siril's SPCC database")
+        self._osc_sensor[key] = name
         self._invalidate()
 
     def output_dir(self) -> str:
@@ -378,6 +675,8 @@ class DialogModel:
         out["outputDir"] = self._output_dir
         out["filters"] = dict(self._filters)
         out["palettes"] = list(self._palettes)
+        out["oscKindChoices"] = dict(self._kind_choices)
+        out["oscSensor"] = dict(self._osc_sensor)
         return out
 
     def take_notices(self) -> list[str]:
@@ -516,6 +815,13 @@ class DialogModel:
             if self._v["spccSensor"] and sensors and self._v["spccSensor"] not in sensors:
                 self._notices.append(f"{self._v['spccSensor']} is not in Siril's SPCC database; set to auto")
                 self._v["spccSensor"] = ""
+            for key, (kind, label) in _OSC_SENSOR_KINDS.items():
+                names = self._choices(kind)
+                saved = self._osc_sensor[key]
+                # An empty list means the database could not be read: keep what was saved rather than lose it.
+                if saved and names and saved not in names:
+                    self._notices.append(f"{saved} is not in Siril's SPCC database; {label} cleared")
+                    self._osc_sensor[key] = ""
             for key in [k for k in self._filters if k in _FILTER_KINDS]:
                 choices = self.filter_choices(key)
                 # An empty list means the database could not be read: keep what was saved rather than lose it.
@@ -542,11 +848,15 @@ class DialogModel:
             return self._v["sharpenTool"] == lv.SHARPEN_TOOL_STUDIO
         if name in ("cacheDir", "ignoreCache"):
             return bool(self._v["useCache"])
+        if name.startswith("filter:") and name[len("filter:"):] in _FILTER_KINDS:
+            return self.filter_enabled(name[len("filter:"):])
         return True
 
     def palettes_visible(self) -> bool:
-        """The palette checkboxes show only when a narrowband channel (H, S or O) has a file."""
-        return any(self.path(k) for k in ch.NARROWBAND)
+        """The palette checkboxes show only when a narrowband channel (H, S or O) is supplied, a colour master's
+        members included."""
+        supplied = osc.supplied_channels({"paths": self._paths})
+        return any(k in supplied for k in ch.NARROWBAND)
 
     def palette_choices(self) -> list[str]:
         return ch.palette_names()
@@ -595,13 +905,17 @@ class DialogModel:
 
     # ---- masters -----------------------------------------------------------------------------------------------
 
-    def scan_masters(self, folder: str, scanner: Optional[Callable[[str], Any]] = None) -> bool:
+    def scan_masters(self, folder: str, scanner: Optional[Callable[[str], Any]] = None,
+                     routed_with: Optional[Mapping[str, str]] = None) -> bool:
         """Reads a master folder and uses what it found; False when it is not a folder (nothing changes then).
 
-        Every channel the scan confirmed gets its file; a channel the folder has no master for is cleared, so the
-        selection is the folder's masters and nothing left over from before.
+        Every channel the scan confirmed gets its file, and so does each colour slot; a channel or slot the folder
+        has no master for is cleared, so the selection is the folder's masters and nothing left over from before.
+        A colour master whose kind is not known yet is listed with no kind to choose. The remembered kinds route
+        the colour masters of a scan the dialog runs itself. ``routed_with`` is the choices a scan run earlier used:
+        when the remembered choices changed meanwhile, the colour masters are routed again with the current ones.
         """
-        result = (scanner or ch.scan_masters)(folder)
+        result = scanner(folder) if scanner is not None else ch.scan_masters(folder, choices=self._kind_choices)
         if result is None:
             return False
         self._scan = result
@@ -609,6 +923,20 @@ class DialogModel:
         for channel in ch.CHANNELS:
             entry = confirmed.get(channel)
             self._paths[channel] = entry["path"] if entry is not None else ""
+        colour = result.get("colour") or {}
+        self._colour_known = {}
+        for slot in osc.COLOUR_SLOTS:
+            entry = colour.get(slot)
+            self._paths[slot] = entry["path"] if entry is not None else ""
+            if entry is not None:
+                self._colour_known[entry["path"]] = entry
+        self._unused = [e for e in (result.get("unresolved") or [])]
+        if routed_with is not None and dict(routed_with) != self._kind_choices:
+            self._reroute(None)
+        self._notices.extend(str(line) for line in result.get("corrected") or [])
+        for row in self.colour_rows():
+            if row["slot"] == "" and row["reason"]:
+                self._notices.append(row["reason"])
         self._invalidate()
         return True
 
@@ -620,21 +948,33 @@ class DialogModel:
         """
         if self._scan:
             return False
+        scan = scanner or (lambda folder: ch.scan_masters(folder, choices=self._kind_choices))
         found: dict[str, dict[str, Any]] = {}
         for folder in {os.path.dirname(str(p)) for p in self._paths.values() if p}:
-            result = (scanner or ch.scan_masters)(folder) or {}
+            result = scan(folder) or {}
             for entry in result.get("confirmed", {}).values():
                 found[entry["path"]] = entry
+            for entry in [*(result.get("colour") or {}).values(), *(result.get("unresolved") or [])]:
+                if entry is not None:
+                    found[entry["path"]] = entry
         confirmed: dict[str, dict[str, Any]] = {}
-        for channel in ch.CHANNELS:
+        colour: dict[str, dict[str, Any]] = {}
+        for channel in ch.CHANNELS + osc.COLOUR_SLOTS:
             path = str(self._paths.get(channel) or "")
             if not path or not os.path.isfile(path):
                 continue
-            confirmed[channel] = found.get(path) or {"path": path, "name": os.path.basename(path),
-                                                     "mtime": os.path.getmtime(path), "filter": channel}
-        if not confirmed:
+            if channel in osc.COLOUR_SLOTS:
+                colour[channel] = found.get(path) or {
+                    "path": path, "name": os.path.basename(path), "mtime": os.path.getmtime(path), "filter": "",
+                    "colour": True, "numberOfChannels": 3, "drizzle": "", "autocrop": False}
+            else:
+                confirmed[channel] = found.get(path) or {"path": path, "name": os.path.basename(path),
+                                                         "mtime": os.path.getmtime(path), "filter": channel}
+        if not confirmed and not colour:
             return False
-        self._scan = {"confirmed": confirmed, "corrected": [], "skipped": [], "total": len(confirmed)}
+        self._colour_known = {e["path"]: e for e in colour.values()}
+        self._scan = {"confirmed": confirmed, "colour": colour, "corrected": [], "skipped": [],
+                      "total": len(confirmed) + len(colour)}
         return True
 
     def scanned(self) -> Optional[dict[str, Any]]:
@@ -680,6 +1020,7 @@ class DialogModel:
                 "channel": channel,
                 "path": entry["path"],
                 "Filter": str(entry.get("filter") or ""),
+                "Kind": "",
                 "Size": size,
                 "Drizzle": str(entry.get("drizzle") or ""),
                 "Source": entry["name"],
@@ -688,6 +1029,22 @@ class DialogModel:
                 "Ecc": _fmt(q.get("eccentricity"), "{:.2f}") or pending,
                 "Noise": _fmt(q.get("noise"), "{:.4g}") or pending,
                 "Stars": _fmt(q.get("stars"), "{:.0f}") or pending,
+            })
+        # The colour masters follow, with the filter their header names and the kind they are used as. Siril does not
+        # measure them for the list: the planes are measured after the split.
+        for (entry, slot), row in zip(self._colour_list(), self.colour_rows()):
+            size = "" if not entry.get("width") or not entry.get("height") else f"{entry['width']} x {entry['height']}"
+            created = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry["mtime"])) if entry.get("mtime") else ""
+            rows.append({
+                "channel": slot,
+                "path": entry["path"],
+                "Filter": row["filter"],
+                "Kind": row["kind_label"] if row["enabled"] else KIND_UNSUPPORTED_TEXT,
+                "Size": size,
+                "Drizzle": str(entry.get("drizzle") or ""),
+                "Source": str(entry.get("name") or ""),
+                "Created": created,
+                "FWHM": "", "Ecc": "", "Noise": "", "Stars": "",
             })
         return rows
 
@@ -701,7 +1058,12 @@ class DialogModel:
         self._problems_key = None
 
     def _request(self) -> RunRequest:
-        return RunRequest(self.to_config(), self._output_dir, self._starnet_revision)
+        """The run's options: a colour run leaves SHO and HSO out (they need SII), so it never dead-ends on that
+        error. The dialog's autosave keeps them in the options file until a Run saves this request, and the tool
+        store keeps them for the next mono run."""
+        config = self.to_config()
+        config["palettes"] = run_palettes(config["palettes"], self._colour_run())
+        return RunRequest(config, self._output_dir, self._starnet_revision)
 
     def run_reasons(self) -> list[str]:
         """Why Run is disabled, every reason at once: no output folder, StarNet2 licence, preflight problems."""
@@ -751,6 +1113,8 @@ class DialogModel:
         reasons = self.run_reasons()
         if reasons:
             raise RunBlocked(reasons)
+        # SHO and HSO a colour run leaves out wait for the next mono run, which has them back and clears the wait
+        self._write_kept(sensor_palettes(self._palettes) if self._colour_run() else [])
         return self._request()
 
     def needs_replace_confirmation(self, image_loaded: bool) -> bool:
@@ -905,6 +1269,10 @@ class LoomDialog:
         self._checks: dict[str, tuple[Any, Any]] = {}
         self._combos: dict[str, tuple[Any, Callable[[], list[tuple[str, str]]], Callable[[], Any]]] = {}
         self._palettes: dict[str, Any] = {}
+        self._palette_boxes: dict[str, Any] = {}
+        self._combo_widgets: dict[str, tuple[Any, Any]] = {}
+        self._kind_rows: list[dict[str, Any]] = []
+        self._layout_key: Optional[tuple[Any, ...]] = None
         self._invalid: dict[str, str] = {}
         self._rendered: dict[str, str] = {}
         self._shown: list[str] = model.take_notices()
@@ -923,7 +1291,11 @@ class LoomDialog:
         bar = ttk.Frame(self._frame)
         bar.grid(row=self._next(), column=0, columnspan=3, sticky="w", pady=2)
         ttk.Button(bar, text="Scan Masters Folder...", command=self._scan).grid(row=0, column=0, padx=2)
-        for channel in ch.CHANNELS:
+        # The kind of each colour master in the list: one row per master, made once and reused.
+        self._kind_frame = ttk.Frame(self._frame)
+        self._kind_frame.grid(row=self._next(), column=0, columnspan=3, sticky="we", pady=2)
+        self._kind_frame.columnconfigure(1, weight=1)
+        for channel in ch.CHANNELS + osc.COLOUR_SLOTS:
             self._text(f"path:{channel}", f"{channel} master", lambda c=channel: model.path(c),
                        lambda value, c=channel: model.set_path(c, value), file_for=channel)
 
@@ -933,6 +1305,10 @@ class LoomDialog:
                         lambda k=key: [("", "(none)")] + [(n, n) for n in model.filter_choices(k)],
                         get=lambda k=key: model.filter_name(k),
                         put=lambda v, k=key: model.set_filter(k, v))
+        self._filter_reason = tk.StringVar(value="")   # why the filter boxes are greyed
+        ttk.Label(self._frame, textvariable=self._filter_reason, foreground="#b35c00", wraplength=560).grid(
+            row=self._next(), column=0, columnspan=3, sticky="w", padx=4)
+        self._build_sensor_row()
         self._combo("spccSensor", "Sensor",
                     lambda: [("", f"Auto ({model.auto_sensor()})")] + [(n, n) for n in model.sensor_choices()],
                     get=model.sensor, put=model.set_sensor)
@@ -972,8 +1348,13 @@ class LoomDialog:
         for pal in model.palette_choices():
             var = tk.BooleanVar(value=False)
             self._palettes[pal] = var
-            ttk.Checkbutton(self._palette_frame, text=pal, variable=var,
-                            command=lambda p=pal, v=var: self._palette(p, bool(v.get()))).pack(anchor="w")
+            box = ttk.Checkbutton(self._palette_frame, text=pal, variable=var,
+                                  command=lambda p=pal, v=var: self._palette(p, bool(v.get())))
+            box.pack(anchor="w")
+            self._palette_boxes[pal] = box
+        self._palette_reason = tk.StringVar(value="")   # why SHO and HSO are greyed
+        ttk.Label(self._palette_frame, textvariable=self._palette_reason, foreground="#b35c00", wraplength=520).pack(
+            anchor="w", padx=4)
 
         self._section("Tools")
         self._tools = ttk.Frame(self._frame)
@@ -1063,13 +1444,15 @@ class LoomDialog:
         from tkinter import ttk
 
         row = self._next()
-        ttk.Label(self._frame, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=2)
+        caption = ttk.Label(self._frame, text=label)
+        caption.grid(row=row, column=0, sticky="w", padx=4, pady=2)
         var = tk.StringVar(value="")
         combo = ttk.Combobox(self._frame, textvariable=var, state="readonly", width=44)
         combo.grid(row=row, column=1, sticky="we", padx=4, pady=2)
         current = get if get is not None else (lambda: self.model.get(name))
         setter = put if put is not None else (lambda value: self.model.set_field(name, value))
         self._combos[name] = (combo, pairs, current)
+        self._combo_widgets[name] = (caption, combo)
 
         def picked(_event: Any = None) -> None:
             values = [value for value, text in pairs() if text == combo.get()]
@@ -1077,6 +1460,108 @@ class LoomDialog:
                 self._apply(lambda: setter(values[0]))
 
         combo.bind("<<ComboboxSelected>>", picked)
+
+    def _build_sensor_row(self) -> None:
+        """The sensor colour filters (sensor, front filter, low-pass filter), shown while OSC is listed."""
+        import tkinter as tk
+        from tkinter import ttk
+
+        self._sensor_frame = ttk.Frame(self._frame)
+        self._sensor_frame.grid(row=self._next(), column=0, columnspan=3, sticky="we")
+        self._sensor_frame.columnconfigure(1, weight=1)
+        self._sensor_combos: dict[str, Any] = {}
+        ttk.Label(self._sensor_frame, text="Sensor colour filters", font=("TkDefaultFont", 9, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))
+        for index, (key, caption) in enumerate((("sensor", "Sensor"), ("frontFilter", "Front filter"),
+                                                ("lpf", "Low-pass filter")), start=1):
+            ttk.Label(self._sensor_frame, text=caption).grid(row=index, column=0, sticky="w", padx=4, pady=2)
+            combo = ttk.Combobox(self._sensor_frame, state="readonly", width=44)
+            combo.grid(row=index, column=1, sticky="we", padx=4, pady=2)
+            self._sensor_combos[key] = combo
+
+            def picked(_event: Any = None, k: str = key, box: Any = combo) -> None:
+                values = [value for value, text in self.model.osc_sensor_pairs(k) if text == box.get()]
+                if values:
+                    self._apply(lambda: self.model.set_osc_sensor(k, values[0]))
+
+            combo.bind("<<ComboboxSelected>>", picked)
+
+    def _make_kind_row(self) -> dict[str, Any]:
+        from tkinter import ttk
+
+        frame = ttk.Frame(self._kind_frame)
+        name = ttk.Label(frame, width=44)
+        name.grid(row=0, column=0, sticky="w", padx=4)
+        combo = ttk.Combobox(frame, state="readonly", width=22, values=[text for _value, text in KIND_ITEMS])
+        combo.grid(row=0, column=1, sticky="w", padx=4)
+        row: dict[str, Any] = {"frame": frame, "name": name, "combo": combo, "path": ""}
+        row["link"] = ttk.Button(frame, text="detected", width=9,
+                                 command=lambda: self._apply(lambda: self.model.set_osc_kind(row["path"], "detected")))
+        row["link"].grid(row=0, column=2, padx=4)
+        row["reason"] = ttk.Label(frame, foreground="#b35c00", wraplength=520)
+        row["reason"].grid(row=1, column=0, columnspan=3, sticky="w", padx=4)
+
+        def picked(_event: Any = None) -> None:
+            values = [value for value, text in KIND_ITEMS if text == combo.get()]
+            if values:
+                self._apply(lambda: self.model.set_osc_kind(row["path"], values[0]))
+
+        combo.bind("<<ComboboxSelected>>", picked)
+        self._kind_rows.append(row)
+        return row
+
+    def _sync_colour(self) -> None:
+        """The controls colour masters change: kind rows, greyed boxes with their reasons, the sensor row."""
+        model = self.model
+        colour = model.colour_rows()
+        for index, info in enumerate(colour):
+            row = self._kind_rows[index] if index < len(self._kind_rows) else self._make_kind_row()
+            row["path"] = info["path"]
+            row["name"].configure(text=f"{info['name']}  -  {info['filter'] or '(no FILTER)'}")
+            row["combo"].set(info["kind_label"])
+            row["combo"].state(["!disabled"] if info["enabled"] else ["disabled"])
+            if info["detected_link"]:
+                row["link"].grid()
+            else:
+                row["link"].grid_remove()
+            row["reason"].configure(text=info["reason"])
+            row["frame"].grid(row=index, column=0, sticky="we", pady=1)
+        for row in self._kind_rows[len(colour):]:
+            row["path"] = ""
+            row["frame"].grid_remove()
+        if colour:
+            self._kind_frame.grid()
+        else:
+            self._kind_frame.grid_remove()
+
+        reason = model.filter_reason()
+        self._filter_reason.set(reason)
+        for key in ("R", "G", "B"):
+            caption, combo = self._combo_widgets[f"filter:{key}"]
+            for widget in (caption, combo):
+                if model.filter_rows_visible():
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        if model.sensor_row_visible():
+            self._sensor_frame.grid()
+        else:
+            self._sensor_frame.grid_remove()
+        for key, box in self._sensor_combos.items():
+            pairs = model.osc_sensor_pairs(key)
+            box["values"] = [text for _value, text in pairs]
+            box.set(next((text for value, text in pairs if value == model.osc_sensor_value(key)), pairs[0][1]))
+        for pal, box in self._palette_boxes.items():
+            box.state(["!disabled"] if model.palette_enabled(pal) else ["disabled"])
+            self._palettes[pal].set(model.palette_shown(pal))
+        self._palette_reason.set(model.palette_reason("SHO"))
+        # the form grew or shrank: the window follows it
+        layout = (len(colour), model.sensor_row_visible(), model.filter_rows_visible())
+        if layout != self._layout_key:
+            first = self._layout_key is None
+            self._layout_key = layout
+            if not first:
+                self._scroll.fit()
 
     # -- actions ----------------------------------------------------------------------------------------------
 
@@ -1156,9 +1641,8 @@ class LoomDialog:
             self._save_timer = None
             if self._closed:
                 return
-            options = self.model.to_config()
-            save = self.model.persist
-            threading.Thread(target=lambda: save(options) if save else None, name="loom-save", daemon=True).start()
+            snapshot = self.model.snapshot_options()
+            threading.Thread(target=lambda: self.model.save_options(snapshot), name="loom-save", daemon=True).start()
 
         self._save_timer = self.top.after(1000, fire)
 
@@ -1185,14 +1669,16 @@ class LoomDialog:
         if not folder:
             return
         self._notice.set("Scanning the masters folder...")
+        remembered = self.model.kind_choices()
 
         def done(result: Any) -> None:
-            if isinstance(result, Exception) or not self.model.scan_masters(folder, scanner=lambda _f: result):
+            if isinstance(result, Exception) or not self.model.scan_masters(folder, scanner=lambda _f: result,
+                                                                            routed_with=remembered):
                 messagebox.showerror("Loom", f"{folder} is not a folder.", parent=self.top)
             self._sync()
             self._measure_masters()
 
-        self._background(lambda: ch.scan_masters(folder), done)
+        self._background(lambda: ch.scan_masters(folder, choices=remembered), done)
 
     def _measure_masters(self) -> None:
         """Measure the scanned masters on a worker thread; the table fills in when the results arrive."""
@@ -1314,8 +1800,7 @@ class LoomDialog:
         self._shown.extend(model.take_notices())
         self._notice.set("\n".join(self._shown))
         self._error.set("\n".join(self._invalid.values()))
-        for pal, var in self._palettes.items():
-            var.set(model.palette_selected(pal))
+        self._sync_colour()
         if model.palettes_visible():
             self._palette_frame.grid()
         else:
@@ -1437,7 +1922,7 @@ class _ScrollArea:
                 self.canvas.unbind_all(sequence)
 
 
-MASTER_COLUMNS: tuple[str, ...] = ("Filter", "Size", "Drizzle", "Source", "Created", "FWHM", "Ecc", "Noise", "Stars")
+MASTER_COLUMNS: tuple[str, ...] = ("Filter", "Kind", "Size", "Drizzle", "Source", "Created", "FWHM", "Ecc", "Noise", "Stars")
 
 
 def _level_pairs(levels: Sequence[str]) -> list[tuple[str, str]]:

@@ -24,8 +24,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, TextIO
 
-from . import cache, channels, finishing, icc, levels, naming, reference, stages_colour, stages_correct
-from . import stages_geometry
+from loomsiril.io_fits import write_fits
+
+from . import cache, channels, colour_load, finishing, icc, levels, naming, reference, stages_colour, stages_correct
+from . import osc, stages_geometry
 from . import publish as publish_steps
 from .chain import CANCEL_MESSAGE, ChainResult, RunCancelled, process_chain
 from .runctx import RunContext, StageOutput
@@ -65,6 +67,15 @@ class RunReport:
             "log_path": self.log_path,
             "warnings": list(self.warnings),
         }
+
+
+def _js_number(value: Any) -> str:
+    """A number as JavaScript prints it in a log line: no ``.0`` on a whole number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number == int(number) else str(number)
 
 
 def _short(text: Any) -> str:
@@ -147,6 +158,11 @@ class _Chan:
     current_key: str = ""
     clean_key: Optional[str] = None
     plate: Optional[str] = None  # the plate as the latest chain left it (None until something needs the pixels)
+    #: A colour member (a plane of a colour master) names its slot and plane; ``path`` stays the master's path, and
+    #: ``source`` gives the member's one-channel plate. All three are None for a mono channel.
+    group: Optional[str] = None
+    plane: Optional[int] = None
+    source: Optional[Callable[[], str]] = None
 
 
 class _Run:
@@ -161,6 +177,7 @@ class _Run:
         self.plan = plan
         self.work = ctx.work_dir
         self.chans: dict[str, _Chan] = {}
+        self.group_filters: dict[str, Optional[str]] = {}  # colour slot -> the master's FILTER keyword
 
     # -- helpers --------------------------------------------------------------------------------------------------
 
@@ -168,7 +185,7 @@ class _Run:
         """The channel's plate, loaded from its source file the first time something needs its pixels."""
         ch = self.chans[key]
         if ch.plate is None:
-            ch.plate = stages_correct.ingest_channel(self.ctx, key, ch.path)
+            ch.plate = ch.source() if ch.source is not None else stages_correct.ingest_channel(self.ctx, key, ch.path)
         return ch.plate
 
     def publish_log(self, level: str, text: str) -> None:
@@ -187,11 +204,49 @@ class _Run:
 
     # -- steps ----------------------------------------------------------------------------------------------------
 
+    def _colour_loaders(self, paths: Mapping[str, Any]) -> dict[str, tuple[colour_load.ColourGroupLoader, str, str]]:
+        """One loader per supplied colour slot: slot -> (loader, the master's INSTRUME, the master's FILTER)."""
+        loaders: dict[str, tuple[colour_load.ColourGroupLoader, str, str]] = {}
+        for slot in osc.colour_supplied(self.cfg):
+            kind = (self.cfg.get("oscKinds") or {}).get(slot)
+            if not kind:
+                raise ValueError(f"internal: the kind of {slot} was not resolved by preflight")
+            path = str(paths.get(slot) or "")
+            keywords = channels.read_header(path).get("keywords", [])
+            loader = colour_load.ColourGroupLoader(
+                slot, kind, path, stages_correct.source_key(path),
+                store=self.store, work_dir=self.work, ignore_cache=bool(self.cfg.get("ignoreCache")),
+                convert=lambda src, name: stages_correct.ingest_channel(self.ctx, name, src), warn=self.ctx.warn)
+            filter_value = channels.keyword_value(keywords, "FILTER")
+            loader.when_validated(self._group_logger(slot, kind, path, filter_value))
+            loaders[slot] = (loader, channels.keyword_value(keywords, "INSTRUME"), filter_value)
+        return loaders
+
+    def _group_logger(self, slot: str, kind: str, path: str, filter_value: Optional[str]) -> Callable[[Any], None]:
+        def log_group(rec: Any) -> None:
+            self.ctx.log(colour_load.group_log_line(slot, path, kind, filter_value, rec))
+
+        return log_group
+
     def load_channels(self) -> None:
         paths = self.cfg.get("paths") or {}
         records: dict[str, dict[str, Any]] = {}
+        loaders = self._colour_loaders(paths)
+        member_of = {member: slot for slot in loaders for member in osc.COLOUR_MEMBERS[slot]}
         for key in CHANNEL_ORDER:
             path = str(paths.get(key) or "")
+            if not path and key in member_of:
+                slot = member_of[key]
+                loader, instrume, filter_value = loaders[slot]
+                self.group_filters[slot] = filter_value
+                plane = osc.OSC_RECIPES[slot][key]
+                sibling = loader.sibling_key(plane)
+                self.chans[key] = _Chan(key=key, path=str(paths[slot]), source_key=sibling, instrume=instrume,
+                                        current_key=sibling, group=slot, plane=plane,
+                                        source=lambda ld=loader, pl=plane: ld.plate(pl))
+                self.ctx.log(f"load {key} <- {paths[slot]} (plane {plane})")
+                records[key] = {"key": key, "instrume": instrume}
+                continue
             if not path:
                 continue
             header = channels.read_header(path)
@@ -228,6 +283,8 @@ class _Run:
 
     def _ingest_source(self, key: str) -> Callable[[], str]:
         ch = self.chans[key]
+        if ch.source is not None:
+            return ch.source
 
         def source() -> str:
             return stages_correct.ingest_channel(self.ctx, key, ch.path)
@@ -261,14 +318,28 @@ class _Run:
 
     def register(self) -> str:
         present = [key for key in CHANNEL_ORDER if key in self.chans]
-        quality = self._registration_quality(present)
-        ref_key, reason = reference.registration_choice(present, quality)
+        # Colour groups first: their reference (OSC's G, else OSCNB's H) needs no star measurement, and the siblings
+        # of a colour master share the path the measurement reads.
+        groups = osc.osc_channel_groups({k: {"group": ch.group} for k, ch in self.chans.items()})
+        plan = osc.osc_registration_plan(present, groups) if groups else None
+        quality = {} if groups else self._registration_quality(present)
+        if plan is not None and plan["ref"] is not None:
+            ref_key, reason = plan["ref"], "colour group reference"
+        else:
+            ref_key, reason = reference.registration_choice(present, quality)
         if ref_key is None:
             raise StageFailed("No channels to register.")
         self.ctx.log(f"register: reference is {ref_key}: {reason}")
         ref_fingerprint = self.chans[ref_key].current_key
+        grouped: set[str] = set()
+        if plan is not None:
+            grouped.update(plan["identity"])  # already on the reference grid
+            for entry in plan["groups"]:
+                self._register_group(entry, ref_key, ref_fingerprint)
+                grouped.update(entry["members"])
+                _checkpoint(self.ctx)
         for key in present:
-            if key == ref_key:
+            if key == ref_key or key in grouped:
                 continue
             ch = self.chans[key]
             chain = cache.build_stage_keys(ch.current_key, {"register": stages_geometry.register_stage_params(
@@ -279,6 +350,102 @@ class _Run:
             ch.current_key = str(chain[-1]["key"])
             _checkpoint(self.ctx)
         return ref_key
+
+    def _register_group(self, entry: Mapping[str, Any], ref_key: str, ref_fingerprint: str) -> None:
+        """Registers one colour group onto the reference as a single image, so its members share one transform.
+
+        The group image is what the cache keeps; each registered member plate is stored under a key derived from it.
+        With the cache off nothing is read or written; with the cache ignored nothing is read and everything is
+        written. A member's plate and ``current_key`` become its registered split. The unregistered plates are
+        never stored again: they were handed out by the colour loader.
+        """
+        members: list[str] = list(entry["members"])
+        plane_names: list[str] = list(entry["planes"])
+        chans = [self.chans[k] for k in members]
+        label = "/".join(members)
+        params = stages_geometry.group_register_params(ref_fingerprint, plane_names)
+        key = osc.osc_group_register_key("registerGroup", [c.current_key for c in chans], params)
+        split_keys = [osc.osc_registered_sibling_key(key, i) for i in range(len(members))]
+        store = self.store
+        action = "register"
+        if store is not None and not self.cfg.get("ignoreCache"):
+            action = osc.osc_group_cache_action(store.lookup(key) is not None,
+                                                [store.lookup(sk) is not None for sk in split_keys],
+                                                {"useCache": True, "ignoreCache": False})
+        parts: Optional[list[str]] = None
+        if action == "load":
+            loaded = [self._usable_split(chans[i], split_keys[i]) for i in range(len(members))]
+            if all(p is not None for p in loaded):
+                self.ctx.log(f"[cache] {label} registerGroup HIT")
+                parts = [str(p) for p in loaded]
+            else:
+                action = "split"
+        if parts is None and action == "split" and store is not None:
+            parts = self._split_cached_group(chans, key, split_keys, label, list(entry["planes"]))
+        if parts is None:
+            self.ctx.log(f"[cache] {label} registerGroup MISS")
+            parts = self._register_and_split(entry, ref_key, chans, key, split_keys, label, params)
+        for ch, path, split_key in zip(chans, parts, split_keys):
+            ch.plate = path
+            ch.current_key = split_key
+
+    def _usable_split(self, ch: _Chan, split_key: str) -> Optional[str]:
+        """The cached registered plate of a member, or None when it is absent, will not read or has other provenance."""
+        assert self.store is not None and ch.plane is not None
+        loaded = self.store.load(split_key)
+        if loaded is None:
+            return None
+        want = stages_geometry.member_split_header({}, ch.key, ch.path, ch.plane)
+        header = loaded[1]
+        if header.get("FILTER") != want["FILTER"] or header.get("LOOMSRC") != want["LOOMSRC"]:
+            return None
+        return self.store.path_for(split_key)
+
+    def _split_cached_group(self, chans: list[_Chan], key: str, split_keys: list[str], label: str,
+                            plane_names: Sequence[str]) -> Optional[list[str]]:
+        assert self.store is not None
+        loaded = self.store.load(key)
+        if loaded is None or len(loaded[0]) != 3:
+            return None
+        planes, header = loaded
+        self.ctx.log(f"[cache] {label} registerGroup HIT (split again)")
+        parts: list[str] = []
+        for i, ch in enumerate(chans):
+            cached = self._usable_split(ch, split_keys[i])
+            parts.append(cached if cached is not None
+                         else self._place_split(ch, i, planes[i], header, split_keys[i], plane_names))
+        return parts
+
+    def _register_and_split(self, entry: Mapping[str, Any], ref_key: str, chans: list[_Chan], key: str,
+                            split_keys: list[str], label: str, params: Mapping[str, Any]) -> list[str]:
+        slot = str(entry["slot"])
+        self.ctx.log(f"register: {label} -> {ref_key} (colour group {slot}, one transform)")
+        ref_plate = self.plate_of(ref_key)
+        group_plates = [self.plate_of(k) for k in entry["planes"]]
+        planes, header = stages_geometry.register_group_image(
+            self.ctx.ops, ref_plate, group_plates, stages_geometry.GROUP_REGISTER_LAYER[slot], self.work,
+            self.ctx.log)
+        if self.store is not None:
+            meta = {"channel": label, "stage": "registerGroup", "params": dict(params)}
+            if self.store.store(key, planes, header, meta) is None:
+                self.ctx.warn(f"[cache] the registered {label} image could not be cached")
+        return [self._place_split(ch, i, planes[i], header, split_keys[i], list(entry["planes"]))
+                for i, ch in enumerate(chans)]
+
+    def _place_split(self, ch: _Chan, plane: int, pixels: Any, group_header: Mapping[str, Any], split_key: str,
+                     planes: Sequence[str]) -> str:
+        """Stores one registered plane under its split key (or in the work folder); the keywords are the member's."""
+        assert ch.plane is not None
+        header = stages_geometry.member_split_header(group_header, ch.key, ch.path, ch.plane)
+        if self.store is not None:
+            meta = {"channel": ch.key, "stage": "registerGroup", "params": {"plane": plane, "planes": ",".join(planes)}}
+            stored = self.store.store(split_key, [pixels], header, meta)
+            if stored is not None:
+                return stored
+            self.ctx.warn(f"[cache] the registered {ch.key} could not be cached; the run uses a copy in the work folder")
+        out = os.path.join(self.work, f"{ch.key}_register.fits")
+        write_fits(out, [pixels], header, bitpix=-32)
+        return out
 
     def _plate_source(self, key: str) -> Callable[[], str]:
         def source() -> str:
@@ -338,7 +505,8 @@ class _Run:
         use_cache = bool(self.cfg.get("useCache"))
         factors = stages_colour.measure_clean_white_balance(
             self.ctx, clean, uncropped[ref_key], rect, self.cfg, lum_instrume,
-            self.store if use_cache else None, use_cache, bool(self.cfg.get("ignoreCache")))
+            self.store if use_cache else None, use_cache, bool(self.cfg.get("ignoreCache")),
+            ref_key=self.chans[ref_key].current_key, ref_channel=ref_key)
         _checkpoint(self.ctx)
         return factors
 
@@ -353,7 +521,8 @@ class _Run:
         params.update(levels.finishing_params(levels.RGB_FINISHING, self.cfg))
         chain = cache.build_stage_keys(source, params)
         runners: dict[str, Callable[[Any, Any], StageOutput]] = dict(
-            stages_colour.rgb_runners(self.ctx, plates, self.cfg, lum_instrume, factors))
+            stages_colour.rgb_runners(self.ctx, plates, self.cfg, lum_instrume, factors,
+                                      self._sources_of(RGB_ORDER, False)))
         runners.update(finishing.finishing_runners(self.ctx, "RGB", levels.RGB_FINISHING, self.cfg,
                                                    noun="composite"))
         result = process_chain(self.ctx, "RGB", lambda: plates["R"], chain, runners, self.store, self.cfg)
@@ -368,13 +537,16 @@ class _Run:
         built: dict[str, ChainResult] = {}
         for pal in channels.wanted_palettes(self.cfg):
             mapping = channels.PALETTES[pal]
+            for line in self.palette_source_lines(pal, mapping):
+                self.ctx.log(line)
             keys3 = [self.chans[letter].current_key for letter in mapping]
             source = cache.palette_source_key(pal, keys3, common, reduce_halos)
             params: dict[str, Any] = stages_colour.palette_stage_params(pal, self.cfg)
             params.update(levels.finishing_params(levels.PALETTE_FINISHING, self.cfg))
             chain = cache.build_stage_keys(source, params)
             runners: dict[str, Callable[[Any, Any], StageOutput]] = dict(
-                stages_colour.palette_runners(self.ctx, pal, plates, self.cfg, rgb_names))
+                stages_colour.palette_runners(self.ctx, pal, plates, self.cfg, rgb_names,
+                                          self._sources_of(mapping, True)))
             runners.update(finishing.finishing_runners(self.ctx, pal, levels.PALETTE_FINISHING, self.cfg,
                                                        noun="palette"))
             first = mapping[0]
@@ -395,6 +567,43 @@ class _Run:
         _checkpoint(self.ctx)
         return result
 
+    def _sources_of(self, keys: Sequence[str], per_plane: bool) -> Optional[str]:
+        """The LOOMSRC value of a composite or a palette made of the channels ``keys``: None unless every one of them
+        is a plane of a colour master (a mono channel, or a mix, has none)."""
+        if not all(key in self.chans and self.chans[key].group for key in keys):
+            return None
+        records = {key: {"group": self.chans[key].group, "path": self.chans[key].path, "plane": self.chans[key].plane}
+                   for key in keys}
+        return colour_load.composite_loomsrc(records, list(keys), per_plane)
+
+    def result_sources(self, names: Sequence[str]) -> dict[str, str]:
+        """The LOOMSRC value of each result among ``names`` that comes from a colour master: the RGB composite and the
+        palettes, with their starless, stars and linear companions. A channel plate carries its own from the load, and
+        a mono result has none."""
+        values: dict[str, Optional[str]] = {"RGB": self._sources_of(RGB_ORDER, False)}
+        for pal, mapping in channels.PALETTES.items():
+            values[pal] = self._sources_of(mapping, True)
+        out: dict[str, str] = {}
+        for name in names:
+            for base, value in values.items():
+                if value is not None and name in (base, base + "_starless", base + "_stars", base + "_linear"):
+                    out[name] = value
+        return out
+
+    def palette_source_lines(self, pal: str, mapping: Sequence[str]) -> list[str]:
+        """The run-log lines of a palette built from a dual-band colour master: where its channels come from, and that
+        its bandwidths approximate (H and O are not single lines there). Nothing for any other palette."""
+        if not any(key in self.chans and self.chans[key].group == "OSCNB" for key in mapping):
+            return []
+        js = osc.js_config(self.cfg)
+        filter_value = self.group_filters.get("OSCNB")
+        info = osc.osc_filter_info(filter_value)
+        lines = [osc.osc_palette_sources(js, {"OSCNB": {"name": info["name"] if info else ""}}, pal)]
+        bw = osc.osc_narrowband_bandwidths(js, {"filter": filter_value})
+        lines.append(f"{pal}: approximation: H and O from a colour master are not single lines; bandwidths "
+                     f"R {_js_number(bw['R'])}nm, G {_js_number(bw['G'])}nm, B {_js_number(bw['B'])}nm")
+        return [line for line in lines if line]
+
     def publish_results(self, named: Mapping[str, str]) -> dict[str, str]:
         available = {name: True for name in named}
         kept = naming.kept_results(available, self.cfg)
@@ -404,7 +613,7 @@ class _Run:
             to_publish[name] = named[base]
         _checkpoint(self.ctx)
         outputs = publish_steps.publish(self.ctx.ops, to_publish, self.cfg, self.cfg["outputDir"], self.plan,
-                                        self.publish_log)
+                                        self.publish_log, self.result_sources(to_publish))
         return outputs
 
     def export_results(self, outputs: Mapping[str, str]) -> list[str]:

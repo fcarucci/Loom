@@ -11,14 +11,16 @@
 # Before running: the work for the release is merged on main, and the
 # CHANGELOG's [Unreleased] section describes it. This script then:
 #   1. checks it is on a clean main and the tag does not exist
-#   2. turns [Unreleased] into the dated <version> section and sets Util.LOOM_VERSION
+#   2. turns [Unreleased] into the dated <version> section and sets Util.LOOM_VERSION;
+#      the same for the Siril port (siril/CHANGELOG.md, loomsiril.__version__)
 #   3. runs the suite as 1.9.5 and as 1.9.4
 #   4. signs the entry scripts (ci/sign.sh) -- after step 2, because the version
 #      lives in a file the signature covers
 #   5. builds the update repository (ci/repository.sh), signs its updates.xri and
 #      puts the result in repo/ -- after step 4, because the package holds the
 #      signed scripts and the manifest holds the package's checksum
-#   6. commits "Loom <version>" with the signatures, the signed-tree hash and repo/,
+#   6. commits "Loom <version>" with the signatures, the signed-tree hash, repo/ and
+#      the Siril changelog and version,
 #      and tags v<version> (SSH-signed, verified before any push)
 #   7. with --push, pushes main and the tag to origin and github; CI then checks
 #      the signatures, builds the release zip and PUBLISHES repo/ as the update
@@ -49,9 +51,14 @@ ci/sign.sh "${sign_args[@]}" --dry-run >/dev/null
 git rev-parse -q --verify "refs/tags/v$version" >/dev/null && { echo "release: tag v$version already exists" >&2; exit 1; }
 grep -q '^## \[Unreleased\]' CHANGELOG.md          || { echo "release: CHANGELOG.md has no [Unreleased] section" >&2; exit 1; }
 
-python3 - "$version" <<'PY'
-import datetime, re, sys
+# One local date for both changelogs, and the Siril files checked before anything is edited.
+rdate="$( date +%Y-%m-%d )"
+node ci/release-prep.js --check --date "$rdate" "$version"
+
+python3 - "$version" "$rdate" <<'PY'
+import re, sys
 v = sys.argv[1]
+d = sys.argv[2]
 s = open("CHANGELOG.md").read()
 head = "## [Unreleased]"
 i = s.index(head) + len(head)
@@ -59,7 +66,7 @@ j = s.find("\n## [", i)
 body = s[i:j if j >= 0 else len(s)]
 if not body.strip():
     sys.exit("release: the [Unreleased] section is empty")
-s = s[:i] + "\n\n## [%s] — %s" % (v, datetime.date.today().isoformat()) + s[i:]
+s = s[:i] + "\n\n## [%s] — %s" % (v, d) + s[i:]
 open("CHANGELOG.md", "w").write(s)
 u = open("script/lib/Util.js").read()
 u2 = re.sub(r'^Util\.LOOM_VERSION = "[^"]*";', 'Util.LOOM_VERSION = "%s";' % v, u, count=1, flags=re.M)
@@ -67,6 +74,9 @@ if u2 == u:
     sys.exit("release: could not set Util.LOOM_VERSION")
 open("script/lib/Util.js", "w").write(u2)
 PY
+
+# The Siril port is released with it: its changelog section and package version.
+node ci/release-prep.js --date "$rdate" "$version"
 
 node ci/run-tests.js | tail -1
 LOOM_TEST_CORE_RELEASE=4 node ci/run-tests.js | tail -1
@@ -81,7 +91,7 @@ mkdir repo
 cp dist/repo/updates.xri dist/repo/LICENSE dist/repo/*.zip repo/
 node ci/check-signatures.js --repo
 
-git add CHANGELOG.md script ci/signed-tree.sha256 repo
+git add CHANGELOG.md script ci/signed-tree.sha256 repo ../siril/CHANGELOG.md ../siril/loomsiril/__init__.py
 git commit -q -m "Loom $version"
 git tag -s "v$version" -m "Loom $version"
 git tag -v "v$version" >/dev/null 2>&1 || {

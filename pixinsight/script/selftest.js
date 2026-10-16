@@ -750,7 +750,9 @@ function configTranscripts()
       noiseLevelL: "low", sharpenTool: Steps.SHARPEN_TOOL_BXT, starReduction: "medium",
       detailLevel: "high", gradientTool: Steps.GRADIENT_TOOL_STUDIO, useGraXpert: true,
       autoUpdate: false, useCache: false, smoothing: 0.25, cacheDir: "/Volumes/X/cache",
-      filter_L: "Antlia L", filter_R: "Antlia R", filter_G: "Antlia G", filter_B: "Antlia B"
+      filter_L: "Antlia L", filter_R: "Antlia R", filter_G: "Antlia G", filter_B: "Antlia B",
+      oscSensor: JSON.stringify( { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" } ),
+      oscKindChoices: JSON.stringify( { "filter:duo": "dualband" } )
    };
 
    load( "empty", {}, {} );
@@ -763,7 +765,8 @@ function configTranscripts()
       savedList: "", palettes: "", projectName: "", exportDir: "", stretchMethod: "",
       marsPath: "", starTool: "", noiseTool: "", noiseLevel: "", noiseLevelL: "",
       sharpenTool: "", starReduction: "", detailLevel: "", gradientTool: "", cacheDir: "",
-      filter_L: "", filter_R: "", filter_G: "", filter_B: "" } ), {} );
+      filter_L: "", filter_R: "", filter_G: "", filter_B: "", oscSensor: "", oscKindChoices: "" } ), {} );
+   load( "malformed OSC choices are ignored", stored( { oscSensor: "{not json", oscKindChoices: "[1,2]" } ), {} );
    load( "narrowbandBandwidth 0", stored( { narrowbandBandwidth: 0 } ), {} );
    load( "narrowbandBandwidth negative", stored( { narrowbandBandwidth: -2 } ), {} );
    load( "Parameters and Settings disagree on every dual key",
@@ -774,7 +777,8 @@ function configTranscripts()
    load( "Parameters only, every name",
          {},
          { path_L: "/m/L.xisf", path_R: "/m/R.xisf", path_G: "", path_B: "/m/B.xisf",
-           path_H: "/m/H.xisf", path_S: "", path_O: "/m/O.xisf", savedList: "/m/list",
+           path_H: "/m/H.xisf", path_S: "", path_O: "/m/O.xisf", path_OSC: "/m/rgb.xisf", path_OSCNB: "",
+           savedList: "/m/list",
            smoothing: 0.7, gradientTool: Steps.GRADIENT_TOOL_NONE, useGraXpert: true,
            graxpertNarrowband: true, useCache: false, autoUpdate: false } );
    load( "palettes with empty entries", stored( { palettes: ",,SHO," } ), {} );
@@ -796,7 +800,8 @@ function configTranscripts()
                    detailLevel: "high" } ), {} );
 
    var all = defaultConfig();
-   all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf" };
+   all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf",
+                 OSC: "", OSCNB: "" };
    all.views = { L: "L_view" };
    all.savedList = "/m/list";
    all.filters = { L: "Antlia L", R: "Antlia R", G: "Antlia G", B: "Antlia B" };
@@ -828,6 +833,9 @@ function configTranscripts()
    all.useCache = false;
    all.cacheDir = "/Volumes/X/cache";
    all.ignoreCache = true;
+   all.oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+   all.oscKindChoices = { "filter:duonarrowband": "dualband", "path:/m/x.xisf": "broadband" };
+   all.oscKinds = { OSC: "broadband" };
 
    var blank = defaultConfig();
    [ "savedList", "gradientTool", "stretchMethod", "projectName", "exportDir", "marsPath", "starTool",
@@ -875,6 +883,7 @@ function configTranscripts()
    persisted.validateOnly = false;
    persisted.keepWindowsOnError = false;
    persisted.ignoreCache = false;
+   persisted.oscKinds = {};
    out.roundTripExpected = persisted;
 
    return out;
@@ -1062,7 +1071,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 334 );
+      check( "Steps: the member count", Object.keys( have ).length, 337 );
    }
 
    /*
@@ -9021,7 +9030,7 @@ function runTests()
       check( "addFiles: one file is an entry from its header, with no busy state",
              [ one.entries, one.busy, one.rebuilt ],
              [ [ { source: "file", ref: "/m/a.xisf", label: "a.xisf", filter: "Red",
-                   instrume: "ZWO ASI2600MM Pro", channel: "R", width: 6248, height: 4176,
+                   instrume: "ZWO ASI2600MM Pro", channel: "R", colour: false, numberOfChannels: 1, width: 6248, height: 4176,
                    drizzle: Util.drizzleLabel( "7.52" ), created: 9 } ], [], 1 ] );
 
       var many = dialog();
@@ -9029,10 +9038,10 @@ function runTests()
       check( "addFiles: several files report progress, and an unreadable one is still listed",
              [ many.entries, many.busy, many.rebuilt ],
              [ [ { source: "file", ref: "/m/b.fits", label: "b.fits", filter: null,
-                   instrume: null, channel: null, width: 10, height: 20,
+                   instrume: null, channel: null, colour: false, numberOfChannels: 1, width: 10, height: 20,
                    drizzle: Util.drizzleLabel( null ), created: 9 },
                  { source: "file", ref: "/m/gone.xisf", label: "gone.xisf", filter: null,
-                   instrume: null, channel: null, width: 0, height: 0,
+                   instrume: null, channel: null, colour: false, numberOfChannels: null, width: 0, height: 0,
                    drizzle: "", created: 12 } ],
                [ Util.scanProgressMessage( "Reading masters", "b.fits", 1, 2 ),
                  Util.scanProgressMessage( "Reading masters", "gone.xisf", 2, 2 ),
@@ -9142,11 +9151,12 @@ function runTests()
          log: [ "busy Measuring masters", "busy Measuring masters: B (# of 4)", "busy Measuring masters: R (# of 4)",
                 "busy null", "measure " + M + "G_mono_drizzle_2x_autocrop", "measure " + M + "R_mono",
                 "read " + M + "G_mono_drizzle_2x_autocrop.xisf", "read " + M + "H_mono.xisf",
-                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "rebuild 1", "rebuild 2", "rebuild 2" ],
+                "read " + M + "R_mono.xisf", "read " + M + "S_mono.xisf", "read odd.xisf", "rebuild 1", "rebuild 2", "rebuild 2" ],
          status: "<b>Loaded 2 masters:</b> B (2x autocrop), R (full)  " +
                  "<i>(7 files, 5 named candidates, 4 opened, 2 skipped)</i>" +
                  "<br/><b>Filter from header, not name:</b> " + M + "G_mono_drizzle_2x_autocrop.xisf: " +
-                 "name says G, header says B",
+                 "name says G, header says B" +
+                 "<br/><b>Skipped, unreadable:</b> " + named + "/" + M + "H_mono.xisf: header could not be read",
          entries: [ "B | " + N + M + "G_mono_drizzle_2x_autocrop.xisf | " + M + "G_mono_drizzle_2x_autocrop.xisf" +
                     " | Blue |  | 2x | true | 100 | 80 | 2.5 | ",
                     OLD_L,
@@ -20189,9 +20199,11 @@ function runSolveTests()
     */
    ( function()
    {
-      var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache" ];
+      var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache", "oscKinds" ];
       var SPECIAL = {
-         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "" },
+         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "/p/OSC", OSCNB: "" },
+         oscSensor: { R: "r", G: "g", B: "b" },
+         oscKindChoices: { "filter:duo": "dualband" },
          palettes: [ "SHO" ],
          parallaxFamily: "aesthetics",
          filters: { L: "F" }
@@ -20538,7 +20550,7 @@ function runPipeTests()
               } ],
             [ Util, "readImageInfo", function( p )
               {
-                 return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [] };
+                 return { keywords: p == withFilter ? [ { name: "FILTER", value: "'Green'" } ] : [], numberOfChannels: 1 };
               } ] ] );
          try { return Pipeline.preflight( config ); }
          finally { restore(); }
@@ -20636,8 +20648,8 @@ function runPipeTests()
       }
       factors = [ 1, 0.5, 0.25 ];
       run( { useCache: false, filters: { R: "Astronomik R" } }, {} );
-      check( "clean WB: the cache key is exactly what it was",
-             lastKey, Cache.hash( "cleanwb|kr|kg|kb|crop:1,2,3,4|" + JSON.stringify( { R: "Astronomik R" } ) + "|ZWO" ) );
+      check( "clean WB: the cache key is the pinned text, the reference key last",
+             lastKey, Cache.hash( "cleanwb|kr|kg|kb|crop:1,2,3,4|" + JSON.stringify( { R: "Astronomik R" } ) + "|ZWO|ref:fp" ) );
       check( "clean WB: a missing key throws before anything opens",
              [ run( {}, { noKey: true } ), calls ], [ "threw no pre-correction cache key for B", [] ] );
       check( "clean WB: uncached, registers each channel, measures, releases everything in reverse",
@@ -21228,7 +21240,7 @@ function runPipeTests()
          { channel: "H", source: "file", ref: "/h", label: "h" } ] );
       check( "UI.foldEntries: paths, views and the problems that refuse a run",
              folded,
-             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "" }, views: { R: "view_R" },
+             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "", OSC: "", OSCNB: "" }, views: { R: "view_R" },
                problems: [ "Unrecognised FILTER (missing) for b", "Unrecognised FILTER 'Weird' for w",
                            "Two images map to channel R: view_R and r2" ] } );
    } )();
@@ -21266,6 +21278,709 @@ function runPipeTests()
       }
    }
 
+   } if ( testGroup( "osc.keys" ) ) {
+   ( function()
+   {
+      var gid = Pipeline.oscGroupIdentity( "fp-abc", "broadband" );
+      check( "oscGroupIdentity", gid, "fp-abc|osc:broadband" );
+      var hexOnly = /^[0-9a-f]+$/;
+      var k0 = Pipeline.oscSiblingKey( gid, 0 ), k1 = Pipeline.oscSiblingKey( gid, 1 );
+      check( "sibling keys are hexadecimal", [ hexOnly.test( k0 ), hexOnly.test( k1 ) ], [ true, true ] );
+      check( "sibling keys differ by plane", k0 != k1, true );
+      check( "sibling key changes with kind",
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp-abc", "dualband" ), 0 ) != k0, true );
+      var vname = Pipeline.oscValidateName( gid );
+      check( "validate sidecar name", /^[0-9a-f]+\.osc\.json$/.test( vname ), true );
+      var g1 = Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, k1, "k2" ], { ref: "refA", planes: "R,G,B" } );
+      check( "group key hexadecimal", hexOnly.test( g1 ), true );
+      check( "group key changes with one sibling",
+             Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, "k1x", "k2" ], { ref: "refA", planes: "R,G,B" } ) != g1, true );
+      check( "group key changes with the reference",
+             Pipeline.oscGroupRegisterKey( "registerGroup", [ k0, k1, "k2" ], { ref: "refB", planes: "R,G,B" } ) != g1, true );
+      check( "registered sibling keys hexadecimal",
+             hexOnly.test( Pipeline.oscRegisteredSiblingKey( g1, 2 ) ), true );
+
+      var wbChans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
+      var common = { x0: 1, y0: 2, x1: 300, y1: 200 };
+      var mono = { paths: { R: "/m/r", G: "/m/g", B: "/m/b" }, filters: { R: "Astronomik R" } };
+      var osc = { paths: { OSC: "/m/rgb" }, oscSensor: { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" } };
+      var osc2 = JSON.parse( JSON.stringify( osc ) ); osc2.oscSensor.G = "Other G";
+      check( "clean wb key changes with the reference (OSC)",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refB" ), true );
+      check( "clean wb key changes with the sensor",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc2, common, null, "refA" ), true );
+      check( "clean wb key changes with the reference (mono)",
+             Pipeline.cleanWhiteBalanceKey( wbChans, mono, common, "CAM", "refA" ) !=
+             Pipeline.cleanWhiteBalanceKey( wbChans, mono, common, "CAM", "refB" ), true );
+      check( "clean wb key of an OSC run ignores the mono filters",
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) ==
+             Pipeline.cleanWhiteBalanceKey( wbChans, { paths: osc.paths, oscSensor: osc.oscSensor, filters: { R: "X" } },
+                                            common, null, "refA" ), true );
+      check( "clean wb key is hexadecimal", /^[0-9a-f]+$/.test(
+             Pipeline.cleanWhiteBalanceKey( wbChans, osc, common, null, "refA" ) ), true );
+   } )();
+   } if ( testGroup( "osc.log" ) ) {
+   ( function()
+   {
+      var c = Config.defaults(); c.paths.OSCNB = "/m/n.xisf"; c.oscKinds = { OSCNB: "dualband" };
+      check( "palette sources line, quad-band note",
+             Pipeline.oscPaletteSources( c, { OSCNB: { name: "L-eXtreme" } } ),
+             "HOO: H from OSCNB L-eXtreme (Ha, plus SII for quad-band), O from OSCNB L-eXtreme (OIII with H\u03b2)" );
+      check( "palette sources line without a filter name",
+             Pipeline.oscPaletteSources( c, { OSCNB: {} } ),
+             "HOO: H from OSCNB (Ha, plus SII for quad-band), O from OSCNB (OIII with H\u03b2)" );
+      var mono = Config.defaults(); mono.paths.H = "/m/h.xisf"; mono.paths.O = "/m/o.xisf";
+      check( "a mono palette has no sources line", Pipeline.oscPaletteSources( mono, {} ), "" );
+
+      // The keyword values name the master file and its planes, whatever the working windows are called.
+      var KW_SHIMMED = typeof FITSKeyword == "undefined";
+      if ( KW_SHIMMED )
+         global.FITSKeyword = function( n, v, cm ) { this.name = n; this.value = v; this.comment = cm; };
+      var savedFns = { exportTiff16: Steps.exportTiff16, exportPsb: Steps.exportPsb, ensureExportDir: Pipeline.ensureExportDir };
+      try
+      {
+         var writes;
+         function win( id, kws )
+         {
+            var store = kws || [];
+            var w = { mainView: { id: id } };
+            Object.defineProperty( w, "keywords", { get: function() { return store; },
+               set: function( v ) { ++writes; store = v; } } );
+            return w;
+         }
+         function src( w ) { return Util.keywordValue( w.keywords, "LOOMSRC" ); }
+         function chan( key, group, plane, path )
+         {
+            return { key: key, group: group, plane: plane, path: path,
+                     window: win( key + "_registered_1a2b3c" ) };
+         }
+         var oscChans = { R: chan( "R", "OSC", 0, "/m/sub/OSC master.xisf" ), G: chan( "G", "OSC", 1, "/m/sub/OSC master.xisf" ),
+                          B: chan( "B", "OSC", 2, "/m/sub/OSC master.xisf" ) };
+         var nbChans = { H: chan( "H", "OSCNB", 0, "C:\\m\\n.xisf" ), O: chan( "O", "OSCNB", 1, "C:\\m\\n.xisf" ) };
+         check( "channel value", Pipeline.oscChannelSource( oscChans.G ), "OSC master.xisf|plane:1" );
+         check( "composite value",
+                Pipeline.oscSourceText( oscChans, [ "R", "G", "B" ], false ), "OSC OSC master.xisf planes 0,1,2" );
+         check( "palette value",
+                Pipeline.oscSourceText( nbChans, [ "H", "O", "O" ], true ), "OSCNB n.xisf plane 0; OSCNB n.xisf plane 1" );
+         check( "a mono channel has no value", Pipeline.oscChannelSource( { key: "L", path: "/m/L.xisf" } ), null );
+
+         // Every colour result is stamped, with the master and never a working window.
+         writes = 0;
+         var results = { R: win( "R_1" ), G_starless: win( "G_starless" ), G_stars: win( "G_stars" ),
+                         RGB: win( "RGB" ), RGB_stars: win( "RGB_stars" ), RGB_linear: win( "RGB_linear" ),
+                         HOO_starless: win( "HOO_starless", [ new FITSKeyword( "LOOMSRC", "'old|plane:9'", "" ),
+                                                              new FITSKeyword( "LOOMOUT", "'HOO_starless'", "" ) ] ) };
+         Pipeline.stampSources( results, oscChans );
+         check( "channel result", src( results.R ), "OSC master.xisf|plane:0" );
+         check( "channel starless and stars results",
+                [ src( results.G_starless ), src( results.G_stars ) ], [ "OSC master.xisf|plane:1", "OSC master.xisf|plane:1" ] );
+         check( "composite results",
+                [ src( results.RGB ), src( results.RGB_stars ), src( results.RGB_linear ) ],
+                [ "OSC OSC master.xisf planes 0,1,2", "OSC OSC master.xisf planes 0,1,2", "OSC OSC master.xisf planes 0,1,2" ] );
+         var kwNames = [];
+         Pipeline.stampSources( { HOO_starless: results.HOO_starless }, nbChans );
+         check( "HOO palette result replaces the old value and keeps the other keywords",
+                [ src( results.HOO_starless ), results.HOO_starless.keywords.map( function( k ) { return k.name; } ) ],
+                [ "OSCNB n.xisf plane 0; OSCNB n.xisf plane 1", [ "LOOMOUT", "LOOMSRC" ] ] );
+         check( "no value names a working window, a work folder or a hash",
+                Object.keys( results ).every( function( k ) { return !/_work|_registered|cache|[0-9a-f]{16}/i.test( src( results[k] ) || "" ); } ), true );
+
+         // A mono run stamps nothing, writes no keyword and leaves the windows untouched.
+         writes = 0;
+         var monoChans = { L: { key: "L", path: "/m/L.xisf", window: win( "L_work" ) },
+                           H: { key: "H", path: "/m/H.xisf", window: win( "H_work" ) },
+                           O: { key: "O", path: "/m/O.xisf", window: win( "O_work" ) } };
+         var monoResults = { L: win( "L" ), RGB: win( "RGB" ), HOO: win( "HOO" ), H_stars: win( "H_stars" ) };
+         Pipeline.stampSources( monoResults, monoChans );
+         check( "mono results carry no LOOMSRC and are not written to",
+                [ Object.keys( monoResults ).map( function( k ) { return src( monoResults[k] ); } ), writes ],
+                [ [ null, null, null, null ], 0 ] );
+
+         // The export sees the stamped windows: the TIFFs and each PSB layer's source window.
+         silenceLogging();
+         var seen = {}, psb = null;
+         Pipeline.ensureExportDir = function() { return true; };
+         Steps.exportTiff16 = function( w, dir, name ) { seen[name] = src( w ); return dir + "/" + name + ".tif"; };
+         Steps.exportPsb = function( res ) { psb = res; return "x.psb"; };
+         var cfg = { exportDir: "/out", stretch: true, exportPsb: true };
+         var colour = { R: win( "R" ), RGB_starless: win( "RGB_starless" ), RGB_stars: win( "RGB_stars" ),
+                        HOO_starless: win( "HOO_starless" ), HOO_stars: win( "HOO_stars" ) };
+         Pipeline.stampSources( colour, { R: oscChans.R, G: oscChans.G, B: oscChans.B, H: nbChans.H, O: nbChans.O } );
+         // one master kind at a time in a real run: the composite and palette sources above are exact
+         Pipeline.exportResults( colour, cfg );
+         check( "exported channel carries its source", seen.R, "OSC master.xisf|plane:0" );
+         check( "exported composite carries its source", seen.RGB_starless, "OSC OSC master.xisf planes 0,1,2" );
+         var layers = {};
+         ( function walk( list )
+         {
+            list.forEach( function( e )
+            {
+               if ( e.group ) walk( e.group );
+               else if ( e.window ) layers[e.name] = src( e.window );
+            } );
+         } )( Steps.buildPsbDocument( psb ) );
+         check( "PSB palette layer carries its source", layers.HOO_starless, "OSCNB n.xisf plane 0; OSCNB n.xisf plane 1" );
+         check( "PSB broadband layer carries its source", layers.RGB_starless, "OSC OSC master.xisf planes 0,1,2" );
+
+         seen = {};
+         var monoOut = { L: win( "L" ), RGB: win( "RGB" ) };
+         Pipeline.stampSources( monoOut, monoChans );
+         Pipeline.exportResults( monoOut, cfg );
+         check( "mono exports carry no LOOMSRC", seen, { L: null, RGB: null } );
+
+         // Util.loomSourceKeywords keeps LOOMSRC and nothing else
+         var mixed = win( "m", [ new FITSKeyword( "FILTER", "'x'", "" ), new FITSKeyword( "LOOMSRC", "'f|plane:0'", "" ),
+                                 new FITSKeyword( "EXPTIME", "60", "" ) ] );
+         check( "loomSourceKeywords: only LOOMSRC of a mixed header",
+                Util.loomSourceKeywords( mixed ).map( function( k ) { return k.name; } ), [ "LOOMSRC" ] );
+         check( "loomSourceKeywords: none without one", Util.loomSourceKeywords( win( "n", [ new FITSKeyword( "FILTER", "'x'", "" ) ] ) ), [] );
+         check( "loomSourceKeywords: an unreadable window gives none",
+                Util.loomSourceKeywords( { get keywords() { throw new Error( "closed" ); } } ), [] );
+
+         // The export clones: colour gets exactly the LOOMSRC keyword, mono's are left alone.
+         var KEEP = [ "syqonCloneWindowForProcessing", "buildPsbDocument", "psbProfileOrNull", "assertPlatesShareSize" ];
+         var keptSteps = {}, keptFree = Util.freeWindowId, keptWrite = Psb.write;
+         KEEP.forEach( function( n ) { keptSteps[n] = Steps[n]; } );
+         var SENTINEL = [ { name: "CLONE" } ], clones = [];
+         try
+         {
+            Util.freeWindowId = function( id ) { return id; };
+            Steps.syqonCloneWindowForProcessing = function()
+            {
+               var c = { keywords: SENTINEL, setSampleFormat: function() {}, saveAs: function() {}, forceClose: function() {},
+                         mainView: { image: { width: 1, height: 1 } } };
+               clones.push( c );
+               return c;
+            };
+            var colourSrc = win( "c", [ new FITSKeyword( "FILTER", "'x'", "" ), new FITSKeyword( "LOOMSRC", "'f|plane:0'", "" ) ] );
+            var monoSrc = win( "o", [ new FITSKeyword( "FILTER", "'x'", "" ) ] );
+            clones.length = 0;
+            savedFns.exportTiff16( colourSrc, "/nonexistent-osc-log", "colour" );
+            savedFns.exportTiff16( monoSrc, "/nonexistent-osc-log", "mono" );
+            check( "exportTiff16: the colour clone gets exactly LOOMSRC, the mono clone is untouched",
+                   [ clones[0].keywords.map( function( k ) { return k.name; } ), clones[1].keywords === SENTINEL ],
+                   [ [ "LOOMSRC" ], true ] );
+
+            Steps.buildPsbDocument = function() { return [ { name: "c", window: colourSrc }, { name: "o", window: monoSrc } ]; };
+            Steps.psbProfileOrNull = function() { return null; };
+            Steps.assertPlatesShareSize = function() {};
+            var written = null;
+            Psb.write = function( path, doc ) { written = doc; };
+            clones.length = 0;
+            savedFns.exportPsb( {}, "/nonexistent-osc-log", "psb" );
+            check( "exportPsb: the colour layer's clone gets exactly LOOMSRC, the mono layer's is untouched",
+                   [ written[0].window.keywords.map( function( k ) { return k.name; } ), written[1].window.keywords === SENTINEL ],
+                   [ [ "LOOMSRC" ], true ] );
+         }
+         finally
+         {
+            KEEP.forEach( function( n ) { Steps[n] = keptSteps[n]; } );
+            Util.freeWindowId = keptFree; Psb.write = keptWrite;
+         }
+
+         // Pipeline.run stamps the colour results; buildPalette logs the sources once per palette.
+         var runKeep = {}, runStubs = {
+            Pipeline: { loadChannels: null, inheritInstrument: null, correctBroadband: null, correctNarrowband: null,
+                        registerToReference: null, cropToCommonArea: null, matchHalos: null, balanceNarrowband: null,
+                        compositeInstrument: null, cleanWhiteBalance: null, buildRGB: null, splitLuminance: null,
+                        retainResults: null, publishOutputs: null, sweepNewWindows: null, exportResults: null,
+                        arrangeOutputs: null, reportSkippedPalettes: null },
+            Steps: { assignProfile: null }, Cache: { disableIfDirMissing: null, warnIfLowSpace: null } };
+         var runChans = { R: chan( "R", "OSC", 0, "/m/OSC master.xisf" ), G: chan( "G", "OSC", 1, "/m/OSC master.xisf" ),
+                          B: chan( "B", "OSC", 2, "/m/OSC master.xisf" ) };
+         var runRgb = win( "RGB" );
+         var keptReg = Util.Registry, keptWins = ImageWindow.windows;
+         Object.keys( runStubs ).forEach( function( ns )
+         {
+            var owner = { Pipeline: Pipeline, Steps: Steps, Cache: Cache }[ns];
+            Object.keys( runStubs[ns] ).forEach( function( n ) { runKeep[ns + "." + n] = owner[n]; } );
+         } );
+         try
+         {
+            Util.Registry = function() { this.closeAll = function() {}; };
+            ImageWindow.windows = [];
+            Cache.disableIfDirMissing = function() {}; Cache.warnIfLowSpace = function() {};
+            Pipeline.loadChannels = function() { return runChans; };
+            [ "inheritInstrument", "correctBroadband", "correctNarrowband", "matchHalos", "balanceNarrowband",
+              "splitLuminance", "sweepNewWindows", "exportResults", "arrangeOutputs", "reportSkippedPalettes" ]
+               .forEach( function( n ) { Pipeline[n] = function() {}; } );
+            Pipeline.registerToReference = function() { return { refView: {}, refFingerprint: "f", refKey: "G" }; };
+            Pipeline.cropToCommonArea = function() { return {}; };
+            Pipeline.compositeInstrument = function() { return null; };
+            Pipeline.cleanWhiteBalance = function() { return null; };
+            Pipeline.buildRGB = function() { return null; };
+            Pipeline.retainResults = function( results ) { results.RGB = runRgb; return []; };
+            Pipeline.publishOutputs = function() { return []; };
+            Steps.assignProfile = function() {};
+            Pipeline.run( { palettes: [] } );
+            check( "run: the colour composite is stamped with its master", src( runRgb ), "OSC OSC master.xisf planes 0,1,2" );
+         }
+         finally
+         {
+            Util.Registry = keptReg; ImageWindow.windows = keptWins;
+            Object.keys( runKeep ).forEach( function( k )
+            {
+               var parts = k.split( "." );
+               ( { Pipeline: Pipeline, Steps: Steps, Cache: Cache }[parts[0]] )[parts[1]] = runKeep[k];
+            } );
+         }
+
+         var keptPc = Pipeline.processChain, keptCa = Pipeline.checkAbort, keptLog = Util.log, palLines = [];
+         try
+         {
+            Pipeline.checkAbort = function() {};
+            Util.freeWindowId = function( id ) { return id; };
+            Util.log = function( tag, msg ) { if ( msg.indexOf( " from OSCNB" ) > 0 ) palLines.push( msg ); };
+            var nbCfg = Config.defaults(); nbCfg.paths.OSCNB = "/m/n.xisf"; nbCfg.oscKinds = { OSCNB: "dualband" };
+            var palChans = { H: { key: "H", currentKey: "kH", view: {}, group: "OSCNB", filter: "L-eXtreme" },
+                             O: { key: "O", currentKey: "kO", view: {}, group: "OSCNB", filter: "L-eXtreme" } };
+            // the line is written before the chain runs, so a cold build and a cache hit both log it once
+            Pipeline.processChain = function( holder ) { holder.window = null; };
+            Pipeline.buildPalette( "HOO", palChans, nbCfg, { add: function() {} }, {} );
+            Pipeline.processChain = function( holder ) { holder.window = {}; };
+            Pipeline.buildPalette( "HOO", palChans, nbCfg, { add: function() {} }, {} );
+            check( "buildPalette logs the sources line once per palette built",
+                   palLines.length, 2 );
+         }
+         finally { Pipeline.processChain = keptPc; Pipeline.checkAbort = keptCa; Util.freeWindowId = keptFree; Util.log = keptLog; }
+      }
+      finally
+      {
+         restoreLogging();
+         Steps.exportTiff16 = savedFns.exportTiff16; Steps.exportPsb = savedFns.exportPsb;
+         Pipeline.ensureExportDir = savedFns.ensureExportDir;
+         if ( KW_SHIMMED ) delete global.FITSKeyword;
+      }
+
+      // The palette sources are logged once per palette built from a colour group, and never for a mono one.
+      var logged = [], realLog = Util.log;
+      Util.log = function( tag, msg ) { logged.push( tag + ": " + msg ); };
+      try
+      {
+         var line = Pipeline.logPaletteSources( "HOO", { H: { group: "OSCNB", filter: "L-eXtreme" }, O: { group: "OSCNB", filter: "L-eXtreme" } }, c );
+         check( "colour palette: the sources line is logged once",
+                [ line, logged ],
+                [ "HOO: H from OSCNB L-eXtreme (Ha, plus SII for quad-band), O from OSCNB L-eXtreme (OIII with H\u03b2)",
+                  [ "palette: HOO: H from OSCNB L-eXtreme (Ha, plus SII for quad-band), O from OSCNB L-eXtreme (OIII with H\u03b2)" ] ] );
+         logged.length = 0;
+         Pipeline.logPaletteSources( "HOO", { H: { filter: "Ha" }, O: { filter: "OIII" } }, mono );
+         check( "mono palette: nothing is logged", logged, [] );
+      }
+      finally { Util.log = realLog; }
+   } )();
+   } if ( testGroup( "osc.e2e" ) ) {
+   /*
+    * Colour masters through the real pipeline, in PixInsight only. The masters are synthetic and
+    * written under the cache folder; the photometric steps that need catalogues (solve, SPFC, SPCC,
+    * MGC, gradient removal) are replaced by recorders, so what runs for real is the loading, the
+    * split, the registration, the cropping, the cache and the exports' provenance. Master opens are
+    * counted by wrapping ImageWindow.open for the length of the group.
+    */
+   if ( IN_PIXINSIGHT ) ( function()
+   {
+      var W = 160, H = 120;
+      var savedDir = Cache.overrideDir, savedOpen = ImageWindow.open, savedLog = Util.log;
+      var cacheDir = synthDir( "osc-e2e-cache" );
+      Cache.setDir( cacheDir );
+      var masterDir = Cache.dir() + "/masters";
+      File.createDirectory( masterDir, true );
+      var masterPaths = [], opened = [], logLines = [], spcc = [];
+      var stubs = [ "solve", "spfc", "mgc", "removeGradient", "spccRGB", "spccNarrowband" ];
+      var savedSteps = {};
+
+      // a deterministic star field, the first star being the brightest
+      function stars()
+      {
+         var s = [ [ 60, 50, 0.9 ] ], seed = 12345;
+         function rnd() { seed = ( seed*1103515245 + 12345 ) % 2147483648; return seed/2147483648; }
+         for ( var i = 0; i < 30; ++i )
+            s.push( [ 15 + rnd()*( W - 30 ), 15 + rnd()*( H - 30 ), 0.15 + 0.4*rnd() ] );
+         return s;
+      }
+      var STARS = stars();
+      function blob( buf, cx, cy, sigma, amp )
+      {
+         for ( var y = 0; y < H; ++y )
+            for ( var x = 0; x < W; ++x )
+               buf[y*W + x] += amp*Math.exp( -( ( x - cx )*( x - cx ) + ( y - cy )*( y - cy ) )/( 2*sigma*sigma ) );
+      }
+      // plane p of a master: gradient, stars at `shift`, and the structure each plane holds
+      function plane( p, kind, shift, blueHbeta )
+      {
+         var buf = new Float32Array( W*H );
+         for ( var y = 0; y < H; ++y )
+            for ( var x = 0; x < W; ++x )
+               buf[y*W + x] = 0.05 + 0.0004*x + 0.0003*y + 0.01*p;
+         var gain = kind == "OSC" ? [ 1, 0.9, 0.8 ][p] : 1;
+         STARS.forEach( function( s ) { blob( buf, s[0] + shift[0], s[1] + shift[1], 1.8, s[2]*gain ); } );
+         if ( kind == "OSCNB" )
+         {
+            if ( p == 0 ) blob( buf, 80 + shift[0], 60 + shift[1], 12, 0.2 );                // Ha
+            if ( p == 1 || p == 2 ) blob( buf, 100 + shift[0], 70 + shift[1], 10, 0.15 );    // OIII
+            if ( p == 2 ) blob( buf, 50 + shift[0], 80 + shift[1], 9, blueHbeta );           // Hbeta, blue only
+         }
+         else
+            blob( buf, 80, 60, 14, [ 0.1, 0.08, 0.06 ][p] );
+         return buf;
+      }
+      function makeMaster( name, kind, o )
+      {
+         o = o || {};
+         var path = masterDir + "/" + name;
+         var w = new ImageWindow( W, H, 3, 32, true, true, Util.freeWindowId( "osc_e2e_src" ) );
+         try
+         {
+            w.mainView.beginProcess( UndoFlag_NoSwapFile );
+            for ( var p = 0; p < 3; ++p )
+            {
+               var buf = ( o.constant === p ) ? new Float32Array( W*H ).fill( 0.5 )
+                                              : plane( p, kind, o.shift || [ 0, 0 ], o.hbeta == null ? 0.2 : o.hbeta );
+               w.mainView.image.setSamples( buf, new Rect( 0, 0, W, H ), p );
+            }
+            w.mainView.endProcess();
+            var kws = [ new FITSKeyword( "FILTER", kind == "OSCNB" ? "'L-eXtreme'" : "''", "" ) ];
+            if ( o.mark ) kws.push( new FITSKeyword( "COMMENT", "'" + o.mark + "'", "" ) );
+            w.keywords = kws;
+            if ( File.exists( path ) ) File.remove( path );
+            w.saveAs( path, false, false, false, false );
+         }
+         finally { w.forceClose(); }
+         if ( masterPaths.indexOf( path ) < 0 ) masterPaths.push( path );
+         return path;
+      }
+      function count( path ) { return opened.filter( function( p ) { return p == path; } ).length; }
+      function sensor( tag ) { return { R: "Sensor " + tag + " R", G: "Sensor " + tag + " G", B: "Sensor " + tag + " B" }; }
+      function makeConfig( paths, tag )
+      {
+         var c = Config.defaults();
+         c.paths = Object.assign( {}, c.paths, paths );
+         c.oscKinds = { OSC: "broadband", OSCNB: "dualband" };
+         c.oscSensor = sensor( tag || "A" );
+         c.gradientTool = Steps.GRADIENT_TOOL_NONE;
+         c.graxpertNarrowband = false;
+         c.narrowbandNormalize = false;
+         c.palettes = paths.OSCNB ? [ "HOO" ] : [];
+         c.useCache = true; c.ignoreCache = false; c.stretch = false; c.exportDir = "";
+         return c;
+      }
+      function newWindows( before )
+      {
+         return ImageWindow.windows.filter( function( w ) { return !before[w.mainView.id]; } );
+      }
+      function snapshot() { var s = {}; ImageWindow.windows.forEach( function( w ) { s[w.mainView.id] = true; } ); return s; }
+      function closeNew( before )
+      {
+         newWindows( before ).forEach( function( w ) { try { w.forceClose(); } catch ( e ) {} } );
+      }
+      function begin() { opened.length = 0; logLines.length = 0; spcc.length = 0; }
+      function logged( re ) { return logLines.some( function( l ) { return re.test( l ); } ); }
+
+      // a whole run; returns what it logged, opened and called, and each result's LOOMSRC
+      function fullRun( config )
+      {
+         begin();
+         var before = snapshot(), src = {}, results = null;
+         try
+         {
+            results = Pipeline.run( config );
+            Object.keys( results ).forEach( function( k )
+            {
+               if ( Pipeline.windowIsUsable( results[k] ) )
+                  src[k] = Util.keywordValue( results[k].keywords, "LOOMSRC" );
+            } );
+         }
+         finally { closeNew( before ); }
+         return { src: src, keys: Object.keys( results || {} ).sort() };
+      }
+      // the stages up to the common crop, with the channels left open for inspection
+      function staged( config )
+      {
+         begin();
+         var reg = new Util.Registry;
+         var chans = Pipeline.loadChannels( config, reg );
+         Pipeline.inheritInstrument( chans );
+         Pipeline.correctBroadband( chans, config, reg );
+         Pipeline.correctNarrowband( chans, config, reg );
+         var ref = Pipeline.registerToReference( chans, config, reg );
+         var common = Pipeline.cropToCommonArea( chans, ref.refKey );
+         return { chans: chans, reg: reg, ref: ref, common: common };
+      }
+      function peak( view )
+      {
+         var img = view.image, buf = new Float32Array( img.width*img.height ), best = 0;
+         img.getSamples( buf, new Rect( 0, 0, img.width, img.height ), 0 );
+         for ( var i = 1; i < buf.length; ++i )
+            if ( buf[i] > buf[best] ) best = i;
+         return { x: best % img.width, y: Math.floor( best/img.width ) };
+      }
+      function samples( view )
+      {
+         var img = view.image, buf = new Float32Array( img.width*img.height );
+         img.getSamples( buf, new Rect( 0, 0, img.width, img.height ), 0 );
+         return buf;
+      }
+      function sameSamples( a, b )
+      {
+         if ( a.length != b.length ) return false;
+         for ( var i = 0; i < a.length; ++i ) if ( a[i] !== b[i] ) return false;
+         return true;
+      }
+      function planeOf( path, p )
+      {
+         var ws = savedOpen.call( ImageWindow, path ), out = null;
+         try
+         {
+            var img = ws[0].mainView.image, buf = new Float32Array( img.width*img.height );
+            img.getSamples( buf, new Rect( 0, 0, img.width, img.height ), p );
+            out = buf;
+         }
+         finally { ws.forEach( function( w ) { w.forceClose(); } ); }
+         return out;
+      }
+
+      var before0 = snapshot();
+      // One failing scenario is reported by name and does not hide the ones after it.
+      function scenario( name, body )
+      {
+         try { body(); }
+         catch ( e ) { check( "osc.e2e: " + name + " ran to the end", "threw " + String( e ), "no error" ); }
+      }
+      var osc = null, nb = null, both = null;
+      try
+      {
+         ImageWindow.open = function( path )
+         {
+            if ( masterPaths.indexOf( path ) >= 0 ) opened.push( path );
+            return savedOpen.apply( ImageWindow, arguments );
+         };
+         check( "the master-open counter is installed", ImageWindow.open !== savedOpen, true );
+         Util.log = function( stage, message ) { logLines.push( stage + ": " + message ); };
+         stubs.forEach( function( n ) { savedSteps[n] = Steps[n]; } );
+         Steps.solve = function() {};
+         Steps.spfc = function() {};
+         Steps.mgc = function() {};
+         Steps.removeGradient = function() {};
+         Steps.spccNarrowband = function() {};
+         Steps.spccRGB = function( view, instrume, filters ) { spcc.push( { instrume: instrume, filters: filters } ); };
+
+         osc = makeMaster( "OSC_master.xisf", "OSC" );
+         nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ] } );
+         both = { OSC: osc, OSCNB: nb };
+
+         scenario( "cold, warm and sensor-change runs", function()
+         {
+            // cold: each master opened once; the exports' provenance names the master files
+            var cold = fullRun( makeConfig( both, "A" ) );
+            check( "cold run: each master opened once", [ count( osc ), count( nb ) ], [ 1, 1 ] );
+            check( "cold run: the composite and the palette name their master files",
+                   [ cold.src.RGB, cold.src.HOO ],
+                   [ "OSC OSC_master.xisf planes 0,1,2", "OSCNB OSCNB_master.xisf plane 0; OSCNB OSCNB_master.xisf plane 1" ] );
+            check( "cold run: the palette sources are logged",
+                   logged( /^palette: HOO: H from OSCNB L-eXtreme \(Ha, plus SII for quad-band\), O from OSCNB L-eXtreme \(OIII with Hβ\)$/ ), true );
+
+            // warm: nothing opened
+            fullRun( makeConfig( both, "A" ) );
+            check( "warm run: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
+
+            // only the sensor changed: no open, the white balance is measured again with the sensor curves
+            fullRun( makeConfig( both, "B" ) );
+            check( "sensor change: no master opened", [ count( osc ), count( nb ) ], [ 0, 0 ] );
+            check( "sensor change: the composite calibration is a cache miss", logged( /RGB spccRGB MISS/ ), true );
+            check( "sensor change: SPCC gets the sensor curves and no camera (the Ideal QE curve)",
+                   spcc.length > 0 && spcc[spcc.length - 1].instrume == null &&
+                   spcc[spcc.length - 1].filters.R == "Sensor B R" && spcc[spcc.length - 1].filters.B == "Sensor B B", true );
+         } );
+
+         var splitKeyH = null;
+         scenario( "siblings are pixel-aligned after registration", function()
+         {
+            var st = staged( makeConfig( both, "B" ) );
+            try
+            {
+               var pg = peak( st.chans.G.view ), ph = peak( st.chans.H.view ), po = peak( st.chans.O.view );
+               check( "corrected branch: the OSCNB siblings sit on the OSC reference",
+                      [ Math.abs( pg.x - ph.x ) <= 1 && Math.abs( pg.y - ph.y ) <= 1,
+                        Math.abs( pg.x - po.x ) <= 1 && Math.abs( pg.y - po.y ) <= 1 ], [ true, true ] );
+               splitKeyH = st.chans.H.currentKey;
+            }
+            finally { st.reg.closeAll(); }
+         } );
+
+         scenario( "a deleted registered split", function()
+         {
+            File.remove( Cache.pathFor( splitKeyH ) );
+            var st = staged( makeConfig( both, "B" ) );
+            st.reg.closeAll();
+            check( "a deleted registered split is split again, not registered again",
+                   [ logged( /registerGroup HIT \(split again\)/ ), logged( /registerGroup MISS/ ), count( nb ) ], [ true, false, 0 ] );
+         } );
+
+         scenario( "split planes removed from the cache", function()
+         {
+            // The planes and every cached stage of the OSC channels go, so a stage that must run
+            // has to ask for its plane again, which opens the master once.
+            var gidOsc = Pipeline.oscGroupIdentity( Cache.fingerprintFile( osc ), "broadband" );
+            [ 0, 1, 2 ].forEach( function( p )
+            {
+               var sib = Pipeline.oscSiblingKey( gidOsc, p ), key = [ "R", "G", "B" ][p];
+               var keys = [ sib ];
+               [ "A", "B", "C" ].forEach( function( tag )
+               {
+                  var cfg = makeConfig( both, tag );
+                  Pipeline.buildStageKeys( sib, Pipeline.broadbandStages( key, { group: "OSC", instrume: null }, cfg ) )
+                     .forEach( function( e ) { keys.push( e.key ); } );
+               } );
+               keys.forEach( function( k )
+               {
+                  var sp = Cache.pathFor( k );
+                  if ( File.exists( sp ) ) File.remove( sp );
+               } );
+            } );
+            fullRun( makeConfig( both, "C" ) );
+            check( "split planes removed: the master opens once, the other not at all", [ count( osc ), count( nb ) ], [ 1, 0 ] );
+         } );
+
+         scenario( "a re-made OSCNB master", function()
+         {
+            nb = makeMaster( "OSCNB_master.xisf", "OSCNB", { shift: [ 3, 2 ], mark: "remade" } );
+            both = { OSC: osc, OSCNB: nb };
+            var st = staged( makeConfig( both, "C" ) );
+            st.reg.closeAll();
+            check( "a re-made OSCNB master: opened once and the group registers again",
+                   [ count( nb ), logged( /registerGroup MISS/ ) ], [ 1, true ] );
+         } );
+
+         scenario( "clean white-balance branch", function()
+         {
+            // the OSC planes are on the reference already, so they are only cropped (once, with the
+            // corrected planes) and need no registration
+            var cleanCfg = makeConfig( both, "D" );
+            cleanCfg.sharpenTool = Steps.SHARPEN_TOOL_BXT;
+            var keptAberration = Steps.aberration, keptFactors = Steps.readWhiteBalanceFactors;
+            var keptRegClean = Pipeline.registerCleanChannel, keptCropClean = Pipeline.cropCleanChannel;
+            var regCalls = 0, cleanPeaks = {}, cleanSizes = {};
+            try
+            {
+               Steps.aberration = function() {};
+               Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
+               Pipeline.registerCleanChannel = function() { ++regCalls; return keptRegClean.apply( Pipeline, arguments ); };
+               Pipeline.cropCleanChannel = function( cleanKey, k )
+               {
+                  var v = keptCropClean.apply( Pipeline, arguments );
+                  cleanPeaks[k] = peak( v );
+                  cleanSizes[k] = [ v.image.width, v.image.height ];
+                  return v;
+               };
+               var st = staged( cleanCfg );
+               try
+               {
+                  // measureCleanWhiteBalance itself: cleanWhiteBalance would swallow a failure
+                  var factors = Pipeline.measureCleanWhiteBalance( st.chans, cleanCfg, st.reg, st.common, null,
+                                                                   st.ref.refView, st.ref.refFingerprint, st.ref.refKey );
+                  var gv = st.chans.G.view, pgc = peak( gv );
+                  check( "clean branch: factors were measured", factors, [ 1, 1, 1 ] );
+                  check( "clean branch: no registration is run for the OSC planes", regCalls, 0 );
+                  check( "clean branch: each clean plane has the corrected planes' size (one crop)",
+                         [ "R", "G", "B" ].map( function( k ) { return cleanSizes[k]; } ),
+                         [ "R", "G", "B" ].map( function() { return [ gv.image.width, gv.image.height ]; } ) );
+                  check( "clean branch: the clean planes are pixel-aligned with the reference",
+                         [ "R", "G", "B" ].map( function( k )
+                         { return Math.abs( cleanPeaks[k].x - pgc.x ) <= 1 && Math.abs( cleanPeaks[k].y - pgc.y ) <= 1; } ),
+                         [ true, true, true ] );
+               }
+               finally { st.reg.closeAll(); }
+            }
+            finally
+            {
+               Steps.aberration = keptAberration; Steps.readWhiteBalanceFactors = keptFactors;
+               Pipeline.registerCleanChannel = keptRegClean; Pipeline.cropCleanChannel = keptCropClean;
+            }
+         } );
+
+         scenario( "OSCNB alone", function()
+         {
+            // narrowband gradient removal off: one open cold, none warm
+            var alone = makeMaster( "OSCNB_alone.xisf", "OSCNB" );
+            fullRun( makeConfig( { OSCNB: alone }, "A" ) );
+            check( "OSCNB alone, cold: one open", count( alone ), 1 );
+            fullRun( makeConfig( { OSCNB: alone }, "A" ) );
+            check( "OSCNB alone, warm: no open", count( alone ), 0 );
+         } );
+
+         scenario( "O is the green plane", function()
+         {
+            var nbA = makeMaster( "OSCNB_blueA.xisf", "OSCNB", { hbeta: 0.05 } );
+            var nbB = makeMaster( "OSCNB_blueB.xisf", "OSCNB", { hbeta: 0.4 } );
+            var oFrom = [ nbA, nbB ].map( function( path )
+            {
+               var reg = new Util.Registry, o = null;
+               try
+               {
+                  var chans = Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: path }, "A" ), reg );
+                  chans.O.load();
+                  o = samples( chans.O.view );
+               }
+               finally { reg.closeAll(); }
+               return o;
+            } );
+            check( "O equals the green plane exactly",
+                   [ sameSamples( oFrom[0], planeOf( nbA, 1 ) ), sameSamples( oFrom[1], planeOf( nbB, 1 ) ) ], [ true, true ] );
+            check( "O does not depend on the blue plane", sameSamples( oFrom[0], oFrom[1] ), true );
+         } );
+
+         scenario( "a constant plane", function()
+         {
+            var flat = makeMaster( "OSCNB_flat.xisf", "OSCNB", { constant: 2 } );
+            var refusal = null, regF = new Util.Registry;
+            try
+            {
+               Pipeline.oscColourChannels( "OSCNB", "dualband", makeConfig( { OSCNB: flat }, "A" ), regF ).H.load();
+            }
+            catch ( e ) { refusal = String( e.message || e ); }
+            finally { regF.closeAll(); }
+            check( "a constant plane is refused with the plane named",
+                   refusal != null && refusal.indexOf( ": plane 2 is constant (all values 0.5); the master looks broken" ) > 0, true );
+         } );
+
+         scenario( "TIFF provenance", function()
+         {
+            // PixInsight's TIFF writer may not store FITS keywords: read LOOMSRC back only when it can.
+            var canStore = ( new FileFormat( ".tif", false, true ) ).canStoreKeywords;
+            var w = new ImageWindow( 16, 16, 1, 32, true, false, Util.freeWindowId( "osc_e2e_tiff" ) );
+            var path = null;
+            try
+            {
+               w.keywords = [ new FITSKeyword( "LOOMSRC", "'OSC_master.xisf|plane:1'", "" ) ];
+               path = Steps.exportTiff16( w, masterDir, "osc_e2e_tiff" );
+               if ( canStore )
+               {
+                  var back = savedOpen.call( ImageWindow, path );
+                  try { check( "TIFF export keeps LOOMSRC", Util.keywordValue( back[0].keywords, "LOOMSRC" ), "OSC_master.xisf|plane:1" ); }
+                  finally { back.forEach( function( b ) { b.forceClose(); } ); }
+               }
+               console.writeln( "osc.e2e: the TIFF writer " + ( canStore ? "stores" : "does not store" ) +
+                                " keywords; LOOMSRC " + ( canStore ? "was read back" : "is carried by the XISF and FITS results" ) );
+            }
+            finally
+            {
+               w.forceClose();
+               if ( path != null && File.exists( path ) ) File.remove( path );
+            }
+         } );
+      }
+      finally
+      {
+         ImageWindow.open = savedOpen;
+         Util.log = savedLog;
+         stubs.forEach( function( n ) { Steps[n] = savedSteps[n]; } );
+         closeNew( before0 );
+         masterPaths.forEach( function( p ) { try { if ( File.exists( p ) ) File.remove( p ); } catch ( e ) {} } );
+         removeTestFolder( cacheDir );
+         Cache.overrideDir = savedDir;
+      }
+   } )();
    } if ( testGroup( "imageinfo" ) ) {
    /*
     * readImageInfo, tryHeaderRead, imageInfoCacheKey and the cache they
@@ -21351,7 +22066,7 @@ function runPipeTests()
 
             check( "tryHeaderRead: a FITS header, keywords and geometry, reader closed",
                    [ Util.tryHeaderRead( "/fake/a.fits" ), log.splice( 0 ) ],
-                   [ { info: { keywords: headerKws, width: 100, height: 50 }, why: null },
+                   [ { info: { keywords: headerKws, width: 100, height: 50, numberOfChannels: 1 }, why: null },
                      [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ] ] );
             check( "tryHeaderRead: no reader for the extension",
                    [ Util.tryHeaderRead( "/fake/b.zzz" ), log.splice( 0 ) ],
@@ -21366,13 +22081,13 @@ function runPipeTests()
                      [ "FileFormat .xisf true false", "open /fake/e.xisf verbosity 0" ] ] );
             check( "tryHeaderRead: a format without keywords gives none, and a failing close is ignored",
                    [ Util.tryHeaderRead( "/fake/d.tif" ), log.splice( 0 ) ],
-                   [ { info: { keywords: [], width: 100, height: 50 }, why: null },
+                   [ { info: { keywords: [], width: 100, height: 50, numberOfChannels: 1 }, why: null },
                      [ "FileFormat .tif true false", "open /fake/d.tif verbosity 0", "close" ] ] );
 
             var first = Util.readImageInfo( "/fake/a.fits" );
             check( "readImageInfo: header fields from one open, no warning",
                    [ first, log.splice( 0 ), warned.length ],
-                   [ { keywords: headerKws, width: 100, height: 50 },
+                   [ { keywords: headerKws, width: 100, height: 50, numberOfChannels: 1 },
                      [ "FileFormat .fits true false", "open /fake/a.fits verbosity 0", "close" ], 0 ] );
             var again = Util.readImageInfo( "/fake/a.fits" );
             check( "readImageInfo: the second call is the SAME object, with no second open",
@@ -21409,7 +22124,7 @@ function runPipeTests()
 
             fullWindows = [];
             check( "readImageInfo: a full read that opens nothing is empty, not an error",
-                   Util.readImageInfo( "/fake/g.zzz" ), { keywords: [], width: 0, height: 0 } );
+                   Util.readImageInfo( "/fake/g.zzz" ), { keywords: [], width: 0, height: 0, numberOfChannels: 1 } );
             fullWindows = null;
             log.splice( 0 ); warned.splice( 0 );
 
@@ -21467,6 +22182,357 @@ function runPipeTests()
       delete cache[key];
    } )();
 
+   } if ( testGroup( "osc.discovery" ) ) {
+   ( function()
+   {
+      function cand( path, filter, extra )
+      {
+         var c = { path: path, filter: filter, colour: true, drizzle: "", autocrop: false, mtime: 1,
+                   numberOfChannels: 3, imagetyp: "Master Light" };
+         for ( var k in ( extra || {} ) ) c[k] = extra[k];
+         return c;
+      }
+      function paths( list ) { return list.map( function( c ) { return c.path; } ); }
+      var picks = Util.selectColourMasters( [
+         cand( "/m/a_uvir.xisf", "UV/IR Cut" ),
+         cand( "/m/b_lext.xisf", "L-eXtreme" ),
+         cand( "/m/b_lext_drizzle.xisf", "L-eXtreme", { drizzle: "2x" } ),
+         cand( "/m/c_duo.xisf", "Duo" ) ], {} );
+      check( "OSC pick", picks.OSC.path, "/m/a_uvir.xisf" );
+      check( "OSCNB pick prefers drizzle", picks.OSCNB.path, "/m/b_lext_drizzle.xisf" );
+      check( "unconfident candidate listed without a kind", paths( picks.unresolved ), [ "/m/c_duo.xisf" ] );
+      check( "newest wins within one variant",
+             Util.selectColourMasters( [ cand( "/m/Old.xisf", "UV/IR Cut", { mtime: 5 } ),
+                                         cand( "/m/New.xisf", "UV/IR Cut", { mtime: 9 } ) ], {} ).OSC.path,
+             "/m/New.xisf" );
+      var none = Util.selectColourMasters( [], {} );
+      check( "no candidates", [ none.OSC, none.OSCNB, none.unresolved ], [ null, null, [] ] );
+      check( "unsupported filter lands in unresolved",
+             paths( Util.selectColourMasters( [ cand( "/m/s.xisf", "ALP-T SII/Hb" ) ], {} ).unresolved ),
+             [ "/m/s.xisf" ] );
+      check( "a remembered choice routes an undetected candidate",
+             Util.selectColourMasters( [ cand( "/m/c_duo.xisf", "Duo" ) ], { "filter:duo": "dualband" } ).OSCNB.path,
+             "/m/c_duo.xisf" );
+      var pc = { "path:/m/Two.xisf": "dualband" };
+      var both = Util.selectColourMasters( [ cand( "/m/One.xisf", "" ), cand( "/m/Two.xisf", "" ) ], pc );
+      check( "a path choice applies only to that path",
+             [ both.OSC.path, both.OSCNB.path, both.unresolved.length ], [ "/m/One.xisf", "/m/Two.xisf", 0 ] );
+      check( "correction: colour name, mono header",
+             Util.colourCandidateCorrection( cand( "/m/x_color.xisf", "UV/IR", { numberOfChannels: 1 } ) ),
+             "/m/x_color.xisf: the name says colour but the image has 1 channel; it is used as a mono master" );
+      check( "correction: mono name, colour header",
+             Util.colourCandidateCorrection( cand( "/m/X_mono.xisf", "L", { colour: false } ) ),
+             "/m/X_mono.xisf: the name says mono but the image has 3 channels; it is used as a colour master" );
+      check( "correction: none", Util.colourCandidateCorrection( cand( "/m/y_color.xisf", "UV/IR" ) ), null );
+      check( "correction: mono name, mono header",
+             Util.colourCandidateCorrection( cand( "/m/z.xisf", "L", { colour: false, numberOfChannels: 1 } ) ), null );
+      // Entries route by channel count first, then by kind.
+      check( "entryChannel mono", Util.entryChannel( "Ha", 1, "/m/h", {} ),
+             { channel: "H", colour: false, kindSource: null } );
+      check( "entryChannel broadband colour", Util.entryChannel( "UV/IR Cut", 3, "/m/a", {} ),
+             { channel: "OSC", colour: true, kindSource: "detected" } );
+      check( "entryChannel dual-band colour", Util.entryChannel( "L-eXtreme", 3, "/m/b", {} ).channel, "OSCNB" );
+      var duo = Util.entryChannel( "Duo", 3, "/m/c", {} );
+      check( "entryChannel unconfident colour waits for a choice", [ duo.channel, duo.colour, duo.kindSource ],
+             [ null, true, "none" ] );
+      check( "entryChannel override moves a broadband-named master to OSCNB",
+             Util.entryChannel( "UV/IR Cut", 3, "/m/a", { "filter:uvircut": "dualband" } ),
+             { channel: "OSCNB", colour: true, kindSource: "choice" } );
+      check( "entryChannel unsupported kind has no slot", Util.entryChannel( "ALP-T SII/Hb", 3, "/m/s", {} ).channel, null );
+      check( "entryChannel other counts", [ Util.entryChannel( "Ha", 2, "/m/h", {} ), Util.entryChannel( "Ha", 4, "/m/h", {} ).channel ],
+             [ { channel: null, colour: false, kindSource: null }, null ] );
+      check( "a remembered path choice applies only to that path",
+             [ Util.entryChannel( "", 3, "/m/One.xisf", { "path:/m/One.xisf": "dualband" } ).channel,
+               Util.entryChannel( "", 3, "/m/Other.xisf", { "path:/m/One.xisf": "dualband" } ).channel ],
+             [ "OSCNB", "OSC" ] );
+      function ent( ref, filter, n, source )
+      {
+         var r = Util.entryChannel( filter, n, ref, {} );
+         return { source: source || "file", ref: ref, label: ref, filter: filter, numberOfChannels: n,
+                  channel: r.channel, colour: r.colour };
+      }
+      var folded = UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "nbview", "L-eXtreme", 3, "view" ) ], {} );
+      check( "foldEntries colour file and view", [ folded.paths.OSC, folded.views.OSCNB, folded.problems ],
+             [ "/m/a", "nbview", [] ] );
+      check( "foldEntries colour entry without a kind",
+             UI.foldEntries( [ ent( "/m/c", "Duo", 3 ) ], {} ).problems,
+             [ "choose Broadband or Dual-band Hα + OIII for /m/c" ] );
+      check( "foldEntries unsupported colour entry",
+             UI.foldEntries( [ ent( "/m/s", "ALP-T SII/Hb", 3 ) ], {} ).problems,
+             [ "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" ] );
+      check( "foldEntries keeps mono behaviour",
+             UI.foldEntries( [ ent( "/m/h", "Ha", 1 ) ], {} ).paths.H, "/m/h" );
+      check( "foldEntries unrecognised mono filter keeps its text",
+             UI.foldEntries( [ ent( "/m/w", "Weird", 1 ) ], {} ).problems, [ "Unrecognised FILTER 'Weird' for /m/w" ] );
+      var mixed = UI.foldEntries( [ ent( "/m/L", "L", 1 ), ent( "/m/a", "UV/IR Cut", 3 ) ], {} );
+      check( "foldEntries mono and colour fill both slots; the mix is refused later",
+             [ mixed.paths.L, mixed.paths.OSC, mixed.problems ], [ "/m/L", "/m/a", [] ] );
+      check( "foldEntries two colour entries for one slot",
+             UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "/m/B", "UVIR", 3 ) ], {} ).problems,
+             [ "Two images map to channel OSC: /m/a and /m/B" ] );
+      check( "foldEntries initialises the colour slots", UI.foldEntries( [], {} ).paths,
+             { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "" } );
+      check( "foldEntries a bad channel count is refused with its path",
+             UI.foldEntries( [ ent( "/m/two", "L", 2 ) ], {} ).problems,
+             [ Util.channelCountProblem( "/m/two", 2 ) ] );
+
+      // Folder plan
+      function rec( name, extra )
+      {
+         var r = { path: "/m/" + name, name: name, mtime: 1, created: 1 };
+         for ( var k in ( extra || {} ) ) r[k] = extra[k];
+         return r;
+      }
+      function crec( name )
+      {
+         var p = Util.parseColourMasterName( name );
+         return rec( name, { filter: p.filter, colour: true, drizzle: p.drizzle, autocrop: p.autocrop,
+                             numberOfChannels: 3 } );
+      }
+      var monoL = rec( "masterLight_FILTER-L_mono.xisf", { channel: "L", drizzle: "", autocrop: false } );
+      var scan = { named: [ monoL ], colourNamed: [], unreadable: [], unnamed: [ rec( "Stack_Final.xisf" ) ] };
+      var plan = UI.planFolderPicks( scan, {} );
+      check( "planFolderPicks: named mono winner, unnamed file present", [ plan.mono.L.path, plan.readUnnamed ],
+             [ "/m/masterLight_FILTER-L_mono.xisf", true ] );
+      var info = { keywords: [ { name: "FILTER", value: "UV/IR Cut" }, { name: "IMAGETYP", value: "Master Light" } ],
+                   width: 10, height: 10, numberOfChannels: 3 };
+      var reads = [];
+      UI.resolveUnnamedRecords( scan, {}, function( p ) { reads.push( p ); return info; } );
+      plan = UI.planFolderPicks( scan, {} );
+      check( "planFolderPicks: an unnamed colour master reaches the colour picks after resolution",
+             [ reads, plan.colour.OSC && plan.colour.OSC.path, plan.mono.L.path ],
+             [ [ "/m/Stack_Final.xisf" ], "/m/Stack_Final.xisf", "/m/masterLight_FILTER-L_mono.xisf" ] );
+      plan = UI.planFolderPicks( { named: [ monoL ],
+                                   colourNamed: [ crec( "masterLight_FILTER-L-eXtreme_color.xisf" ),
+                                                  crec( "masterLight_FILTER-UVIR_RGB.xisf" ) ],
+                                   unnamed: [] }, {} );
+      check( "planFolderPicks: named mono and colour winners together",
+             [ plan.mono.L.name, plan.colour.OSC.name, plan.colour.OSCNB.name, plan.unresolved, plan.readUnnamed ],
+             [ monoL.name, "masterLight_FILTER-UVIR_RGB.xisf", "masterLight_FILTER-L-eXtreme_color.xisf", [], false ] );
+      check( "planFolderPicks: both kinds present is refused by the mix message",
+             Util.colourMixProblem( { paths: { L: plan.mono.L.path, OSC: plan.colour.OSC.path }, views: {} } ).indexOf(
+                "colour masters cannot be combined with mono masters" ), 0 );
+      plan = UI.planFolderPicks( { named: [], colourNamed: [ crec( "Master_FILTER-Duo_color.xisf" ) ],
+                                   unnamed: [ rec( "x.xisf" ) ] }, {} );
+      check( "planFolderPicks: an undetected kind is listed without one and a missing slot asks for unnamed files",
+             [ paths( plan.unresolved ), plan.readUnnamed ], [ [ "/m/Master_FILTER-Duo_color.xisf" ], true ] );
+      check( "planFolderPicks: nothing unnamed reads nothing",
+             UI.planFolderPicks( { named: [], colourNamed: [], unnamed: [] }, {} ).readUnnamed, false );
+      // Unnamed resolution: failures reported and skipped, filled slots left alone
+      var scan2 = { named: [ monoL ], colourNamed: [], unreadable: [],
+                    unnamed: [ rec( "Bad.xisf" ), rec( "Throws.xisf" ), rec( "Second_L.xisf" ), rec( "Two.xisf" ) ] };
+      UI.resolveUnnamedRecords( scan2, {}, function( p )
+      {
+         if ( p == "/m/Throws.xisf" ) throw new Error( "unreadable" );
+         if ( p == "/m/Bad.xisf" ) return null;
+         if ( p == "/m/Two.xisf" ) return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 2 };
+         return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 1 };
+      } );
+      check( "resolveUnnamedRecords: failures are reported, never abort; a filled slot is left alone",
+             [ scan2.unreadable.length, scan2.named.length ], [ 3, 1 ] );
+      var cs = { named: [], colourNamed: [], unnamed: [], unreadable: [], total: 0, skipped: 0 };
+      [ "masterLight_FILTER-L-eXtreme_color_drizzle_2x.xisf", "MasterLight_FILTER-L_mono.xisf", "Stack.XISF" ]
+         .forEach( function( n ) { UI.classifyMasterFile( cs, "/m", { name: n, isDirectory: false } ); } );
+      check( "classifyMasterFile: a colour name is collected apart from the mono winners",
+             [ cs.colourNamed.map( function( r ) { return [ r.name, r.filter, r.drizzle ]; } ),
+               cs.named.map( function( r ) { return r.channel; } ), cs.unnamed.length, cs.total ],
+             [ [ [ "masterLight_FILTER-L-eXtreme_color_drizzle_2x.xisf", "L-eXtreme", "2x" ] ], [ "L" ], 1, 3 ] );
+      var scan3 = { named: [], colourNamed: [], unreadable: [], unnamed: [ rec( "Plain_L.xisf" ) ] };
+      UI.resolveUnnamedRecords( scan3, {}, function()
+      {
+         return { keywords: [ { name: "FILTER", value: "L" } ], numberOfChannels: 1 };
+      } );
+      check( "resolveUnnamedRecords: a mono file fills a missing mono slot",
+             [ scan3.named.length, scan3.named[0].channel ], [ 1, "L" ] );
+   } )();
+
+   } if ( testGroup( "osc.ui" ) ) {
+   ( function()
+   {
+      var c = Config.defaults(); c.paths.OSC = "/m/a.xisf";
+      var s = Util.oscControlState( c );
+      check( "mono boxes greyed with reason", [ s.monoEnabled, s.monoReason ],
+             [ false, "colour and mono masters cannot be combined" ] );
+      check( "SHO/HSO greyed with reason", [ s.shoHsoEnabled, s.shoHsoReason ],
+             [ false, "needs SII, which a colour camera cannot separate from Ha" ] );
+      check( "sensor row instead of R/G/B filter boxes", [ s.sensorRowVisible, s.rgbFilterRowsVisible ], [ true, false ] );
+      var m = Config.defaults(); m.paths.L = "/m/l.xisf";
+      var t = Util.oscControlState( m );
+      check( "mono run unchanged", [ t.monoEnabled, t.shoHsoEnabled, t.sensorRowVisible, t.rgbFilterRowsVisible ],
+             [ true, true, false, true ] );
+      var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf";
+      var u = Util.oscControlState( nb );
+      check( "OSCNB alone: no sensor row, SHO/HSO and mono greyed",
+             [ u.sensorRowVisible, u.shoHsoEnabled, u.monoEnabled, u.rgbFilterRowsVisible ], [ false, false, false, true ] );
+      var both = Config.defaults(); both.paths.OSC = "/m/a.xisf"; both.paths.OSCNB = "/m/n.xisf";
+      check( "OSC + OSCNB: sensor row visible, SHO/HSO greyed",
+             [ Util.oscControlState( both ).sensorRowVisible, Util.oscControlState( both ).shoHsoEnabled ], [ true, false ] );
+      var bare = { paths: { L: "/m/l.xisf" } };
+      var v = Util.oscControlState( bare );
+      check( "paths without colour keys is a mono run", [ v.monoEnabled, v.shoHsoEnabled, v.sensorRowVisible ], [ true, true, false ] );
+      check( "no config at all is a mono run", Util.oscControlState( null ).monoEnabled, true );
+      var viewOnly = Config.defaults(); viewOnly.views.OSC = "osc1";
+      check( "an open colour view counts as supplied", Util.oscControlState( viewOnly ).sensorRowVisible, true );
+
+      // the kind control of one masters-list row
+      function ent( ref, filter, extra )
+      {
+         var e = { source: "file", ref: ref, label: ref, filter: filter, channel: null, colour: true, numberOfChannels: 3 };
+         for ( var k in ( extra || {} ) ) e[k] = extra[k];
+         return e;
+      }
+      var r1 = UI.oscKindRow( ent( "/m/a.xisf", "UV/IR Cut" ), {} );
+      check( "kind row: detected broadband is preset, no detected link",
+             [ r1.index, r1.enabled, r1.detectedLink ], [ 1, true, false ] );
+      var r2 = UI.oscKindRow( ent( "/m/b.xisf", "L-eXtreme" ), {} );
+      check( "kind row: detected dual-band", [ r2.index, r2.enabled ], [ 2, true ] );
+      var r3 = UI.oscKindRow( ent( "/m/c.xisf", "Mystery" ), {} );
+      check( "kind row: an unrecognised filter has no kind", [ r3.index, r3.enabled, r3.detectedLink ], [ 0, true, false ] );
+      var r4 = UI.oscKindRow( ent( "/m/c.xisf", "" ), { "path:/m/c.xisf": "dualband" } );
+      check( "kind row: a remembered choice shows with its detected link", [ r4.index, r4.detectedLink ], [ 2, true ] );
+      var r5 = UI.oscKindRow( ent( "/m/d.xisf", "ALP-T SII/Hb" ), {} );
+      check( "kind row: an unsupported filter is disabled", [ r5.index, r5.enabled ], [ 0, false ] );
+      check( "kind items", UI.OSC_KIND_ITEMS, [ "", "Broadband", "Dual-band Hα + OIII" ] );
+
+      // a change writes the choice, moves the entry, and a reset restores detection
+      var choices = {}, e1 = ent( "/m/c.xisf", "", { channel: "OSC" } ), e2 = ent( "/m/other.xisf", "", { channel: "OSC" } );
+      var key = UI.applyOscKind( [ e1, e2 ], choices, e1, 2 );
+      check( "choice keyed by path, entry moved to OSCNB, the other file untouched",
+             [ key, choices, e1.channel, e2.channel ], [ "path:/m/c.xisf", { "path:/m/c.xisf": "dualband" }, "OSCNB", "OSC" ] );
+      UI.applyOscKind( [ e1, e2 ], choices, e1, 1 );
+      check( "changed to broadband: moves to OSC", [ choices["path:/m/c.xisf"], e1.channel ], [ "broadband", "OSC" ] );
+      UI.applyOscKind( [ e1, e2 ], choices, e1, "detected" );
+      check( "detected: the key is deleted and the detected slot is back", [ choices, e1.channel ], [ {}, "OSC" ] );
+      var e5 = ent( "/m/q.xisf", "Mystery" );
+      UI.applyOscKind( [ e5 ], choices, e5, 2 );
+      check( "an unrecognised filter is remembered by its name", [ Object.keys( choices ), e5.channel ],
+             [ [ "filter:" + Util.normaliseFilter( "Mystery" ) ], "OSCNB" ] );
+      UI.applyOscKind( [ e5 ], choices, e5, "detected" );
+      check( "and forgotten again: no slot", [ Object.keys( choices ).length, e5.channel ], [ 0, null ] );
+      var e3 = ent( "/m/lx.xisf", "L-eXtreme", { channel: "OSCNB" } );
+      UI.applyOscKind( [ e3 ], choices, e3, 1 );
+      check( "a detected dual-band overridden to broadband", [ choices["filter:" + Util.normaliseFilter( "L-eXtreme" )], e3.channel ],
+             [ "broadband", "OSC" ] );
+      UI.applyOscKind( [ e3 ], choices, e3, "detected" );
+      check( "detected restores the detection", [ Object.keys( choices ).length, e3.channel ], [ 0, "OSCNB" ] );
+      var e4 = ent( "/m/mono.xisf", "L", { colour: false, numberOfChannels: 1, channel: "L" } );
+      UI.applyOscKind( [ e4 ], choices, e4, 1 );
+      check( "a mono entry is never recomputed", e4.channel, "L" );
+
+      // SHO and HSO are not applied to a colour run
+      check( "colour run drops the palettes that need SII", UI.runPalettes( [ "SHO", "HOO", "HSO" ], true ), [ "HOO" ] );
+      check( "mono run keeps them", UI.runPalettes( [ "SHO", "HOO", "HSO" ], false ), [ "SHO", "HOO", "HSO" ] );
+      check( "the dropped ones are the remembered ones", UI.sensorPalettes( [ "SHO", "HOO", "HSO" ] ), [ "SHO", "HSO" ] );
+
+      // t10 follow-up 1: a colour-named one-channel file with an unrecognised FILTER
+      var route1 = Util.entryChannel( "Mystery", 1, "/m/x_color.xisf", {} );
+      check( "unrecognised colour-named mono: no correction printed",
+             UI.candidateCorrection( { path: "/m/x_color.xisf", colour: true }, 1, route1 ), null );
+      check( "unrecognised colour-named mono: listed with its FILTER value",
+             UI.unrecognisedFilterNote( "/m/x_color.xisf", "Mystery" ),
+             "/m/x_color.xisf: unrecognised FILTER 'Mystery'" );
+      check( "missing FILTER is said so", UI.unrecognisedFilterNote( "/m/y.xisf", null ),
+             "/m/y.xisf: unrecognised FILTER (missing)" );
+      var route2 = Util.entryChannel( "L", 1, "/m/z_color.xisf", {} );
+      check( "recognised colour-named mono keeps the correction",
+             UI.candidateCorrection( { path: "/m/z_color.xisf", colour: true }, 1, route2 ),
+             "/m/z_color.xisf: the name says colour but the image has 1 channel; it is used as a mono master" );
+      check( "colour master mismatch still corrected",
+             UI.candidateCorrection( { path: "/m/w.xisf", colour: false }, 3,
+                                     Util.entryChannel( "UV/IR Cut", 3, "/m/w.xisf", {} ) ),
+             "/m/w.xisf: the name says mono but the image has 3 channels; it is used as a colour master" );
+
+      // t10 follow-up 2: the scan summary counts mono-named and colour-named candidates
+      var scan = { total: 5, skipped: 1, named: [ { name: "a" } ], colourNamed: [ { name: "b" } ], unreadable: [] };
+      var confirm = { opened: 2, skipped: 0, corrected: [], unreadable: [ "/m/x_color.xisf: unrecognised FILTER 'Mystery'" ] };
+      var text = UI.scanSummary( scan, confirm, [ "L (full)" ] );
+      check( "summary counts both kinds of named candidate", text.indexOf( "2 named candidates" ) >= 0, true );
+      check( "summary lists the unrecognised file under Skipped, unreadable",
+             text.indexOf( "<b>Skipped, unreadable:</b> /m/x_color.xisf: unrecognised FILTER 'Mystery'" ) >= 0, true );
+      check( "summary without colour candidates still counts",
+             UI.scanSummary( { total: 1, skipped: 0, named: [ 1 ], unreadable: [] }, { opened: 1, skipped: 0, corrected: [], unreadable: [] }, [ "L" ] )
+                .indexOf( "1 named candidates" ) >= 0, true );
+      check( "nothing loaded", UI.scanSummary( scan, { opened: 0, skipped: 0, corrected: [], unreadable: [] }, [] )
+                .indexOf( "No masters with a readable FILTER keyword" ) >= 0, true );
+
+      // applyOscKind leaves an entry that is not available alone
+      var gone = ent( "/m/gone.xisf", "L-eXtreme", { channel: "OSC", unavailable: true } ), here = ent( "/m/here.xisf", "", { channel: "OSC" } );
+      UI.applyOscKind( [ gone, here ], {}, here, 2 );
+      check( "an unavailable entry keeps its slot", [ gone.channel, here.channel ], [ "OSC", "OSCNB" ] );
+
+      // the kept palettes: a stub settings store, the construction merge, the commit strip
+      function stubStore( initial )
+      {
+         var data = {};
+         if ( initial != null ) data[Config.SETTINGS_PREFIX + "palettesKept"] = initial;
+         return { data: data, settings: {
+            read: function( k ) { return data[k] === undefined ? null : data[k]; },
+            write: function( k, type, v ) { data[k] = v; } } };
+      }
+      var kk = Config.SETTINGS_PREFIX + "palettesKept";
+      var st = stubStore( null );
+      check( "nothing kept reads as empty", UI.readKeptPalettes( st ), [] );
+      UI.writeKeptPalettes( [ "SHO", "HSO" ], st );
+      check( "kept palettes are written as a list", st.data[kk], "SHO,HSO" );
+      check( "and read back", UI.readKeptPalettes( st ), [ "SHO", "HSO" ] );
+      check( "unknown names are dropped on read", UI.readKeptPalettes( stubStore( "SHO,Bogus" ) ), [ "SHO" ] );
+      check( "a failing store reads as empty", UI.readKeptPalettes( { settings: { read: function() { throw new Error( "x" ); } } } ), [] );
+      check( "construction merge adds the kept ones once", UI.mergeKeptPalettes( [ "HOO", "SHO" ], [ "SHO", "HSO" ] ),
+             [ "HOO", "SHO", "HSO" ] );
+      check( "construction merge with nothing kept", UI.mergeKeptPalettes( [ "HOO" ], [] ), [ "HOO" ] );
+
+      // commit() on a dialog stand-in: the real method, a stub store behind the settings
+      var realStore = Config.pixinsightStore;
+      function commitWith( palettes, entries, store )
+      {
+         var cfg = Config.defaults(); cfg.palettes = palettes.slice();
+         var fake = { config: cfg, entries: entries, projectEdit: { text: "" } };
+         Config.pixinsightStore = function() { return store; };
+         try { var ok = UI.SelectDialog.prototype.commit.call( fake ); }
+         finally { Config.pixinsightStore = realStore; }
+         return { ok: ok, palettes: cfg.palettes };
+      }
+      var colourEntry = ent( "/m/a.xisf", "UV/IR Cut", { channel: "OSC" } );
+      var monoEntry = ent( "/m/l.xisf", "L", { colour: false, numberOfChannels: 1, channel: "L" } );
+      var cst = stubStore( null );
+      var cr = commitWith( [ "SHO", "HOO", "HSO" ], [ colourEntry ], cst );
+      check( "a colour run drops SHO and HSO from the run", [ cr.ok, cr.palettes ], [ true, [ "HOO" ] ] );
+      check( "and keeps them in Settings", cst.data[kk], "SHO,HSO" );
+      var mr = commitWith( [ "SHO", "HOO" ], [ monoEntry ], cst );
+      check( "a mono run keeps its palettes and clears the kept ones", [ mr.palettes, cst.data[kk] ], [ [ "SHO", "HOO" ], "" ] );
+   } )();
+
+   } if ( testGroup( "osc.header" ) ) {
+   ( function()
+   {
+      var fakeF = { canStoreKeywords: false, canStoreImageProperties: false, name: "FITS" };
+      var hi = Util.headerInfo( fakeF, null, [ { width: 40, height: 30, numberOfChannels: 3 } ] );
+      check( "headerInfo numberOfChannels", hi.numberOfChannels, 3 );
+      check( "headerInfo keeps geometry", [ hi.width, hi.height ], [ 40, 30 ] );
+      check( "headerInfo defaults to one channel",
+             Util.headerInfo( fakeF, null, [ { width: 4, height: 3 } ] ).numberOfChannels, 1 );
+      check( "channelCountProblem 2 channels",
+             Util.channelCountProblem( "/m/a.xisf", 2 ),
+             "/m/a.xisf has 2 channels; Loom takes mono (1) or colour (3) masters" );
+      check( "channelCountProblem 3 channels", Util.channelCountProblem( "/m/a.xisf", 3 ), null );
+      var cn = Util.parseColourMasterName(
+         "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-L-eXtreme_color_drizzle_2x_autocrop.xisf" );
+      check( "parseColourMasterName hyphenated filter", cn.filter, "L-eXtreme" );
+      check( "parseColourMasterName colour flag", cn.colour, true );
+      check( "parseColourMasterName drizzle", cn.drizzle, "2x" );
+      check( "parseColourMasterName autocrop", cn.autocrop, true );
+      check( "parseColourMasterName _RGB",
+             Util.parseColourMasterName( "masterLight_FILTER-UVIR_RGB.xisf" ).colour, true );
+      check( "parseColourMasterName mono name",
+             Util.parseColourMasterName( "masterLight_FILTER-Ha_mono.xisf" ).colour, false );
+      check( "parseColourMasterName no filter token",
+             Util.parseColourMasterName( "masterLight_color.xisf" ).filter, "" );
+      check( "parseColourMasterName hyphenated filter, _RGB",
+             Util.parseColourMasterName( "masterLight_FILTER-L-Pro_RGB_autocrop.xisf" ).filter, "L-Pro" );
+      check( "parseMasterName unchanged",
+             Util.parseMasterName( "masterLight_BIN-1_FILTER-L_mono.xisf" ).channel, "L" );
+   } )();
+
    } if ( testGroup( "util" ) ) {
    /*
     * The directory lister: one level, "." and ".." dropped and nothing
@@ -21516,6 +22582,584 @@ function runPipeTests()
              list( [ "a", "b", "c" ], 2, "/r" ), [] );
    } )();
 
+   } if ( testGroup( "osc.detect" ) ) {
+   ( function()
+   {
+      // Known models win over family aliases; matching ignores case and punctuation.
+      var ext = Util.oscFilterInfo( "L-eXtreme" );
+      check( "oscFilterInfo L-eXtreme kind", ext.kind, "dualband" );
+      check( "oscFilterInfo L-eXtreme confident", ext.confident, true );
+      check( "oscFilterInfo L-eXtreme passbands", [ ext.haNm, ext.oiiiNm ], [ 7, 7 ] );
+      check( "oscFilterInfo spelling variants agree",
+             [ "L eXtreme", "l-extreme", "LeXtreme", "L_eXtreme" ].map( function( n ) {
+                return Util.oscFilterInfo( n ).name; } ),
+             [ "L-eXtreme", "L-eXtreme", "L-eXtreme", "L-eXtreme" ] );
+      check( "oscFilterInfo L-Ultimate passbands",
+             [ Util.oscFilterInfo( "L-Ultimate" ).haNm, Util.oscFilterInfo( "L-Ultimate" ).oiiiNm ], [ 3, 3 ] );
+      check( "oscFilterInfo ALP-T Ha/OIII supported",
+             Util.oscFilterInfo( "ALP-T Ha/OIII" ).kind, "dualband" );
+      check( "oscFilterInfo ALP-T SII/Hb unsupported",
+             Util.oscFilterInfo( "ALP-T SII/Hb" ).kind, "unsupported" );
+      check( "oscFilterInfo Greek spellings",
+             [ Util.oscFilterInfo( "ALP-T Hα/OIII" ).kind, Util.oscFilterInfo( "ALP-T Hα/OIII" ).haNm,
+               Util.oscFilterInfo( "ALP-T SII/Hβ" ).kind ],
+             [ "dualband", 5, "unsupported" ] );
+      // Broadband names and an absent FILTER are broadband, confidently.
+      check( "oscFilterInfo UV/IR", Util.oscFilterInfo( "UV/IR Cut" ).kind, "broadband" );
+      check( "oscFilterInfo L-Pro", Util.oscFilterInfo( "L-Pro" ).kind, "broadband" );
+      check( "oscFilterInfo empty FILTER", [ Util.oscFilterInfo( "" ).kind, Util.oscFilterInfo( "" ).confident ],
+             [ "broadband", true ] );
+      check( "oscFilterInfo absent FILTER", Util.oscFilterInfo( null ).kind, "broadband" );
+      // Family aliases are dual-band but not confident.
+      check( "oscFilterInfo family alias", [ Util.oscFilterInfo( "Duo Narrowband" ).kind,
+                                             Util.oscFilterInfo( "Duo Narrowband" ).confident ],
+             [ "dualband", false ] );
+      check( "oscFilterInfo quad alias", Util.oscFilterInfo( "Quad band" ).confident, false );
+      check( "oscFilterInfo unknown", Util.oscFilterInfo( "Astronomik Deep-Sky" ), null );
+      check( "normaliseFilter", Util.normaliseFilter( " L-eXtreme 2\" " ), "lextreme2" );
+      check( "oscFilterInfo unsupported is not confident", Util.oscFilterInfo( "ALP-T SII/Hb" ).confident, false );
+      check( "oscFilterInfo known model beats family prefix", Util.oscFilterInfo( "ALP-T Ha/OIII" ).confident, true );
+      // Spelling variants of the SII/Hb line pair are unsupported, however they are written.
+      check( "oscFilterInfo ALP-T SII/Hb 5nm unsupported", Util.oscFilterInfo( "ALP-T SII/Hb 5nm" ).kind, "unsupported" );
+      check( "oscFilterInfo ALP-T SIIHb unsupported", Util.oscFilterInfo( "ALP-T SIIHb" ).kind, "unsupported" );
+      // A leading brand and a trailing size are not part of the model name.
+      check( "oscFilterInfo brand and 2in size", Util.oscFilterInfo( "Optolong L-eXtreme 2\"" ).name, "L-eXtreme" );
+      check( "oscFilterInfo brand and 2in size kind", Util.oscFilterInfo( "Optolong L-eXtreme 2\"" ).confident, true );
+      check( "oscFilterInfo Antlia 1.25in size", Util.oscFilterInfo( "Antlia L-Ultimate 1.25\"" ).name, "L-Ultimate" );
+      check( "oscFilterInfo IDAS 50mm size", Util.oscFilterInfo( "IDAS L-eNhance 50mm" ).name, "L-eNhance" );
+      check( "oscFilterInfo bare model 36mm size", Util.oscFilterInfo( "L-eXtreme 36mm" ).name, "L-eXtreme" );
+      check( "oscFilterInfo brand alone is unknown", Util.oscFilterInfo( "Optolong" ), null );
+      // NBZ-II has its own passbands; NBZ and NBZex are 12 nm / 12 nm.
+      check( "oscFilterInfo NBZ-II passbands",
+             [ Util.oscFilterInfo( "NBZ-II" ).kind, Util.oscFilterInfo( "NBZ-II" ).haNm, Util.oscFilterInfo( "NBZ-II" ).oiiiNm ],
+             [ "dualband", 10, 8 ] );
+      check( "oscFilterInfo NBZ passbands",
+             [ Util.oscFilterInfo( "NBZ" ).haNm, Util.oscFilterInfo( "NBZ" ).oiiiNm ], [ 12, 12 ] );
+      check( "oscFilterInfo NBZex passbands",
+             [ Util.oscFilterInfo( "NBZex" ).haNm, Util.oscFilterInfo( "NBZex" ).oiiiNm ], [ 12, 12 ] );
+   } )();
+
+   } if ( testGroup( "osc.load" ) ) {
+   ( function() {
+   check( "oscPlaneProblem constant plane",
+          Pipeline.oscPlaneProblem( { min: 0, max: 0, median: 0 }, 2, "/m/a.xisf" ),
+          "/m/a.xisf: plane 2 is constant (all values 0); the master looks broken" );
+   check( "oscPlaneProblem normal plane",
+          Pipeline.oscPlaneProblem( { min: 0.01, max: 0.9, median: 0.1 }, 0, "/m/a.xisf" ), null );
+   var sidecars = {};   // persists across loaders, like the cache directory
+   function fakeIo( cached )
+   {
+      var io = { opens: 0, stored: [], asked: [], loads: 0 };
+      io.openMaster = function() { io.opens++; return { id: "master", planes: 3 }; };
+      io.cacheLoad = function( key ) { io.loads++; return cached[key] ? { id: "cached_" + key } : null; };
+      io.cacheStore = function( key ) { io.stored.push( key ); cached[key] = true; };
+      io.planeWindow = function( master, plane ) { io.asked.push( plane ); return { id: "plane" + plane }; };
+      io.planeStats = function() { return { min: 0.01, max: 0.9, median: 0.1 }; };
+      io.writeSidecar = function( name, rec ) { sidecars[name] = JSON.stringify( rec ); };
+      io.readSidecar = function( name ) { return sidecars[name] ? JSON.parse( sidecars[name] ) : null; };
+      io.closeMaster = function() {};
+      return io;
+   }
+   var cache = {};
+   var io = fakeIo( cache );
+   var loader = Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io );
+   loader.planeWindow( 0 ); loader.planeWindow( 1 ); loader.planeWindow( 2 );
+   check( "loader opens the master once for three siblings", io.opens, 1 );
+   check( "loader stores every split plane", io.stored.length, 3 );
+   var io2 = fakeIo( cache );
+   var loader2 = Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io2 );
+   loader2.planeWindow( 1 );
+   check( "warm run does not open the master", io2.opens, 0 );
+   check( "warm run logs the cached plane statistics", loader2.validation(), loader.validation() );
+   check( "validation record holds three planes", loader2.validation().planes.length, 3 );
+   delete cache[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp", "broadband" ), 1 ) ];
+   var io3 = fakeIo( cache );
+   Pipeline.oscGroupLoader( "OSC", { path: "/m/a.xisf", fingerprint: "fp" }, "broadband", null, io3 ).planeWindow( 1 );
+   check( "a missing split plane reopens the master once", io3.opens, 1 );
+   // Cache policy: no cache means no persistent reads or writes, one open, planes kept in memory.
+   var off = Config.defaults(); off.useCache = false;
+   var ioOff = Pipeline.oscCacheIo( off, fakeIo( {} ) );
+   var lOff = Pipeline.oscGroupLoader( "OSC", { path: "/m/z.xisf", fingerprint: "fz" }, "broadband", null, ioOff );
+   lOff.planeWindow( 0 ); lOff.planeWindow( 2 );
+   check( "cache off: one open, nothing stored", [ ioOff.base.opens, ioOff.base.stored.length ], [ 1, 0 ] );
+   check( "cache off: statistics kept in memory", lOff.validation().planes.length, 3 );
+   var ign = Config.defaults(); ign.useCache = true; ign.ignoreCache = true;
+   var warmCache = {}; warmCache[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fy", "broadband" ), 0 ) ] = true;
+   var ioIgn = Pipeline.oscCacheIo( ign, fakeIo( warmCache ) );
+   Pipeline.oscGroupLoader( "OSC", { path: "/m/y.xisf", fingerprint: "fy" }, "broadband", null, ioIgn ).planeWindow( 0 );
+   check( "ignore cache: cached plane not reused, cache refreshed", [ ioIgn.base.opens, ioIgn.base.stored.length ], [ 1, 3 ] );
+   var cache4 = {}, io4 = fakeIo( cache4 );
+   var nb = Pipeline.oscGroupLoader( "OSCNB", { path: "/m/n.xisf", fingerprint: "fn" }, "dualband", null, io4 );
+   nb.planeWindow( 0 ); nb.planeWindow( 1 );
+   check( "OSCNB stores two planes", io4.stored.length, 2 );
+   check( "OSCNB never extracts plane 2", io4.asked.indexOf( 2 ), -1 );
+   check( "OSCNB validation still holds three planes", nb.validation().planes.length, 3 );
+
+   // A constant plane is refused, naming it, and nothing is stored.
+   var ioBad = fakeIo( {} );
+   ioBad.planeStats = function( master, plane )
+   { return plane == 1 ? { min: 0.5, max: 0.5, median: 0.5 } : { min: 0.01, max: 0.9, median: 0.1 }; };
+   var msg = null;
+   try { Pipeline.oscGroupLoader( "OSC", { path: "/m/bad.xisf", fingerprint: "fb" }, "broadband", null, ioBad ).planeWindow( 0 ); }
+   catch ( e ) { msg = e.message; }
+   check( "a constant plane throws the plane problem", msg,
+          "/m/bad.xisf: plane 1 is constant (all values 0.5); the master looks broken" );
+   check( "a constant plane stores nothing", ioBad.stored.length, 0 );
+
+   // The same plane asked twice in one run: the same window, no second cache read.
+   var io5 = fakeIo( { } );
+   var l5 = Pipeline.oscGroupLoader( "OSC", { path: "/m/t.xisf", fingerprint: "ft" }, "broadband", null, io5 );
+   var first = l5.planeWindow( 1 ), loadsAfterFirst = io5.loads;
+   var second = l5.planeWindow( 1 );
+   check( "planeWindow twice returns one window", first === second, true );
+   check( "planeWindow twice reads the cache once", io5.loads, loadsAfterFirst );
+
+   // A cached plane already handed out is not extracted or stored again when another plane misses.
+   var cache6 = {}; cache6[ Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fq", "broadband" ), 0 ) ] = true;
+   var io6 = fakeIo( cache6 );
+   var l6 = Pipeline.oscGroupLoader( "OSC", { path: "/m/q.xisf", fingerprint: "fq" }, "broadband", null, io6 );
+   l6.planeWindow( 0 ); l6.planeWindow( 1 );
+   check( "a handed cached plane is not extracted again", io6.asked.indexOf( 0 ), -1 );
+   check( "only the other two planes are stored", io6.stored.length, 2 );
+   check( "oscWorkingId keeps its own id", Pipeline.oscWorkingId( "R_work", "R", function( id ) { return id == "R_work"; } ), "R_work" );
+   check( "oscWorkingId moves off a taken id", Pipeline.oscWorkingId( "Ha_work", "H", function( id ) { return id == "H_work"; } ), "H_work_1" );
+   check( "oscWorkingId renames a plain id", Pipeline.oscWorkingId( "Ha_work", "H", function() { return false; } ), "H_work" );
+   check( "fitsString doubles apostrophes", Util.fitsString( "Bob's M31.xisf|plane:1" ), "'Bob''s M31.xisf|plane:1'" );
+
+   // The group's log line.
+   check( "oscGroupLogLine", Pipeline.oscGroupLogLine( "OSCNB", { path: "/m/n.xisf" }, "dualband", "L-eXtreme",
+             { planes: [ { min: 0.1, max: 0.9, median: 0.2 }, { min: 0, max: 1, median: 0.5 }, { min: 0, max: 1, median: 0.5 } ] } ),
+          "OSC n.xisf: dualband, filter L-eXtreme, planes H/O, min/max/median 0.10000/0.90000/0.20000, 0.00000/1.00000/0.50000, 0.00000/1.00000/0.50000" );
+
+   if ( IN_PIXINSIGHT )
+   {
+      // Steps.extractPlane on a 3x2 image whose planes hold distinct values.
+      var src = new ImageWindow( 3, 2, 3, 32, true, true, "loom_osc_extract_src" );
+      var out = null;
+      try
+      {
+         src.mainView.beginProcess( UndoFlag_NoSwapFile );
+         for ( var c = 0; c < 3; ++c )
+            for ( var y = 0; y < 2; ++y )
+               for ( var x = 0; x < 3; ++x )
+                  src.mainView.image.setSample( ( c + 1 ) * 0.1 + y * 0.01 + x * 0.001, x, y, c );
+         src.mainView.endProcess();
+         out = Steps.extractPlane( src.mainView, 1, "loom_osc_extract_out" );
+         var img = out.mainView.image;
+         check( "extractPlane: one 32-bit channel of the same size",
+                [ img.width, img.height, img.numberOfChannels ], [ 3, 2, 1 ] );
+         check( "extractPlane: the plane's own values",
+                [ img.sample( 0, 0 ), img.sample( 2, 1 ) ].map( function( v ) { return v.toFixed( 3 ); } ),
+                [ "0.200", "0.212" ] );
+         check( "extractPlane: FILTER names the plane", Util.keywordValue( out.keywords, "FILTER" ), "G" );
+         check( "extractPlane: LOOMSRC names the plane", /\|plane:1$/.test( Util.keywordValue( out.keywords, "LOOMSRC" ) ), true );
+         var st = Steps.planeStats( src.mainView, 2 );
+         check( "planeStats: min and max of a plane",
+                [ st.min.toFixed( 3 ), st.max.toFixed( 3 ) ], [ "0.300", "0.312" ] );
+      }
+      finally
+      {
+         if ( out != null ) out.forceClose();
+         src.forceClose();
+      }
+   }
+   } )();
+   } if ( testGroup( "osc.register" ) ) {
+   ( function() {
+   // The node harness has no FITSKeyword; a plain record stands in for the group's checks.
+   var shimmedKeyword = typeof FITSKeyword == "undefined";
+   if ( shimmedKeyword )
+      global.FITSKeyword = function( n, v, c ) { this.name = n; this.value = v; this.comment = c; };
+   var groups = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+   var both = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H", "O" ], groups );
+   check( "reference is OSC G", both.ref, "G" );
+   check( "reference group is identity", both.identity, [ "R", "G", "B" ] );
+   check( "OSCNB registered as one image (H, O, O)",
+          both.groups, [ { slot: "OSCNB", members: [ "H", "O" ], planes: [ "H", "O", "O" ] } ] );
+   check( "no mono channels in a colour plan", both.mono, [] );
+   var nbOnly = Pipeline.oscRegistrationPlan( [ "H", "O" ], { OSCNB: [ "H", "O" ] } );
+   check( "OSCNB alone: reference H", nbOnly.ref, "H" );
+   check( "OSCNB alone: identity members", nbOnly.identity, [ "H", "O" ] );
+   check( "OSCNB alone: no grouped registration", nbOnly.groups, [] );
+   var rgbOnly = Pipeline.oscRegistrationPlan( [ "R", "G", "B" ], { OSC: [ "R", "G", "B" ] } );
+   check( "OSC alone: reference G, nothing to register", [ rgbOnly.ref, rgbOnly.groups ], [ "G", [] ] );
+   var otherWay = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H", "O" ], groups );
+   check( "plan is repeatable", otherWay, both );
+   check( "OSC beside mono: the mono keys are listed",
+          Pipeline.oscRegistrationPlan( [ "L", "R", "G", "B" ], { OSC: [ "R", "G", "B" ] } ).mono, [ "L" ] );
+   check( "registrationReference with colour groups ignores quality",
+          Pipeline.registrationReference( [ "R", "G", "B", "H", "O" ], { H: { fwhm: 1 }, G: { fwhm: 9 } },
+                                          groups ), { key: "G", reason: "colour group reference" } );
+   check( "registrationReference: OSCNB alone gives H",
+          Pipeline.registrationReference( [ "H", "O" ], { O: { fwhm: 1, stars: 9000 } },
+                                          { OSCNB: [ "H", "O" ] } ).key, "H" );
+   // a mono run chooses as it always did (same inputs as pipeline.reference)
+   var sharp = { R: { fwhm: 3.4, stars: 2400 }, G: { fwhm: 3.0, stars: 2600 }, B: { fwhm: 3.9, stars: 1900 } };
+   check( "mono reference unchanged without groups",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp ).key, "G" );
+   check( "mono reference unchanged with empty groups",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp, {} ).key, "G" );
+   check( "mono reference unchanged with empty member lists",
+          Pipeline.registrationReference( [ "R", "G", "B" ], sharp, { OSC: [], OSCNB: [] } ).key, "G" );
+   check( "L stays the mono reference",
+          Pipeline.registrationReference( [ "L", "R", "G", "B" ], sharp ).key, "L" );
+
+   var on = { useCache: true, ignoreCache: false };
+   check( "cache action: group missing registers",
+          Pipeline.oscGroupCacheAction( false, [ true, true, true ], on ), "register" );
+   check( "cache action: a split missing re-splits",
+          Pipeline.oscGroupCacheAction( true, [ true, false, true ], on ), "split" );
+   check( "cache action: everything cached loads",
+          Pipeline.oscGroupCacheAction( true, [ true, true, true ], on ), "load" );
+   check( "cache action: cache off always registers",
+          [ [ true, [ true, true ] ], [ true, [ false, true ] ], [ false, [ false ] ] ].map( function( a )
+          { return Pipeline.oscGroupCacheAction( a[0], a[1], { useCache: false } ); } ),
+          [ "register", "register", "register" ] );
+   check( "cache action: ignore cache always registers",
+          [ [ true, [ true, true ] ], [ true, [ false, true ] ], [ false, [ false ] ] ].map( function( a )
+          { return Pipeline.oscGroupCacheAction( a[0], a[1], { useCache: true, ignoreCache: true } ); } ),
+          [ "register", "register", "register" ] );
+
+   // The reference is chosen before any quality measurement.
+   var realQuality = Pipeline.registrationQuality;
+   var realRegister = Steps.register, realCombine = Steps.combinePlanes, realExtract = Steps.extractPlane;
+   var qualityCalls = 0;
+   Pipeline.registrationQuality = function() { qualityCalls++; throw new Error( "quality must not be read" ); };
+   try
+   {
+      var log = [];
+      var closed = [];
+      function fakeWin( id )
+      {
+         var w = { id: id, forceClose: function() { closed.push( id ); }, keywords: [] };
+         w.mainView = { id: id, window: w };
+         return w;
+      }
+      Steps.combinePlanes = function( views, id )
+      {
+         log.push( "combine " + views.map( function( v ) { return v.id; } ).join( "+" ) );
+         return fakeWin( id );
+      };
+      Steps.register = function( view, ref ) { log.push( "register " + view.id + " -> " + ref.id ); return fakeWin( "registered" ); };
+      Steps.extractPlane = function( view, plane, id ) { log.push( "split " + plane ); return fakeWin( id ); };
+      var regd = { added: [], add: function( w ) { this.added.push( w ); return w; }, forget: function() {} };
+      function colourChan( key, group, plane )
+      {
+         var w = fakeWin( key + "_w" );
+         return { key: key, window: w, view: w.mainView, group: group, plane: plane,
+                  sourceKey: "src" + key, currentKey: "cur" + key, path: "/m/" + group + ".xisf" };
+      }
+      var chans = { R: colourChan( "R", "OSC", 0 ), G: colourChan( "G", "OSC", 1 ), B: colourChan( "B", "OSC", 2 ),
+                    H: colourChan( "H", "OSCNB", 0 ), O: colourChan( "O", "OSCNB", 1 ) };
+      var refId = chans.G.view.id;
+      var res = Pipeline.registerToReference( chans, { useCache: false }, regd );
+      check( "colour run: quality never measured", qualityCalls, 0 );
+      check( "colour run: G is the reference", res.refKey, "G" );
+      check( "colour run: the reference is not resampled", chans.G.view.id, refId );
+      check( "colour run: exactly one registration call",
+             log.filter( function( l ) { return l.indexOf( "register" ) == 0; } ).length, 1 );
+      check( "colour run: planes combined in H, O, O order", log[0], "combine H_w+O_w+O_w" );
+      check( "colour run: split into the two members", log.filter( function( l ) { return l.indexOf( "split" ) == 0; } ),
+             [ "split 0", "split 1" ] );
+      var expectKey = Pipeline.oscGroupRegisterKey( "registerGroup", [ "curH", "curO" ],
+                                                    { ref: "curG", planes: "H,O,O" } );
+      check( "colour run: members take their split keys",
+             [ chans.H.currentKey, chans.O.currentKey ],
+             [ Pipeline.oscRegisteredSiblingKey( expectKey, 0 ), Pipeline.oscRegisteredSiblingKey( expectKey, 1 ) ] );
+      check( "colour run: identity members keep their keys",
+             [ chans.R.currentKey, chans.G.currentKey, chans.B.currentKey ], [ "curR", "curG", "curB" ] );
+      check( "colour run: the temporary and the old windows are closed",
+             closed.indexOf( "H_w" ) >= 0 && closed.indexOf( "O_w" ) >= 0, true );
+   }
+   finally
+   {
+      Pipeline.registrationQuality = realQuality;
+      Steps.register = realRegister; Steps.combinePlanes = realCombine; Steps.extractPlane = realExtract;
+   }
+   // The grouped registration against a fake cache: every path, with its provenance and window ids.
+   ( function()
+   {
+      var real = { lookup: Cache.lookup, load: Cache.load, store: Cache.store, exists: Util.windowIdExists,
+                   register: Steps.register, combine: Steps.combinePlanes, extract: Steps.extractPlane };
+      var live = [], cached = {}, failLoad = {};
+      var st;
+      function win( id, kws )
+      {
+         var w = { keywords: kws || [] };
+         w.mainView = { id: id, window: w };
+         w.forceClose = function() { st.closed.push( w.mainView.id ); live.splice( live.indexOf( w ), 1 ); };
+         live.push( w );
+         return w;
+      }
+      function kw( n, v ) { return { name: n, value: v }; }
+      function newChans()
+      {
+         var c = {};
+         [ [ "G", "OSC", 1 ], [ "H", "OSCNB", 0 ], [ "O", "OSCNB", 1 ] ].forEach( function( d )
+         {
+            var w = win( d[0] + "_work", [ kw( "FILTER", "'x'" ) ] );
+            c[d[0]] = { key: d[0], window: w, view: w.mainView, group: d[1], plane: d[2],
+                        sourceKey: "s" + d[0], currentKey: "cur" + d[0], path: "/m/" + d[1] + ".xisf" };
+         } );
+         return c;
+      }
+      var groupKey = Pipeline.oscGroupRegisterKey( "registerGroup", [ "curH", "curO" ], { ref: "curG", planes: "H,O,O" } );
+      var splitH = Pipeline.oscRegisteredSiblingKey( groupKey, 0 ), splitO = Pipeline.oscRegisteredSiblingKey( groupKey, 1 );
+      function run( config )
+      {
+         live.length = 0;   // the previous run's windows are gone
+         st = { calls: [], closed: [], stores: [], loads: [] };
+         var chans = newChans();
+         Pipeline.registerToReference( chans, config, { add: function( w ) { return w; }, forget: function() {} } );
+         st.chans = chans;
+         return st;
+      }
+      function calls( what ) { return st.calls.filter( function( c ) { return c.indexOf( what ) == 0; } ).length; }
+      function provenance( chans )
+      {
+         return [ "H", "O" ].map( function( k )
+         {
+            return [ Util.keywordValue( chans[k].window.keywords, "FILTER" ),
+                     /^OSCNB\.xisf\|plane:\d$/.test( Util.keywordValue( chans[k].window.keywords, "LOOMSRC" ) ),
+                     Util.keywordValue( chans[k].window.keywords, "LOOMSRC" ).slice( -7 ) ];
+         } );
+      }
+      var wantProv = [ [ "Ha", true, "plane:0" ], [ "OIII", true, "plane:1" ] ];
+      try
+      {
+         Util.windowIdExists = function( id ) { return live.some( function( w ) { return w.mainView.id == id; } ); };
+         Cache.lookup = function( key ) { return cached[key] ? "/c/" + key : null; };
+         Cache.load = function( key, id )
+         {
+            st.loads.push( key );
+            return cached[key] && !failLoad[key] ? win( id, [ kw( "FILTER", "'group'" ), kw( "LOOMSRC", "'tmp|plane:0'" ) ] ) : null;
+         };
+         Cache.store = function( key ) { st.stores.push( key ); cached[key] = true; return "/c/" + key; };
+         Steps.combinePlanes = function( views, id ) { st.calls.push( "combine" ); return win( id, [ kw( "FILTER", "'Ha'" ) ] ); };
+         Steps.register = function() { st.calls.push( "register" ); return win( "registered", [ kw( "FILTER", "'Ha'" ) ] ); };
+         Steps.extractPlane = function( v, plane, id ) { st.calls.push( "extract" + plane ); return win( id,
+            [ kw( "FILTER", "'Ha'" ), kw( "LOOMSRC", "'tmp|plane:" + plane + "'" ) ] ); };
+         var on = { useCache: true, ignoreCache: false };
+
+         var r = run( on );
+         check( "cold: registered once and split twice", [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 1, 1, 2 ] );
+         check( "cold: the group image and both splits stored", st.stores, [ groupKey, splitH, splitO ] );
+         check( "cold: H and O carry their own FILTER and LOOMSRC", provenance( r.chans ), wantProv );
+         check( "cold: the temporary windows are closed",
+                [ r.closed.indexOf( "register_group" ) >= 0, r.closed.indexOf( "registered" ) >= 0 ], [ true, true ] );
+         check( "cold: members take working ids and split keys",
+                [ r.chans.H.window.mainView.id, r.chans.O.window.mainView.id, r.chans.H.currentKey, r.chans.O.currentKey ],
+                [ "H_work", "O_work", splitH, splitO ] );
+         check( "cold: no window is left but the members'",
+                live.filter( function( w ) { return /register/.test( w.mainView.id ); } ).length, 0 );
+
+         r = run( on );
+         check( "warm: nothing registered, combined or split", [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 0, 0, 0 ] );
+         check( "warm: the splits are loaded, the group image is not", r.loads, [ splitH, splitO ] );
+         check( "warm: nothing stored", r.stores, [] );
+         check( "warm: provenance and ids as on a cold run",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+
+         delete cached[splitO];
+         r = run( on );
+         check( "one split missing: no registration, two splits made",
+                [ calls( "register" ), calls( "combine" ), calls( "extract" ) ], [ 0, 0, 2 ] );
+         check( "one split missing: the group image is loaded once", r.loads, [ groupKey ] );
+         check( "one split missing: the splits are stored again", r.stores, [ splitH, splitO ] );
+         check( "one split missing: provenance and ids",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+         check( "one split missing: the loaded group image is closed",
+                r.closed.indexOf( "register_group" ) >= 0, true );
+
+         failLoad[splitO] = true;
+         r = run( on );
+         check( "a split that will not load falls back to splitting",
+                [ calls( "register" ), calls( "extract" ) ], [ 0, 2 ] );
+         check( "a split that will not load: loads tried", r.loads, [ splitH, splitO, groupKey ] );
+         check( "a split that will not load: provenance and ids",
+                [ provenance( r.chans ), r.chans.H.window.mainView.id, r.chans.O.window.mainView.id ],
+                [ wantProv, "H_work", "O_work" ] );
+         delete failLoad[splitO];
+
+         r = run( { useCache: true, ignoreCache: true } );
+         check( "ignore cache: registers although everything is cached", calls( "register" ), 1 );
+         check( "ignore cache: nothing is read", r.loads, [] );
+         check( "ignore cache: results are written", r.stores, [ groupKey, splitH, splitO ] );
+         check( "ignore cache: temporary windows closed",
+                [ r.closed.indexOf( "register_group" ) >= 0, r.closed.indexOf( "registered" ) >= 0 ], [ true, true ] );
+
+         r = run( { useCache: false } );
+         check( "cache off: registers, reads and writes nothing", [ calls( "register" ), r.loads, r.stores ], [ 1, [], [] ] );
+      }
+      finally
+      {
+         Cache.lookup = real.lookup; Cache.load = real.load; Cache.store = real.store; Util.windowIdExists = real.exists;
+         Steps.register = real.register; Steps.combinePlanes = real.combine; Steps.extractPlane = real.extract;
+      }
+   } )();
+   // a mono run still measures
+   var measured = 0;
+   Pipeline.registrationQuality = function() { measured++; return {}; };
+   try
+   {
+      var monoChans = { R: { key: "R", currentKey: "kR", view: { id: "R" }, window: {} },
+                        G: { key: "G", currentKey: "kG", view: { id: "G" }, window: {} } };
+      Pipeline.registerToReference( monoChans, { useCache: false }, { add: function( w ) { return w; }, forget: function() {} } );
+   }
+   catch ( e ) { /* the registrations themselves need PixInsight */ }
+   finally { Pipeline.registrationQuality = realQuality; }
+   check( "mono run still reads quality", measured, 1 );
+   if ( shimmedKeyword )
+      delete global.FITSKeyword;
+
+   if ( IN_PIXINSIGHT )
+   {
+      // Steps.combinePlanes and a shifted OSCNB pair registered against an OSC G.
+      var W = 256, H = 256, stars = [ [ 40, 50 ], [ 90, 200 ], [ 150, 80 ], [ 200, 150 ], [ 120, 120 ],
+                                      [ 60, 140 ], [ 180, 40 ], [ 220, 220 ], [ 30, 210 ], [ 140, 180 ] ];
+      var made = [];
+      function field( id, dx, dy )
+      {
+         var w = new ImageWindow( W, H, 1, 32, true, false, id );
+         made.push( w );
+         w.mainView.beginProcess( UndoFlag_NoSwapFile );
+         var im = w.mainView.image;
+         for ( var y = 0; y < H; ++y )
+            for ( var x = 0; x < W; ++x )
+            {
+               var v = 0.02;
+               for ( var s = 0; s < stars.length; ++s )
+               {
+                  var ex = x - ( stars[s][0] + dx ), ey = y - ( stars[s][1] + dy );
+                  if ( Math.abs( ex ) < 12 && Math.abs( ey ) < 12 )
+                     v += 0.8 * Math.exp( -( ex * ex + ey * ey ) / ( 2 * 2.2 * 2.2 ) );
+               }
+               im.setSample( v, x, y, 0 );
+            }
+         w.mainView.endProcess();
+         return w;
+      }
+      function centroid( view, sx, sy )
+      {
+         var im = view.image, sum = 0, cx = 0, cy = 0;
+         for ( var y = Math.round( sy ) - 8; y <= Math.round( sy ) + 8; ++y )
+            for ( var x = Math.round( sx ) - 8; x <= Math.round( sx ) + 8; ++x )
+            {
+               var v = Math.max( 0, im.sample( x, y, 0 ) - 0.03 );
+               sum += v; cx += v * x; cy += v * y;
+            }
+         return [ cx / sum, cy / sum ];
+      }
+      function chan( key, group, plane, w )
+      {
+         return { key: key, window: w, view: w.mainView, group: group, plane: plane,
+                  sourceKey: "reg_" + key, currentKey: "reg_" + key, path: "/m/" + key + ".xisf" };
+      }
+      var preg = new Util.Registry();
+      try
+      {
+         var pc = { R: chan( "R", "OSC", 0, field( "reg_r", 0, 0 ) ), G: chan( "G", "OSC", 1, field( "reg_g", 0, 0 ) ),
+                    B: chan( "B", "OSC", 2, field( "reg_b", 0, 0 ) ),
+                    H: chan( "H", "OSCNB", 0, field( "reg_h", 3, 2 ) ), O: chan( "O", "OSCNB", 1, field( "reg_o", 3, 2 ) ) };
+         Pipeline.registerToReference( pc, { useCache: false }, preg );
+         var worst = 0, worstG = 0;
+         stars.forEach( function( s )
+         {
+            var g = centroid( pc.G.view, s[0], s[1] ), h = centroid( pc.H.view, s[0], s[1] ), o = centroid( pc.O.view, s[0], s[1] );
+            worst = Math.max( worst, Math.hypot( h[0] - o[0], h[1] - o[1] ) );
+            worstG = Math.max( worstG, Math.hypot( h[0] - g[0], h[1] - g[1] ), Math.hypot( o[0] - g[0], o[1] - g[1] ) );
+         } );
+         check( "H and O share one transform (centroids within 0.05 px)", worst < 0.05, true );
+         check( "H and O sit on G (centroids within 0.2 px)", worstG < 0.2, true );
+      }
+      finally
+      {
+         preg.closeAll();
+         made.forEach( function( w ) { try { w.forceClose(); } catch ( e ) {} } );
+      }
+   }
+   ( function() {
+      var groups = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+      check( "clean plan: OSC is the reference group", Pipeline.cleanRegistrationPlan( "G", groups ), "identity" );
+      check( "clean plan: mono run", Pipeline.cleanRegistrationPlan( "L", {} ), "mono" );
+      check( "clean plan: no groups at all is a mono run", Pipeline.cleanRegistrationPlan( "L", null ), "mono" );
+      var thrown = null;
+      try { Pipeline.cleanRegistrationPlan( "H", groups ); }
+      catch ( e ) { thrown = e.message; }
+      check( "clean plan: a colour run's reference is always OSC G",
+             thrown, "internal: with OSC in the run the reference must be its G (got H)" );
+
+      // The white-balance key follows the crop and the reference in the identity case.
+      var cfgW = Config.defaults(); cfgW.paths.OSC = "/m/a.xisf";
+      cfgW.oscSensor = { R: "S R", G: "S G", B: "S B" };
+      function wbKey( common, refKey )
+      {
+         var chans = { R: { cleanKey: "r1" }, G: { cleanKey: "g1" }, B: { cleanKey: "b1" } };
+         return Pipeline.cleanWhiteBalanceKey( chans, cfgW, common, null, refKey );
+      }
+      var full = { x0: 0, y0: 0, x1: 100, y1: 80 }, smaller = { x0: 0, y0: 0, x1: 90, y1: 70 };
+      check( "clean white balance key changes when the overlap shrinks", wbKey( full, "g1" ) != wbKey( smaller, "g1" ), true );
+      check( "clean white balance key changes with a replaced OSC master (new reference key, same crop)",
+             wbKey( full, "g1" ) != wbKey( full, "g2" ), true );
+
+      // The call sequence of the measurement, identity and mono.
+      var dir = TEST_SCRATCH + "/loom-pipe-cleanwb-colour";
+      ensureDir( dir );
+      var calls, lastKey;
+      function win( id ) { return { mainView: { id: id }, isNull: false, forceClose: function() { calls.push( "close " + id ); } }; }
+      function measure( config, chans, refKey )
+      {
+         calls = [];
+         var restore = stub( [
+            [ Pipeline, "cleanWhiteBalanceCachePath", function( k ) { lastKey = k; return dir + "/" + k + ".wb.json"; } ],
+            [ Util, "freeWindowId", function( id ) { return id; } ],
+            [ Cache, "load", function( k, id ) { calls.push( "load " + id ); return win( id ); } ],
+            [ Cache, "store", function( k, w, meta ) { calls.push( "store " + meta.channel + " " + meta.stage ); } ],
+            [ Steps, "cropTo", function( v, rect ) { calls.push( "crop " + v.id + " " + rect.x1 ); } ],
+            [ Steps, "register", function( v, ref ) { calls.push( "register " + v.id + " to " + ref.id ); return win( v.id + "_r" ); } ],
+            [ Steps, "combineRGB", function( r, g, b, id ) { calls.push( "combine " + [ r.id, g.id, b.id ].join( "," ) ); return win( id ); } ],
+            [ Steps, "solve", function( v ) { calls.push( "solve " + v.id ); } ],
+            [ Steps, "spfc", function( v, a, b, inst, filters ) { calls.push( "spfc " + v.id + " " + inst + " " + JSON.stringify( filters ) ); } ],
+            [ Steps, "spccRGB", function( v, inst, filters ) { calls.push( "spcc " + v.id + " " + inst + " " + JSON.stringify( filters ) ); } ],
+            [ Steps, "readWhiteBalanceFactors", function() { return [ 1, 2, 3 ]; } ] ] );
+         var reg = { forget: function( w ) { calls.push( "forget " + w.mainView.id ); } };
+         try
+         {
+            return Pipeline.measureCleanWhiteBalance( chans, config, reg, { x0: 1, y0: 2, x1: 3, y1: 4 },
+                                                      "ZWO", { id: "REF" }, "fp", refKey );
+         }
+         finally { restore(); }
+      }
+      var oscChans = { R: { cleanKey: "kr", group: "OSC" }, G: { cleanKey: "kg", group: "OSC" }, B: { cleanKey: "kb", group: "OSC" } };
+      var oscCfg = Config.defaults(); oscCfg.useCache = false; oscCfg.paths.OSC = "/m/a.xisf";
+      oscCfg.oscSensor = { R: "S R", G: "S G", B: "S B" };
+      var sensor = JSON.stringify( Pipeline.effectiveFilters( oscCfg ) );
+      check( "OSC clean WB: no registration, each plane cropped once, sensor curves to SPFC and SPCC",
+             [ measure( oscCfg, oscChans, "G" ), calls.filter( function( c ) { return !/^(forget|close)/.test( c ); } ) ],
+             [ [ 1, 2, 3 ],
+               [ "load R_cleanref", "crop R_cleanref 3", "load G_cleanref", "crop G_cleanref 3",
+                 "load B_cleanref", "crop B_cleanref 3",
+                 "combine R_cleanref,G_cleanref,B_cleanref",
+                 "solve RGB_cleanref", "spfc RGB_cleanref null " + sensor, "spcc RGB_cleanref null " + sensor ] ] );
+      check( "OSC clean WB: the key keeps the reference key last",
+             lastKey, Pipeline.cleanWhiteBalanceKey( oscChans, oscCfg, { x0: 1, y0: 2, x1: 3, y1: 4 }, null, "fp" ) );
+      check( "OSC clean WB: the temporaries are released",
+             calls.filter( function( c ) { return /^close/.test( c ); } ).length, 4 );
+
+      var monoChans = { R: { cleanKey: "kr" }, G: { cleanKey: "kg" }, B: { cleanKey: "kb" } };
+      var monoCfg = { useCache: false };
+      measure( monoCfg, monoChans, "L" );
+      check( "mono clean WB: the call sequence is unchanged",
+             calls.filter( function( c ) { return !/^(forget|close)/.test( c ); } ),
+             [ "load R_cleanref", "register R_cleanref to REF", "load G_cleanref", "register G_cleanref to REF",
+               "load B_cleanref", "register B_cleanref to REF",
+               "combine R_cleanref_r,G_cleanref_r,B_cleanref_r",
+               "solve RGB_cleanref", "spfc RGB_cleanref ZWO " + JSON.stringify( Pipeline.effectiveFilters( monoCfg ) ),
+               "spcc RGB_cleanref ZWO " + JSON.stringify( Pipeline.effectiveFilters( monoCfg ) ) ] );
+   } )();
+   } )();
    } if ( testGroup( "coreversion" ) ) {
    /*
     * The refusal on a core older than Util.MIN_CORE, per entry point: the
@@ -21601,6 +23245,515 @@ function runPipeTests()
                                        { criticalln: function() { throw new Error( "logged" ); },
                                          show: function() { throw new Error( "shown" ); } } ),
                 true );
+   } )();
+   } if ( testGroup( "osc.kindkey" ) ) {
+   ( function()
+   {
+      // A remembered kind choice is keyed by the filter model that detection
+      // uses: a brand and a size do not change the key, a blank filter keys on
+      // its path exactly as given.
+      check( "osc.kindkey: a branded, sized filter and its model share a key",
+             Util.oscKindKey( "Optolong Duo 2\"", "/m/a" ), Util.oscKindKey( "Duo", "/m/b" ) );
+      check( "osc.kindkey: the shared key is the model's", Util.oscKindKey( "Optolong Duo 2\"", "/m/a" ), "filter:duo" );
+      check( "osc.kindkey: a model with spaces and a size is keyed by its model",
+             Util.oscKindKey( "Antlia ALP-T Ha/OIII 5nm", "/m/a" ), "filter:alpthaoiii5nm" );
+      check( "osc.kindkey: a brand alone is kept", Util.oscKindKey( "Optolong", "/m/a" ), "filter:optolong" );
+      check( "osc.kindkey: a blank filter keys on the path", Util.oscKindKey( "", "/m/a" ), "path:/m/a" );
+      check( "osc.kindkey: an absent filter keys on the path", Util.oscKindKey( null, "/m/a" ), "path:/m/a" );
+      check( "osc.kindkey: other OSC filter brands are dropped too",
+             Util.oscModelName( "Astronomik CLS-CCD" ), "CLS-CCD" );
+      check( "osc.kindkey: a ZWO brand gives the model's key",
+             Util.oscKindKey( "ZWO Duo-Band", "/m/a" ), Util.oscKindKey( "Duo-Band", "/m/b" ) );
+      check( "osc.kindkey: a branded broadband filter has the bare filter's kind",
+             Util.oscFilterInfo( "Astronomik CLS" ).kind, Util.oscFilterInfo( "CLS" ).kind );
+      check( "osc.kindkey: a brand needs a separator to be dropped",
+             Util.oscKindKey( "Baader", "/m/a" ), "filter:baader" );
+      check( "osc.kindkey: two blank-filter paths have different keys",
+             Util.oscKindKey( "", "/m/a" ) != Util.oscKindKey( "", "/m/b" ), true );
+      check( "osc.kindkey: paths differing only in case have different keys",
+             Util.oscKindKey( "", "/m/A.xisf" ) != Util.oscKindKey( "", "/m/a.xisf" ), true );
+      check( "osc.kindkey: a choice for a branded model applies to the plain model",
+             Util.effectiveOscKind( "OSCNB", "IDAS Duo 1.25in", "/m/x", { "filter:duo": "dualband" } ).source, "choice" );
+   } )();
+   } if ( testGroup( "osc.config" ) ) {
+   ( function()
+   {
+      function oscConfig( paths, views )
+      {
+         var c = defaultConfig();
+         for ( var k in paths ) c.paths[k] = paths[k];
+         for ( var v in ( views || {} ) ) c.views[v] = views[v];
+         return c;
+      }
+      check( "suppliedChannels OSC", Util.suppliedChannels( oscConfig( { OSC: "/m/rgb.xisf" } ) ), [ "R", "G", "B" ] );
+      check( "suppliedChannels OSCNB", Util.suppliedChannels( oscConfig( { OSCNB: "/m/nb.xisf" } ) ), [ "H", "O" ] );
+      check( "suppliedChannels both", Util.suppliedChannels( oscConfig( { OSC: "/m/a", OSCNB: "/m/b" } ) ),
+             [ "R", "G", "B", "H", "O" ] );
+      check( "suppliedChannels mono unchanged", Util.suppliedChannels( oscConfig( { L: "/m/l", H: "/m/h" } ) ),
+             [ "L", "H" ] );
+      check( "suppliedChannels colour view",
+             Util.suppliedChannels( oscConfig( {}, { OSC: "rgb_view" } ) ), [ "R", "G", "B" ] );
+      check( "suppliedChannels of an empty config", Util.suppliedChannels( {} ), [] );
+      check( "colourSupplied with no colour keys at all", Util.colourSupplied( { paths: { L: "/m/l" } } ), [] );
+      var MIX = "colour masters cannot be combined with mono masters; choose either the colour masters or the mono masters";
+      var mix = Util.colourMixProblem( oscConfig( { OSC: "/m/dir/a.xisf", L: "/m/dir/l.xisf" } ) );
+      check( "colourMixProblem mixed keeps the verbatim text", mix.indexOf( MIX ), 0 );
+      check( "colourMixProblem names the inputs", mix.substring( MIX.length ), " (colour: OSC=a.xisf; mono: L=l.xisf)" );
+      check( "colourMixProblem names a view", Util.colourMixProblem( oscConfig( { OSCNB: "/m/b.xisf" }, { H: "ha_view" } ) )
+             .substring( MIX.length ), " (colour: OSCNB=b.xisf; mono: H=ha_view)" );
+      check( "colourMixProblem colour only", Util.colourMixProblem( oscConfig( { OSC: "/m/a", OSCNB: "/m/b" } ) ), null );
+      check( "colourMixProblem mono only", Util.colourMixProblem( oscConfig( { L: "/m/l" } ) ), null );
+      check( "validateSelection OSCNB alone has something to do", Util.validateSelection( { OSCNB: "/m/b" }, {} ).length, 0 );
+      check( "validateSelection OSC alone has something to do", Util.validateSelection( { OSC: "/m/a" }, {} ).length, 0 );
+      check( "validateSelection nothing still says so", Util.validateSelection( {}, {} ),
+             [ "Nothing to do: supply R, G and B, or at least one of H, S, O" ] );
+      check( "duplicateFileProblems colour vs mono",
+             Util.duplicateFileProblems( { OSC: "/m/a.xisf", R: "/m/a.xisf" } ).length, 1 );
+      check( "oscKindKey filter", Util.oscKindKey( "L-eXtreme", "/m/a" ), "filter:lextreme" );
+      check( "oscKindKey blank uses path", Util.oscKindKey( "", "/m/a" ), "path:/m/a" );
+      var choices = { "path:/m/a": "dualband" };
+      check( "effectiveOscKind choice beats detection", Util.effectiveOscKind( "OSC", "", "/m/a", choices ).kind, "dualband" );
+      check( "effectiveOscKind choice source", Util.effectiveOscKind( "OSC", "", "/m/a", choices ).source, "choice" );
+      check( "effectiveOscKind other blank file not affected", Util.effectiveOscKind( "OSC", "", "/m/b", choices ).source, "detected" );
+      check( "effectiveOscKind unsupported cannot be overridden",
+             Util.effectiveOscKind( "OSCNB", "ALP-T SII/Hb", "/m/c", { "filter:alptsiihb": "dualband" } ).kind, "unsupported" );
+      check( "effectiveOscKind unknown name has no kind",
+             Util.effectiveOscKind( "OSCNB", "Astronomik X", "/m/d", {} ).source, "none" );
+      check( "effectiveOscKind accepts null choices", Util.effectiveOscKind( "OSCNB", "L-eXtreme", "/m/e", null ).source, "detected" );
+      check( "effectiveOscKind always returns every field",
+             Object.keys( Util.effectiveOscKind( "OSC", "Astronomik X", "/m/d", undefined ) ).sort(),
+             [ "confident", "haNm", "kind", "name", "oiiiNm", "source" ] );
+
+      var c1 = defaultConfig();
+      c1.oscSensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+      c1.oscKindChoices = { "filter:duonarrowband": "dualband" };
+      c1.paths.OSC = "/m/rgb.xisf";
+      var saved = withConfigStore( {}, {}, function() { saveConfig( c1 ); } );
+      var back = withConfigStore( saved.stored, saved.paramsSet, function() { return loadConfig(); } );
+      check( "Config persists oscSensor", back.result.oscSensor, c1.oscSensor );
+      check( "Config persists oscKindChoices", back.result.oscKindChoices, c1.oscKindChoices );
+      check( "Config persists the OSC path through Parameters", back.result.paths.OSC, "/m/rgb.xisf" );
+      check( "Config does not persist oscKinds", ( function() { var c = defaultConfig(); c.oscKinds = { OSC: "broadband" };
+             var s = withConfigStore( {}, {}, function() { saveConfig( c ); } );
+             return withConfigStore( s.stored, s.paramsSet, function() { return loadConfig(); } ).result.oscKinds; } )(), {} );
+   } )();
+   } if ( testGroup( "osc.preflight" ) ) {
+   ( function()
+   {
+      function cfg( paths, palettes )
+      {
+         var c = defaultConfig();
+         for ( var k in paths ) c.paths[k] = paths[k];
+         if ( palettes ) c.palettes = palettes;
+         return c;
+      }
+      function infoOf( table ) { return function( slot ) { return table[slot]; }; }
+      check( "oscPaletteProblem SHO with colour",
+             Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "SHO", "HOO" ] ) ),
+             "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
+      check( "oscPaletteProblem HSO with OSC", Pipeline.oscPaletteProblem( cfg( { OSC: "/m/a" }, [ "HSO" ] ) ),
+             "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
+      check( "oscPaletteProblem HOO only", Pipeline.oscPaletteProblem( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), null );
+      check( "oscPaletteProblem mono run unaffected",
+             Pipeline.oscPaletteProblem( cfg( { H: "/m/h", S: "/m/s", O: "/m/o" }, [ "SHO" ] ) ), null );
+      check( "narrowbandSupplied OSCNB", Pipeline.narrowbandSupplied( cfg( { OSCNB: "/m/nb" } ) ), [ "H", "O" ] );
+      check( "narrowbandSupplied mono unchanged", Pipeline.narrowbandSupplied( cfg( { H: "/m/h", O: "/m/o" } ) ), [ "H", "O" ] );
+      var mc = cfg( { R: "/m/r.xisf", H: "/m/h.xisf" } );
+      check( "inputChannelProblems colour file in a mono slot",
+             Pipeline.inputChannelProblems( mc, infoOf( {
+                R: { filter: "R", path: "/m/r.xisf", numberOfChannels: 3, width: 9, height: 9 },
+                H: { filter: "Ha", path: "/m/h.xisf", numberOfChannels: 2, width: 9, height: 9 } } ) ),
+             [ "/m/r.xisf is a colour master (3 channels); a mono slot needs a one-channel master",
+               "/m/h.xisf has 2 channels; Loom takes mono (1) or colour (3) masters" ] );
+      var sz = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      check( "oscKindProblems different sizes allowed",
+             Pipeline.oscKindProblems( sz, infoOf( {
+                OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
+                OSCNB: { filter: "L-eXtreme", path: "/m/b.xisf", numberOfChannels: 3, width: 90, height: 70 } } ) ), [] );
+      check( "wantedPalettes OSCNB gives HOO",
+             Pipeline.wantedPalettes( cfg( { OSCNB: "/m/nb" }, [ "HOO" ] ) ), [ "HOO" ] );
+      check( "wantedPalettes OSCNB drops SHO", Pipeline.wantedPalettes( cfg( { OSCNB: "/m/nb" }, [ "SHO", "HOO" ] ) ), [ "HOO" ] );
+      var c = cfg( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      var probs = Pipeline.oscKindProblems( c, infoOf( {
+         OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
+         OSCNB: { filter: "Duo",       path: "/m/b.xisf", numberOfChannels: 3, width: 100, height: 80 } } ) );
+      check( "oscKindProblems unconfident needs a choice",
+             probs, [ "choose Broadband or Dual-band Hα + OIII for /m/b.xisf" ] );
+      check( "oscKindProblems fills oscKinds", c.oscKinds.OSC, "broadband" );
+      var c2 = cfg( { OSCNB: "/m/c.xisf" } );
+      check( "oscKindProblems unsupported filter",
+             Pipeline.oscKindProblems( c2, infoOf( { OSCNB: { filter: "ALP-T SII/Hb", path: "/m/c.xisf",
+                                                             numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" ] );
+      var c3 = cfg( { OSC: "/m/m.xisf" } );
+      check( "oscKindProblems mono file in a colour slot",
+             Pipeline.oscKindProblems( c3, infoOf( { OSC: { filter: "", path: "/m/m.xisf",
+                                                           numberOfChannels: 1, width: 9, height: 9 } } ) ),
+             [ "/m/m.xisf is a mono master (1 channel); a colour slot needs a three-channel master" ] );
+      var c4 = cfg( { OSCNB: "/m/u.xisf" } );
+      check( "oscKindProblems broadband in the dual-band slot",
+             Pipeline.oscKindProblems( c4, infoOf( { OSCNB: { filter: "UV/IR Cut", path: "/m/u.xisf",
+                                                             numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "/m/u.xisf is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master" ] );
+      var dd = cfg( { OSC: "/m/d.xisf" } );
+      check( "oscKindProblems dual-band in the broadband slot",
+             Pipeline.oscKindProblems( dd, infoOf( { OSC: { filter: "L-eXtreme", path: "/m/d.xisf",
+                                                          numberOfChannels: 3, width: 9, height: 9 } } ) ),
+             [ "/m/d.xisf is a dual-band colour master; the broadband slot needs a Broadband master" ] );
+      var ch = cfg( { OSCNB: "/m/q.xisf" } ); ch.oscKindChoices = { "filter:duo": "dualband" };
+      check( "oscKindProblems a remembered choice resolves an unconfident filter",
+             [ Pipeline.oscKindProblems( ch, infoOf( { OSCNB: { filter: "Duo", path: "/m/q.xisf",
+                                                              numberOfChannels: 3, width: 9, height: 9 } } ) ),
+               ch.oscKinds.OSCNB ], [ [], "dualband" ] );
+      var blank = cfg( { OSCNB: "/m/u.xisf" } ); blank.oscKindChoices = { "path:/m/u.xisf": "dualband" };
+      check( "oscKindProblems keys a blank filter by the configured path when infoOf has none",
+             [ Pipeline.oscKindProblems( blank, infoOf( { OSCNB: { filter: "", numberOfChannels: 3, width: 9, height: 9 } } ) ),
+               blank.oscKinds.OSCNB ], [ [], "dualband" ] );
+      check( "marsProblems counts derived RGB", Util.suppliedChannels( cfg( { OSC: "/m/a" } ) ).length, 3 );
+      check( "inputChannelProblems says when the channel count cannot be read",
+             Pipeline.inputChannelProblems( cfg( { L: "/m/l.xisf" } ),
+                infoOf( { L: { filter: "L", path: "/m/l.xisf", width: 9, height: 9 } } ) ),
+             [ "could not read the channel count of /m/l.xisf" ] );
+      check( "oscKindProblems says when the channel count cannot be read",
+             Pipeline.oscKindProblems( cfg( { OSC: "/m/a.xisf" } ),
+                infoOf( { OSC: { filter: "UV/IR Cut", path: "/m/a.xisf", width: 9, height: 9 } } ) ),
+             [ "could not read the channel count of /m/a.xisf" ] );
+      check( "oscSensorProblems asks for the sensor when a colour master has none chosen",
+             Pipeline.oscSensorProblems( cfg( { OSC: "/m/a" } ) ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+      check( "oscInfoOf gives null for a missing file",
+             Pipeline.oscInfoOf( cfg( { OSC: "/m/definitely/not/here.xisf" } ) )( "OSC" ), null );
+      check( "oscInfoOf gives null for an empty slot", Pipeline.oscInfoOf( cfg( {} ) )( "OSC" ), null );
+   } )();
+   } if ( testGroup( "osc.calibration" ) ) {
+   ( function()
+   {
+      var sensor = { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: "Sony Color Sensor B" };
+      function oscConfig()
+      {
+         var c = Config.defaults();
+         c.paths.OSC = "/m/a.xisf";
+         c.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
+         return c;
+      }
+
+      // Mono runs: the palette and composite stage keys, captured through a stubbed processChain.
+      function chainKeys( build )
+      {
+         var got = null, realChain = Pipeline.processChain, realAbort = Pipeline.checkAbort,
+             realFree = Util.freeWindowId, realLog = Util.log;
+         Pipeline.processChain = function( holder, chain ) { got = chain; };
+         Pipeline.checkAbort = function() {};
+         Util.freeWindowId = function( id ) { return id; };
+         Util.log = function() {};
+         try { build(); }
+         finally { Pipeline.processChain = realChain; Pipeline.checkAbort = realAbort;
+                   Util.freeWindowId = realFree; Util.log = realLog; }
+         var out = {};
+         got.forEach( function( s ) { out[s.stage] = s.key; } );
+         return out;
+      }
+      var monoCommon = { x0: 0, y0: 0, x1: 100, y1: 100 };
+      var monoChans = {};
+      [ "R", "G", "B", "H", "O", "S" ].forEach( function( k )
+      {
+         monoChans[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, window: null };
+      } );
+      var monoCfg = Config.defaults();
+      monoCfg.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      var reg = { add: function() {} };
+      var monoPalette = chainKeys( function() { Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon ); } );
+      var monoRGB = chainKeys( function()
+      {
+         Pipeline.buildRGB( monoChans, monoCfg, reg, monoCommon, "ZWO ASI2600MM", null );
+      } );
+      check( "mono palette keys are unchanged", [ monoPalette.paletteCombine, monoPalette.paletteSpcc ],
+             [ "ecac9209a41585a1bd324e8a4e4f9a42a1f024ef", "03a5d59dae3633c0ebbc667d6d3c30f7c675b886" ] );
+      check( "mono composite keys are unchanged",
+             [ monoRGB.spfcRGB, monoRGB.spccRGB ], [ "63e48e287b8b762d0d93b8d9fb2a1d8934cfe40e", "5f7e0d0d752c33e61c213075ded9b931f3c99f67" ] );
+
+      // The sensor curves and Ideal QE.
+      var c = oscConfig();
+      check( "oscSpfcParams uses the sensor curve and Ideal QE",
+             Pipeline.oscSpfcParams( "G", c ),
+             { channel: "G", filter: "Sony Color Sensor G", qe: "Ideal QE curve" } );
+      check( "oscSensorProblems missing curve",
+             Pipeline.oscSensorProblems( c, function( name ) { return name != "Sony Color Sensor B"; } ),
+             [ "sensor colour filter curve 'Sony Color Sensor B' is not in filters.xspd" ] );
+      var empty = Config.defaults(); empty.paths.OSC = "/m/a.xisf";
+      check( "oscSensorProblems sensor not chosen",
+             Pipeline.oscSensorProblems( empty, function() { return true; } ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+      var partial = oscConfig(); partial.oscSensor.B = "";
+      check( "oscSensorProblems one sensor curve not chosen",
+             Pipeline.oscSensorProblems( partial, function() { return true; } ),
+             [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+      check( "oscSensorProblems all curves present", Pipeline.oscSensorProblems( c, function() { return true; } ), [] );
+      var monoRun = Config.defaults(); monoRun.paths.L = "/m/l.xisf";
+      check( "oscSensorProblems empty for a mono run",
+             Pipeline.oscSensorProblems( monoRun, function() { return false; } ), [] );
+      var nbOnly = Config.defaults(); nbOnly.paths.OSCNB = "/m/n.xisf"; nbOnly.oscKinds = { OSCNB: "dualband" };
+      check( "oscSensorProblems empty for an OSCNB-only run",
+             Pipeline.oscSensorProblems( nbOnly, function() { return false; } ), [] );
+      var seenCurves = [];
+      Pipeline.oscSensorProblems( c, function( name, ch ) { seenCurves.push( ch + ":" + name ); return true; } );
+      check( "oscSensorProblems asks for each curve by channel", seenCurves,
+             [ "R:Sony Color Sensor R", "G:Sony Color Sensor G", "B:Sony Color Sensor B" ] );
+
+      // The spfc stage and its runner.
+      var a = Pipeline.buildStageKeys( "src-G", { solve: {}, spfc: Pipeline.oscSpfcParams( "G", c ), mgc: { marsFiles: [] },
+                                                  graxpert: { enabled: false } } );
+      c.oscSensor.G = "Other Color Sensor G";
+      var b = Pipeline.buildStageKeys( "src-G", { solve: {}, spfc: Pipeline.oscSpfcParams( "G", c ), mgc: { marsFiles: [] },
+                                                  graxpert: { enabled: false } } );
+      check( "spfc key changes with the sensor", a[1].key != b[1].key, true );
+      var realCurve = Steps.deviceCurveForImage, realMgc = Steps.configuredMGC, realStudio = Steps.studioAvailable;
+      Steps.deviceCurveForImage = function( i ) { return { name: "QE:" + i }; };
+      Steps.configuredMGC = function() { return null; };
+      Steps.studioAvailable = function() { return false; };
+      var stages;
+      try { stages = Pipeline.broadbandStages( "G", { group: "OSC", instrume: "ZWO ASI2600MC" }, oscConfig() ); }
+      finally { Steps.deviceCurveForImage = realCurve; Steps.configuredMGC = realMgc; Steps.studioAvailable = realStudio; }
+      check( "broadbandStages: an OSC channel calibrates against the sensor curve and Ideal QE",
+             stages.spfc, { channel: "G", filter: "Sony Color Sensor G", qe: "Ideal QE curve" } );
+      var calls = [], realSpfc = Steps.spfc;
+      Steps.spfc = function( view, f, ch, instrume, chosen ) { calls.push( [ f, ch, instrume, chosen ] ); };
+      try
+      {
+         Pipeline.broadbandRunners( "G", oscConfig() ).spfc( { view: {}, filter: "UV/IR Cut", group: "OSC",
+                                                                instrume: "ZWO ASI2600MC" } );
+         var mono2 = Config.defaults(); mono2.filters = { G: "Mono G filter" };
+         Pipeline.broadbandRunners( "G", mono2 ).spfc( { view: {}, filter: "G", instrume: "ZWO ASI2600MM" } );
+      }
+      finally { Steps.spfc = realSpfc; }
+      check( "broadbandRunners: OSC uses the sensor curve and no camera; mono is unchanged", calls,
+             [ [ "UV/IR Cut", "G", null, "Sony Color Sensor G" ], [ "G", "G", "ZWO ASI2600MM", "Mono G filter" ] ] );
+
+      // The composite.
+      var osc3 = { R: { group: "OSC", instrume: "ZWO ASI2600MC" }, G: { group: "OSC", instrume: "ZWO ASI2600MC" },
+                   B: { group: "OSC", instrume: "ZWO ASI2600MC" } };
+      check( "compositeInstrument is null for an OSC composite", Pipeline.compositeInstrument( osc3, "G" ), null );
+      check( "compositeInstrument still follows the camera for mono",
+             Pipeline.compositeInstrument( { G: { instrume: "ZWO ASI2600MM" } }, "G" ), "ZWO ASI2600MM" );
+      var inh = { R: { group: "OSC", instrume: "ZWO ASI2600MC" }, G: { group: "OSC", instrume: "" },
+                  B: { group: "OSC", instrume: null } };
+      Pipeline.inheritInstrument( inh );
+      check( "inheritInstrument leaves colour channels alone", [ inh.G.instrume, inh.B.instrume, inh.G.instrumeInherited ],
+             [ "", null, undefined ] );
+      var mix = { R: { key: "R", instrume: "ZWO ASI2600MM" }, G: { key: "G", instrume: "" } };
+      Pipeline.inheritInstrument( mix );
+      check( "inheritInstrument still lends a camera to mono", mix.G.instrume, "ZWO ASI2600MM" );
+
+      var ef = Config.defaults();
+      ef.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      check( "effectiveFilters mono run", Pipeline.effectiveFilters( ef ), ef.filters );
+      check( "effectiveFilters mono run is a copy", Pipeline.effectiveFilters( ef ) !== ef.filters, true );
+      ef.paths.OSC = "/m/a.xisf";
+      ef.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
+      check( "effectiveFilters OSC run uses the sensor curves",
+             [ Pipeline.effectiveFilters( ef ).R, Pipeline.effectiveFilters( ef ).G, Pipeline.effectiveFilters( ef ).B ],
+             [ sensor.R, sensor.G, sensor.B ] );
+      check( "effectiveFilters leaves config.filters alone", ef.filters.G, "Mono G filter" );
+
+      var seen = [], keepSpfc = Steps.spfc, keepSpcc = Steps.spccRGB, keepWb = Steps.applyWhiteBalance;
+      Steps.spfc = function( view, f, ch, instrume, filters ) { seen.push( [ "spfc", ch, instrume, filters.G ] ); };
+      Steps.spccRGB = function( view, instrume, filters ) { seen.push( [ "spcc", instrume, filters.G ] ); };
+      Steps.applyWhiteBalance = function( view, factors ) { seen.push( [ "wb", factors ] ); };
+      try { Pipeline.rgbCalibrationRunners( ef, null, null ).spfcRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( ef, null, null ).spccRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( ef, null, [ 1, 2, 3 ] ).spccRGB( { view: {} } ); }
+      finally { Steps.spfc = keepSpfc; Steps.spccRGB = keepSpcc; Steps.applyWhiteBalance = keepWb; }
+      check( "composite runners: sensor curves, no camera; clean factors applied instead of SPCC",
+             seen, [ [ "spfc", "RGB", null, sensor.G ], [ "spcc", null, sensor.G ], [ "wb", [ 1, 2, 3 ] ] ] );
+      var mono = Config.defaults(); mono.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      seen = [];
+      Steps.spfc = function( view, f, ch, instrume, filters ) { seen.push( [ "spfc", filters.G ] ); };
+      Steps.spccRGB = function( view, instrume, filters ) { seen.push( [ "spcc", filters.G ] ); };
+      Steps.applyWhiteBalance = function( view, factors ) { seen.push( [ "wb", factors ] ); };
+      try { Pipeline.rgbCalibrationRunners( mono, "ZWO ASI2600MM", null ).spccRGB( { view: {} } );
+            Pipeline.rgbCalibrationRunners( mono, "ZWO ASI2600MM", [ 4, 5, 6 ] ).spccRGB( { view: {} } ); }
+      finally { Steps.spfc = keepSpfc; Steps.spccRGB = keepSpcc; Steps.applyWhiteBalance = keepWb; }
+      check( "mono runners unchanged", seen, [ [ "spcc", "Mono G filter" ], [ "wb", [ 4, 5, 6 ] ] ] );
+
+      // The composite's cache parameters follow the sensor.
+      var oscChans = {};
+      [ "R", "G", "B" ].forEach( function( k )
+      {
+         oscChans[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, group: "OSC" };
+      } );
+      var oscCfgA = oscConfig(), oscCfgB = oscConfig();
+      oscCfgB.oscSensor.R = "Other Color Sensor R";
+      var oscA = chainKeys( function() { Pipeline.buildRGB( oscChans, oscCfgA, reg, monoCommon, null, null ); } );
+      var oscB = chainKeys( function() { Pipeline.buildRGB( oscChans, oscCfgB, reg, monoCommon, null, null ); } );
+      check( "composite spfc and spcc keys move with the sensor",
+             [ oscA.spfcRGB != oscB.spfcRGB, oscA.spccRGB != oscB.spccRGB ], [ true, true ] );
+
+      // Narrowband bandwidths.
+      var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf"; nb.oscKinds = { OSCNB: "dualband" };
+      check( "narrowband bandwidths from the filter table",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "L-eXtreme" } ), { R: 7, G: 7, B: 7 } );
+      check( "narrowband bandwidths differ per channel when the table says so",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "L-eNhance" } ), { R: 10, G: 24, B: 24 } );
+      check( "narrowband bandwidths fall back to the run's bandwidth",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: "Duo" } ),
+             { R: nb.narrowbandBandwidth, G: nb.narrowbandBandwidth, B: nb.narrowbandBandwidth } );
+      check( "narrowband bandwidths fall back with no filter",
+             Pipeline.oscNarrowbandBandwidths( nb, { filter: null } ).G, nb.narrowbandBandwidth );
+
+      function nbChans( filter )
+      {
+         var o = {};
+         [ "H", "O" ].forEach( function( k )
+         {
+            o[k] = { key: k, currentKey: "key" + k, view: { id: "v" + k }, group: "OSCNB", filter: filter };
+         } );
+         return o;
+      }
+      var logged = [], realLog = Util.log;
+      function nbKeys( filter )
+      {
+         logged = [];
+         var keys = chainKeys( function()
+         {
+            Util.log = function( st, m ) { logged.push( st + ": " + m ); };
+            try { Pipeline.buildPalette( "HOO", nbChans( filter ), nb, reg, monoCommon ); }
+            finally { Util.log = realLog; }
+         } );
+         return keys;
+      }
+      var kx = nbKeys( "L-eXtreme" ), kxLog = logged.slice(), ku = nbKeys( "L-Ultimate" );
+      check( "HOO paletteSpcc key differs between L-eXtreme and L-Ultimate", kx.paletteSpcc != ku.paletteSpcc, true );
+      check( "HOO from OSCNB logs the approximation",
+             kxLog.some( function( l ) { return l.indexOf( "approximation: H and O from a colour master are not single lines" ) >= 0; } ),
+             true );
+      check( "a mono palette does not log the approximation",
+             ( function()
+             {
+                var l2 = [], keep = Util.log;
+                chainKeys( function()
+                {
+                   Util.log = function( st, m ) { l2.push( m ); };
+                   try { Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon ); }
+                   finally { Util.log = keep; }
+                } );
+                return l2.some( function( m ) { return m.indexOf( "approximation" ) >= 0; } );
+             } )(), false );
+
+      // The bandwidth reaches Steps.spccNarrowband in the form the key records.
+      var bwSeen = [], realNb = Steps.spccNarrowband, realCheck = Pipeline.processChain;
+      var capturedRunners = null, realAbort = Pipeline.checkAbort, realFree = Util.freeWindowId, realLog2 = Util.log;
+      Pipeline.processChain = function( holder, chain, cfg, r, runners ) { capturedRunners = runners; };
+      Pipeline.checkAbort = function() {}; Util.freeWindowId = function( id ) { return id; }; Util.log = function() {};
+      Steps.spccNarrowband = function( view, pal, bw ) { bwSeen.push( bw ); };
+      try
+      {
+         Pipeline.buildPalette( "HOO", nbChans( "L-eXtreme" ), nb, reg, monoCommon );
+         capturedRunners.paletteSpcc( { window: { hasAstrometricSolution: true }, view: {} } );
+         Pipeline.buildPalette( "HOO", monoChans, monoCfg, reg, monoCommon );
+         capturedRunners.paletteSpcc( { window: { hasAstrometricSolution: true }, view: {} } );
+      }
+      finally { Steps.spccNarrowband = realNb; Pipeline.processChain = realCheck; Pipeline.checkAbort = realAbort;
+                Util.freeWindowId = realFree; Util.log = realLog2; }
+      check( "palette calibration gets per-channel bandwidths for OSCNB and a plain number for mono", bwSeen,
+             [ { R: 7, G: 7, B: 7 }, monoCfg.narrowbandBandwidth ] );
+
+      // A light-pollution filter in front of the camera is noted, never refused.
+      function lpLog( filter )
+      {
+         var l = [], keep = Util.log;
+         Util.log = function( st, m ) { l.push( m ); };
+         try
+         {
+            var chans3 = {};
+            [ "R", "G", "B" ].forEach( function( k )
+            {
+               chans3[k] = { group: "OSC", instrume: "ZWO ASI2600MC", filter: filter };
+            } );
+            Pipeline.compositeInstrument( chans3, "G" );
+         }
+         finally { Util.log = keep; }
+         return l.filter( function( m ) { return m.indexOf( "colour calibration does not model" ) >= 0; } );
+      }
+      check( "L-Pro is noted once", lpLog( "L-Pro" ),
+             [ "colour calibration does not model the L-Pro filter in front of the camera" ] );
+      check( "CLS CCD is noted", lpLog( "CLS CCD" ).length, 1 );
+      check( "a branded L-Pro is noted once", lpLog( "Optolong L-Pro" ),
+             [ "colour calibration does not model the Optolong L-Pro filter in front of the camera" ] );
+      check( "a sized, branded L-Pro is noted once", lpLog( "Optolong L-Pro 2\"" ).length, 1 );
+      check( "a branded CLS is noted once", lpLog( "Optolong CLS" ).length, 1 );
+      check( "a sized CLS-CCD is noted once", lpLog( "Optolong CLS-CCD 2\"" ).length, 1 );
+      check( "Astronomik CLS is noted once", lpLog( "Astronomik CLS" ),
+             [ "colour calibration does not model the Astronomik CLS filter in front of the camera" ] );
+      check( "Astronomik CLS-CCD is noted once", lpLog( "Astronomik CLS-CCD" ),
+             [ "colour calibration does not model the Astronomik CLS-CCD filter in front of the camera" ] );
+      check( "UV/IR cut is not noted", lpLog( "UV/IR Cut" ), [] );
+      check( "L-eXtreme is not noted for the broadband colour master", lpLog( "L-eXtreme" ), [] );
+      // An OSC channel's stage parameters do not look up the camera's QE curve.
+      var qeAsked = 0, realQe2 = Steps.deviceCurveForImage, realMgc2 = Steps.configuredMGC,
+          realStudio2 = Steps.studioAvailable;
+      Steps.deviceCurveForImage = function() { ++qeAsked; return { name: "camera QE" }; };
+      Steps.configuredMGC = function() { return null; };
+      Steps.studioAvailable = function() { return false; };
+      var oscStageQe, monoStageQe;
+      try
+      {
+         oscStageQe = Pipeline.broadbandStages( "R", { group: "OSC", instrume: "ZWO ASI2600MC" }, oscConfig() ).spfc.qe;
+         var askedForOsc = qeAsked;
+         monoStageQe = Pipeline.broadbandStages( "R", { instrume: "ZWO ASI2600MM" }, monoCfg ).spfc.qe;
+         check( "an OSC channel does not look up a camera QE curve", askedForOsc, 0 );
+      }
+      finally { Steps.deviceCurveForImage = realQe2; Steps.configuredMGC = realMgc2; Steps.studioAvailable = realStudio2; }
+      check( "OSC qe is Ideal QE; mono qe is the camera's", [ oscStageQe, monoStageQe ],
+             [ "Ideal QE curve", "camera QE" ] );
+
+      // The composite's own stage parameters carry the effective filters.
+      var effParams = null, realBsk = Pipeline.buildStageKeys;
+      var monoFiltersToo = oscConfig();
+      monoFiltersToo.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+      Pipeline.buildStageKeys = function( src, params ) { effParams = params; return realBsk( src, params ); };
+      try { chainKeys( function() { Pipeline.buildRGB( oscChans, monoFiltersToo, reg, monoCommon, null, null ); } ); }
+      finally { Pipeline.buildStageKeys = realBsk; }
+      check( "composite spfc and spcc parameters carry the sensor curves, not config.filters",
+             [ effParams.spfcRGB.filters.G, effParams.spccRGB.filters.G, effParams.spccRGB.filters.R ],
+             [ sensor.G, sensor.G, sensor.R ] );
+
+      // The clean reference calibrates with the effective filters.
+      var refSeen = [];
+      var keepFns = [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
+                      "registerCleanChannel", "cropCleanChannel", "releaseTemps" ].map( function( n ) { return Pipeline[n]; } );
+      var keepSteps = [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].map( function( n ) { return Steps[n]; } );
+      var keepFree = Util.freeWindowId, keepLog3 = Util.log;
+      Pipeline.cleanWhiteBalanceKey = function() { return "k"; };
+      Pipeline.cleanWhiteBalanceCachePath = function() { return "p"; };
+      Pipeline.cachedCleanWhiteBalance = function() { return null; };
+      Pipeline.registerCleanChannel = function() { return {}; };
+      Pipeline.cropCleanChannel = function() { return {}; };
+      Pipeline.releaseTemps = function() {};
+      Util.freeWindowId = function( id ) { return id; };
+      Util.log = function() {};
+      Steps.combineRGB = function() { return { mainView: {} }; };
+      Steps.solve = function() {};
+      Steps.spfc = function( v, f, ch, ins, filters ) { refSeen.push( [ "spfc", ins, filters.G ] ); };
+      Steps.spccRGB = function( v, ins, filters ) { refSeen.push( [ "spcc", ins, filters.G ] ); };
+      Steps.readWhiteBalanceFactors = function() { return [ 1, 1, 1 ]; };
+      try
+      {
+         var cleanCfg = oscConfig(); cleanCfg.useCache = false;
+         cleanCfg.filters = { R: "Mono R filter", G: "Mono G filter", B: "Mono B filter" };
+         Pipeline.measureCleanWhiteBalance( oscChans, cleanCfg, reg, monoCommon, null, {}, "ref", "G" );
+      }
+      finally
+      {
+         [ "cleanWhiteBalanceKey", "cleanWhiteBalanceCachePath", "cachedCleanWhiteBalance",
+           "registerCleanChannel", "cropCleanChannel", "releaseTemps" ].forEach( function( n, i ) { Pipeline[n] = keepFns[i]; } );
+         [ "combineRGB", "solve", "spfc", "spccRGB", "readWhiteBalanceFactors" ].forEach( function( n, i ) { Steps[n] = keepSteps[i]; } );
+         Util.freeWindowId = keepFree; Util.log = keepLog3;
+      }
+      check( "the clean reference calibrates with the sensor curves and no camera", refSeen,
+             [ [ "spfc", null, sensor.G ], [ "spcc", null, sensor.G ] ] );
+
+      var lp = oscConfig();
+      check( "an L-Pro run has no sensor problem", Pipeline.oscSensorProblems( lp, function() { return true; } ), [] );
    } )();
    } if ( testGroup( "pipeline.run" ) ) {
    /*
@@ -22853,13 +25006,13 @@ function runFinishingTests()
          var wbChans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
          check( "finishing: the source key texts, crop and halos included",
                 [ capture( "RGB", everything ).src, capture( "SHO", halos ).src, capture( "L", halos ).src,
-                  Pipeline.cleanWhiteBalanceKey( wbChans, { filters: { R: "Astronomik R" } }, common, "CAM" ),
-                  Pipeline.cleanWhiteBalanceKey( wbChans, {}, common, null ) ],
+                  Pipeline.cleanWhiteBalanceKey( wbChans, { filters: { R: "Astronomik R" } }, common, "CAM", "refL" ),
+                  Pipeline.cleanWhiteBalanceKey( wbChans, {}, common, null, "refL" ) ],
                 [ "H(rgb|keyR|keyG|keyB|crop:1,2,300,200|halos:0)",
                   "H(palette|SHO|keyS|keyH|keyO|crop:1,2,300,200|halos:1)",
                   "H(lstars|keyL|crop:1,2,300,200|halos:1)",
-                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{\"R\":\"Astronomik R\"}|CAM)",
-                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{}|null)" ] );
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{\"R\":\"Astronomik R\"}|CAM|ref:refL)",
+                  "H(cleanwb|cR|cG|cB|crop:1,2,300,200|{}|null|ref:refL)" ] );
       }
       finally { restore(); }
    } )();
@@ -23341,6 +25494,564 @@ function runFailurePathTests()
    }
    finally { Steps.FILTERS_XSPD_PATH = savedXspd; }
 
+   } if ( testGroup( "qa.osc.detect" ) ) {
+   /*
+    * Acceptance: how a colour master's filter says what its planes hold.
+    * Known models first, then broadband names, then family aliases, then
+    * nothing; spelling, case, spacing and punctuation never matter.
+    */
+   ( function()
+   {
+      function info( v ) { return Util.oscFilterInfo( v ); }
+      function field( v, f ) { var i = info( v ); return i == null ? "null" : i[f]; }
+      var KINDS = [ "broadband", "dualband", "unsupported" ];
+
+      // 1. Known models are dual-band and confident, with their passbands.
+      [ "L-eXtreme", "L-Ultimate", "L-eNhance", "NBZ" ].forEach( function( n )
+      {
+         check( "qa.osc.detect: " + n + " is a known dual-band model", [ field( n, "kind" ), field( n, "confident" ) ],
+                [ "dualband", true ] );
+      } );
+      check( "qa.osc.detect: L-eXtreme passes 7 nm / 7 nm", [ field( "L-eXtreme", "haNm" ), field( "L-eXtreme", "oiiiNm" ) ], [ 7, 7 ] );
+      check( "qa.osc.detect: L-Ultimate passes 3 nm / 3 nm", [ field( "L-Ultimate", "haNm" ), field( "L-Ultimate", "oiiiNm" ) ], [ 3, 3 ] );
+
+      // 1. Spelling, case, spaces and punctuation do not matter.
+      var ref = info( "L-eXtreme" );
+      [ "l-extreme", "L EXTREME", "LeXtreme", "L_eXtreme", "  l - e x t r e m e ", "L.eXtreme" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the same filter as L-eXtreme", info( v ), ref );
+      } );
+      var ult = info( "L-Ultimate" );
+      [ "l ultimate", "LULTIMATE", "L_Ultimate" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the same filter as L-Ultimate", info( v ), ult );
+      } );
+
+      // 1. A known model beats a family alias: ALP-T is also the family alias "alpt".
+      var alpt = info( "ALP-T Hα/OIII" );
+      check( "qa.osc.detect: the ALP-T Hα/OIII variant is supported, dual-band and confident (the model beats the alias)",
+             [ alpt && alpt.kind, alpt && alpt.confident ], [ "dualband", true ] );
+      [ "ALP-T Ha/OIII", "alpt ha oiii", "ALP-T HA/OIII", "ALPT Hα OIII" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the ALP-T Hα/OIII variant", info( v ), alpt );
+      } );
+      var alptSii = info( "ALP-T SII/Hβ" );
+      check( "qa.osc.detect: the ALP-T SII/Hβ variant is unsupported (not an unconfident dual-band alias)",
+             alptSii && alptSii.kind, "unsupported" );
+      [ "ALP-T SII/Hb", "alpt sii hb", "ALP-T SII/Hbeta", "ALPT SII Hβ" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is the ALP-T SII/Hβ variant, unsupported", field( v, "kind" ), "unsupported" );
+      } );
+      check( "qa.osc.detect: the two ALP-T variants differ", alpt && alptSii && alpt.kind != alptSii.kind, true );
+
+      // 2. Broadband names, and an empty or absent FILTER, are broadband and confident.
+      [ "UVIR", "UV/IR", "uv-ir", "IR-Cut", "ircut", "L-Pro", "lpro", "CLS", "cls", "", "   ", null, undefined ].forEach( function( v )
+      {
+         check( "qa.osc.detect: " + JSON.stringify( v ) + " is broadband and confident",
+                [ field( v, "kind" ), field( v, "confident" ) ], [ "broadband", true ] );
+      } );
+
+      // 3. Family aliases are dual-band but not confident: the name alone does not give the line pair.
+      [ "Duo", "duo", "Dual", "Tri", "Triad", "Quad", "ALPT", "alp-t", " D U O " ].forEach( function( v )
+      {
+         check( "qa.osc.detect: family alias '" + v + "' is dual-band, not confident",
+                [ field( v, "kind" ), field( v, "confident" ) ], [ "dualband", false ] );
+      } );
+
+      // 4. Anything else is null.
+      [ "Astronomik Deep-Sky", "xyzzy", "Ha 7nm", "Baader Moon & Skyglow" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: '" + v + "' is not recognised", info( v ), null );
+      } );
+
+      // Quad-band is dual-band: no fourth kind exists, and the kind is never "quad".
+      [ "Quad", "Quad band", "quad-band", "Quadband", "QUAD BAND" ].forEach( function( v )
+      {
+         check( "qa.osc.detect: quad-band '" + v + "' is dual-band", field( v, "kind" ), "dualband" );
+      } );
+      var every = [ "L-eXtreme", "L-Ultimate", "L-eNhance", "NBZ", "ALP-T Hα/OIII", "ALP-T SII/Hβ", "UVIR", "", null,
+                    "Duo", "Quad", "Triad" ].map( function( v ) { return field( v, "kind" ); } );
+      check( "qa.osc.detect: every answer is one of broadband, dualband, unsupported",
+             every.filter( function( k ) { return KINDS.indexOf( k ) < 0; } ), [] );
+
+      // The normaliser the table and the override keys share.
+      check( "qa.osc.detect: normaliseFilter lowercases and drops punctuation and spacing",
+             [ Util.normaliseFilter( "L-eXtreme" ), Util.normaliseFilter( " Duo Band! " ), Util.normaliseFilter( "UV/IR" ) ],
+             [ "lextreme", "duoband", "uvir" ] );
+      check( "qa.osc.detect: normaliseFilter of nothing is empty", [ Util.normaliseFilter( null ), Util.normaliseFilter( "" ) ], [ "", "" ] );
+   } )();
+
+   } if ( testGroup( "qa.osc.header" ) ) {
+   /*
+    * Acceptance: a colour master is a three-channel image; any other
+    * channel count than 1 or 3 is refused with its path and count; the
+    * channel count comes from the header alone; a WBPP colour master's
+    * name gives its filter token (hyphens included) and a colour mark.
+    */
+   ( function()
+   {
+      function header( desc )
+      {
+         var F = { canStoreKeywords: false, canStoreImageProperties: false, name: "XISF" };
+         return Util.headerInfo( F, { keywords: [] }, [ desc ] );
+      }
+      check( "qa.osc.header: a three-channel description reports 3 channels",
+             header( { width: 40, height: 30, numberOfChannels: 3 } ).numberOfChannels, 3 );
+      check( "qa.osc.header: a one-channel description reports 1 channel",
+             header( { width: 40, height: 30, numberOfChannels: 1 } ).numberOfChannels, 1 );
+      check( "qa.osc.header: a description that does not say is one channel",
+             header( { width: 40, height: 30 } ).numberOfChannels, 1 );
+      var h3 = header( { width: 40, height: 30, numberOfChannels: 3 } );
+      check( "qa.osc.header: the geometry is still reported alongside", [ h3.width, h3.height ], [ 40, 30 ] );
+
+      [ 1, 3 ].forEach( function( n )
+      {
+         check( "qa.osc.header: " + n + " channel(s) accepted", Util.channelCountProblem( "/m/a.xisf", n ), null );
+      } );
+      [ 0, 2, 4, 5, 7 ].forEach( function( n )
+      {
+         var p = Util.channelCountProblem( "/m/a.xisf", n );
+         check( "qa.osc.header: " + n + " channels refused, naming the path and the count",
+                [ typeof p == "string" && p.length > 0, p != null && p.indexOf( "/m/a.xisf" ) >= 0,
+                  p != null && new RegExp( "(^|[^0-9])" + n + "([^0-9]|$)" ).test( p.replace( "/m/a.xisf", "" ) ) ],
+                [ true, true, true ] );
+      } );
+
+      // The colour-master name: the filter token runs to the next underscore, hyphens included.
+      var cn = Util.parseColourMasterName(
+         "masterLight_BIN-1_6248x4176_EXPOSURE-300.00s_FILTER-L-eXtreme_color_drizzle_2x_autocrop.xisf" );
+      check( "qa.osc.header: FILTER-L-eXtreme_color gives the filter L-eXtreme", cn && cn.filter, "L-eXtreme" );
+      check( "qa.osc.header: _color marks a colour candidate", cn && cn.colour, true );
+      check( "qa.osc.header: the drizzle label is read as the mono parser reads it", cn && cn.drizzle, "2x" );
+      check( "qa.osc.header: autocrop is read", cn && cn.autocrop, true );
+      var rgb = Util.parseColourMasterName( "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-UV-IR_RGB.xisf" );
+      check( "qa.osc.header: _RGB marks a colour candidate, and the hyphenated token is whole",
+             [ rgb && rgb.colour, rgb && rgb.filter ], [ true, "UV-IR" ] );
+      check( "qa.osc.header: a plain colour name is neither drizzled nor autocropped",
+             [ rgb && rgb.drizzle, rgb && rgb.autocrop ], [ "", false ] );
+      var mono = Util.parseColourMasterName( "masterLight_BIN-1_EXPOSURE-60.00s_FILTER-Ha_mono.xisf" );
+      check( "qa.osc.header: a mono-named file is not a colour candidate", mono == null || mono.colour === false, true );
+
+      // The drizzle and autocrop answers rank candidates the same way mono ones are ranked.
+      check( "qa.osc.header: drizzle and autocrop feed the existing variant rank",
+             [ Util.masterVariantRank( cn.drizzle, cn.autocrop ), Util.masterVariantRank( rgb.drizzle, rgb.autocrop ) ], [ 3, 0 ] );
+
+      // The mono parser keeps its mono behaviour.
+      var m = Util.parseMasterName( "masterLight_BIN-1_6248x4176_EXPOSURE-60.00s_FILTER-L_mono_drizzle_2x_(1)_autocrop.xisf" );
+      check( "qa.osc.header: parseMasterName still reads a mono name",
+             [ m.filter, m.channel, m.drizzle, m.autocrop ], [ "L", "L", "2x", true ] );
+      check( "qa.osc.header: parseMasterName still answers null without a filter token",
+             Util.parseMasterName( "masterFlat_something_else.xisf" ), null );
+   } )();
+
+   } if ( testGroup( "qa.osc.config" ) ) {
+   /*
+    * Acceptance: the colour slots, the logical channels they supply, the
+    * kind override and its persistence, mixed selections, and the same
+    * file selected twice.
+    */
+   ( function()
+   {
+      var MIX = "colour masters cannot be combined with mono masters; choose either the colour masters or the mono masters";
+      function conf( paths, views )
+      {
+         var c = Config.defaults(), k;
+         for ( k in ( paths || {} ) ) c.paths[k] = paths[k];
+         for ( k in ( views || {} ) ) c.views[k] = views[k];
+         return c;
+      }
+      function sorted( a ) { return a.slice().sort(); }
+      function has( problem, text ) { return problem != null && String( problem ).indexOf( text ) >= 0; }
+      function kindOf( slot, filter, path, choices )
+      {
+         var e = Util.effectiveOscKind( slot, filter, path, choices || {} );
+         return e == null ? "null" : e.kind;
+      }
+
+      // The slots and the defaults.
+      check( "qa.osc.config: the colour slots are OSC and OSCNB", Util.COLOUR_SLOTS, [ "OSC", "OSCNB" ] );
+      var d = Config.defaults();
+      check( "qa.osc.config: the defaults carry both colour slots, empty",
+             [ "OSC" in d.paths, "OSCNB" in d.paths, !d.paths.OSC, !d.paths.OSCNB ], [ true, true, true, true ] );
+      check( "qa.osc.config: the defaults remember no kind choice and no per-run kind",
+             [ d.oscKindChoices, d.oscKinds ], [ {}, {} ] );
+      check( "qa.osc.config: the defaults have a sensor", typeof d.oscSensor, "object" );
+
+      // 8. Logical channels.
+      check( "qa.osc.config: OSC supplies R, G, B", sorted( Util.suppliedChannels( conf( { OSC: "/m/rgb.xisf" } ) ) ), [ "B", "G", "R" ] );
+      check( "qa.osc.config: OSCNB supplies H, O", sorted( Util.suppliedChannels( conf( { OSCNB: "/m/nb.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.config: both together supply R, G, B, H, O",
+             sorted( Util.suppliedChannels( conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ) ) ), [ "B", "G", "H", "O", "R" ] );
+      check( "qa.osc.config: an open view in a colour slot supplies the same",
+             [ sorted( Util.suppliedChannels( conf( {}, { OSC: "viewA" } ) ) ), sorted( Util.suppliedChannels( conf( {}, { OSCNB: "viewB" } ) ) ) ],
+             [ [ "B", "G", "R" ], [ "H", "O" ] ] );
+      check( "qa.osc.config: mono slots supply themselves, as before",
+             sorted( Util.suppliedChannels( conf( { L: "/m/l.xisf", H: "/m/h.xisf", S: "/m/s.xisf" } ) ) ), [ "H", "L", "S" ] );
+      check( "qa.osc.config: nothing selected supplies nothing", Util.suppliedChannels( conf( {} ) ), [] );
+      var both = Util.suppliedChannels( conf( { OSC: "/m/a.xisf", R: "/m/r.xisf" } ) );
+      check( "qa.osc.config: a channel is never listed twice", both.length, sorted( both ).filter( function( k, i, a ) { return i == 0 || a[i - 1] != k; } ).length );
+
+      // 6. Mixed selections.
+      [ [ { OSC: "/m/a.xisf", L: "/m/l.xisf" }, {} ], [ { OSCNB: "/m/b.xisf", H: "/m/h.xisf" }, {} ],
+        [ { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf", O: "/m/o.xisf" }, {} ], [ { OSC: "/m/a.xisf" }, { S: "monoView" } ],
+        [ {}, { OSC: "viewA", R: "viewR" } ] ].forEach( function( t, i )
+      {
+         check( "qa.osc.config: mixed selection " + i + " is refused with the verbatim text",
+                has( Util.colourMixProblem( conf( t[0], t[1] ) ), MIX ), true );
+      } );
+      [ [ { OSC: "/m/a.xisf" } ], [ { OSCNB: "/m/b.xisf" } ], [ { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ],
+        [ { L: "/m/l.xisf", R: "/m/r.xisf", G: "/m/g.xisf", B: "/m/b.xisf", H: "/m/h.xisf" } ], [ {} ] ].forEach( function( t, i )
+      {
+         check( "qa.osc.config: selection " + i + " has no mix problem", Util.colourMixProblem( conf( t[0] ) ), null );
+      } );
+
+      // 6. "Something to do".
+      function nothingToDo( paths, views )
+      {
+         var c = conf( paths, views );
+         return Util.validateSelection( c.paths, c.views ).filter( function( p ) { return /nothing to do/i.test( p ); } ).length;
+      }
+      check( "qa.osc.config: OSCNB alone is something to do", nothingToDo( { OSCNB: "/m/b.xisf" } ), 0 );
+      check( "qa.osc.config: OSC alone is something to do", nothingToDo( { OSC: "/m/a.xisf" } ), 0 );
+      check( "qa.osc.config: a colour view alone is something to do", nothingToDo( {}, { OSCNB: "viewB" } ), 0 );
+      check( "qa.osc.config: nothing at all is still nothing to do", nothingToDo( {} ), 1 );
+      var vs = conf( { OSC: "/m/a.xisf" } );
+      check( "qa.osc.config: OSC alone gives no 'incomplete RGB set' complaint",
+             Util.validateSelection( vs.paths, vs.views ).filter( function( p ) { return /incomplete/i.test( p ); } ), [] );
+
+      // 7. The same file in a colour slot and a mono slot, or in both colour slots.
+      function dups( paths ) { return Util.duplicateFileProblems( conf( paths ).paths ); }
+      var dp = dups( { OSC: "/m/a.xisf", R: "/m/a.xisf" } );
+      check( "qa.osc.config: the same file in OSC and R is reported once, naming the file and both slots",
+             [ dp.length, has( dp[0], "/m/a.xisf" ), has( dp[0], "OSC" ), has( dp[0], "R" ) ], [ 1, true, true, true ] );
+      check( "qa.osc.config: the same file in OSCNB and H is reported", dups( { OSCNB: "/m/b.xisf", H: "/m/b.xisf" } ).length, 1 );
+      check( "qa.osc.config: the same file in OSC and OSCNB is reported", dups( { OSC: "/m/c.xisf", OSCNB: "/m/c.xisf" } ).length, 1 );
+      check( "qa.osc.config: different files are not reported", dups( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf", R: "/m/r.xisf" } ), [] );
+      check( "qa.osc.config: the mono duplicate report is unchanged", dups( { L: "/m/x.xisf", R: "/m/x.xisf" } ).length, 1 );
+
+      // 4. The override key: by filter name, or by path when the filter is blank.
+      check( "qa.osc.config: the key ignores the spelling of the filter and the path",
+             Util.oscKindKey( "L-eXtreme", "/m/a.xisf" ), Util.oscKindKey( "l extreme", "/m/other.xisf" ) );
+      check( "qa.osc.config: different filters have different keys", Util.oscKindKey( "Duo", "/m/a.xisf" ) != Util.oscKindKey( "Quad", "/m/a.xisf" ), true );
+      check( "qa.osc.config: a blank filter is keyed by its path", Util.oscKindKey( "", "/m/a.xisf" ), Util.oscKindKey( null, "/m/a.xisf" ) );
+      check( "qa.osc.config: two blank-filter files have different keys", Util.oscKindKey( "", "/m/a.xisf" ) != Util.oscKindKey( "", "/m/b.xisf" ), true );
+      check( "qa.osc.config: a blank-filter key is not any filter's key",
+             Util.oscKindKey( "", "/m/a.xisf" ) != Util.oscKindKey( "UVIR", "/m/a.xisf" ), true );
+
+      // 4. Effective kind: a choice beats detection; unsupported cannot be overridden.
+      var chosen = {};
+      chosen[ Util.oscKindKey( "L-eXtreme", "/m/a.xisf" ) ] = "broadband";
+      check( "qa.osc.config: with no choice, a confident detection stands", kindOf( "OSCNB", "L-eXtreme", "/m/a.xisf" ), "dualband" );
+      check( "qa.osc.config: a remembered choice beats a confident detection", kindOf( "OSCNB", "L-eXtreme", "/m/a.xisf", chosen ), "broadband" );
+      check( "qa.osc.config: the choice follows the filter to another file and spelling", kindOf( "OSCNB", "l extreme", "/m/z.xisf", chosen ), "broadband" );
+      var unconf = {}, unknown = {};
+      unconf[ Util.oscKindKey( "Duo", "/m/a.xisf" ) ] = "dualband";
+      unknown[ Util.oscKindKey( "Astronomik Deep-Sky", "/m/a.xisf" ) ] = "broadband";
+      check( "qa.osc.config: an unconfident filter has no kind until chosen",
+             [ !kindOf( "OSCNB", "Duo", "/m/a.xisf" ), kindOf( "OSCNB", "Duo", "/m/a.xisf", unconf ) ], [ true, "dualband" ] );
+      check( "qa.osc.config: an unknown filter has no kind until chosen",
+             [ !kindOf( "OSC", "Astronomik Deep-Sky", "/m/a.xisf" ), kindOf( "OSC", "Astronomik Deep-Sky", "/m/a.xisf", unknown ) ], [ true, "broadband" ] );
+      var force = {};
+      force[ Util.oscKindKey( "ALP-T SII/Hβ", "/m/a.xisf" ) ] = "dualband";
+      check( "qa.osc.config: an unsupported filter cannot be overridden", [ kindOf( "OSCNB", "ALP-T SII/Hβ", "/m/a.xisf", force ),
+             kindOf( "OSCNB", "ALP-T SII/Hβ", "/m/a.xisf", {} ) ], [ "unsupported", "unsupported" ] );
+      var blank = {};
+      blank[ Util.oscKindKey( "", "/m/blank1.xisf" ) ] = "dualband";
+      check( "qa.osc.config: a blank-filter choice applies to its own file",
+             [ kindOf( "OSCNB", "", "/m/blank1.xisf" ), kindOf( "OSCNB", "", "/m/blank1.xisf", blank ) ], [ "broadband", "dualband" ] );
+      check( "qa.osc.config: a blank-filter choice never applies to another blank-filter file",
+             kindOf( "OSCNB", "", "/m/blank2.xisf", blank ), "broadband" );
+      check( "qa.osc.config: a blank-filter choice does not touch a named filter",
+             kindOf( "OSCNB", "UVIR", "/m/blank1.xisf", blank ), "broadband" );
+
+      // 5. Choices and the sensor survive save and load; the per-run kind does not.
+      var store = {}, c1 = Config.defaults();
+      c1.oscSensor = { R: "Test Color Sensor R", G: "Test Color Sensor G", B: "Test Color Sensor B" };
+      c1.oscKindChoices = {};
+      c1.oscKindChoices[ Util.oscKindKey( "Duo", "/m/a.xisf" ) ] = "dualband";
+      c1.oscKindChoices[ Util.oscKindKey( "", "/m/blank1.xisf" ) ] = "broadband";
+      c1.oscKinds = { OSC: "broadband", OSCNB: "dualband" };
+      var saved = withConfigStore( store, {}, function() { saveConfig( c1 ); } );
+      check( "qa.osc.config: the fake settings are in place for the save", saved.swapped, true );
+      if ( saved.swapped )
+      {
+         var back = withConfigStore( store, {}, function() { return loadConfig(); } );
+         check( "qa.osc.config: the fake settings are in place for the load", back.swapped, true );
+         var l = back.result || {};
+         check( "qa.osc.config: the sensor survives save and load", l.oscSensor, c1.oscSensor );
+         check( "qa.osc.config: the kind choices survive save and load", l.oscKindChoices, c1.oscKindChoices );
+         check( "qa.osc.config: the per-run kind is not remembered", l.oscKinds, Config.defaults().oscKinds );
+         check( "qa.osc.config: no stored setting is named for the per-run kind",
+                Object.keys( store ).filter( function( k ) { return /oscKinds/i.test( k ); } ), [] );
+      }
+      var fresh = withConfigStore( {}, {}, function() { return loadConfig(); } );
+      check( "qa.osc.config: with nothing stored, the first launch has no choices and the default sensor",
+             [ fresh.result && fresh.result.oscKindChoices, fresh.result && fresh.result.oscSensor ],
+             [ Config.defaults().oscKindChoices, Config.defaults().oscSensor ] );
+   } )();
+
+   } if ( testGroup( "qa.osc.preflight" ) ) {
+   /*
+    * Acceptance: which runs are refused, and with which words. Channel
+    * counts, the colour slots' kinds, and the palettes a colour run can
+    * build.
+    */
+   ( function()
+   {
+      var SII = "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO";
+      var UNSUP = "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported";
+      var CHOOSE = "choose Broadband or Dual-band Hα + OIII for ";
+      function conf( paths, palettes, views )
+      {
+         var c = Config.defaults(), k;
+         for ( k in ( paths || {} ) ) c.paths[k] = paths[k];
+         for ( k in ( views || {} ) ) c.views[k] = views[k];
+         c.palettes = palettes || [];
+         return c;
+      }
+      function sorted( a ) { return a.slice().sort(); }
+      function text( p ) { return p == null ? "" : String( p ); }
+      function infoOf( table ) { return function( slot ) { return table[slot]; }; }
+      function img( filter, path, n )
+      {
+         return { filter: filter, path: path, numberOfChannels: n == null ? 3 : n, width: 120, height: 80 };
+      }
+      // Every refusal the inputs earn, from both the per-input and the per-kind checks.
+      function refusals( c, table )
+      {
+         return Pipeline.inputChannelProblems( c, infoOf( table ) ).concat( Pipeline.oscKindProblems( c, infoOf( table ) ) );
+      }
+      function choiceFor( filter, path, kind ) { var o = {}; o[ Util.oscKindKey( filter, path ) ] = kind; return o; }
+
+      // 9. Palettes.
+      [ "SHO", "HSO" ].forEach( function( pal )
+      {
+         [ { OSC: "/m/a.xisf" }, { OSCNB: "/m/b.xisf" }, { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ].forEach( function( p )
+         {
+            check( "qa.osc.preflight: " + pal + " with " + Object.keys( p ).join( "+" ) + " is refused with the verbatim text",
+                   text( Pipeline.oscPaletteProblem( conf( p, [ pal ] ) ) ).indexOf( SII ) >= 0, true );
+         } );
+      } );
+      check( "qa.osc.preflight: SHO among other palettes is still refused",
+             text( Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [ "HOO", "SHO" ] ) ) ).indexOf( SII ) >= 0, true );
+      check( "qa.osc.preflight: a colour view refuses SHO too",
+             text( Pipeline.oscPaletteProblem( conf( {}, [ "SHO" ], { OSCNB: "viewB" } ) ) ).indexOf( SII ) >= 0, true );
+      check( "qa.osc.preflight: HOO with a colour master is fine", Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [ "HOO" ] ) ), null );
+      check( "qa.osc.preflight: no palette asked is fine", Pipeline.oscPaletteProblem( conf( { OSCNB: "/m/b.xisf" }, [] ) ), null );
+      [ "SHO", "HSO" ].forEach( function( pal )
+      {
+         check( "qa.osc.preflight: a mono run is unaffected by " + pal,
+                Pipeline.oscPaletteProblem( conf( { H: "/m/h.xisf", S: "/m/s.xisf", O: "/m/o.xisf" }, [ pal ] ) ), null );
+      } );
+      // The SHO choice came from saved settings.
+      var store = {}, saveIt = conf( {}, [ "SHO" ] );
+      var saved = withConfigStore( store, {}, function() { saveConfig( saveIt ); } );
+      check( "qa.osc.preflight: the fake settings are in place for the save", saved.swapped, true );
+      if ( saved.swapped )
+      {
+         var back = withConfigStore( store, {}, function() { return loadConfig(); } );
+         var remembered = back.result;
+         check( "qa.osc.preflight: the SHO choice is remembered", remembered && remembered.palettes, [ "SHO" ] );
+         if ( remembered )
+         {
+            remembered.paths.OSCNB = "/m/b.xisf";
+            check( "qa.osc.preflight: a remembered SHO choice is still refused in a colour run",
+                   text( Pipeline.oscPaletteProblem( remembered ) ).indexOf( SII ) >= 0, true );
+            remembered.paths.OSCNB = "";
+            remembered.paths.H = "/m/h.xisf"; remembered.paths.S = "/m/s.xisf"; remembered.paths.O = "/m/o.xisf";
+            check( "qa.osc.preflight: the same remembered choice is fine in a mono run", Pipeline.oscPaletteProblem( remembered ), null );
+         }
+      }
+
+      // 8/9. Palettes that are built, from the logical channels.
+      check( "qa.osc.preflight: OSCNB supplies the narrowband channels H and O",
+             sorted( Pipeline.narrowbandSupplied( conf( { OSCNB: "/m/b.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.preflight: OSC supplies no narrowband channel", Pipeline.narrowbandSupplied( conf( { OSC: "/m/a.xisf" } ) ), [] );
+      check( "qa.osc.preflight: both colour masters supply only H and O as narrowband",
+             sorted( Pipeline.narrowbandSupplied( conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } ) ) ), [ "H", "O" ] );
+      check( "qa.osc.preflight: a mono run's narrowband is unchanged",
+             sorted( Pipeline.narrowbandSupplied( conf( { H: "/m/h.xisf", S: "/m/s.xisf" } ) ) ), [ "H", "S" ] );
+      check( "qa.osc.preflight: OSCNB alone builds HOO", Pipeline.wantedPalettes( conf( { OSCNB: "/m/b.xisf" }, [ "HOO" ] ) ), [ "HOO" ] );
+      check( "qa.osc.preflight: OSCNB cannot build SHO or HSO",
+             Pipeline.wantedPalettes( conf( { OSCNB: "/m/b.xisf" }, [ "HOO", "SHO", "HSO" ] ) ), [ "HOO" ] );
+      check( "qa.osc.preflight: OSC alone builds no palette", Pipeline.wantedPalettes( conf( { OSC: "/m/a.xisf" }, [ "HOO" ] ) ), [] );
+      check( "qa.osc.preflight: a mono run still builds SHO",
+             Pipeline.wantedPalettes( conf( { H: "/m/h.xisf", S: "/m/s.xisf", O: "/m/o.xisf" }, [ "SHO" ] ) ), [ "SHO" ] );
+
+      // 3. Channel counts, for every physical input.
+      var mono = conf( { R: "/m/r.xisf", G: "/m/g.xisf", B: "/m/b.xisf" } );
+      var ok = { R: img( "R", "/m/r.xisf", 1 ), G: img( "G", "/m/g.xisf", 1 ), B: img( "B", "/m/b.xisf", 1 ) };
+      check( "qa.osc.preflight: one-channel masters in mono slots are accepted", refusals( mono, ok ), [] );
+      var three = { R: img( "R", "/m/r.xisf", 3 ), G: ok.G, B: ok.B };
+      var p3 = refusals( mono, three );
+      check( "qa.osc.preflight: a three-channel file never lands in a mono slot (refused, naming it)",
+             [ p3.length > 0, p3.some( function( p ) { return p.indexOf( "/m/r.xisf" ) >= 0; } ) ], [ true, true ] );
+      [ 2, 4, 5 ].forEach( function( n )
+      {
+         var t = { R: img( "R", "/m/r.xisf", n ), G: ok.G, B: ok.B };
+         var p = refusals( mono, t );
+         check( "qa.osc.preflight: a " + n + "-channel file in a mono slot is refused, naming the path and the count",
+                p.some( function( s ) { return s.indexOf( "/m/r.xisf" ) >= 0 && new RegExp( "(^|[^0-9])" + n + "([^0-9]|$)" ).test( s.replace( "/m/r.xisf", "" ) ); } ), true );
+      } );
+      var cslot = conf( { OSC: "/m/a.xisf" } );
+      var one = refusals( cslot, { OSC: img( "", "/m/a.xisf", 1 ) } );
+      check( "qa.osc.preflight: a one-channel file is refused in a colour slot, naming it",
+             [ one.length > 0, one.some( function( p ) { return p.indexOf( "/m/a.xisf" ) >= 0; } ) ], [ true, true ] );
+      var two = refusals( cslot, { OSC: img( "", "/m/a.xisf", 2 ) } );
+      check( "qa.osc.preflight: a two-channel file is refused in a colour slot, naming the path and the count",
+             two.some( function( s ) { return s.indexOf( "/m/a.xisf" ) >= 0 && /(^|[^0-9])2([^0-9]|$)/.test( s.replace( "/m/a.xisf", "" ) ); } ), true );
+      check( "qa.osc.preflight: a three-channel file in a colour slot passes the channel count",
+             refusals( cslot, { OSC: img( "UVIR", "/m/a.xisf", 3 ) } ), [] );
+
+      // 10. Kind against slot; the kind each slot ends up with.
+      var good = conf( { OSC: "/m/a.xisf", OSCNB: "/m/b.xisf" } );
+      var tbl = { OSC: img( "UV/IR Cut", "/m/a.xisf" ), OSCNB: img( "L-eXtreme", "/m/b.xisf" ) };
+      check( "qa.osc.preflight: a broadband OSC and a dual-band OSCNB are accepted", Pipeline.oscKindProblems( good, infoOf( tbl ) ), [] );
+      check( "qa.osc.preflight: the per-run kinds are filled in", good.oscKinds, { OSC: "broadband", OSCNB: "dualband" } );
+      var stale = conf( { OSC: "/m/a.xisf" } );
+      stale.oscKinds = { OSC: "dualband" };
+      Pipeline.oscKindProblems( stale, infoOf( { OSC: img( "UVIR", "/m/a.xisf" ) } ) );
+      check( "qa.osc.preflight: a kind left from an earlier run is replaced", stale.oscKinds.OSC, "broadband" );
+      var wrongNb = Pipeline.oscKindProblems( conf( { OSCNB: "/m/u.xisf" } ), infoOf( { OSCNB: img( "UV/IR Cut", "/m/u.xisf" ) } ) );
+      check( "qa.osc.preflight: a broadband master in the dual-band slot is refused, naming it",
+             [ wrongNb.length > 0, wrongNb.some( function( p ) { return p.indexOf( "/m/u.xisf" ) >= 0; } ) ], [ true, true ] );
+      var wrongBb = Pipeline.oscKindProblems( conf( { OSC: "/m/x.xisf" } ), infoOf( { OSC: img( "L-eXtreme", "/m/x.xisf" ) } ) );
+      check( "qa.osc.preflight: a dual-band master in the broadband slot is refused, naming it",
+             [ wrongBb.length > 0, wrongBb.some( function( p ) { return p.indexOf( "/m/x.xisf" ) >= 0; } ) ], [ true, true ] );
+      var blankBb = conf( { OSC: "/m/n.xisf" } );
+      check( "qa.osc.preflight: an unlabelled master in the broadband slot is accepted as broadband",
+             [ Pipeline.oscKindProblems( blankBb, infoOf( { OSC: img( "", "/m/n.xisf" ) } ) ), blankBb.oscKinds.OSC ], [ [], "broadband" ] );
+
+      // 4. An unconfident or unknown filter with no choice blocks the run, with the verbatim words.
+      [ "Duo", "Quad", "Astronomik Deep-Sky" ].forEach( function( f )
+      {
+         [ "OSC", "OSCNB" ].forEach( function( slot )
+         {
+            var c = conf( slot == "OSC" ? { OSC: "/m/q.xisf" } : { OSCNB: "/m/q.xisf" } ), t = {};
+            t[slot] = img( f, "/m/q.xisf" );
+            var p = Pipeline.oscKindProblems( c, infoOf( t ) );
+            check( "qa.osc.preflight: '" + f + "' in " + slot + " with no choice blocks, asking for the kind of the file",
+                   p.some( function( s ) { var i = s.indexOf( CHOOSE ); return i >= 0 && s.indexOf( "q.xisf", i ) > i; } ), true );
+         } );
+      } );
+      // ... and a choice lifts the block and wins over detection.
+      var duoC = conf( { OSCNB: "/m/q.xisf" } );
+      duoC.oscKindChoices = choiceFor( "Duo", "/m/q.xisf", "dualband" );
+      check( "qa.osc.preflight: a remembered choice lifts the block", [ Pipeline.oscKindProblems( duoC, infoOf( { OSCNB: img( "Duo", "/m/q.xisf" ) } ) ), duoC.oscKinds.OSCNB ],
+             [ [], "dualband" ] );
+      var winC = conf( { OSCNB: "/m/u.xisf" } );
+      winC.oscKindChoices = choiceFor( "UVIR", "/m/u.xisf", "dualband" );
+      check( "qa.osc.preflight: the user's choice beats the detected kind (a UV/IR-named master chosen as dual-band is accepted in the dual-band slot)",
+             [ Pipeline.oscKindProblems( winC, infoOf( { OSCNB: img( "UVIR", "/m/u.xisf" ) } ) ), winC.oscKinds.OSCNB ], [ [], "dualband" ] );
+      var blank1 = conf( { OSCNB: "/m/blank1.xisf" } );
+      blank1.oscKindChoices = choiceFor( "", "/m/blank1.xisf", "dualband" );
+      check( "qa.osc.preflight: a blank-filter choice lets its own file through",
+             Pipeline.oscKindProblems( blank1, infoOf( { OSCNB: img( "", "/m/blank1.xisf" ) } ) ), [] );
+      var blank2 = conf( { OSCNB: "/m/blank2.xisf" } );
+      blank2.oscKindChoices = choiceFor( "", "/m/blank1.xisf", "dualband" );
+      check( "qa.osc.preflight: the same choice does not let another blank-filter file through",
+             Pipeline.oscKindProblems( blank2, infoOf( { OSCNB: img( "", "/m/blank2.xisf" ) } ) ).length > 0, true );
+
+      // An unsupported filter is refused with its words, choice or no choice.
+      var uns = conf( { OSCNB: "/m/s.xisf" } );
+      check( "qa.osc.preflight: the ALP-T SII/Hβ filter is refused with the verbatim text",
+             Pipeline.oscKindProblems( uns, infoOf( { OSCNB: img( "ALP-T SII/Hβ", "/m/s.xisf" ) } ) ).some( function( p ) { return p.indexOf( UNSUP ) >= 0; } ), true );
+      var unsC = conf( { OSCNB: "/m/s.xisf" } );
+      unsC.oscKindChoices = choiceFor( "ALP-T SII/Hβ", "/m/s.xisf", "dualband" );
+      check( "qa.osc.preflight: a remembered choice does not rescue it",
+             Pipeline.oscKindProblems( unsC, infoOf( { OSCNB: img( "ALP-T SII/Hβ", "/m/s.xisf" ) } ) ).some( function( p ) { return p.indexOf( UNSUP ) >= 0; } ), true );
+
+      // Mono runs: nothing from the colour checks.
+      check( "qa.osc.preflight: a mono run has no colour kind problem", Pipeline.oscKindProblems( mono, infoOf( {} ) ), [] );
+   } )();
+
+   } if ( testGroup( "qa.osc.keys" ) ) {
+   /*
+    * Acceptance: every cache name a colour master generates is hexadecimal
+    * (identity strings are never file names); the sibling key follows the
+    * plane and the kind; the group key follows every sibling and the
+    * reference; the clean white-balance key follows the reference and, for
+    * a colour run, the sensor curves.
+    */
+   ( function()
+   {
+      var HEX = /^[0-9a-f]+$/;
+      function hex( s ) { return typeof s == "string" && HEX.test( s ); }
+      function distinct( list ) { return list.filter( function( v, i ) { return list.indexOf( v ) == i; } ).length == list.length; }
+
+      // Identity and sibling keys.
+      var gid = Pipeline.oscGroupIdentity( "fp-abc", "broadband" );
+      check( "qa.osc.keys: the group identity is the fingerprint plus the kind", gid, "fp-abc|osc:broadband" );
+      check( "qa.osc.keys: the identity changes with the kind and the fingerprint",
+             [ Pipeline.oscGroupIdentity( "fp-abc", "dualband" ) != gid, Pipeline.oscGroupIdentity( "fp-xyz", "broadband" ) != gid ], [ true, true ] );
+      var sib = [ 0, 1, 2 ].map( function( p ) { return Pipeline.oscSiblingKey( gid, p ); } );
+      check( "qa.osc.keys: sibling keys are hexadecimal", sib.map( hex ), [ true, true, true ] );
+      check( "qa.osc.keys: a sibling key is the cache hash of the identity and its plane",
+             sib, [ 0, 1, 2 ].map( function( p ) { return Cache.hash( gid + "|plane:" + p ); } ) );
+      check( "qa.osc.keys: sibling keys change with the plane", distinct( sib ), true );
+      var nbGid = Pipeline.oscGroupIdentity( "fp-abc", "dualband" );
+      check( "qa.osc.keys: the sibling key changes with the kind",
+             [ 0, 1 ].map( function( p ) { return Pipeline.oscSiblingKey( nbGid, p ) != sib[p]; } ), [ true, true ] );
+      check( "qa.osc.keys: the sibling key changes with the file",
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fp-xyz", "broadband" ), 1 ) != sib[1], true );
+      check( "qa.osc.keys: the sibling key is stable", Pipeline.oscSiblingKey( gid, 1 ), sib[1] );
+      check( "qa.osc.keys: a view fingerprint with awkward characters still gives a hexadecimal key",
+             hex( Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "view:Name With Spaces/and\\slashes:1", "dualband" ), 0 ) ), true );
+
+      // The validation sidecar.
+      var side = Pipeline.oscValidateName( gid );
+      check( "qa.osc.keys: the validation sidecar is <hex>.osc.json", /^[0-9a-f]+\.osc\.json$/.test( side ), true );
+      check( "qa.osc.keys: the sidecar is named from the identity and \"|validate\"", side, Cache.hash( gid + "|validate" ) + ".osc.json" );
+      check( "qa.osc.keys: the sidecar differs from every sibling key", sib.indexOf( side.replace( ".osc.json", "" ) ), -1 );
+
+      // The group registration key.
+      var P = { ref: "refA", planes: "R,G,B" };
+      var g0 = Pipeline.oscGroupRegisterKey( "registerGroup", sib, P );
+      check( "qa.osc.keys: the group key is hexadecimal", hex( g0 ), true );
+      check( "qa.osc.keys: the group key is stable", Pipeline.oscGroupRegisterKey( "registerGroup", sib.slice(), { planes: "R,G,B", ref: "refA" } ), g0 );
+      [ 0, 1, 2 ].forEach( function( i )
+      {
+         var changed = sib.slice();
+         changed[i] = Cache.hash( "other input " + i );
+         check( "qa.osc.keys: the group key changes with sibling " + i, Pipeline.oscGroupRegisterKey( "registerGroup", changed, P ) != g0, true );
+      } );
+      check( "qa.osc.keys: the group key changes with the reference", Pipeline.oscGroupRegisterKey( "registerGroup", sib, { ref: "refB", planes: "R,G,B" } ) != g0, true );
+      check( "qa.osc.keys: the group key follows the plane order", Pipeline.oscGroupRegisterKey( "registerGroup", [ sib[1], sib[0], sib[2] ], P ) != g0, true );
+      var rs = [ 0, 1, 2 ].map( function( p ) { return Pipeline.oscRegisteredSiblingKey( g0, p ); } );
+      check( "qa.osc.keys: registered sibling keys are hexadecimal and differ by plane", [ rs.map( hex ), distinct( rs ) ], [ [ true, true, true ], true ] );
+      check( "qa.osc.keys: a registered sibling key is the hash of the group key and its plane", rs, [ 0, 1, 2 ].map( function( p ) { return Cache.hash( g0 + "|plane:" + p ); } ) );
+      var g1 = Pipeline.oscGroupRegisterKey( "registerGroup", sib, { ref: "refB", planes: "R,G,B" } );
+      check( "qa.osc.keys: registered sibling keys change with the group key", Pipeline.oscRegisteredSiblingKey( g1, 0 ) != rs[0], true );
+
+      // 12. The clean white-balance key.
+      var common = { x0: 1, y0: 2, x1: 300, y1: 200 };
+      var chans = { R: { cleanKey: "cR" }, G: { cleanKey: "cG" }, B: { cleanKey: "cB" } };
+      var monoCfg = Config.defaults();
+      monoCfg.paths.R = "/m/r.xisf"; monoCfg.paths.G = "/m/g.xisf"; monoCfg.paths.B = "/m/b.xisf";
+      var m0 = Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refA" );
+      check( "qa.osc.keys: the clean white-balance key is hexadecimal", hex( m0 ), true );
+      check( "qa.osc.keys: a mono run's key is stable", Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refA" ), m0 );
+      check( "qa.osc.keys: a mono run's key changes with the reference", Pipeline.cleanWhiteBalanceKey( chans, monoCfg, common, "CAM", "refB" ) != m0, true );
+      check( "qa.osc.keys: a mono run's key still changes with the crop",
+             Pipeline.cleanWhiteBalanceKey( chans, monoCfg, { x0: 1, y0: 2, x1: 290, y1: 200 }, "CAM", "refA" ) != m0, true );
+
+      var colCfg = Config.defaults();
+      colCfg.paths.OSC = "/m/a.xisf";
+      colCfg.oscSensor = { R: "Sensor R", G: "Sensor G", B: "Sensor B" };
+      var c0 = Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refA" );
+      check( "qa.osc.keys: a colour run's key is hexadecimal and stable",
+             [ hex( c0 ), Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refA" ) == c0 ], [ true, true ] );
+      check( "qa.osc.keys: a colour run's key changes with the reference", Pipeline.cleanWhiteBalanceKey( chans, colCfg, common, null, "refB" ) != c0, true );
+      [ "R", "G", "B" ].forEach( function( k )
+      {
+         var other = Config.defaults();
+         other.paths.OSC = "/m/a.xisf";
+         other.oscSensor = { R: "Sensor R", G: "Sensor G", B: "Sensor B" };
+         other.oscSensor[k] = "Another sensor " + k;
+         check( "qa.osc.keys: a colour run's key changes with the sensor's " + k + " curve",
+                Pipeline.cleanWhiteBalanceKey( chans, other, common, null, "refA" ) != c0, true );
+      } );
+   } )();
    } if ( testGroup( "cache" ) ) {
    /*
     * The cache folder's own bookkeeping, on a synthetic folder: entries

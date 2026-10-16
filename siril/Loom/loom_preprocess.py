@@ -526,7 +526,8 @@ def _save_dialog_options(m: SimpleNamespace, out: _Output, request: Any, model: 
     """Run: the options the run uses, its output folder included. Cancel: what the dialog shows."""
     options = dict(request.config, outputDir=request.output_dir) if request is not None else model.to_config()
     try:
-        m.config.save(options, config_dir)
+        # the last write: behind the autosave's lock, and any autosave still running is dropped after it
+        model.save_final(options, lambda final: m.config.save(final, config_dir))
     except OSError as exc:  # a failed save never stops the run
         out.warn(f"Options not saved ({exc})")
 

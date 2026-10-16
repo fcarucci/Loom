@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import threading
 import sys
@@ -1176,6 +1177,10 @@ def test_no_file_access_runs_on_the_tk_thread(stub, script, monkeypatch, blocked
                         or real_validate(reqs))
     monkeypatch.setattr(fly_checks, "check_out_dir", lambda *a, **k: seen.append(("out", threading.current_thread()))
                         or real_out(*a, **k))
+    made = []
+    real_makedirs = os.makedirs
+    monkeypatch.setattr(fly_checks.os, "makedirs", lambda path, *a, **k: made.append((str(path), threading.current_thread()))
+                        or real_makedirs(path, *a, **k))
     dlg, _ = _dialog(script, monkeypatch, blocked_discover, out_dir=str(tmp_path / "new"))
     (tmp_path / "a.tif").write_text("x")
     dlg._vars["starless_path"].set(str(tmp_path / "a.tif"))
@@ -1183,9 +1188,10 @@ def test_no_file_access_runs_on_the_tk_thread(stub, script, monkeypatch, blocked
     assert seen == [] or all(t is not threading.current_thread() for _n, t in seen)      # nothing so far, or elsewhere
     _settle(dlg)
     dlg._ok()
-    assert not (tmp_path / "new").exists()                      # makedirs has not run on this thread
     _settle(dlg)
     assert (tmp_path / "new").is_dir() and dlg.result is not None
+    ours = [t for path, t in made if path == str(tmp_path / "new")]
+    assert ours and all(t is not threading.current_thread() for t in ours)               # makedirs ran, and never on Tk
     assert seen and all(t is not threading.current_thread() for _n, t in seen)
     assert {n for n, _t in seen} == {"validate", "out"}
 

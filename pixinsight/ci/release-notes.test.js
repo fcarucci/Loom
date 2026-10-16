@@ -54,8 +54,8 @@ function run( options )
       [ "the Siril path is explained location-neutrally",
         out.includes( "folder where you run it" ) && out.includes( "/Users/<you>/Loom/siril/Loom" ) &&
         !/~\/dev|~\/Dev/.test( out ) ],
-      [ "OSC cameras are said not to be supported",
-        out.includes( "mono cameras and filters" ) && /One-shot colour \(OSC\) cameras are not\s+supported yet/.test( out ) ],
+      [ "OSC masters are said to be supported",
+        /broadband and Hα \+ OIII\s+dual-band colour masters/.test( out ) && !/not\s+supported yet/.test( out ) ],
       [ "README links point at the tag",
         out.includes( "https://github.com/fcarucci/Loom/blob/v1.2.3/pixinsight/README.md" ) &&
         out.includes( "https://github.com/fcarucci/Loom/blob/v1.2.3/siril/README.md" ) ],

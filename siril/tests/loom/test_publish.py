@@ -445,3 +445,47 @@ def test_tiffs_are_written_in_name_order(tmp_path: Path) -> None:
     publish.export(ops, outputs, {"exportDir": os.fspath(export_dir), "stretch": True}, _builtin_plan(), log)
     written = [text for _lv, text in lines if text.startswith("16-bit TIFF ")]
     assert written == [f"16-bit TIFF {export_dir / 'L.tif'}", f"16-bit TIFF {export_dir / 'RGB.tif'}"]
+
+
+# ---- provenance ---------------------------------------------------------------------------------------------------
+
+
+def test_sources_are_written_as_loomsrc_on_the_named_results_only(tmp_path: Path) -> None:
+    mono = _write_plate(tmp_path / "in", "L", 1, 1)
+    rgb = _write_plate(tmp_path / "in", "RGB", 3, 2)
+    ops = _ops(tmp_path)
+    _lines, log = _log()
+    publish.publish(ops, {"L": mono, "RGB": rgb}, {}, tmp_path / "out", _builtin_plan(), log,
+                    sources={"RGB": "OSC m.xisf planes 0,1,2"})
+    update = [cmd for cmd in ops.transcript if cmd.startswith("update_key")]
+    assert update == ['update_key LOOMOUT "L" "Loom pipeline output"',
+                      'update_key LOOMOUT "RGB" "Loom pipeline output"',
+                      'update_key LOOMSRC "OSC m.xisf planes 0,1,2" "colour master and planes"']
+
+
+def test_a_source_that_cannot_be_quoted_is_a_warning_and_the_result_is_still_saved(tmp_path: Path) -> None:
+    rgb = _write_plate(tmp_path / "in", "RGB", 3, 2)
+    ops = _ops(tmp_path)
+    lines, log = _log()
+    outputs = publish.publish(ops, {"RGB": rgb}, {}, tmp_path / "out", _builtin_plan(), log,
+                              sources={"RGB": 'OSC a"b.xisf planes 0,1,2'})
+    assert os.path.exists(outputs["RGB"])
+    assert any("LOOMSRC" in text and "empty" in text for text in _texts(lines, "warn"))
+    assert [c for c in ops.transcript if "LOOMSRC" in c] == ['update_key LOOMSRC "" "colour master and planes"']
+    assert _verbs(ops)[-1] == "save"
+
+
+def test_tiff_and_psb_exports_carry_no_loomsrc(tmp_path: Path) -> None:
+    rgb = _write_plate(tmp_path / "in", "RGB", 3, 2)
+    planes, header = read_fits(rgb)
+    write_fits(rgb, planes, {**header, "LOOMSRC": "OSC m.xisf planes 0,1,2"}, bitpix=-32)
+    ops = _ops(tmp_path)
+    _lines, log = _log()
+    export_dir = tmp_path / "exp"
+    cfg = {"exportDir": str(export_dir), "stretch": True, "exportPsb": True}
+    publish.export(ops, {"RGB": rgb}, cfg, _builtin_plan(), log)
+    files = sorted(os.listdir(export_dir))
+    assert any(f.endswith(".tif") for f in files)
+    for f in files:
+        assert b"LOOMSRC" not in (export_dir / f).read_bytes()
+    assert not any(f.endswith((".fits", ".fit", ".json", ".txt", ".xml")) for f in files)

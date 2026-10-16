@@ -14,6 +14,26 @@ SPCC state is kept per Siril session (measured on Siril 1.4.4 with siril-cli): a
 ``-monosensor``, ``-rfilter``, ``-gfilter`` and ``-bfilter``, a later ``spcc -narrowband`` in the same session fails
 with "Argument error". The narrowband command succeeds when it also carries all four of those names (a partial set
 fails), so :meth:`SirilOps.spcc_narrowband` takes them as an option: all four or none.
+
+OSC SPCC (measured on Siril 1.4.4 with siril-cli; ``help spcc`` lists ``-oscsensor= [-oscfilter=] [-osclpf=]`` as the
+alternative of the mono group):
+
+* ``spcc "-oscsensor=<S>" "-oscfilter=<F>" "-osclpf=<L>"``. The database holds an OSC sensor as three OSC_SENSOR
+  entries (one per channel, ``name`` "Sony IMX571 Red" ...) of one ``model`` ("Sony IMX571"); Siril takes the *model*
+  (the entry name is an Argument error), so :func:`spcc_names` serves the models for ``oscsensor``. Front filters are
+  OSC_FILTER entries and low-pass filters OSC_LPF entries, both taken by their ``name``. Siril's "no front filter"
+  is the OSC_FILTER "No filter" and its "no low-pass filter" the OSC_LPF "Full spectrum (no filter)".
+* No flag may be left out: a DSLR sensor without ``-osclpf``, or with a name that is not an OSC_LPF entry's name (a
+  model such as "Canon LPF" counts as unknown), kills Siril (SIGSEGV) from the second ``spcc`` of a session on; the
+  first ``spcc`` of a session neither logs nor checks the low-pass filter. :meth:`SirilOps.spcc_osc` therefore always
+  sends all three, with the none names when nothing is chosen, and every name is checked against the database first.
+* Mode switching: a call that carries the full set of its own mode uses exactly that set, OSC after mono and mono
+  after OSC alike (Siril's log line names the mode and the names it used). Nothing of the other mode is inherited: a
+  partial mono set after an OSC call is an Argument error.
+* Narrowband: in a fresh session ``spcc -narrowband`` takes no names. After a broadband call (either mode) it fails
+  with "Argument error" unless it carries a complete set: the OSC trio after an OSC call, the four mono names after a
+  mono call. A partial set fails (partial mono) or, with a DSLR sensor, kills Siril (partial OSC). A complete set of
+  the other mode is accepted too and used as given, so :func:`spcc_narrowband_names` returns the previous mode's set.
 """
 
 from __future__ import annotations
@@ -46,21 +66,32 @@ __all__ = [
     "SirilOpsError",
     "command_text",
     "quote_path",
+    "OSC_NO_FRONT_FILTER",
+    "OSC_NO_LPF",
     "spcc_database_candidates",
     "siril_data_dir",
     "spcc_names",
+    "spcc_narrowband_names",
 ]
 
 #: Profile names Siril knows without a file (``icc_assign`` takes them unquoted).
 BUILTIN_ICC_PROFILES = ("sRGB", "sRGBlinear", "Rec2020", "Rec2020linear", "working")
 
 _SPCC_FOLDER = "siril-spcc-database"
+#: kind -> (database type, channel or None, the field Siril takes as the name). An OSC sensor is three channel entries
+#: of one model and Siril takes the model; every other kind is taken by the entry's name.
 _SPCC_KINDS = {
-    "monosensor": ("MONO_SENSOR", None),
-    "redfilter": ("MONO_FILTER", "RED"),
-    "greenfilter": ("MONO_FILTER", "GREEN"),
-    "bluefilter": ("MONO_FILTER", "BLUE"),
+    "monosensor": ("MONO_SENSOR", None, "name"),
+    "redfilter": ("MONO_FILTER", "RED", "name"),
+    "greenfilter": ("MONO_FILTER", "GREEN", "name"),
+    "bluefilter": ("MONO_FILTER", "BLUE", "name"),
+    "oscsensor": ("OSC_SENSOR", None, "model"),
+    "oscfilter": ("OSC_FILTER", None, "name"),
+    "osclpf": ("OSC_LPF", None, "name"),
 }
+#: Siril's database entries for "no front filter" and "no low-pass filter" (an OSC call always sends both flags).
+OSC_NO_FRONT_FILTER = "No filter"
+OSC_NO_LPF = "Full spectrum (no filter)"
 _CHANNEL_LETTERS = ("R", "G", "B")
 _KEY_RE = re.compile(r"[A-Z0-9_-]{1,8}")
 _PIPELINE_THREAD_MESSAGE = "Siril commands must come from the pipeline thread"
@@ -207,9 +238,53 @@ def _spcc_session_names(sensor: Any, r: Any, g: Any, b: Any) -> Optional[tuple[A
     return sensor, r, g, b
 
 
+def _osc_triple(sensor: Any, front_filter: Any, lpf: Any) -> tuple[Any, Any, Any]:
+    """The OSC names with Siril's none entries for an unchosen front filter or low-pass filter; a sensor is needed."""
+    if not sensor:
+        raise ValueError("spcc needs the sensor name")
+    return sensor, front_filter or OSC_NO_FRONT_FILTER, lpf or OSC_NO_LPF
+
+
+def _spcc_osc_args(sensor: Any, front_filter: Any, lpf: Any) -> list[str]:
+    """The three OSC name arguments, each one quoted token; none of them may be left out (see the module docstring)."""
+    sensor, front_filter, lpf = _osc_triple(sensor, front_filter, lpf)
+    return [_quoted(f"-oscsensor={sensor}"), _quoted(f"-oscfilter={front_filter}"), _quoted(f"-osclpf={lpf}")]
+
+
+def _spcc_osc_checks(sensor: Any, front_filter: Any, lpf: Any) -> list[tuple[str, Any, str]]:
+    """(database kind, name, label) for each OSC name, the none entries filled in: what ``_require_spcc`` looks up."""
+    sensor, front_filter, lpf = _osc_triple(sensor, front_filter, lpf)
+    return [("oscsensor", sensor, "sensor"), ("oscfilter", front_filter, "front filter"),
+            ("osclpf", lpf, "low-pass filter")]
+
+
+def _text_spcc_osc(sensor: Any, front_filter: Any, lpf: Any) -> str:
+    return command_text("spcc", *_spcc_osc_args(sensor, front_filter, lpf))
+
+
+def _spcc_narrowband_osc(osc: Any) -> Optional[tuple[Any, Any, Any]]:
+    """The optional narrowband OSC triple (sensor, front filter, low-pass filter), else None."""
+    if osc is None:
+        return None
+    if isinstance(osc, (str, bytes)) or not isinstance(osc, Sequence) or len(osc) != 3:
+        raise ValueError("narrowband SPCC takes the OSC names as three: sensor, front filter and low-pass filter")
+    return _osc_triple(*osc)
+
+
+def _spcc_narrowband_mode(sensor: Any, r: Any, g: Any, b: Any,
+                          osc: Any) -> tuple[Optional[tuple[Any, ...]], Optional[tuple[Any, ...]]]:
+    """(mono names, OSC triple) for a narrowband call; at most one is not None. Both given raises ValueError."""
+    triple = _spcc_narrowband_osc(osc)
+    if triple is not None and any(v is not None for v in (sensor, r, g, b)):
+        raise ValueError("narrowband SPCC takes either the mono names or the OSC names, not both")
+    return _spcc_session_names(sensor, r, g, b), triple
+
+
 def _text_spcc_narrowband(rwl: Any, rbw: Any, gwl: Any, gbw: Any, bwl: Any, bbw: Any,
-                          names: Optional[Sequence[Any]] = None) -> str:
+                          names: Optional[Sequence[Any]] = None, osc: Optional[Sequence[Any]] = None) -> str:
     head: list[str] = [] if names is None else _spcc_name_args(*names)
+    if osc is not None:
+        head = _spcc_osc_args(*osc)
     return command_text("spcc", *head, "-narrowband", f"-rwl={float(rwl):.2f}", f"-rbw={float(rbw):.2f}",
                         f"-gwl={float(gwl):.2f}", f"-gbw={float(gbw):.2f}", f"-bwl={float(bwl):.2f}",
                         f"-bbw={float(bbw):.2f}")
@@ -227,8 +302,13 @@ def _text_setref(name: Any, index1: Any) -> str:
     return command_text("setref", _plain_name(name), index)
 
 
-def _text_register(name: Any) -> str:
-    return command_text("register", _plain_name(name), "-transf=homography", "-interp=lanczos4")
+def _text_register(name: Any, layer: Optional[Any] = None) -> str:
+    parts: list[Any] = ["register", _plain_name(name), "-transf=homography", "-interp=lanczos4"]
+    if layer is not None:
+        if isinstance(layer, bool) or not isinstance(layer, (int, np.integer)) or not 0 <= int(layer) <= 2:
+            raise ValueError(f"layer must be 0, 1 or 2, got {layer!r}")
+        parts.append(f"-layer={int(layer)}")
+    return command_text(*parts)
 
 
 def _text_crop(x: Any, y: Any, w: Any, h: Any) -> str:
@@ -413,14 +493,25 @@ class SirilOps:
         """Spectrophotometric colour calibration with a camera and three filter names from Siril's database."""
         raise NotImplementedError
 
+    def spcc_osc(self, sensor: str, front_filter: Optional[str], lpf: Optional[str]) -> None:
+        """SPCC for a one-shot colour sensor: ``spcc "-oscsensor=<S>" "-oscfilter=<F>" "-osclpf=<L>"``.
+
+        All three flags are always sent (a missing one is inherited from the session or kills Siril, see the module
+        docstring). ``front_filter`` and ``lpf`` are database names; None sends Siril's none entries
+        (``OSC_NO_FRONT_FILTER``, ``OSC_NO_LPF``). ``sensor`` is the sensor model (``spcc_names("oscsensor", ...)``).
+        """
+        raise NotImplementedError
+
     def spcc_narrowband(self, rwl: float, rbw: float, gwl: float, gbw: float, bwl: float, bbw: float,
                         sensor: Optional[str] = None, r: Optional[str] = None, g: Optional[str] = None,
-                        b: Optional[str] = None) -> None:
+                        b: Optional[str] = None, osc: Optional[Sequence[Optional[str]]] = None) -> None:
         """Narrowband calibration: wavelength and bandwidth (nm) of each of the three channels.
 
         ``sensor``, ``r``, ``g`` and ``b`` (the database names used by :meth:`spcc_broadband`) are optional and go
-        together: all four or none, else ValueError before anything is sent. Pass them when a broadband ``spcc`` ran
-        earlier in the same Siril session (see the module docstring).
+        together: all four or none, else ValueError before anything is sent. ``osc`` is the optional triple
+        ``(sensor, front_filter, lpf)`` of :meth:`spcc_osc` and excludes the mono names (both given: ValueError).
+        Pass the set of the session's previous broadband mode (see the module docstring and
+        :func:`spcc_narrowband_names`); in a fresh session pass none.
         """
         raise NotImplementedError
 
@@ -436,8 +527,12 @@ class SirilOps:
         """Make the 1-based frame ``index1`` of sequence ``name`` the registration reference."""
         raise NotImplementedError
 
-    def register(self, name: str) -> None:
-        """Register sequence ``name`` (homography, lanczos4; outputs ``r_<name>_NNNNN.fit``)."""
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        """Register sequence ``name`` (homography, lanczos4; outputs ``r_<name>_NNNNN.fit``).
+
+        ``layer`` (0, 1 or 2) names the channel of a colour sequence the stars are found on (``-layer=``); None adds
+        no argument, which is the command text of a mono sequence.
+        """
         raise NotImplementedError
 
     def crop(self, x: int, y: int, w: int, h: int) -> None:
@@ -621,16 +716,27 @@ class SirilCommandOps(SirilOps):
         self._send(text)
 
     @_pipeline_only
+    def spcc_osc(self, sensor: str, front_filter: Optional[str], lpf: Optional[str]) -> None:
+        text = _text_spcc_osc(sensor, front_filter, lpf)
+        self._require_spcc(text, _spcc_osc_checks(sensor, front_filter, lpf))
+        self._send(text)
+
+    @_pipeline_only
     def spcc_narrowband(self, rwl: float, rbw: float, gwl: float, gbw: float, bwl: float, bbw: float,
                         sensor: Optional[str] = None, r: Optional[str] = None, g: Optional[str] = None,
-                        b: Optional[str] = None) -> None:
-        """Narrowband SPCC. After a broadband SPCC in the same Siril session, the command without the names fails
-        with "Argument error" (measured on Siril 1.4.4); with all four names (sensor, R, G, B filters) it succeeds in
-        either order. The names are checked against the database like :meth:`spcc_broadband` checks them.
+                        b: Optional[str] = None, osc: Optional[Sequence[Optional[str]]] = None) -> None:
+        """Narrowband SPCC. After a broadband SPCC in the same Siril session, the command without names fails
+        with "Argument error" (measured on Siril 1.4.4); with the complete set of the previous mode (the four mono
+        names, or the OSC trio as ``osc``) it succeeds. The names are checked against the database like
+        :meth:`spcc_broadband` and :meth:`spcc_osc` check them.
         """
-        names = _spcc_session_names(sensor, r, g, b)
-        text = _text_spcc_narrowband(rwl, rbw, gwl, gbw, bwl, bbw, names)
-        self._require_spcc(text, [] if names is None else _spcc_checks(sensor, r, g, b))
+        names, triple = _spcc_narrowband_mode(sensor, r, g, b, osc)
+        text = _text_spcc_narrowband(rwl, rbw, gwl, gbw, bwl, bbw, names, triple)
+        if triple is not None:
+            checks = _spcc_osc_checks(*triple)
+        else:
+            checks = [] if names is None else _spcc_checks(sensor, r, g, b)
+        self._require_spcc(text, checks)
         self._send(text)
 
     @_pipeline_only
@@ -642,8 +748,8 @@ class SirilCommandOps(SirilOps):
         self._send(_text_setref(name, index1))
 
     @_pipeline_only
-    def register(self, name: str) -> None:
-        self._send(_text_register(name))
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        self._send(_text_register(name, layer))
 
     @_pipeline_only
     def crop(self, x: int, y: int, w: int, h: int) -> None:
@@ -779,14 +885,15 @@ class RecordingOps(SirilOps):
     def _resolve(self, path: Any) -> str:
         return os.path.normpath(os.path.join(self.workdir, os.fspath(path)))
 
-    def _do(self, name: str, args: tuple, texts: list[str], default: Callable[[str], Any]) -> Any:
+    def _do(self, name: str, args: tuple, texts: list[str], default: Callable[[str], Any],
+            handler_args: Optional[tuple] = None) -> Any:
         self.calls.append((name, tuple(args), {}))
         self.transcript.extend(texts)
         text = texts[-1] if texts else name
         if name in self._fail:
             raise SirilOpsError(text, self._fail[name])
         if name in self.handlers:
-            return self.handlers[name](self, *args)
+            return self.handlers[name](self, *(args if handler_args is None else handler_args))
         return default(text)
 
     def _image(self, text: str) -> tuple[list[np.ndarray], dict[str, Any]]:
@@ -842,12 +949,16 @@ class RecordingOps(SirilOps):
     def spcc_broadband(self, sensor: str, r: str, g: str, b: str) -> None:
         return self._do("spcc_broadband", (sensor, r, g, b), [_text_spcc_broadband(sensor, r, g, b)], lambda text: None)
 
+    def spcc_osc(self, sensor: str, front_filter: Optional[str], lpf: Optional[str]) -> None:
+        return self._do("spcc_osc", (sensor, front_filter, lpf), [_text_spcc_osc(sensor, front_filter, lpf)],
+                        lambda text: None)
+
     def spcc_narrowband(self, rwl: float, rbw: float, gwl: float, gbw: float, bwl: float, bbw: float,
                         sensor: Optional[str] = None, r: Optional[str] = None, g: Optional[str] = None,
-                        b: Optional[str] = None) -> None:
-        names = _spcc_session_names(sensor, r, g, b)
-        text = _text_spcc_narrowband(rwl, rbw, gwl, gbw, bwl, bbw, names)
-        return self._do("spcc_narrowband", (rwl, rbw, gwl, gbw, bwl, bbw, sensor, r, g, b), [text],
+                        b: Optional[str] = None, osc: Optional[Sequence[Optional[str]]] = None) -> None:
+        names, triple = _spcc_narrowband_mode(sensor, r, g, b, osc)
+        text = _text_spcc_narrowband(rwl, rbw, gwl, gbw, bwl, bbw, names, triple)
+        return self._do("spcc_narrowband", (rwl, rbw, gwl, gbw, bwl, bbw, sensor, r, g, b, osc), [text],
                         lambda text: None)
 
     def link_sequence(self, name: str) -> None:
@@ -856,8 +967,11 @@ class RecordingOps(SirilOps):
     def setref(self, name: str, index1: int) -> None:
         return self._do("setref", (name, index1), [_text_setref(name, index1)], lambda text: None)
 
-    def register(self, name: str) -> None:
-        return self._do("register", (name,), [_text_register(name)], lambda text: None)
+    def register(self, name: str, layer: Optional[int] = None) -> None:
+        # a register handler is called with the layer only when one is given: handlers written for the plain
+        # command keep working; the recorded call always holds both parameters
+        return self._do("register", (name, layer), [_text_register(name, layer)], lambda text: None,
+                        handler_args=(name,) if layer is None else (name, layer))
 
     def crop(self, x: int, y: int, w: int, h: int) -> None:
         text_crop = _text_crop(x, y, w, h)
@@ -985,6 +1099,30 @@ class RecordingOps(SirilOps):
 # ---------------------------------------------------------------------------------------------------------------
 
 
+def spcc_narrowband_names(previous_mode: Optional[str], mono_names: Optional[Sequence[Any]],
+                          osc_names: Optional[Sequence[Any]]) -> dict[str, Any]:
+    """The keyword arguments of :meth:`SirilOps.spcc_narrowband` that carry the session's SPCC state.
+
+    ``previous_mode`` is the mode of the last broadband ``spcc`` of the Siril session: None (none yet), "mono" or
+    "osc". Measured on Siril 1.4.4 (module docstring): a fresh session takes no names (``{}``), after a mono call the
+    four mono names are needed (``sensor``, ``r``, ``g``, ``b`` from ``mono_names``), after an OSC call the OSC trio
+    (``osc`` from ``osc_names``). ValueError when the mode needs a set that is missing or incomplete.
+    """
+    if previous_mode is None:
+        return {}
+    if previous_mode == "mono":
+        if mono_names is None or isinstance(mono_names, (str, bytes)) or len(mono_names) != 4 \
+                or any(not name for name in mono_names):
+            raise ValueError("narrowband SPCC after a mono SPCC needs the sensor and the red, green and blue filter")
+        sensor, r, g, b = mono_names
+        return {"sensor": sensor, "r": r, "g": g, "b": b}
+    if previous_mode == "osc":
+        if osc_names is None or isinstance(osc_names, (str, bytes)) or len(osc_names) != 3 or not osc_names[0]:
+            raise ValueError("narrowband SPCC after an OSC SPCC needs the sensor, front filter and low-pass filter")
+        return {"osc": tuple(osc_names)}
+    raise ValueError(f"unknown SPCC mode {previous_mode!r}; expected None, 'mono' or 'osc'")
+
+
 def spcc_names(kind: str, database_dir: Any) -> list[str]:
     """Names in Siril's SPCC database folder for one kind, sorted and unique.
 
@@ -992,11 +1130,13 @@ def spcc_names(kind: str, database_dir: Any) -> list[str]:
     schema file and some OSC filter files at the top). Each file that is a JSON array of objects with ``name``,
     ``type`` and optionally ``channel`` contributes its entries; every other file (not JSON, or another shape) is
     skipped. ``kind`` "monosensor" selects type MONO_SENSOR; "redfilter", "greenfilter" and "bluefilter" select type
-    MONO_FILTER with channel RED, GREEN and BLUE. A missing folder gives an empty list.
+    MONO_FILTER with channel RED, GREEN and BLUE; "oscsensor" selects OSC_SENSOR and lists each sensor once by its
+    ``model`` (Siril refuses the per-channel entry name); "oscfilter" selects OSC_FILTER and "osclpf" OSC_LPF. A
+    missing folder gives an empty list.
     """
     if kind not in _SPCC_KINDS:
         raise ValueError(f"unknown SPCC kind {kind!r}; expected one of {sorted(_SPCC_KINDS)}")
-    wanted_type, wanted_channel = _SPCC_KINDS[kind]
+    wanted_type, wanted_channel, field = _SPCC_KINDS[kind]
     folder = Path(database_dir)
     if not folder.is_dir():
         return []
@@ -1015,7 +1155,7 @@ def spcc_names(kind: str, database_dir: Any) -> list[str]:
                 continue
             if wanted_channel is not None and entry.get("channel") != wanted_channel:
                 continue
-            name = entry.get("name")
+            name = entry.get(field)
             if isinstance(name, str) and name:
                 names.add(name)
     return sorted(names)

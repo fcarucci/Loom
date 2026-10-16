@@ -48,6 +48,22 @@ def siril(stub):
     return stub.SirilInterface()
 
 
+#: OSC entries as Siril's files lay them out: a sensor is three channel entries of one model (the name carries the
+#: channel), the front filters are OSC_FILTER and the low-pass filters OSC_LPF.
+OSC_DB = (
+    '[{"name": "Canon EOS 20D R", "model": "Canon EOS 20D", "type": "OSC_SENSOR", "channel": "RED"},'
+    ' {"name": "Canon EOS 20D G", "model": "Canon EOS 20D", "type": "OSC_SENSOR", "channel": "GREEN"},'
+    ' {"name": "Canon EOS 20D B", "model": "Canon EOS 20D", "type": "OSC_SENSOR", "channel": "BLUE"},'
+    ' {"name": "Sony IMX571 Red", "model": "Sony IMX571", "type": "OSC_SENSOR", "channel": "RED"},'
+    ' {"name": "Sony IMX571 Green", "model": "Sony IMX571", "type": "OSC_SENSOR", "channel": "GREEN"},'
+    ' {"name": "Sony IMX571 Blue", "model": "Sony IMX571", "type": "OSC_SENSOR", "channel": "BLUE"},'
+    ' {"name": "No filter", "model": "None", "type": "OSC_FILTER"},'
+    ' {"name": "Optolong L-Pro", "model": "Optolong L-Pro Light Pollution", "type": "OSC_FILTER"},'
+    ' {"name": "Full spectrum (no filter)", "model": "Generic / None", "type": "OSC_LPF"},'
+    ' {"name": "Canon EOS 350D blocking filter", "model": "Canon LPF", "type": "OSC_LPF"}]'
+)
+
+
 def write_spcc_db(folder: Path) -> Path:
     """A small SPCC database: one camera and a red, green and blue filter (as Siril's JSON files are laid out)."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -57,6 +73,7 @@ def write_spcc_db(folder: Path) -> Path:
         '[{"name": "Baader R", "type": "MONO_FILTER", "channel": "RED"},'
         ' {"name": "Baader G", "type": "MONO_FILTER", "channel": "GREEN"},'
         ' {"name": "Baader B", "type": "MONO_FILTER", "channel": "BLUE"}]', encoding="utf-8")
+    (folder / "osc.json").write_text(OSC_DB, encoding="utf-8")
     return folder
 
 
@@ -678,3 +695,252 @@ def test_spcc_candidates_put_siril_own_data_folder_first():
     got = spcc_database_candidates("darwin", {}, "/Users/u", base)
     assert got[0] == base + "/siril-spcc-database"
     assert "/Users/u/Library/Application Support/siril-spcc-database" in got[1:]
+
+
+# ---- SPCC with an OSC sensor (measured on Siril 1.4.4: see the module docstring of siril_ops) -----------------
+
+OSC_TEXT = ('spcc "-oscsensor=Sony IMX571" "-oscfilter=Optolong L-Pro" '
+            '"-osclpf=Canon EOS 350D blocking filter"')
+OSC_NONE_TEXT = 'spcc "-oscsensor=Sony IMX571" "-oscfilter=No filter" "-osclpf=Full spectrum (no filter)"'
+NARROW_ARGS = "-narrowband -rwl=656.28 -rbw=7.00 -gwl=500.70 -gbw=25.00 -bwl=495.90 -bbw=20.00"
+
+
+def test_spcc_osc_text_has_all_three_flags_each_one_quoted_token():
+    assert siril_ops._text_spcc_osc("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter") == OSC_TEXT
+
+
+@pytest.mark.parametrize("front, lpf", [(None, None), ("", "")])
+def test_spcc_osc_text_sends_siril_s_none_entries_when_nothing_is_chosen(front, lpf):
+    assert siril_ops._text_spcc_osc("Sony IMX571", front, lpf) == OSC_NONE_TEXT
+    assert siril_ops.OSC_NO_FRONT_FILTER == "No filter"
+    assert siril_ops.OSC_NO_LPF == "Full spectrum (no filter)"
+
+
+def test_spcc_osc_text_needs_a_sensor_and_refuses_a_double_quote():
+    with pytest.raises(ValueError, match="sensor"):
+        siril_ops._text_spcc_osc("", None, None)
+    with pytest.raises(ValueError, match="sensor"):
+        siril_ops._text_spcc_osc(None, None, None)
+    for args in (('Sony "X"', None, None), ("Sony IMX571", 'a"b', None), ("Sony IMX571", None, 'a"b')):
+        with pytest.raises(ValueError):
+            siril_ops._text_spcc_osc(*args)
+
+
+def test_spcc_osc_checks_name_the_database_kind_of_each_name():
+    assert siril_ops._spcc_osc_checks("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter") == [
+        ("oscsensor", "Sony IMX571", "sensor"),
+        ("oscfilter", "Optolong L-Pro", "front filter"),
+        ("osclpf", "Canon EOS 350D blocking filter", "low-pass filter"),
+    ]
+    assert siril_ops._spcc_osc_checks("Sony IMX571", None, None)[1:] == [
+        ("oscfilter", "No filter", "front filter"), ("osclpf", "Full spectrum (no filter)", "low-pass filter")]
+
+
+def test_spcc_names_serve_the_osc_kinds(spcc_db):
+    # a sensor is listed once by its model (Siril refuses the channel entry's name); filters by name
+    assert spcc_names("oscsensor", spcc_db) == ["Canon EOS 20D", "Sony IMX571"]
+    assert spcc_names("oscfilter", spcc_db) == ["No filter", "Optolong L-Pro"]
+    assert spcc_names("osclpf", spcc_db) == ["Canon EOS 350D blocking filter", "Full spectrum (no filter)"]
+    assert spcc_names("monosensor", spcc_db) == ["Sony IMX571"]  # the mono kinds are unchanged
+
+
+def test_osc_kinds_do_not_mix_with_the_mono_kinds(spcc_db):
+    assert "Sony IMX571 Red" not in spcc_names("oscsensor", spcc_db)
+    assert spcc_names("redfilter", spcc_db) == ["Baader R"]
+
+
+def test_spcc_osc_is_sent_after_the_names_are_checked(logged, stub):
+    ops, lines = logged
+    ops.spcc_osc("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter")
+    ops.spcc_osc("Sony IMX571", None, None)
+    assert [c[0] for c in stub.STATE.commands] == [OSC_TEXT, OSC_NONE_TEXT]
+    assert lines[0].startswith("siril: " + OSC_TEXT)
+
+
+@pytest.mark.parametrize("args, label", [
+    (("Sony IMX571 Red", "No filter", "Full spectrum (no filter)"), "sensor 'Sony IMX571 Red'"),
+    (("Nonexistent", "No filter", "Full spectrum (no filter)"), "sensor 'Nonexistent'"),
+    (("Sony IMX571", "Nonexistent", "Full spectrum (no filter)"), "front filter 'Nonexistent'"),
+    (("Sony IMX571", "No filter", "Canon LPF"), "low-pass filter 'Canon LPF'"),
+    (("Sony IMX571", "Full spectrum (no filter)", None), "front filter 'Full spectrum (no filter)'"),
+    (("Sony IMX571", None, "No filter"), "low-pass filter 'No filter'"),
+])
+def test_spcc_osc_refuses_unknown_names_before_sending(logged, stub, args, label):
+    ops, _ = logged
+    with pytest.raises(SirilOpsError) as info:
+        ops.spcc_osc(*args)
+    assert info.value.command.startswith('spcc "-oscsensor=')
+    assert label in str(info.value.original)
+    assert stub.STATE.commands == []
+
+
+def test_spcc_osc_refuses_a_missing_database_before_sending(siril, stub, tmp_path):
+    ops = SirilCommandOps(siril, spcc_database=tmp_path / "absent")
+    with pytest.raises(SirilOpsError) as info:
+        ops.spcc_osc("Sony IMX571", None, None)
+    assert "not installed" in str(info.value.original)
+    assert stub.STATE.commands == []
+
+
+def test_spcc_osc_refuses_a_database_without_osc_entries(siril, stub, tmp_path):
+    folder = tmp_path / "mono-only"
+    folder.mkdir()
+    (folder / "sensors.json").write_text('[{"name": "Sony IMX571", "type": "MONO_SENSOR"}]', encoding="utf-8")
+    ops = SirilCommandOps(siril, spcc_database=folder)
+    with pytest.raises(SirilOpsError) as info:
+        ops.spcc_osc("Sony IMX571", None, None)
+    assert "sensor 'Sony IMX571'" in str(info.value.original) and "0 oscsensor names known" in str(info.value.original)
+    assert stub.STATE.commands == []
+
+
+def test_the_recording_ops_record_spcc_osc_like_spcc_broadband():
+    rec = RecordingOps(".")
+    rec.spcc_osc("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter")
+    rec.spcc_osc("Sony IMX571", None, None)
+    assert rec.transcript == [OSC_TEXT, OSC_NONE_TEXT]
+    assert rec.calls == [
+        ("spcc_osc", ("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter"), {}),
+        ("spcc_osc", ("Sony IMX571", None, None), {}),
+    ]
+
+
+def test_the_recording_ops_refuse_what_the_command_ops_refuse():
+    rec = RecordingOps(".")
+    with pytest.raises(ValueError, match="sensor"):
+        rec.spcc_osc("", None, None)
+    assert rec.transcript == [] and rec.calls == []
+
+
+def test_spcc_osc_is_abstract_on_the_interface():
+    with pytest.raises(NotImplementedError):
+        siril_ops.SirilOps.spcc_osc(object(), "Sony IMX571", None, None)
+
+
+def test_narrowband_with_the_osc_trio_puts_it_before_narrowband(logged, stub):
+    ops, _ = logged
+    rec = RecordingOps(".")
+    osc = ("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter")
+    ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=osc)
+    rec.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=osc)
+    assert stub.STATE.commands[-1][0] == OSC_TEXT + " " + NARROW_ARGS
+    assert rec.transcript == [OSC_TEXT + " " + NARROW_ARGS]
+
+
+def test_narrowband_with_the_osc_trio_sends_the_none_names_for_what_is_not_chosen(logged, stub):
+    ops, _ = logged
+    ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=("Sony IMX571", None, None))
+    assert stub.STATE.commands[-1][0] == OSC_NONE_TEXT + " " + NARROW_ARGS
+
+
+@pytest.mark.parametrize("mono", [
+    {"sensor": "Sony IMX571", "r": "Baader R", "g": "Baader G", "b": "Baader B"},
+    {"sensor": "Sony IMX571"},
+    {"r": "Baader R"},
+])
+def test_narrowband_refuses_the_osc_trio_together_with_mono_names_before_sending(logged, stub, mono):
+    ops, _ = logged
+    rec = RecordingOps(".")
+    osc = ("Sony IMX571", None, None)
+    with pytest.raises(ValueError, match="either"):
+        ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=osc, **mono)
+    with pytest.raises(ValueError, match="either"):
+        rec.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=osc, **mono)
+    assert stub.STATE.commands == [] and rec.transcript == [] and rec.calls == []
+
+
+def test_narrowband_osc_names_are_checked_against_the_database(logged, stub):
+    ops, _ = logged
+    with pytest.raises(SirilOpsError) as info:
+        ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=("Sony IMX571", "Nonexistent", None))
+    assert "front filter 'Nonexistent'" in str(info.value.original)
+    assert " -narrowband " in info.value.command
+    assert stub.STATE.commands == []
+
+
+@pytest.mark.parametrize("osc", [("Sony IMX571",), ("Sony IMX571", None), ("Sony IMX571", None, None, None), "abc"])
+def test_narrowband_osc_must_be_a_triple(logged, stub, osc):
+    ops, _ = logged
+    with pytest.raises(ValueError, match="three"):
+        ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, osc=osc)
+    assert stub.STATE.commands == []
+
+
+def test_spcc_narrowband_names_for_each_previous_mode():
+    mono = ("Sony IMX571", "Baader R", "Baader G", "Baader B")
+    osc = ("Sony IMX571", "Optolong L-Pro", "Canon EOS 350D blocking filter")
+    assert siril_ops.spcc_narrowband_names(None, mono, osc) == {}
+    assert siril_ops.spcc_narrowband_names(None, None, None) == {}
+    assert siril_ops.spcc_narrowband_names("mono", mono, osc) == {
+        "sensor": "Sony IMX571", "r": "Baader R", "g": "Baader G", "b": "Baader B"}
+    assert siril_ops.spcc_narrowband_names("osc", mono, osc) == {"osc": osc}
+    assert siril_ops.spcc_narrowband_names("osc", None, osc) == {"osc": osc}
+    assert siril_ops.spcc_narrowband_names("mono", mono, None)["r"] == "Baader R"
+
+
+@pytest.mark.parametrize("mode, mono, osc", [
+    ("mono", None, ("Sony IMX571", None, None)),
+    ("mono", ("Sony IMX571", "Baader R", "Baader G"), None),
+    ("osc", ("Sony IMX571", "Baader R", "Baader G", "Baader B"), None),
+    ("osc", None, ("Sony IMX571", None)),
+    ("both", None, None),
+])
+def test_spcc_narrowband_names_refuses_what_the_session_cannot_take(mode, mono, osc):
+    with pytest.raises(ValueError):
+        siril_ops.spcc_narrowband_names(mode, mono, osc)
+
+
+@pytest.mark.parametrize("mode, mono, osc", [
+    ("mono", ("Sony IMX571", "Baader R", "Baader G", "Baader B"), None),
+    ("osc", None, ("Sony IMX571", "Optolong L-Pro", None)),
+    (None, None, None),
+])
+def test_spcc_narrowband_names_feed_spcc_narrowband_directly(logged, stub, mode, mono, osc):
+    ops, _ = logged
+    ops.spcc_narrowband(656.28, 7, 500.7, 25, 495.9, 20, **siril_ops.spcc_narrowband_names(mode, mono, osc))
+    text = stub.STATE.commands[-1][0]
+    assert text.endswith(NARROW_ARGS)
+    assert ("-monosensor=" in text) is (mode == "mono")
+    assert ("-oscsensor=" in text) is (mode == "osc")
+
+
+# ---- register with a layer ----------------------------------------------------------------------------------
+
+
+def test_register_text_without_a_layer_is_unchanged():
+    assert siril_ops._text_register("lights") == "register lights -transf=homography -interp=lanczos4"
+    assert siril_ops._text_register("lights", None) == "register lights -transf=homography -interp=lanczos4"
+
+
+@pytest.mark.parametrize("layer", [0, 1, 2])
+def test_register_text_with_a_layer_appends_it(layer):
+    assert siril_ops._text_register("lights", layer) == \
+        f"register lights -transf=homography -interp=lanczos4 -layer={layer}"
+
+
+@pytest.mark.parametrize("layer", [-1, 3, 1.5, "1", True])
+def test_register_text_refuses_a_layer_that_is_not_0_1_or_2(layer):
+    with pytest.raises(ValueError):
+        siril_ops._text_register("lights", layer)
+
+
+def test_register_with_a_layer_sends_it_and_the_fake_records_it(logged, stub, tmp_path):
+    real, _ = logged
+    rec = RecordingOps(tmp_path)
+    for ops in (real, rec):
+        ops.register("lights")
+        ops.register("lights", layer=1)
+        ops.register("lights", 0)
+    expected = ["register lights -transf=homography -interp=lanczos4",
+                "register lights -transf=homography -interp=lanczos4 -layer=1",
+                "register lights -transf=homography -interp=lanczos4 -layer=0"]
+    assert [c[0] for c in stub.STATE.commands] == expected
+    assert rec.transcript == expected
+    assert [c[1][-1] for c in rec.calls] == [None, 1, 0]
+
+
+def test_the_fake_calls_a_register_handler_with_the_layer_only_when_one_is_given(tmp_path):
+    seen = []
+    rec = RecordingOps(tmp_path, handlers={"register": lambda ops, *args: seen.append(args)})
+    rec.register("lights")
+    rec.register("lights", layer=1)
+    assert seen == [("lights",), ("lights", 1)]

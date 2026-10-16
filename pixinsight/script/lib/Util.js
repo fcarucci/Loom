@@ -324,6 +324,20 @@ Util.powerShellFile = function( script, args )
 };
 
 /*
+ * The LOOMSRC keywords of a window, as an array: empty for a window without
+ * one (every mono result) or one that cannot be read. Exports copy only these
+ * onto the throwaway clone they save, so a mono file gains no keyword.
+ */
+Util.loomSourceKeywords = function( window )
+{
+   try
+   {
+      return ( window.keywords || [] ).filter( function( k ) { return k.name == "LOOMSRC"; } );
+   }
+   catch ( e ) { return []; }
+};
+
+/*
  * PJSR's File API speaks forward slashes on every platform, including
  * Windows: File.homeDirectory and CoreApplication.baseDirPath come back
  * as C:/Users/... and C:/Program Files/PixInsight, and File.exists
@@ -334,6 +348,12 @@ Util.powerShellFile = function( script, args )
  * program -- see Update.js, where the Windows helper is PowerShell
  * precisely because cmd.exe reads a leading "/" as a switch.
  */
+
+// A FITS string value: quoted, each apostrophe in the text doubled.
+Util.fitsString = function( text )
+{
+   return "'" + String( text ).replace( /'/g, "''" ) + "'";
+};
 
 /*
  * Returns `base` if free, otherwise the first free `base_<n>` starting at n=1.
@@ -625,9 +645,10 @@ Util.channelSupplied = function( paths, views, k )
 Util.channelGroupProblems = function( paths, views )
 {
    var problems = [];
+   var supplied = Util.suppliedChannels( { paths: paths, views: views || {} } );
    var rgbPresent = [], rgbMissing = [];
    for ( var r = 0; r < Util.RGB_GROUP.length; ++r )
-      ( Util.channelSupplied( paths, views, Util.RGB_GROUP[r] ) ? rgbPresent : rgbMissing )
+      ( supplied.indexOf( Util.RGB_GROUP[r] ) >= 0 ? rgbPresent : rgbMissing )
          .push( Util.RGB_GROUP[r] );
 
    if ( rgbPresent.length > 0 && rgbMissing.length > 0 )
@@ -635,7 +656,7 @@ Util.channelGroupProblems = function( paths, views )
                      ". Supply all three or none." );
 
    var nbCount = Util.NARROWBAND.filter( function( k )
-                    { return Util.channelSupplied( paths, views, k ); } ).length;
+                    { return supplied.indexOf( k ) >= 0; } ).length;
    if ( rgbPresent.length == 0 && nbCount == 0 )
       problems.push( "Nothing to do: supply R, G and B, or at least one of H, S, O" );
    return problems;
@@ -646,9 +667,10 @@ Util.duplicateFileProblems = function( paths )
 {
    var problems = [];
    var seen = {};
-   for ( var j = 0; j < Util.CHANNELS.length; ++j )
+   var keys = Util.CHANNELS.concat( Util.COLOUR_SLOTS );
+   for ( var j = 0; j < keys.length; ++j )
    {
-      var k = Util.CHANNELS[j];
+      var k = keys[j];
       var p = paths[k];
       if ( !p || p.length == 0 )
          continue;
@@ -658,6 +680,121 @@ Util.duplicateFileProblems = function( paths )
          seen[p] = k;
    }
    return problems;
+};
+
+// The two colour-master slots and the logical channels each one stands for.
+Util.COLOUR_SLOTS = [ "OSC", "OSCNB" ];
+Util.COLOUR_MEMBERS = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+
+// Colour slots with a path or an open view, in COLOUR_SLOTS order.
+// paths and views may be missing, or lack the colour keys.
+Util.colourSupplied = function( config )
+{
+   var paths = ( config && config.paths ) || {};
+   var views = ( config && config.views ) || {};
+   return Util.COLOUR_SLOTS.filter( function( k ) { return Util.channelSupplied( paths, views, k ); } );
+};
+
+// Mono channels (keys of Util.CHANNELS) with a path or an open view.
+Util.monoSupplied = function( config )
+{
+   var paths = ( config && config.paths ) || {};
+   var views = ( config && config.views ) || {};
+   return Util.CHANNELS.filter( function( k ) { return Util.channelSupplied( paths, views, k ); } );
+};
+
+// Logical channels supplied: mono ones plus the members of each colour
+// slot, in Util.CHANNELS order, each once.
+Util.suppliedChannels = function( config )
+{
+   var have = Util.monoSupplied( config );
+   Util.colourSupplied( config ).forEach( function( slot )
+   {
+      Util.COLOUR_MEMBERS[slot].forEach( function( k )
+      {
+         if ( have.indexOf( k ) < 0 )
+            have.push( k );
+      } );
+   } );
+   return Util.CHANNELS.filter( function( k ) { return have.indexOf( k ) >= 0; } );
+};
+
+// Colour masters and mono masters are two different kinds of run. The
+// message names the inputs: a file's name, or an open view's id.
+Util.colourMixProblem = function( config )
+{
+   var colour = Util.colourSupplied( config ), mono = Util.monoSupplied( config );
+   if ( colour.length == 0 || mono.length == 0 )
+      return null;
+   var paths = config.paths || {}, views = config.views || {};
+   function named( k )
+   {
+      var p = paths[k] != undefined && paths[k].length > 0 ? String( paths[k] ).replace( /^.*[\\\/]/, "" )
+                                                          : String( views[k] );
+      return k + "=" + p;
+   }
+   return "colour masters cannot be combined with mono masters; " +
+          "choose either the colour masters or the mono masters" +
+          " (colour: " + colour.map( named ).join( ", " ) + "; mono: " + mono.map( named ).join( ", " ) + ")";
+};
+
+/*
+ * The key a remembered kind choice is stored under: the model name that
+ * detection uses (a brand and a size are dropped), so one choice covers every
+ * spelling of a model. A blank filter is keyed by the path exactly as given
+ * (an open view's id): never resolved or case-folded.
+ */
+Util.oscKindKey = function( filterValue, path )
+{
+   var f = Util.normaliseFilter( Util.oscModelName( filterValue ) );
+   return f.length > 0 ? "filter:" + f : "path:" + path;
+};
+
+/*
+ * The kind a colour master is treated as. An unsupported filter is never
+ * overridable; then a remembered choice; then a confident detection;
+ * otherwise no kind (source "none") and the caller must ask.
+ */
+Util.effectiveOscKind = function( slot, filterValue, path, choices )
+{
+   var info = Util.oscFilterInfo( filterValue );
+   var name = info ? info.name : ( filterValue == null ? "" : String( filterValue ) );
+   if ( info && info.kind == "unsupported" )
+      return { kind: info.kind, name: info.name, confident: info.confident,
+               haNm: info.haNm, oiiiNm: info.oiiiNm, source: "detected" };
+
+   var key = Util.oscKindKey( filterValue, path );
+   var choice = choices && Object.prototype.hasOwnProperty.call( choices, key ) ? choices[key] : null;
+   if ( choice == "broadband" || choice == "dualband" )
+      return { kind: choice, name: name, confident: true,
+               haNm: info ? info.haNm : null, oiiiNm: info ? info.oiiiNm : null, source: "choice" };
+
+   if ( info && info.confident )
+      return { kind: info.kind, name: info.name, confident: info.confident,
+               haNm: info.haNm, oiiiNm: info.oiiiNm, source: "detected" };
+
+   return { kind: null, name: name, confident: false, haNm: null, oiiiNm: null, source: "none" };
+};
+
+/*
+ * Which dialog controls a colour master changes. Any colour master greys the
+ * mono boxes and the palettes that need SII; the sensor colour filters
+ * replace the R, G and B filter boxes only while OSC (not OSCNB) is
+ * supplied. Reasons are empty while the control is enabled.
+ */
+Util.oscControlState = function( config )
+{
+   var colour = Util.colourSupplied( config );
+   var any = colour.length > 0;
+   var osc = colour.indexOf( "OSC" ) >= 0;
+   return {
+      monoEnabled: !any,
+      monoReason: any ? "colour and mono masters cannot be combined" : "",
+      shoHsoEnabled: !any,
+      shoHsoReason: any ? "needs SII, which a colour camera cannot separate from Ha" : "",
+      sensorRowVisible: osc,
+      rgbFilterRowsVisible: !osc
+   };
 };
 
 /*
@@ -704,6 +841,79 @@ Util.FILTER_NAMES = [ { token: "halpha", exact: "ha", channel: "H" },
                       { token: "red",    exact: null, channel: "R" },
                       { token: "green",  exact: null, channel: "G" },
                       { token: "blue",   exact: null, channel: "B" } ];
+
+Util.normaliseFilter = function( value )
+{
+   if ( value == null )
+      return "";
+   // Greek line names are spelt out before punctuation is removed, so
+   // "Hα/OIII" and "Ha/OIII" (and "Hβ" and "Hb") meet in the table.
+   return String( value ).toLowerCase()
+      .replace( /α/g, "a" ).replace( /β/g, "b" )
+      .replace( /[^a-z0-9]/g, "" );
+};
+
+/*
+ * Colour-camera filters by full normalised model name. Passbands are the
+ * manufacturer's Ha and OIII bandwidths in nm. An entry whose line pair is
+ * not Ha/OIII is "unsupported": its H and O planes would not hold Ha and OIII.
+ */
+Util.OSC_FILTERS = [
+   { match: "lextreme",     name: "L-eXtreme",       kind: "dualband",    haNm: 7,   oiiiNm: 7 },
+   { match: "lultimate",    name: "L-Ultimate",      kind: "dualband",    haNm: 3,   oiiiNm: 3 },
+   { match: "lenhance",     name: "L-eNhance",       kind: "dualband",    haNm: 10,  oiiiNm: 24 },
+   { match: "lenhanced",    name: "L-eNhance",       kind: "dualband",    haNm: 10,  oiiiNm: 24 },
+   { match: "alpthaoiii",   name: "ALP-T Ha/OIII",   kind: "dualband",    haNm: 5,   oiiiNm: 5 },
+   { match: "alpthaoiii5nm",name: "ALP-T Ha/OIII",   kind: "dualband",    haNm: 5,   oiiiNm: 5 },
+   { match: "alptsiihb",    name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
+   { match: "alptsiihbeta", name: "ALP-T SII/Hb",    kind: "unsupported", haNm: null, oiiiNm: null },
+   // NBZ-II: the published retailer bandwidths are 10 nm Ha and 8 nm OIII.
+   { match: "nbzii",         name: "NBZ-II",          kind: "dualband",    haNm: 10,  oiiiNm: 8 },
+   // NBZ and NBZex: the published retailer bandwidths are 12 nm Ha and 12 nm OIII.
+   { match: "nbz",            name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 },
+   { match: "nbzex",          name: "NBZ",             kind: "dualband",    haNm: 12,  oiiiNm: 12 }
+];
+Util.OSC_BROADBAND = [ "uvir", "uvircut", "ircut", "uvirblock", "lpro", "cls", "clsccd", "lrgb" ];
+Util.OSC_FAMILIES  = [ "duo", "dual", "dualband", "tri", "triad", "quad", "alpt" ];
+
+/*
+ * The model part of a filter name: a leading brand and a trailing size are
+ * not part of the model, so "Optolong L-eXtreme 2\"" names L-eXtreme. A brand
+ * on its own is kept, so that it is not read as a broadband filter.
+ */
+Util.oscModelName = function( value )
+{
+   if ( value == null )
+      return "";
+   return String( value ).trim()
+      .replace( /\s*\d+(\.\d+)?\s*("|''|mm|in)$/i, "" )
+      .replace( /^(optolong|antlia|idas|astronomik|zwo|baader|svbony|stc|radian)[\s_-]+(?=\S)/i, "" );
+};
+
+Util.oscFilterInfo = function( filterValue )
+{
+   var f = Util.normaliseFilter( Util.oscModelName( filterValue ) );
+   for ( var i = 0; i < Util.OSC_FILTERS.length; ++i )
+      if ( Util.OSC_FILTERS[i].match == f )
+      {
+         var m = Util.OSC_FILTERS[i];
+         return { kind: m.kind, name: m.name, confident: m.kind != "unsupported",
+                  haNm: m.haNm, oiiiNm: m.oiiiNm };
+      }
+   // Any ALP-T name that mentions SII or Hb is the unsupported line pair,
+   // whatever else it says (a size, a spacing, a 5nm suffix).
+   if ( /^alpt.*(sii|hb)/.test( f ) )
+      return { kind: "unsupported", name: String( filterValue ).trim(), confident: false,
+               haNm: null, oiiiNm: null };
+   if ( f.length == 0 || Util.OSC_BROADBAND.indexOf( f ) >= 0 )
+      return { kind: "broadband", name: f.length == 0 ? "" : String( filterValue ).trim(),
+               confident: true, haNm: null, oiiiNm: null };
+   for ( var j = 0; j < Util.OSC_FAMILIES.length; ++j )
+      if ( f.indexOf( Util.OSC_FAMILIES[j] ) == 0 )
+         return { kind: "dualband", name: String( filterValue ).trim(), confident: false,
+                  haNm: null, oiiiNm: null };
+   return null;
+};
 
 /*
  * The selection list is remembered between runs. Entries serialise as
@@ -1276,6 +1486,13 @@ Util.readImageProperty = function( f, id )
    catch ( e ) { return null; }
 };
 
+Util.channelCountProblem = function( path, n )
+{
+   if ( n == 1 || n == 3 )
+      return null;
+   return path + " has " + n + " channels; Loom takes mono (1) or colour (3) masters";
+};
+
 /*
  * The header fields of an open file: geometry and keywords, plus PixInsight's
  * integration metadata, read from the same open file with no pixel data. Both
@@ -1286,7 +1503,8 @@ Util.headerInfo = function( F, f, d )
    var info = {
       keywords: F.canStoreKeywords ? f.keywords : [],
       width: d[0].width,
-      height: d[0].height
+      height: d[0].height,
+      numberOfChannels: ( d && d[0] && d[0].numberOfChannels > 0 ) ? d[0].numberOfChannels : 1
    };
    /*
     * Only XISF implements the property reader. FITS reports that it can
@@ -1367,12 +1585,13 @@ Util.readImageInfo = function( path )
                          " -- falling back to a FULL read of the image" );
       var w = ImageWindow.open( path );
       if ( w.length == 0 )
-         info = { keywords: [], width: 0, height: 0 };
+         info = { keywords: [], width: 0, height: 0, numberOfChannels: 1 };
       else
       {
          info = { keywords: w[0].keywords,
                   width: w[0].mainView.image.width,
-                  height: w[0].mainView.image.height };
+                  height: w[0].mainView.image.height,
+                  numberOfChannels: w[0].mainView.image.numberOfChannels };
          w[0].forceClose();
       }
    }
@@ -1622,6 +1841,24 @@ Util.parseMasterName = function( name )
    };
 };
 
+/*
+ * A WBPP colour master name: FILTER-<token> runs to the next underscore,
+ * hyphens included, and _color / _RGB marks the colour case. The header
+ * stays authoritative; this only orders the work.
+ */
+Util.parseColourMasterName = function( name )
+{
+   var n = String( name || "" );
+   var m = /FILTER-([^_.]*)/i.exec( n );
+   var dm = /drizzle_(\d+)x/i.exec( n );
+   return {
+      filter: m ? m[1] : "",
+      colour: /_(color|colour|RGB)(_|\.|$)/i.test( n ),
+      drizzle: dm ? ( dm[1] + "x" ) : "",
+      autocrop: Util.isAutocropName( n )
+   };
+};
+
 Util.selectMasters = function( candidates )
 {
    var best = {};
@@ -1641,6 +1878,75 @@ Util.selectMasters = function( candidates )
       }
    }
    return best;
+};
+
+/*
+ * Where a masters-list entry goes, from its filter and header channel
+ * count. One channel is a mono master (its channel key); three channels
+ * are a colour master whose slot follows its kind: broadband is OSC,
+ * dual-band is OSCNB, and an undetected or unsupported kind has no slot
+ * yet (channel null). Any other count has none either. `path` is the
+ * file's path or the view's id, as the list holds it.
+ */
+Util.entryChannel = function( filterValue, numberOfChannels, path, choices )
+{
+   if ( numberOfChannels == 1 )
+      return { channel: Util.channelFromFilter( filterValue ), colour: false, kindSource: null };
+   if ( numberOfChannels != 3 )
+      return { channel: null, colour: false, kindSource: null };
+   var k = Util.effectiveOscKind( null, filterValue, path, choices );
+   var channel = k.kind == "broadband" ? "OSC" : k.kind == "dualband" ? "OSCNB" : null;
+   return { channel: channel, colour: true, kindSource: k.source };
+};
+
+/*
+ * The best colour master per slot: the variant rank first (drizzle, then
+ * autocrop), the newest within a variant, as selectMasters does. A candidate
+ * with no slot (kind undetected or unsupported) goes to `unresolved`, in
+ * input order; a candidate that is not a colour image is not a colour pick.
+ */
+Util.selectColourMasters = function( candidates, choices )
+{
+   var best = { OSC: null, OSCNB: null, unresolved: [] };
+   for ( var i = 0; i < candidates.length; ++i )
+   {
+      var c = candidates[i];
+      if ( !c )
+         continue;
+      var n = c.numberOfChannels == null ? 3 : c.numberOfChannels;
+      var r = Util.entryChannel( c.filter, n, c.path, choices );
+      if ( r.channel == null )
+      {
+         best.unresolved.push( c );
+         continue;
+      }
+      if ( !r.colour )
+         continue;
+      var rank = Util.masterVariantRank( c.drizzle, c.autocrop );
+      var cur = best[r.channel];
+      if ( cur == null || rank > cur.rank ||
+           ( rank == cur.rank && ( c.mtime || 0 ) > ( cur.mtime || 0 ) ) )
+      {
+         c.rank = rank;
+         best[r.channel] = c;
+      }
+   }
+   return best;
+};
+
+/*
+ * A name and a header that disagree about colour. The header wins; this is
+ * the line that says so, or null when they agree.
+ */
+Util.colourCandidateCorrection = function( c )
+{
+   if ( !c )
+      return null;
+   if ( c.colour && c.numberOfChannels == 1 )
+      return c.path + ": the name says colour but the image has 1 channel; it is used as a mono master";
+   if ( !c.colour && c.numberOfChannels == 3 )
+      return c.path + ": the name says mono but the image has 3 channels; it is used as a colour master";
+   return null;
 };
 
 Util.sigmaToReach = function( target, current )

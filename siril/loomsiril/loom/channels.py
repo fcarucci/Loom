@@ -72,14 +72,20 @@ def channel_supplied(paths: Mapping[str, Any], views: Mapping[str, Any], k: str)
 
 
 def channel_group_problems(paths: Mapping[str, Any], views: Mapping[str, Any]) -> list[str]:
-    """The RGB group is all or nothing; any narrowband subset is fine; there must be something (Util.js:623-643)."""
+    """The RGB group is all or nothing; any narrowband subset is fine; there must be something (Util.js:623-643).
+
+    Logical channels count: a colour master supplies R, G, B (OSC) or H, O (OSCNB).
+    """
+    from loomsiril.loom import osc
+
     problems: list[str] = []
-    rgb_present = [c for c in RGB_GROUP if channel_supplied(paths, views, c)]
-    rgb_missing = [c for c in RGB_GROUP if not channel_supplied(paths, views, c)]
+    supplied = osc.supplied_channels({"paths": paths, "views": views})
+    rgb_present = [c for c in RGB_GROUP if c in supplied]
+    rgb_missing = [c for c in RGB_GROUP if c not in supplied]
     if rgb_present and rgb_missing:
         problems.append("Incomplete RGB set: missing " + ", ".join(rgb_missing) +
                         ". Supply all three or none.")
-    nb_count = sum(1 for k in NARROWBAND if channel_supplied(paths, views, k))
+    nb_count = sum(1 for k in NARROWBAND if k in supplied)
     if not rgb_present and nb_count == 0:
         problems.append("Nothing to do: supply R, G and B, or at least one of H, S, O")
     return problems
@@ -88,23 +94,25 @@ def channel_group_problems(paths: Mapping[str, Any], views: Mapping[str, Any]) -
 def _path_key(p: str) -> str:
     """The identity of a path for the duplicate check.
 
-    POSIX-style paths compare exactly, as Loom does. A Windows-style path (a backslash, or a drive letter) is
-    compared with separators unified to "/" and case folded, because Windows file names are case-insensitive.
+    Paths compare exactly as configured, as Loom does: never case-folded or resolved. A Windows-style path (a
+    backslash, or a drive letter) only has its separators unified to "/".
     """
     if "\\" in p or re.match(r"^[A-Za-z]:", p):
-        return p.replace("\\", "/").lower()
+        return p.replace("\\", "/")
     return p
 
 
 def duplicate_file_problems(paths: Mapping[str, Any]) -> list[str]:
-    """The same file named for two channels, reported once per repeat (Util.js:646-661).
+    """The same file named for two channels or colour slots, reported once per repeat (Util.js:646-661).
 
     Paths are compared through ``_path_key``, so C:\\a\\x.xisf and C:/a/x.xisf name the same file. The message
     prints the path as the second channel gave it, as Loom does.
     """
+    from loomsiril.loom import osc
+
     problems: list[str] = []
     seen: dict[str, str] = {}
-    for k in CHANNELS:
+    for k in CHANNELS + osc.COLOUR_SLOTS:
         p = paths.get(k)
         if not _has_path(p):
             continue
@@ -552,10 +560,11 @@ def project_name_for(config: Optional[Mapping[str, Any]]) -> str:
 
 
 def narrowband_supplied(config: Mapping[str, Any]) -> list[str]:
-    """The narrowband channels the run supplies, as files or open views."""
-    paths = config.get("paths") or {}
-    views = config.get("views") or {}
-    return [k for k in NARROWBAND if channel_supplied(paths, views, k)]
+    """The narrowband channels the run supplies, as files, open views or the members of a colour master."""
+    from loomsiril.loom import osc
+
+    supplied = osc.supplied_channels(config)
+    return [k for k in NARROWBAND if k in supplied]
 
 
 def wanted_palettes(config: Mapping[str, Any]) -> list[str]:
@@ -589,8 +598,11 @@ def inherit_instrument(chans: Mapping[str, dict[str, Any]]) -> list[str]:
     """Give each channel with no INSTRUME the camera the other channels name, when they agree (Pipeline.js:1780-1798).
 
     Mutates the channel records in place (``instrume`` and ``instrumeInherited``) and returns the log messages.
+    A colour master's channels (records with a ``group``) neither give nor take a camera: nothing changes.
     """
     keys = list(chans.keys())
+    if any(chans[k].get("group") for k in keys):
+        return []
     common = common_instrument([chans[k].get("instrume") for k in keys])
     logs: list[str] = []
     if common is not None:
@@ -609,6 +621,7 @@ def inherit_instrument(chans: Mapping[str, dict[str, Any]]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _FITS_BLOCK = 2880
+_MAX_HDUS = 64  # extensions looked at for a tile-compressed image before giving up
 
 
 def _fits_value_text(v: Any) -> str:
@@ -624,36 +637,93 @@ def _fits_value_text(v: Any) -> str:
     return str(v)
 
 
-def _read_fits_header(path: str) -> dict[str, Any]:
-    """The primary header of a FITS file, read block by block up to END. No pixels are read."""
+def _read_hdu_header(fh: Any, path: str) -> dict[str, Any]:
+    """One FITS header read block by block up to its END card, leaving ``fh`` at the start of the HDU's data."""
     data = b""
+    while True:
+        block = fh.read(_FITS_BLOCK)
+        if len(block) < _FITS_BLOCK:
+            raise ValueError(f"FITS header has no END card: {path}")
+        data += block
+        if any(block[c:c + 8].rstrip() == b"END" for c in range(0, _FITS_BLOCK, 80)):
+            return io_fits._parse_header(data)[0]
+
+
+def _int_of(header: Mapping[str, Any], key: str) -> Optional[int]:
+    v = header.get(key)
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _data_size(header: Mapping[str, Any]) -> int:
+    """The bytes of an HDU's data part, padding included (FITS standard 4.4.1.1 and 7.3)."""
+    def non_negative(key: str, default: int) -> int:
+        v = _int_of(header, key)
+        return default if v is None else max(0, v)  # a corrupt negative size must never move the file position back
+
+    naxis = min(non_negative("NAXIS", 0), 999)
+    if naxis == 0:
+        return 0
+    count = 1
+    for i in range(1, naxis + 1):
+        count *= non_negative(f"NAXIS{i}", 0)
+    bits = abs(_int_of(header, "BITPIX") or 8)
+    size = bits // 8 * non_negative("GCOUNT", 1) * (count + non_negative("PCOUNT", 0))
+    return size + (-size % _FITS_BLOCK)
+
+
+def _fits_keywords(header: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [{"name": k, "value": _fits_value_text(v)} for k, v in header.items()]
+
+
+def _compressed_image_header(fh: Any, path: str, primary: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The header of the first tile-compressed image extension (a BINTABLE with ZIMAGE = T) after the primary HDU.
+
+    The data of every HDU passed over is skipped by its size, never read. None when there is no such extension.
+    """
+    try:
+        fh.seek(_data_size(primary), 1)
+        for _ in range(_MAX_HDUS):
+            ext = _read_hdu_header(fh, path)
+            if ext.get("XTENSION") == "BINTABLE" and ext.get("ZIMAGE") is True:
+                return ext
+            fh.seek(_data_size(ext), 1)
+    except (ValueError, OSError):  # a corrupt or truncated file: no compressed image to report
+        return None
+    return None
+
+
+def _read_fits_header(path: str) -> dict[str, Any]:
+    """The header of a FITS file, read block by block up to END. No pixels are read.
+
+    A plain image gives the primary header. A tile-compressed one (``.fz``) has an empty primary and its image in the
+    first compressed BINTABLE: that header gives width, height and channels from ZNAXIS1-3, and its keywords come
+    after the primary's, so they win.
+    """
     with open(path, "rb") as fh:
-        while True:
-            block = fh.read(_FITS_BLOCK)
-            if not block:
-                raise ValueError(f"FITS header has no END card: {path}")
-            data += block
-            try:
-                header, _ = io_fits._parse_header(data)
-                break
-            except ValueError:
-                if len(block) < _FITS_BLOCK:
-                    raise
-    keywords = [{"name": k, "value": _fits_value_text(v)} for k, v in header.items()]
-
-    def _int(key: str) -> Optional[int]:
-        v = header.get(key)
-        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-
+        header = _read_hdu_header(fh, path)
+        keywords = _fits_keywords(header)
+        width, height = _int_of(header, "NAXIS1"), _int_of(header, "NAXIS2")
+        naxis, naxis3 = _int_of(header, "NAXIS") or 0, _int_of(header, "NAXIS3")
+        channels = naxis3 if naxis >= 3 and naxis3 is not None else 1
+        ext = _compressed_image_header(fh, path, header) if naxis == 0 else None
+    if ext is not None:
+        merged = {k["name"]: k for k in keywords}
+        for k in _fits_keywords(ext):
+            merged[k["name"]] = k
+        keywords = list(merged.values())
+        width, height = _int_of(ext, "ZNAXIS1"), _int_of(ext, "ZNAXIS2")
+        znaxis, znaxis3 = _int_of(ext, "ZNAXIS") or 0, _int_of(ext, "ZNAXIS3")
+        channels = znaxis3 if znaxis >= 3 and znaxis3 is not None else 1
     return {"format": "fits", "keywords": keywords, "history": None, "signature": None,
-            "width": _int("NAXIS1"), "height": _int("NAXIS2"), "notes": []}
+            "width": width, "height": height, "channels": channels, "notes": []}
 
 
 def read_header(path: str) -> dict[str, Any]:
     """The header fields a master needs, read without decoding pixels.
 
-    Returns ``{"format", "keywords": [{"name", "value"}], "history", "signature", "width", "height"}``. ``history``
-    and ``signature`` are the XISF properties ``PixInsight:ProcessingHistory`` and
+    Returns ``{"format", "keywords": [{"name", "value"}], "history", "signature", "width", "height", "channels"}``.
+    ``channels`` is NAXIS3 of a FITS image (1 below three axes), ZNAXIS3 of a tile-compressed one, and the third part
+    of an XISF geometry. ``history`` and ``signature`` are the XISF properties ``PixInsight:ProcessingHistory`` and
     ``PCL:Signature:Integration``; FITS has neither. Raises ValueError for anything that is neither XISF nor FITS.
     """
     with open(path, "rb") as fh:
@@ -668,6 +738,7 @@ def read_header(path: str) -> dict[str, Any]:
             "signature": hdr.properties.get("PCL:Signature:Integration"),
             "width": geometry[0] if geometry else None,
             "height": geometry[1] if geometry else None,
+            "channels": geometry[2] if geometry else 1,
             "notes": list(hdr.notes),
         }
     if sig.startswith(b"SIMPLE"):
@@ -676,11 +747,35 @@ def read_header(path: str) -> dict[str, Any]:
 
 
 def _is_master_file_name(name: str) -> bool:
-    return re.search(r"\.(xisf|fits?|fit)$", name, re.IGNORECASE) is not None
+    return re.search(r"\.(xisf|fits?|fit|fz)$", name, re.IGNORECASE) is not None
 
 
 def _is_calibration_name(name: str) -> bool:
     return re.match(r"master(Flat|Dark|Bias)", name, re.IGNORECASE) is not None
+
+
+def _channel_count(info: Mapping[str, Any]) -> int:
+    """The channel count of a header read; a header that does not say is one channel."""
+    n = info.get("channels")
+    return 1 if n is None else n
+
+
+def _colour_entry(rec: Mapping[str, Any], info: Mapping[str, Any], slot: Optional[str], filter_value: Optional[str],
+                  kws: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "path": rec["path"],
+        "name": rec["name"],
+        "filter": filter_value,
+        "instrume": keyword_value(kws, "INSTRUME"),
+        "channel": slot,
+        "colour": True,
+        "numberOfChannels": 3,
+        "width": info.get("width"),
+        "height": info.get("height"),
+        "drizzle": master_drizzle_label(info),
+        "autocrop": rec.get("autocrop", False),
+        "mtime": rec["mtime"],
+    }
 
 
 def scan_masters(
@@ -689,18 +784,27 @@ def scan_masters(
     stat: Optional[Callable[[str], float]] = None,
     list_dir: Optional[Callable[[str], Sequence[str]]] = None,
     is_dir: Optional[Callable[[str], bool]] = None,
+    choices: Optional[Mapping[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Pick the best master per channel from a WBPP master folder (UI.js:1940-2110, without the quality measurement).
+    """Pick the best master per channel, and per colour slot, from a WBPP master folder (UI.js scanMasterFolder).
 
-    Phase 1 ranks candidates by their file names alone; calibration masters are skipped by name. Phase 2 reads the
-    header of each winner: its FILTER keyword decides the channel, and it must be a light (IMAGETYP). Files whose
-    names carry no filter are opened only when no candidate has a filter in its name (UI.js:1995-1997).
+    Phase 1 ranks candidates by their file names alone; calibration masters are skipped by name. A name that carries
+    a colour mark (``_color``, ``_colour``, ``_RGB``) is a colour candidate, collected apart from the mono winners;
+    its header decides. Files whose names carry no filter are opened only when some mono slot or colour slot has no
+    named winner, and fill only those slots. Phase 2 reads the header of each winner and of every colour candidate:
+    the channel count (1 or 3) decides mono or colour, FILTER the channel or the colour slot (through ``choices``,
+    the remembered kinds), and a master must be a light (IMAGETYP).
 
-    Returns None when ``folder`` is not a directory. Otherwise a dict with ``confirmed`` (channel -> entry),
-    ``corrected`` (name-versus-header disagreements), ``skipped`` (winners that were not lights) and ``total``.
-    Directories are skipped, even when their names end in .fits. The default ``read_header``, ``stat``, ``list_dir``
-    and ``is_dir`` use the disk; tests inject their own.
+    Returns None when ``folder`` is not a directory. Otherwise a dict with ``confirmed`` (mono channel -> entry),
+    ``colour`` (``{"OSC": entry or None, "OSCNB": entry or None}``), ``unresolved`` (colour entries whose kind is
+    still to be chosen), ``corrected`` (name-versus-header disagreements), ``skipped`` (the count of winners that
+    were not lights plus the files that could not be read), ``unreadable`` (one line with the reason for each file
+    that could not be read or decoded) and ``total``. A file whose header cannot be read, or whose name cannot be
+    decoded, is reported and skipped, never raised. Directories are skipped, even when their names end in .fits.
+    The default ``read_header``, ``stat``, ``list_dir`` and ``is_dir`` use the disk; tests inject their own.
     """
+    from loomsiril.loom import osc
+
     reader = read_header or _read_header_or_none
     mtime_of = stat or _mtime
     listing = list_dir or os.listdir
@@ -708,55 +812,124 @@ def scan_masters(
     if not directory(folder):
         return None
 
+    unreadable: list[str] = []
     scan_total = 0
     named: list[dict[str, Any]] = []
+    colour_named: list[dict[str, Any]] = []
     unnamed: list[dict[str, Any]] = []
     for name in sorted(listing(folder)):
-        if name.startswith(".") or not _is_master_file_name(name):
-            continue
-        path = os.path.join(folder, name)
-        if directory(path):
-            continue
-        scan_total += 1
-        if _is_calibration_name(name):
-            continue
-        rec: dict[str, Any] = {"path": path, "name": name, "mtime": mtime_of(path)}
-        parsed = parse_master_name(name)
-        if parsed is not None and parsed["channel"] is not None:
-            rec.update(channel=parsed["channel"], drizzle=parsed["drizzle"], autocrop=parsed["autocrop"])
-            named.append(rec)
-        else:
-            unnamed.append(rec)
+        try:
+            if name.startswith(".") or not _is_master_file_name(name):
+                continue
+            path = os.path.join(folder, name)
+            if directory(path):
+                continue
+            scan_total += 1
+            if _is_calibration_name(name):
+                continue
+            rec: dict[str, Any] = {"path": path, "name": name, "mtime": mtime_of(path)}
+            colour_name = osc.parse_colour_master_name(name)
+            if colour_name["colour"]:
+                rec.update(filter=colour_name["filter"], colour=True, drizzle=colour_name["drizzle"],
+                           autocrop=colour_name["autocrop"], numberOfChannels=3)
+                colour_named.append(rec)
+                continue
+            parsed = parse_master_name(name)
+            if parsed is not None and parsed["channel"] is not None:
+                rec.update(channel=parsed["channel"], drizzle=parsed["drizzle"], autocrop=parsed["autocrop"],
+                           colour=False)
+                named.append(rec)
+            else:
+                unnamed.append(rec)
+        except (UnicodeError, ValueError, OSError) as exc:
+            unreadable.append(repr(name) + ": name could not be read (" + str(exc) + ")")
 
-    picks = select_masters(named)
-    if not picks and unnamed:
+    kinds = choices or {}
+
+    def plan() -> tuple[dict[str, dict[str, Any]], dict[str, Any], bool]:
+        mono = select_masters(named)
+        cp = osc.select_colour_masters(colour_named, kinds)
+        missing = any(k not in mono for k in CHANNELS) or cp["OSC"] is None or cp["OSCNB"] is None
+        return mono, cp, missing and len(unnamed) > 0
+
+    mono_picks, colour_plan, read_unnamed = plan()
+    if read_unnamed:
         for rec in unnamed:
             info = reader(rec["path"])
             if info is None:
+                unreadable.append(rec["path"] + ": header could not be read")
                 continue
-            channel = channel_from_filter(keyword_value(info.get("keywords") or [], "FILTER"))
-            if channel is None:
+            n = _channel_count(info)
+            bad = osc.channel_count_problem(rec["path"], n)
+            if bad is not None:
+                unreadable.append(bad)
                 continue
-            rec.update(channel=channel, drizzle=master_drizzle_label(info), autocrop=is_autocrop_name(rec["name"]))
-            named.append(rec)
-        picks = select_masters(named)
+            kws = info.get("keywords") or []
+            filter_value = keyword_value(kws, "FILTER")
+            rec.update(drizzle=master_drizzle_label(info), autocrop=is_autocrop_name(rec["name"]))
+            if n == 3:
+                slot = osc.entry_channel(filter_value, n, rec["path"], kinds)["channel"]
+                if slot is not None and colour_plan[slot] is not None:
+                    continue  # that slot already has a named winner
+                rec.update(filter="" if filter_value is None else filter_value, colour=True, numberOfChannels=3)
+                colour_named.append(rec)
+            else:
+                channel = channel_from_filter(filter_value)
+                if channel is None or channel in mono_picks:
+                    continue
+                rec.update(channel=channel, colour=False, numberOfChannels=1)
+                named.append(rec)
+        mono_picks, colour_plan, _ = plan()
+
+    picks: list[dict[str, Any]] = list(mono_picks.values())
+    picks += [colour_plan[slot] for slot in osc.COLOUR_SLOTS if colour_plan[slot] is not None]
+    picks += colour_plan["unresolved"]
 
     confirmed: dict[str, dict[str, Any]] = {}
+    colour: dict[str, Optional[dict[str, Any]]] = {"OSC": None, "OSCNB": None}
+    unresolved: list[dict[str, Any]] = []
     corrected: list[str] = []
     skipped = 0
-    for pick in picks.values():
+
+    def better(entry: Mapping[str, Any], prev: Optional[Mapping[str, Any]]) -> bool:
+        return prev is None or (master_variant_rank(entry["drizzle"], entry["autocrop"]) >
+                                master_variant_rank(prev["drizzle"], prev["autocrop"]))
+
+    for pick in picks:
         info = reader(pick["path"])
         if info is None:
+            unreadable.append(pick["path"] + ": header could not be read")
             continue
         kws = info.get("keywords") or []
         if not is_master_light(pick["name"], keyword_value(kws, "IMAGETYP")):
             skipped += 1
             continue
-        filter_value = keyword_value(kws, "FILTER")
-        channel = channel_from_filter(filter_value)
-        if channel is None:
+        n = _channel_count(info)
+        bad = osc.channel_count_problem(pick["path"], n)
+        if bad is not None:
+            unreadable.append(bad)
             continue
-        if channel != pick["channel"]:
+        filter_value = keyword_value(kws, "FILTER")
+        route = osc.entry_channel(filter_value, n, pick["path"], kinds)
+        fix = None
+        if route["colour"] or route["channel"] is not None:
+            fix = osc.colour_candidate_correction(
+                {"path": pick["path"], "colour": bool(pick.get("colour")), "numberOfChannels": n})
+        if fix is not None:
+            corrected.append(fix)
+        if route["colour"]:
+            entry = _colour_entry(pick, info, route["channel"], filter_value, kws)
+            if route["channel"] is None:
+                unresolved.append(entry)
+            elif better(entry, colour[route["channel"]]):
+                colour[route["channel"]] = entry
+            continue
+        channel = route["channel"]
+        if channel is None:
+            unreadable.append(pick["path"] + ": unrecognised FILTER " +
+                              ("(missing)" if filter_value is None else "'" + filter_value + "'"))
+            continue
+        if pick.get("channel") is not None and channel != pick["channel"] and fix is None:
             corrected.append(pick["name"] + ": name says " + pick["channel"] + ", header says " + channel)
         entry = {
             "path": pick["path"],
@@ -770,11 +943,10 @@ def scan_masters(
             "autocrop": pick["autocrop"],
             "mtime": pick["mtime"],
         }
-        prev = confirmed.get(channel)
-        if prev is None or (master_variant_rank(entry["drizzle"], entry["autocrop"]) >
-                            master_variant_rank(prev["drizzle"], prev["autocrop"])):
+        if better(entry, confirmed.get(channel)):
             confirmed[channel] = entry
-    return {"confirmed": confirmed, "corrected": corrected, "skipped": skipped, "total": scan_total}
+    return {"confirmed": confirmed, "colour": colour, "unresolved": unresolved, "corrected": corrected,
+            "skipped": skipped + len(unreadable), "unreadable": unreadable, "total": scan_total}
 
 
 def _read_header_or_none(path: str) -> Optional[dict[str, Any]]:

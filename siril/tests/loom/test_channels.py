@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from loomsiril import io_fits
 from loomsiril.loom import channels as ch
 
 from . import synth
@@ -290,7 +291,7 @@ def test_scan_masters_missing_folder_returns_none(tmp_path: Path) -> None:
     assert ch.scan_masters(str(tmp_path / "absent")) is None
 
 
-def test_scan_masters_reads_only_the_winners_with_injected_io() -> None:
+def test_scan_masters_reads_the_winners_and_the_unnamed_files_with_injected_io() -> None:
     names = ["masterFlat_FILTER-Ha.xisf", "masterLight_FILTER-Ha_mono_drizzle_2x.xisf",
              "masterLight_FILTER-Ha_mono.xisf", "masterLight_FILTER-S_mono_autocrop.xisf",
              "masterLight_FILTER-L.xisf", "frame.fits", ".hidden_FILTER-B.xisf", "notes.txt"]
@@ -310,8 +311,11 @@ def test_scan_masters_reads_only_the_winners_with_injected_io() -> None:
     assert scan is not None
     assert scan["total"] == 6
     assert sorted(scan["confirmed"]) == ["H", "L", "S"]
-    assert sorted(opened) == sorted(["masterLight_FILTER-Ha_mono_drizzle_2x.xisf",
+    # frame.fits has no filter in its name; it is read because no colour slot has a named winner, and it is
+    # unreadable here, so it is reported and never picked
+    assert sorted(opened) == sorted(["frame.fits", "masterLight_FILTER-Ha_mono_drizzle_2x.xisf",
                                      "masterLight_FILTER-S_mono_autocrop.xisf", "masterLight_FILTER-L.xisf"])
+    assert scan["unreadable"] == ["/fake/frame.fits: header could not be read"]
 
 
 # ---------------------------------------------------------------------------
@@ -352,9 +356,10 @@ def test_project_name_for_takes_a_backslash_path() -> None:
     assert ch.project_name_for({"paths": {"R": "C:\\Astro\\M31\\masters\\r.fits"}}) == "M31"
 
 
-def test_duplicate_check_unifies_windows_separators_and_case() -> None:
-    assert ch.validate_selection({"R": "C:\\a\\x.xisf", "G": "C:/a/X.xisf", "B": "/b.xisf"}) == [
-        "Same file selected for R and G: C:/a/X.xisf"]
+def test_duplicate_check_unifies_windows_separators_but_not_case() -> None:
+    assert ch.validate_selection({"R": "C:\\a\\x.xisf", "G": "C:/a/x.xisf", "B": "/b.xisf"}) == [
+        "Same file selected for R and G: C:/a/x.xisf"]
+    assert ch.duplicate_file_problems({"R": "C:\\a\\x.xisf", "G": "C:/a/X.xisf"}) == []
 
 
 def test_duplicate_check_keeps_posix_paths_case_sensitive() -> None:
@@ -394,3 +399,194 @@ def test_directory_named_like_a_fits_file_is_skipped(tmp_path: Path) -> None:
     assert scan is not None
     assert scan["total"] == 1
     assert list(scan["confirmed"]) == ["H"]
+
+
+# ---------------------------------------------------------------------------
+# Colour masters: logical channels, duplicates, instrument inheritance
+# ---------------------------------------------------------------------------
+
+
+def test_a_dual_band_colour_master_alone_is_a_valid_selection_and_gives_hoo() -> None:
+    paths = {"OSCNB": "/m/nb.fit"}
+    assert ch.validate_selection(paths) == []
+    cfg = {"paths": paths, "palettes": ["HOO", "SHO"]}
+    assert ch.narrowband_supplied(cfg) == ["H", "O"]
+    assert ch.wanted_palettes(cfg) == ["HOO"]
+    assert ch.report_skipped_palettes(cfg) == ["the SHO palette is skipped: it needs S, which was not supplied"]
+
+
+def test_a_broadband_colour_master_alone_is_valid_and_supplies_no_narrowband() -> None:
+    cfg = {"paths": {"OSC": "/m/rgb.fit"}, "palettes": ["HOO"]}
+    assert ch.validate_selection(cfg["paths"]) == []
+    assert ch.narrowband_supplied(cfg) == []
+    assert ch.wanted_palettes(cfg) == []
+    assert ch.report_skipped_palettes(cfg) == []
+
+
+def test_a_colour_master_with_a_mono_rgb_set_is_not_an_incomplete_set() -> None:
+    # derived R, G and B make the broadband set complete, so a lone mono R adds nothing missing
+    assert not any(p.startswith("Incomplete RGB set") for p in ch.validate_selection(
+        {"OSC": "/m/rgb.fit", "R": "/m/r.fit"}))
+
+
+def test_the_same_file_in_both_colour_slots_or_a_colour_and_a_mono_slot_is_reported() -> None:
+    assert ch.duplicate_file_problems({"OSC": "/m/a.fit", "OSCNB": "/m/a.fit"}) == [
+        "Same file selected for OSC and OSCNB: /m/a.fit"]
+    assert ch.duplicate_file_problems({"L": "/m/a.fit", "OSCNB": "/m/a.fit"}) == [
+        "Same file selected for L and OSCNB: /m/a.fit"]
+    assert ch.validate_selection({"OSC": "/m/a.fit", "OSCNB": "/m/a.fit"}) == [
+        "Same file selected for OSC and OSCNB: /m/a.fit"]
+
+
+def test_duplicate_paths_are_compared_as_configured_never_case_folded_or_resolved() -> None:
+    assert ch.duplicate_file_problems({"OSC": "/m/A.fit", "OSCNB": "/m/a.fit"}) == []
+    assert ch.duplicate_file_problems({"OSC": "/m/../m/a.fit", "OSCNB": "/m/a.fit"}) == []
+    assert ch.duplicate_file_problems({"OSC": "C:\\m\\a.fit", "OSCNB": "C:/m/a.fit"}) == [
+        "Same file selected for OSC and OSCNB: C:/m/a.fit"]
+    assert ch.duplicate_file_problems({"OSC": "C:/a/x.fit", "OSCNB": "c:/a/X.fit"}) == []
+
+
+def test_inherit_instrument_changes_nothing_for_a_colour_run() -> None:
+    chans = {"R": {"key": "R", "instrume": "ZWO ASI2600MC", "group": "OSC"},
+             "G": {"key": "G", "instrume": None, "group": "OSC"},
+             "H": {"key": "H", "instrume": None}}
+    before = {k: dict(v) for k, v in chans.items()}
+    assert ch.inherit_instrument(chans) == []
+    assert chans == before
+
+
+# ---------------------------------------------------------------------------
+# scan_masters: colour discovery
+# ---------------------------------------------------------------------------
+
+
+def _colour_fits(folder: Path, name: str, filter_name: str | None, channels: int = 3, imagetyp: str = "Light",
+                 drizzle: int = 1) -> Path:
+    extra: dict[str, Any] = {"IMAGETYP": imagetyp}
+    master = synth.make_master("L", w=16, h=12, drizzle=drizzle, filter_name=filter_name or "",
+                               catalogue=synth.sky_catalogue(n_stars=4), extra=extra)
+    plane = master.planes[0]
+    io_fits.write_fits(folder / name, [plane] * channels, master.header)
+    return folder / name
+
+
+@pytest.fixture
+def no_pixels(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a pixel reader was called")
+
+    for fn in ("read_fits", "read_image", "read_planes"):
+        if hasattr(io_fits, fn):
+            monkeypatch.setattr(io_fits, fn, boom)
+
+
+def test_scan_masters_finds_colour_and_mono_masters_independently(tmp_path: Path, no_pixels: None) -> None:
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-L-eXtreme_color.fit", "L-eXtreme")
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-L_mono.fit", "L", channels=1)
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"]["OSCNB"]["name"] == "masterLight_BIN-1_FILTER-L-eXtreme_color.fit"
+    assert scan["colour"]["OSCNB"]["channel"] == "OSCNB"
+    assert scan["colour"]["OSC"] is None
+    assert list(scan["confirmed"]) == ["L"]
+    assert scan["unresolved"] == [] and scan["corrected"] == [] and scan["total"] == 2
+
+
+def test_scan_masters_keeps_its_existing_keys_and_adds_colour_and_unresolved(tmp_path: Path) -> None:
+    _write_fits_master(tmp_path, "masterLight_FILTER-Ha_mono.fits", "H", 1, filter_name="Ha")
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert {"confirmed", "corrected", "skipped", "total", "colour", "unresolved"} <= set(scan)
+    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+
+
+def test_scan_masters_unnamed_three_channel_fz_lists_both_colour_and_mono(tmp_path: Path, no_pixels: None) -> None:
+    from .test_header_channels import _card, _fz
+
+    _colour_fits(tmp_path, "masterLight_FILTER-L-eXtreme_color.fit", "L-eXtreme")
+    _colour_fits(tmp_path, "masterLight_FILTER-L_mono.fit", "L", channels=1)
+    data = _fz([16, 12, 3], primary_extra=[_card("IMAGETYP", "Light")])
+    data = data.replace(_card("FILTER", "Ha"), _card("FILTER", "UV/IR Cut"))  # the extension's FILTER card
+    (tmp_path / "stack_final.fz").write_bytes(data)
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"]["OSCNB"]["name"] == "masterLight_FILTER-L-eXtreme_color.fit"
+    assert scan["colour"]["OSC"]["name"] == "stack_final.fz"
+    assert scan["colour"]["OSC"]["numberOfChannels"] == 3
+    assert scan["confirmed"]["L"]["name"] == "masterLight_FILTER-L_mono.fit"
+
+
+def test_scan_masters_unnamed_colour_file_with_no_known_kind_is_unresolved(tmp_path: Path) -> None:
+    _colour_fits(tmp_path, "stack.fit", "Mystery")
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert [e["name"] for e in scan["unresolved"]] == ["stack.fit"]
+    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+
+
+def test_scan_masters_colour_name_with_a_one_channel_header_is_corrected_and_used_as_mono(tmp_path: Path) -> None:
+    path = _colour_fits(tmp_path, "masterLight_FILTER-Ha_color.fit", "Ha", channels=1)
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["corrected"] == [str(path) + ": the name says colour but the image has 1 channel; "
+                                 "it is used as a mono master"]
+    assert scan["confirmed"]["H"]["name"] == "masterLight_FILTER-Ha_color.fit"
+    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+
+
+def test_scan_masters_mono_name_with_a_three_channel_header_is_a_colour_master(tmp_path: Path) -> None:
+    path = _colour_fits(tmp_path, "masterLight_FILTER-Ha_mono.fit", "UV/IR Cut")
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["corrected"] == [str(path) + ": the name says mono but the image has 3 channels; "
+                                 "it is used as a colour master"]
+    assert scan["colour"]["OSC"]["name"] == "masterLight_FILTER-Ha_mono.fit"
+    assert scan["confirmed"] == {}
+
+
+def test_scan_masters_mixed_case_names_are_colour_names(tmp_path: Path) -> None:
+    _colour_fits(tmp_path, "MASTERLIGHT_filter-L-eXtreme_COLOR.FIT", "L-eXtreme")
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"]["OSCNB"]["name"] == "MASTERLIGHT_filter-L-eXtreme_COLOR.FIT"
+
+
+def test_scan_masters_an_unreadable_header_is_reported_and_never_raised(tmp_path: Path) -> None:
+    (tmp_path / "masterLight_FILTER-L-eXtreme_color.fit").write_bytes(b"SIMPLE  =" + b" " * 100)
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+    assert scan["unreadable"] and scan["unreadable"][0].endswith("masterLight_FILTER-L-eXtreme_color.fit: "
+                                                                  "header could not be read")
+    assert scan["skipped"] >= 1
+
+
+def test_scan_masters_a_name_that_cannot_be_decoded_is_skipped_with_the_reason() -> None:
+    bad = "masterLight_FILTER-L-eXtreme_color\udcff.fit"
+    good = "masterLight_FILTER-Ha_mono.fit"
+    headers = {good: {"keywords": [{"name": "FILTER", "value": "'Ha'"}], "channels": 1}}
+
+    def fake(path: str) -> dict[str, Any] | None:
+        return headers.get(os.path.basename(path))
+
+    def lister(_d: str) -> list[str]:
+        return [bad, good]
+
+    scan = ch.scan_masters("/fake", read_header=fake, stat=lambda p: 1.0, list_dir=lister,
+                           is_dir=lambda p: p == "/fake")
+    assert scan is not None and "H" in scan["confirmed"]
+
+
+def test_scan_masters_dot_fz_is_a_master_file_name() -> None:
+    assert ch._is_master_file_name("x.fz") and ch._is_master_file_name("X.FZ")
+    assert ch._is_master_file_name("x.fits.fz") and not ch._is_master_file_name("x.fz.txt")
+
+
+def test_scan_masters_an_unnamed_mono_file_does_not_displace_a_named_winner(tmp_path: Path) -> None:
+    named = _write_fits_master(tmp_path, "masterLight_FILTER-Ha_mono.fits", "H", 1, filter_name="Ha")
+    other = _write_fits_master(tmp_path, "stack_final.fits", "H", 1, filter_name="Ha")
+    os.utime(named, (1_000_000_000, 1_000_000_000))
+    os.utime(other, (2_000_000_000, 2_000_000_000))  # newer, and a better variant would also not matter
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["confirmed"]["H"]["name"] == "masterLight_FILTER-Ha_mono.fits"
