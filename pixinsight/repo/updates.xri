@@ -11,7 +11,7 @@
       </p>
    </description>
    <platform os="all" arch="noarch" version="1.9.4:1.9.99">
-      <package fileName="20261016-loom-0.6.0.zip" sha1="e2189f6d9821351b3ccbaea53480f72872c6f9c3" type="script" releaseDate="20261016" remove="src/scripts/Loom" title="Loom 0.6.0">
+      <package fileName="20261015-loom-0.5.1.zip" sha1="b5dc72b816ec6012eaa30f25ae3c52166b095b57" type="script" releaseDate="20261015" remove="src/scripts/Loom" title="Loom 0.5.1">
          <description>
             <p>
                Solve, flux-calibrate, remove gradients, correct aberration,
@@ -23,4 +23,4 @@
       </package>
    </platform>
 </xri>
-<Signature developerId="Francesco Carucci" timestamp="2026-10-16T03:31:26.901Z" encoding="Base64">x1FTt4EiLUmOZUjjM95HdDtOD0+aUaJKR3tLVjtakA9AE0VB2KC/X8g6YDDBvazOQ5QzUMvuOxZNtkuhlSYGBQ==</Signature>
+<Signature developerId="Francesco Carucci" timestamp="2026-10-15T15:23:22.310Z" encoding="Base64">+ws4DYfrGZdfHW3EddciUs2uyWZA4ID6fMmpXAceTPy++SraFMKaLPIRTD1FR3xgiNnMsLLKwebwNS/8grZwCw==</Signature>
