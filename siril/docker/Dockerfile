@@ -89,6 +89,12 @@ RUN set -eux; \
     "$HOME/.local/share/siril/venv/bin/python" -c "import numpy, scipy, tifffile, sirilpy"; \
     rm -rf /tmp/warm
 
+# A local Gaia xp_sampled catalogue of the test fields (about 9 MB), in the folder Siril reads by default: SPCC then
+# never asks Siril's online catalogue service, whose failed requests make siril-cli 1.4.4 die by SIGSEGV
+# (tests/loom/gaia_xpsamp.py). Fetched here, once, with retries; the test run itself does not touch the mirror.
+COPY tests/loom/gaia_xpsamp.py /opt/loom/gaia_xpsamp.py
+RUN python /opt/loom/gaia_xpsamp.py
+
 COPY . /work
 # The tree is on PYTHONPATH (no install step).
 ENV PYTHONPATH=/work

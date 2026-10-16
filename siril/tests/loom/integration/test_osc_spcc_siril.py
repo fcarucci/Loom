@@ -1,8 +1,9 @@
 """SPCC with an OSC sensor, measured on Siril 1.4.4 (siril-cli): the syntax, the database names and the session rules.
 
 Each test is one siril-cli run on a small synthetic field of public Gaia stars that Siril plate-solves online. The
-tests need LOOMSIRIL_NETWORK=1, Siril's online catalogues and the SPCC database (the module fetches the pinned
-database with docker/network-setup.sh when none is installed); markers ``siril`` and ``network``.
+tests need LOOMSIRIL_NETWORK=1, the local star catalogue SPCC reads (tests/loom/gaia_xpsamp.py) and the SPCC database
+(the module fetches the pinned database with docker/network-setup.sh when none is installed); markers ``siril`` and
+``network``.
 
 Measured rules (recorded in the module docstring of ``loomsiril.loom.siril_ops``):
 

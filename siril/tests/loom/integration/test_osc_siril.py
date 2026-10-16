@@ -143,7 +143,7 @@ def test_a_dual_band_group_is_registered_onto_the_osc_green_as_one_image(tmp_pat
 #
 # One Siril session runs the real orchestrator once per entry of the plan (a JSON file). Every run writes what a test
 # needs (the report, the run log, the SPCC commands sent, the reads of each master, the Siril commands by name) to a JSON
-# file; the tests below read those. SPCC needs the online catalogues and the database: marker ``network`` too.
+# file; the tests below read those. SPCC needs the database and the local star catalogue: marker ``network`` too.
 
 NETWORK = pytest.mark.network
 
@@ -156,7 +156,7 @@ CANON_LPF = '"-osclpf=Canon EOS 350D blocking filter"'
 BAADER = '"-rfilter=Baader R" "-gfilter=Baader G" "-bfilter=Baader B"'
 
 PLAN_SCRIPT = r'''
-import json, os, sys, time, traceback
+import json, os, sys, traceback
 import sirilpy as s
 from loomsiril.loom import colour_load, config as loom_config, finishing, levels, pipeline, stages_correct
 from loomsiril.loom.runctx import RunContext, StageOutput
@@ -170,11 +170,6 @@ sent = []
 real_send = ops._send
 ops._send = lambda text, *a, **k: (sent.append(text), real_send(text, *a, **k))[1]
 
-real_nb = ops.spcc_narrowband
-def delayed_nb(*a, **k):
-    time.sleep(plan["narrowband_pause"])
-    return real_nb(*a, **k)
-ops.spcc_narrowband = delayed_nb
 
 reads = []
 real_read = colour_load.read_fits
@@ -264,15 +259,9 @@ def _mono_masters(folder: Path) -> dict[str, str]:
     return out
 
 
-def _run_plan(tmp_path: Path, common: dict, runs: list[dict], narrowband_pause: int = 0) -> dict[str, dict]:
-    """Run the plan in one siril-cli session; return each run's record by tag (a run's error fails the test).
-
-    ``narrowband_pause`` is a wait in seconds before every narrowband SPCC call. The image has no local Gaia catalogue,
-    so Siril 1.4.4 asks its online service for the stars of every SPCC call; a second request that follows a first one
-    at once fails with an SSL connect error and ends siril-cli (measured: the call after a broadband SPCC dies, the
-    same call two minutes later does not).
-    """
-    plan = {"common": common, "runs": runs, "narrowband_pause": narrowband_pause}
+def _run_plan(tmp_path: Path, common: dict, runs: list[dict]) -> dict[str, dict]:
+    """Run the plan in one siril-cli session; return each run's record by tag (a run's error fails the test)."""
+    plan = {"common": common, "runs": runs}
     (tmp_path / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     script = PLAN_SCRIPT.replace("ROOT_DIR", str(tmp_path))
     run = run_pyscript(script, tmp_path, timeout=1800)
@@ -313,14 +302,13 @@ def test_a_whole_osc_and_oscnb_run_exports_files_with_master_derived_provenance(
     """``pipeline.run`` on an ``OSC`` and an ``OSCNB`` master, stretched and exported: the RGB composite and HOO exist,
     their FITS results carry the masters' LOOMSRC and the TIFF and PSB exports carry none; a second run with no
     palette keeps the H and O channels, whose FITS results carry their plane's LOOMSRC; the run log names where the
-    HOO channels come from; a warm run reads no master and runs no stage. ``narrowband_pause=120`` makes it slow on
-    purpose: a workaround for the online catalogue service (see ``_run_plan``)."""
+    HOO channels come from; a warm run reads no master and runs no stage."""
     osc_path, nb_path, _green = _masters(tmp_path)
     common = _osc_common(osc_path, nb_path, stretch=True)
     runs = [{"tag": "cold", "config": {"palettes": ["HOO"]}, "export": True},
             {"tag": "warm", "config": {"palettes": ["HOO"]}, "export": True},
             {"tag": "channels", "config": {"palettes": []}, "export": True}]
-    records = _run_plan(tmp_path, common, runs, narrowband_pause=120)
+    records = _run_plan(tmp_path, common, runs)
 
     cold = records["cold"]
     assert sorted(cold["produced"]) == ["HOO", "RGB"]
