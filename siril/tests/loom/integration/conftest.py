@@ -42,6 +42,19 @@ RGB_SHIFTS = {"R": (0.0, 0.0), "G": (-2.6, 3.4), "B": (3.1, -2.2)}
 NB_SHIFTS = {"H": (0.0, 0.0), "S": (-2.6, 3.4), "O": (3.1, -2.2)}
 
 
+#: Siril 1.4.4 fetches the SPCC stars from its online Gaia service. A request that follows another one closely can
+#: fail with "libcurl error: SSL connect error", and siril-cli then dies by a signal (measured: SIGSEGV) instead of
+#: returning an error. The same request about two minutes later succeeds, so the runner waits and runs the job again
+#: (the cache keeps the stages already done). Any other failure is reported at once.
+CATALOGUE_ATTEMPTS = 3
+CATALOGUE_PAUSE_S = 120.0
+
+
+def online_catalogue_crash(returncode: int, output: str) -> bool:
+    """True when siril-cli was killed by a signal after its online catalogue request failed on SSL."""
+    return returncode < 0 and "libcurl error: SSL connect error" in output
+
+
 def _installed_spcc_database() -> Path | None:
     for candidate in spcc_database_candidates(sys.platform, os.environ, os.path.expanduser("~")):
         if os.path.isdir(candidate):
@@ -128,8 +141,15 @@ def run_loom(tmp_path: Path) -> Callable[[Mapping[str, Any], str], LoomRun]:
         env["LOOMSIRIL_SRC"] = str(REPO)
         env["PYTHONPATH"] = str(REPO) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         started = time.monotonic()
-        proc = subprocess.run([siril_cli(), "-d", str(workdir), "-s", "-"], input=script, text=True,
-                              capture_output=True, timeout=RUN_TIMEOUT_S, env=env, check=False)
+        for attempt in range(1, CATALOGUE_ATTEMPTS + 1):
+            proc = subprocess.run([siril_cli(), "-d", str(workdir), "-s", "-"], input=script, text=True,
+                                  capture_output=True, timeout=RUN_TIMEOUT_S, env=env, check=False)
+            if not online_catalogue_crash(proc.returncode, proc.stdout + proc.stderr) or \
+                    attempt == CATALOGUE_ATTEMPTS:
+                break
+            print(f"run {name}: siril-cli died (exit {proc.returncode}) after an online catalogue SSL error; "
+                  f"attempt {attempt + 1} of {CATALOGUE_ATTEMPTS} in {CATALOGUE_PAUSE_S:.0f} s", flush=True)
+            time.sleep(CATALOGUE_PAUSE_S)
         wall = time.monotonic() - started
         result = SirilRun(proc.returncode, proc.stdout, proc.stderr)
         status_file = _status_path(job_path)
