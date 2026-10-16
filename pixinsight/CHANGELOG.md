@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-10-15
+
 ### Added
 
 - **One-shot colour (OSC) cameras.** Loom now takes the debayered colour masters WBPP writes: one broadband master (UV/IR cut, light-pollution filter) and/or one Hα + OIII dual-band master (L-eXtreme, L-Enhance, ALP-T Hα/OIII and similar) per run. A colour master is split into channels when it is loaded and the whole pipeline then runs as for mono masters: the broadband master gives R, G and B and the composite, the dual-band master gives Hα and OIII and the HOO palette. The masters list shows each colour master with its detected kind (Broadband or Dual-band Hα + OIII), which you can override; the choice is remembered per filter model, or per file when the filter is blank. Colour and mono masters cannot be combined in one run. SHO and HSO are refused for colour masters, because a colour camera cannot separate SII from Hα. A quad-band filter is treated as dual-band: its H carries SII as well, and O is the green plane only. Colour calibration uses the sensor's R, G and B colour filter curves (chosen in the dialog) with the Ideal QE curve; a light-pollution filter in front of the camera is not modelled, and the run goes ahead with a note in the log. Siblings of a colour master are registered together with one transform.
