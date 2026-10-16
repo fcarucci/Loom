@@ -22,6 +22,7 @@ from scipy import ndimage
 
 from loomsiril.io_fits import read_fits
 from loomsiril.io_tiff import read_image as read_tiff
+from loomsiril.loom import config as loom_config
 from loomsiril.starnet_licence import STARNET_LICENCE_REV
 
 from ..test_psb import _read_psb
@@ -29,8 +30,8 @@ from .conftest import FILTERS, LoomRun, job_paths
 
 pytestmark = pytest.mark.siril
 
-#: Median of the stretched composite's channels, averaged (the stretch target of the MTF).
-SKY_TARGET = 0.25
+#: Median of the stretched composite's channels, averaged: the stretch target of the MTF (the default option).
+SKY_TARGET = loom_config.defaults()["stretchTarget"]
 SKY_TOLERANCE = 0.01
 #: Layers in the PSB of an RGB composite with no stars and no palette: the RGB group (its pixel layer and the two
 #: divider records) and the three background, nebulosity and vibrance adjustment layers.
@@ -211,7 +212,7 @@ def test_rgb_run_with_stretch_writes_rgb_with_wcs_and_stretched_sky(tmp_path: Pa
     """RGB composite: gradient tool none (the background is still subtracted), stretch on.
 
     RGB.fits holds three planes, the LOOMOUT keyword is RGB, the WCS is present, and the mean of the channel medians
-    is the stretch target (0.25 +/- 0.01).
+    is the default stretch target (+/- 0.01).
     """
     paths = masters(("R", "G", "B"))
     out_dir = tmp_path / "out"
