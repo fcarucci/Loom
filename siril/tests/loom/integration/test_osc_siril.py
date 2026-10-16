@@ -313,7 +313,8 @@ def test_a_whole_osc_and_oscnb_run_exports_files_with_master_derived_provenance(
     """``pipeline.run`` on an ``OSC`` and an ``OSCNB`` master, stretched and exported: the RGB composite and HOO exist,
     their FITS results carry the masters' LOOMSRC and the TIFF and PSB exports carry none; a second run with no
     palette keeps the H and O channels, whose FITS results carry their plane's LOOMSRC; the run log names where the
-    HOO channels come from; a warm run reads no master and runs no stage."""
+    HOO channels come from; a warm run reads no master and runs no stage. ``narrowband_pause=120`` makes it slow on
+    purpose: a workaround for the online catalogue service (see ``_run_plan``)."""
     osc_path, nb_path, _green = _masters(tmp_path)
     common = _osc_common(osc_path, nb_path, stretch=True)
     runs = [{"tag": "cold", "config": {"palettes": ["HOO"]}, "export": True},

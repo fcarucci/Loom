@@ -720,6 +720,30 @@ def test_a_palette_built_from_a_dual_band_master_logs_its_sources_and_the_approx
     assert cr.lines.index(sources) < cr.lines.index(approx)
 
 
+def test_a_dual_band_only_run_builds_hoo_without_a_sensor_or_any_spcc_names(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Offline cover for the OSCNB-only path: no sensor is chosen, HOO is produced, and its narrowband SPCC call
+    carries no sensor, filter or low-pass filter names (a fresh session: no broadband mode ran before it)."""
+    cr = _ColourRun(tmp_path, monkeypatch, palettes=["HOO"])
+    # full-frame planes: the helper's half-black planes would make the common-area crop refuse the run
+    write_fits(cr.master, [_plane(i + 1) for i in range(3)],
+               {"FILTER": "L-eXtreme", "INSTRUME": INSTRUME, "OBJECT": "NGC 7000"}, bitpix=-32)
+    cfg = dict(cr.cfg)
+    cfg.pop("oscSensor", None)
+    assert [slot for slot, path in cfg["paths"].items() if path] == ["OSCNB"]
+    harness = Harness(tmp_path)
+    report = harness.run(cfg, "oscnb-only")
+    assert report.produced == ["HOO"]
+    assert os.path.isfile(report.outputs["HOO"])
+    calls = [c for ops in harness.opses for c in ops.calls]
+    assert not [c for c in calls if c[0] in ("spcc_osc", "spcc_broadband")]
+    narrowband = [c[1] for c in calls if c[0] == "spcc_narrowband"]
+    assert narrowband and all(args[6:] == (None, None, None, None, None) for args in narrowband)
+    texts = [t for ops in harness.opses for t in ops.transcript if t.startswith("spcc")]
+    assert texts and not any(flag in t for t in texts
+                             for flag in ("-oscsensor", "-oscfilter", "-osclpf", "-monosensor", "-rfilter"))
+
+
 def test_a_palette_from_mono_channels_logs_neither_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = Harness(tmp_path)
     cfg = _config(tmp_path, _nb_paths(tmp_path), palettes=["HOO"])
