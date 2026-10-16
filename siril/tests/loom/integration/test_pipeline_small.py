@@ -9,14 +9,12 @@ without siril-cli (marker ``siril``).
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
 
 from .. import synth
 from ..siril_run import run_pyscript
-from .conftest import CATALOGUE_ATTEMPTS, CATALOGUE_PAUSE_S, online_catalogue_crash
 
 pytestmark = pytest.mark.siril
 
@@ -70,12 +68,7 @@ def test_small_rgb_run_under_siril_cli(tmp_path: Path) -> None:
         # the default frame carries enough stars for the registration to find its reference
         master = synth.make_master(channel, seed=index + 2, shift=shifts[channel], filter_name=FILTERS[channel])
         synth.write_master(tmp_path / f"{channel}.fits", master)
-    for attempt in range(1, CATALOGUE_ATTEMPTS + 1):
-        run = run_pyscript(SCRIPT, tmp_path)
-        if not online_catalogue_crash(run.returncode, run.stdout + run.stderr) or attempt == CATALOGUE_ATTEMPTS:
-            break
-        time.sleep(CATALOGUE_PAUSE_S)  # Siril's online catalogue failed on SSL and siril-cli died (see conftest)
-    run.check()
+    run = run_pyscript(SCRIPT, tmp_path).check()
     result = run.value("RESULT")
     assert result["produced"] == ["RGB"]
     assert result["name"] == "RGB.fits"

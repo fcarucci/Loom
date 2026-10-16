@@ -11,15 +11,12 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import pytest
-
-from loomsiril.loom.siril_ops import spcc_database_candidates
 
 from .. import synth
 from ..siril_run import SirilRun, siril_cli
@@ -40,52 +37,6 @@ MASTER_W, MASTER_H = 704, 576
 #: Sky offsets (px) of the broadband and narrowband masters: the registration has to find them.
 RGB_SHIFTS = {"R": (0.0, 0.0), "G": (-2.6, 3.4), "B": (3.1, -2.2)}
 NB_SHIFTS = {"H": (0.0, 0.0), "S": (-2.6, 3.4), "O": (3.1, -2.2)}
-
-
-#: Siril 1.4.4 fetches the SPCC stars from its online Gaia service. A request that follows another one closely can
-#: fail with "libcurl error: SSL connect error", and siril-cli then dies by a signal (measured: SIGSEGV) instead of
-#: returning an error. The same request about two minutes later succeeds, so the runner waits and runs the job again
-#: (the cache keeps the stages already done). Any other failure is reported at once.
-CATALOGUE_ATTEMPTS = 3
-CATALOGUE_PAUSE_S = 120.0
-
-
-def online_catalogue_crash(returncode: int, output: str) -> bool:
-    """True when siril-cli was killed by a signal after its online catalogue request failed on SSL."""
-    return returncode < 0 and "libcurl error: SSL connect error" in output
-
-
-def _installed_spcc_database() -> Path | None:
-    for candidate in spcc_database_candidates(sys.platform, os.environ, os.path.expanduser("~")):
-        if os.path.isdir(candidate):
-            return Path(candidate)
-    return None
-
-
-def ensure_spcc_database() -> Path:
-    """Siril's SPCC database, installed with docker/network-setup.sh when it is missing (the image never holds it).
-
-    Every network-marked run calibrates with SPCC, whose preflight refuses a run without the database, so the
-    database must be there whichever network test runs first.
-    """
-    found = _installed_spcc_database()
-    if found is not None:
-        return found
-    env = dict(os.environ, LOOMSIRIL_NETWORK="1")
-    proc = subprocess.run(["bash", str(REPO / "docker" / "network-setup.sh")], capture_output=True, text=True,
-                          env=env, timeout=600, check=False)
-    found = _installed_spcc_database()
-    if proc.returncode != 0 or found is None:
-        pytest.fail(f"the SPCC database is missing and network-setup.sh did not install it "
-                    f"(exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
-    return found
-
-
-@pytest.fixture(autouse=True)
-def _spcc_database_for_network_tests(request: pytest.FixtureRequest) -> None:
-    """Installs the SPCC database before any network-marked test (skipped network tests never get here)."""
-    if request.node.get_closest_marker("network") is not None:
-        ensure_spcc_database()
 
 
 @dataclass
@@ -141,15 +92,8 @@ def run_loom(tmp_path: Path) -> Callable[[Mapping[str, Any], str], LoomRun]:
         env["LOOMSIRIL_SRC"] = str(REPO)
         env["PYTHONPATH"] = str(REPO) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         started = time.monotonic()
-        for attempt in range(1, CATALOGUE_ATTEMPTS + 1):
-            proc = subprocess.run([siril_cli(), "-d", str(workdir), "-s", "-"], input=script, text=True,
-                                  capture_output=True, timeout=RUN_TIMEOUT_S, env=env, check=False)
-            if not online_catalogue_crash(proc.returncode, proc.stdout + proc.stderr) or \
-                    attempt == CATALOGUE_ATTEMPTS:
-                break
-            print(f"run {name}: siril-cli died (exit {proc.returncode}) after an online catalogue SSL error; "
-                  f"attempt {attempt + 1} of {CATALOGUE_ATTEMPTS} in {CATALOGUE_PAUSE_S:.0f} s", flush=True)
-            time.sleep(CATALOGUE_PAUSE_S)
+        proc = subprocess.run([siril_cli(), "-d", str(workdir), "-s", "-"], input=script, text=True,
+                              capture_output=True, timeout=RUN_TIMEOUT_S, env=env, check=False)
         wall = time.monotonic() - started
         result = SirilRun(proc.returncode, proc.stdout, proc.stderr)
         status_file = _status_path(job_path)
