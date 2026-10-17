@@ -682,9 +682,32 @@ Util.duplicateFileProblems = function( paths )
    return problems;
 };
 
-// The two colour-master slots and the logical channels each one stands for.
-Util.COLOUR_SLOTS = [ "OSC", "OSCNB" ];
-Util.COLOUR_MEMBERS = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] };
+// The colour-master slots and the logical channels each one stands for. OSCHA is
+// a colour master shot through one narrowband Ha filter: its red plane is H.
+Util.COLOUR_SLOTS = [ "OSC", "OSCNB", "OSCHA" ];
+Util.COLOUR_MEMBERS = { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ], OSCHA: [ "H" ] };
+// The kind of master each slot takes.
+Util.COLOUR_SLOT_KIND = { OSC: "broadband", OSCNB: "dualband", OSCHA: "halpha" };
+
+/*
+ * An Ha colour master and a dual-band colour master both supply H, so one run
+ * cannot have both (an Ha master with a broadband one is fine). Null when the
+ * combination is allowed.
+ */
+Util.oscCombinationProblem = function( config )
+{
+   var colour = Util.colourSupplied( config );
+   if ( colour.indexOf( "OSCHA" ) < 0 || colour.indexOf( "OSCNB" ) < 0 )
+      return null;
+   var paths = ( config && config.paths ) || {}, views = ( config && config.views ) || {};
+   function named( k )
+   {
+      return paths[k] != undefined && paths[k].length > 0 ? String( paths[k] ).replace( /^.*[\\\/]/, "" )
+                                                          : String( views[k] );
+   }
+   return "a Narrowband Hα colour master and a dual-band Hα + OIII colour master both supply H; " +
+          "choose one of them (Narrowband Hα: " + named( "OSCHA" ) + "; dual-band: " + named( "OSCNB" ) + ")";
+};
 
 // Colour slots with a path or an open view, in COLOUR_SLOTS order.
 // paths and views may be missing, or lack the colour keys.
@@ -765,7 +788,7 @@ Util.effectiveOscKind = function( slot, filterValue, path, choices )
 
    var key = Util.oscKindKey( filterValue, path );
    var choice = choices && Object.prototype.hasOwnProperty.call( choices, key ) ? choices[key] : null;
-   if ( choice == "broadband" || choice == "dualband" )
+   if ( choice == "broadband" || choice == "dualband" || choice == "halpha" )
       return { kind: choice, name: name, confident: true,
                haNm: info ? info.haNm : null, oiiiNm: info ? info.oiiiNm : null, source: "choice" };
 
@@ -935,6 +958,14 @@ Util.oscFilterInfo = function( filterValue )
       if ( f.indexOf( Util.OSC_FAMILIES[j] ) == 0 )
          return { kind: "dualband", name: String( filterValue ).trim(), confident: false,
                   haNm: null, oiiiNm: null };
+   // A single Ha filter: the name is Ha or H-alpha, with a bandwidth in nm before or after.
+   // Whole-name match, so Ha/OIII, Ha+OIII or any name with more in it is not this.
+   if ( /^(\d+nm)?(ha|halpha)(\d+nm)?$/.test( f ) )
+   {
+      var nm = /(\d+(?:\.\d+)?)\s*nm/i.exec( Util.oscModelName( filterValue ) );
+      return { kind: "halpha", name: String( filterValue ).trim(), confident: true,
+               haNm: nm ? parseFloat( nm[1] ) : null, oiiiNm: null };
+   }
    return null;
 };
 
@@ -1966,7 +1997,7 @@ Util.entryChannel = function( filterValue, numberOfChannels, path, choices )
    if ( numberOfChannels != 3 )
       return { channel: null, colour: false, kindSource: null };
    var k = Util.effectiveOscKind( null, filterValue, path, choices );
-   var channel = k.kind == "broadband" ? "OSC" : k.kind == "dualband" ? "OSCNB" : null;
+   var channel = k.kind == "broadband" ? "OSC" : k.kind == "dualband" ? "OSCNB" : k.kind == "halpha" ? "OSCHA" : null;
    return { channel: channel, colour: true, kindSource: k.source };
 };
 
@@ -1978,7 +2009,7 @@ Util.entryChannel = function( filterValue, numberOfChannels, path, choices )
  */
 Util.selectColourMasters = function( candidates, choices )
 {
-   var best = { OSC: null, OSCNB: null, unresolved: [] };
+   var best = { OSC: null, OSCNB: null, OSCHA: null, unresolved: [] };
    for ( var i = 0; i < candidates.length; ++i )
    {
       var c = candidates[i];

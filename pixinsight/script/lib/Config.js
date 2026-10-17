@@ -130,7 +130,7 @@ Config.saveFields = function( config, store, names )
 Config.defaults = function()
 {
    return {
-      paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "" },
+      paths: { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "", OSCHA: "" },
       views: {},
       savedList: "",
       filters: {},
@@ -190,7 +190,7 @@ Config.defaults = function()
       // Not persisted -- "for this run" is exactly what it means; it must
       // not silently stay on across sessions.
       ignoreCache: false,
-      // Per run, never persisted: preflight fills { OSC: kind, OSCNB: kind }.
+      // Per run, never persisted: preflight fills { OSC: kind, OSCNB: kind, OSCHA: kind }.
       oscKinds: {},
       // The sensor's three Siril curve names, remembered between runs.
       oscSensor: { R: "", G: "", B: "" },
@@ -444,7 +444,7 @@ Config.loadOscChoices = function( config, store )
       config.oscKindChoices = {};
       for ( var k in choices )
          if ( Object.prototype.hasOwnProperty.call( choices, k ) &&
-              ( choices[k] === "broadband" || choices[k] === "dualband" ) )
+              ( choices[k] === "broadband" || choices[k] === "dualband" || choices[k] === "halpha" ) )
             config.oscKindChoices[k] = choices[k];
    }
 };

@@ -9,7 +9,8 @@
    "S": "",
    "O": "",
    "OSC": "",
-   "OSCNB": ""
+   "OSCNB": "",
+   "OSCHA": ""
   },
   "views": {},
   "savedList": "",
@@ -65,6 +66,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -123,7 +125,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -179,6 +182,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -236,7 +240,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "/m/a.xisf;/m/b.xisf",
@@ -302,6 +307,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -360,7 +366,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -417,6 +424,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -475,7 +483,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -532,6 +541,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -591,7 +601,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -648,6 +659,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -707,7 +719,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -764,6 +777,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -822,7 +836,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -878,6 +893,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -936,7 +952,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -992,6 +1009,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1050,7 +1068,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -1106,6 +1125,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1164,7 +1184,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -1220,6 +1241,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.getReal smoothing",
@@ -1281,7 +1303,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -1346,6 +1369,7 @@
     "Parameters.getString path_OSC",
     "Parameters.has path_OSCNB",
     "Parameters.getString path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1408,7 +1432,8 @@
      "S": "",
      "O": "/m/O.xisf",
      "OSC": "/m/rgb.xisf",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "/m/list",
@@ -1464,6 +1489,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1522,7 +1548,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -1580,6 +1607,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1639,7 +1667,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "/s/list",
@@ -1695,6 +1724,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.getString savedList",
     "Parameters.has smoothing",
@@ -1753,7 +1783,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "/p/list",
@@ -1809,6 +1840,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1867,7 +1899,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -1923,6 +1956,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -1981,7 +2015,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -2037,6 +2072,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -2096,7 +2132,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -2152,6 +2189,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -2211,7 +2249,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -2267,6 +2306,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -2325,7 +2365,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -2381,6 +2422,7 @@
     "Parameters.has path_O",
     "Parameters.has path_OSC",
     "Parameters.has path_OSCNB",
+    "Parameters.has path_OSCHA",
     "Parameters.has savedList",
     "Parameters.has smoothing",
     "Parameters.has gradientTool",
@@ -2439,7 +2481,8 @@
      "S": "",
      "O": "",
      "OSC": "",
-     "OSCNB": ""
+     "OSCNB": "",
+     "OSCHA": ""
     },
     "views": {},
     "savedList": "",
@@ -2497,6 +2540,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2553,6 +2597,7 @@
     "Parameters.set path_O \"/m/O.xisf\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"/m/list\"",
     "Parameters.set smoothing 0.3",
     "Parameters.set gradientTool \"SyQon Studio Deep Gradient\"",
@@ -2609,6 +2654,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2665,6 +2711,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2721,6 +2768,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2777,6 +2825,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"GraXpert\"",
@@ -2833,6 +2882,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing 0.5",
     "Parameters.set gradientTool \"none\"",
@@ -2889,6 +2939,7 @@
     "Parameters.set path_O \"\"",
     "Parameters.set path_OSC \"\"",
     "Parameters.set path_OSCNB \"\"",
+    "Parameters.set path_OSCHA \"\"",
     "Parameters.set savedList \"\"",
     "Parameters.set smoothing undefined",
     "Parameters.set gradientTool \"none\"",
@@ -2945,7 +2996,8 @@
    "S": "",
    "O": "/m/O.xisf",
    "OSC": "",
-   "OSCNB": ""
+   "OSCNB": "",
+   "OSCHA": ""
   },
   "views": {},
   "savedList": "/m/list",

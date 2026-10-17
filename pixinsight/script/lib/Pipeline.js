@@ -63,6 +63,9 @@ Pipeline.preflight = function( config )
    var mix = Util.colourMixProblem( config );
    if ( mix != null )
       problems.push( mix );
+   var combination = Util.oscCombinationProblem( config );
+   if ( combination != null )
+      problems.push( combination );
    var palette = Pipeline.oscPaletteProblem( config );
    if ( palette != null )
       problems.push( palette );
@@ -252,6 +255,11 @@ Pipeline.inputChannelProblems = function( config, infoOf )
    return problems;
 };
 
+// The words of the slot-and-kind mismatch message.
+Pipeline.OSC_KIND_PHRASE = { broadband: "a broadband", dualband: "a dual-band", halpha: "a narrowband Hα" };
+Pipeline.OSC_SLOT_PHRASE = { OSC: "broadband", OSCNB: "dual-band", OSCHA: "narrowband Hα" };
+Pipeline.OSC_KIND_NEEDS  = { OSC: "a Broadband", OSCNB: "a Dual-band Hα + OIII", OSCHA: "a Narrowband Hα" };
+
 /*
  * The checks of the colour slots: three channels, a kind (broadband or
  * dual-band) that is known and matches the slot. The kind found is left in
@@ -286,11 +294,10 @@ Pipeline.oscKindProblems = function( config, infoOf )
       if ( k.kind == "unsupported" )
          problems.push( "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" );
       else if ( k.source == "none" )
-         problems.push( "choose Broadband or Dual-band Hα + OIII for " + path );
-      else if ( slot == "OSCNB" && k.kind == "broadband" )
-         problems.push( path + " is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master" );
-      else if ( slot == "OSC" && k.kind == "dualband" )
-         problems.push( path + " is a dual-band colour master; the broadband slot needs a Broadband master" );
+         problems.push( "choose Broadband, Dual-band Hα + OIII or Narrowband Hα for " + path );
+      else if ( k.kind != Util.COLOUR_SLOT_KIND[slot] )
+         problems.push( path + " is " + Pipeline.OSC_KIND_PHRASE[k.kind] + " colour master; the " +
+                        Pipeline.OSC_SLOT_PHRASE[slot] + " slot needs " + Pipeline.OSC_KIND_NEEDS[slot] + " master" );
       else
       {
          if ( !config.oscKinds )
@@ -1033,7 +1040,14 @@ Pipeline.buildStageKeys = function( sourceKey, params )
  * becomes. OSC is broadband (R, G, B); OSCNB is dual-band: H is plane 0 and
  * O is plane 1 (green) alone, see the design's Splitting section.
  */
-Pipeline.OSC_RECIPES = { OSC: { R: 0, G: 1, B: 2 }, OSCNB: { H: 0, O: 1 } };
+Pipeline.OSC_RECIPES = { OSC: { R: 0, G: 1, B: 2 }, OSCNB: { H: 0, O: 1 }, OSCHA: { H: 0 } };
+
+/*
+ * The planes checked when a colour master is split. OSCHA is a colour master
+ * through one Ha filter: only its red plane (H) is used, and its green and blue
+ * planes (interpolation and leak) are neither checked nor kept.
+ */
+Pipeline.OSC_VALIDATED_PLANES = { OSC: [ 0, 1, 2 ], OSCNB: [ 0, 1, 2 ], OSCHA: [ 0 ] };
 
 /*
  * The identity of one colour group: the master's fingerprint plus its kind.
@@ -2232,11 +2246,12 @@ Pipeline.oscGroupLoader = function( slot, source, kind, reg, io )
       try
       {
          var stats = [];
-         for ( var p = 0; p < 3; ++p )
-            stats.push( io.planeStats( master, p ) );
-         for ( var q = 0; q < 3; ++q )
+         var checked = Pipeline.OSC_VALIDATED_PLANES[slot];
+         for ( var p = 0; p < checked.length; ++p )
+            stats.push( io.planeStats( master, checked[p] ) );
+         for ( var q = 0; q < checked.length; ++q )
          {
-            var problem = Pipeline.oscPlaneProblem( stats[q], q, source.path );
+            var problem = Pipeline.oscPlaneProblem( stats[q], checked[q], source.path );
             if ( problem != null )
                throw new Error( problem );
          }
@@ -2798,15 +2813,16 @@ Pipeline.bestMeasuredChannel = function( ranked, quality )
 /*
  * How the channels of a colour run are registered. `groups` maps a colour
  * slot to its members ( { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] } );
- * only members in `present` count. The reference is OSC's G, else OSCNB's H;
+ * only members in `present` count. The reference is OSC's G, else OSCNB's H,
+ * else OSCHA's H;
  * its own group is already on the reference grid (identity). Any other group
  * is one entry: its members and the planes of the temporary image that is
  * registered in one go (R,G,B for OSC; H,O,O for OSCNB, whose third plane
- * repeats O). Channels outside every group are listed under mono.
+ * repeats O; H,H,H for OSCHA). Channels outside every group are listed under mono.
  */
 Pipeline.oscRegistrationPlan = function( present, groups )
 {
-   var slots = [ "OSC", "OSCNB" ];
+   var slots = [ "OSC", "OSCNB", "OSCHA" ];
    var used = {}, byslot = {};
    slots.forEach( function( slot )
    {
@@ -2817,7 +2833,7 @@ Pipeline.oscRegistrationPlan = function( present, groups )
          members.forEach( function( k ) { used[k] = true; } );
       }
    } );
-   var refSlot = byslot.OSC ? "OSC" : byslot.OSCNB ? "OSCNB" : null;
+   var refSlot = byslot.OSC ? "OSC" : byslot.OSCNB ? "OSCNB" : byslot.OSCHA ? "OSCHA" : null;
    var plan = { ref: null, identity: [], groups: [],
                 mono: present.filter( function( k ) { return !used[k]; } ) };
    if ( refSlot == null )
@@ -2829,7 +2845,7 @@ Pipeline.oscRegistrationPlan = function( present, groups )
       if ( !byslot[slot] || slot == refSlot )
          return;
       plan.groups.push( { slot: slot, members: byslot[slot].slice(),
-                          planes: slot == "OSC" ? [ "R", "G", "B" ] : [ "H", "O", "O" ] } );
+                          planes: slot == "OSC" ? [ "R", "G", "B" ] : slot == "OSCHA" ? [ "H", "H", "H" ] : [ "H", "O", "O" ] } );
    } );
    return plan;
 };

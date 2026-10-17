@@ -33,8 +33,8 @@ UI.seededFilterNames = function()
    return seeded;
 };
 
-/* The kind control's items: no kind, then the two a colour master can be. */
-UI.OSC_KIND_ITEMS = [ "", "Broadband", "Dual-band H\u03b1 + OIII" ];
+/* The kind control's items: no kind, then the three a colour master can be. */
+UI.OSC_KIND_ITEMS = [ "", "Broadband", "Dual-band H\u03b1 + OIII", "Narrowband H\u03b1" ];
 
 /*
  * How one colour master's kind control looks: the item shown (an index into
@@ -45,13 +45,14 @@ UI.OSC_KIND_ITEMS = [ "", "Broadband", "Dual-band H\u03b1 + OIII" ];
 UI.oscKindRow = function( entry, choices )
 {
    var k = Util.effectiveOscKind( null, entry.filter, entry.ref, choices );
-   return { index: k.kind == "broadband" ? 1 : k.kind == "dualband" ? 2 : 0,
+   return { index: k.kind == "broadband" ? 1 : k.kind == "dualband" ? 2 : k.kind == "halpha" ? 3 : 0,
             enabled: k.kind != "unsupported",
             detectedLink: k.source == "choice" };
 };
 
 /*
- * Applies a kind picked for `entry`: item 1 broadband, item 2 dual-band; item
+ * Applies a kind picked for `entry`: item 1 broadband, item 2 dual-band, item 3
+ * narrowband Ha; item
  * 0 or "detected" forgets the remembered choice. Writes
  * choices[ Util.oscKindKey( filter, ref ) ] and recomputes the slot of every
  * colour entry, since one choice keyed by a filter name covers every master
@@ -61,8 +62,8 @@ UI.oscKindRow = function( entry, choices )
 UI.applyOscKind = function( entries, choices, entry, kind )
 {
    var key = Util.oscKindKey( entry.filter, entry.ref );
-   if ( kind === 1 || kind === 2 )
-      choices[key] = kind === 1 ? "broadband" : "dualband";
+   if ( kind === 1 || kind === 2 || kind === 3 )
+      choices[key] = kind === 1 ? "broadband" : kind === 2 ? "dualband" : "halpha";
    else
       delete choices[key];
    entries.forEach( function( e )
@@ -525,7 +526,7 @@ UI.foldEntries = function( entries, choices )
          var kind = Util.effectiveOscKind( null, e.filter, e.ref, choices );
          problems.push( kind.kind == "unsupported"
             ? "this filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported"
-            : "choose Broadband or Dual-band H\u03b1 + OIII for " + e.ref );
+            : "choose Broadband, Dual-band H\u03b1 + OIII or Narrowband H\u03b1 for " + e.ref );
          continue;
       }
       if ( e.channel === null && typeof e.numberOfChannels == "number" &&
@@ -670,7 +671,7 @@ UI.planFolderPicks = function( scan, choices )
    var cp = Util.selectColourMasters( scan.colourNamed || [], choices );
    var missing = Util.CHANNELS.some( function( k ) { return mono[k] == null; } ) ||
                  cp.OSC == null || cp.OSCNB == null;
-   return { mono: mono, colour: { OSC: cp.OSC, OSCNB: cp.OSCNB }, unresolved: cp.unresolved,
+   return { mono: mono, colour: { OSC: cp.OSC, OSCNB: cp.OSCNB, OSCHA: cp.OSCHA }, unresolved: cp.unresolved,
             readUnnamed: missing && ( scan.unnamed || [] ).length > 0 };
 };
 
@@ -2301,7 +2302,8 @@ UI.SelectDialog = class extends Dialog
       try
       {
          var folded = UI.foldEntries( this.entries, ( this.config || {} ).oscKindChoices );
-         mix = Util.colourMixProblem( { paths: folded.paths, views: folded.views } );
+         var supplied = { paths: folded.paths, views: folded.views };
+         mix = Util.colourMixProblem( supplied ) || Util.oscCombinationProblem( supplied );
       }
       catch ( e ) { mix = null; }
       this.runButton.enabled = !this.busy && n > 0 && mix == null;
@@ -2917,7 +2919,7 @@ UI.SelectDialog = class extends Dialog
          row.combo.currentItem = k.index;
          row.combo.enabled = k.enabled;
          row.combo.toolTip = k.enabled
-            ? "<p>Broadband or dual-band H\u03b1 + OIII. Your choice is remembered for this filter name, " +
+            ? "<p>Broadband, dual-band H\u03b1 + OIII, or narrowband H\u03b1 (one Ha filter: the red plane is H). Your choice is remembered for this filter name, " +
               "or for this file when it has no FILTER name, and always wins over detection.</p>"
             : "<p>This filter passes SII and H\u03b2; only H\u03b1/OIII dual-band filters are supported.</p>";
          row.link.visible = k.detectedLink;

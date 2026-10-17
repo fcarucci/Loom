@@ -802,7 +802,7 @@ function configTranscripts()
 
    var all = defaultConfig();
    all.paths = { L: "/m/L.xisf", R: "/m/R.xisf", G: "/m/G.xisf", B: "/m/B.xisf", H: "", S: "", O: "/m/O.xisf",
-                 OSC: "", OSCNB: "" };
+                 OSC: "", OSCNB: "", OSCHA: "" };
    all.views = { L: "L_view" };
    all.savedList = "/m/list";
    all.filters = { L: "Antlia L", R: "Antlia R", G: "Antlia G", B: "Antlia B" };
@@ -20204,7 +20204,7 @@ function runSolveTests()
    {
       var PER_RUN = [ "views", "validateOnly", "keepWindowsOnError", "ignoreCache", "oscKinds" ];
       var SPECIAL = {
-         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "/p/OSC", OSCNB: "" },
+         paths: { L: "/p/L", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "/p/OSC", OSCNB: "", OSCHA: "" },
          oscSensor: { R: "r", G: "g", B: "b" },
          oscKindChoices: { "filter:duo": "dualband" },
          palettes: [ "SHO" ],
@@ -21243,7 +21243,7 @@ function runPipeTests()
          { channel: "H", source: "file", ref: "/h", label: "h" } ] );
       check( "UI.foldEntries: paths, views and the problems that refuse a run",
              folded,
-             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "", OSC: "", OSCNB: "" }, views: { R: "view_R" },
+             { paths: { L: "", R: "", G: "", B: "", H: "/h", S: "", O: "", OSC: "", OSCNB: "", OSCHA: "" }, views: { R: "view_R" },
                problems: [ "Unrecognised FILTER (missing) for b", "Unrecognised FILTER 'Weird' for w",
                            "Two images map to channel R: view_R and r2" ] } );
    } )();
@@ -22259,7 +22259,7 @@ function runPipeTests()
              [ "/m/a", "nbview", [] ] );
       check( "foldEntries colour entry without a kind",
              UI.foldEntries( [ ent( "/m/c", "Duo", 3 ) ], {} ).problems,
-             [ "choose Broadband or Dual-band Hα + OIII for /m/c" ] );
+             [ "choose Broadband, Dual-band Hα + OIII or Narrowband Hα for /m/c" ] );
       check( "foldEntries unsupported colour entry",
              UI.foldEntries( [ ent( "/m/s", "ALP-T SII/Hb", 3 ) ], {} ).problems,
              [ "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported" ] );
@@ -22274,7 +22274,7 @@ function runPipeTests()
              UI.foldEntries( [ ent( "/m/a", "UV/IR Cut", 3 ), ent( "/m/B", "UVIR", 3 ) ], {} ).problems,
              [ "Two images map to channel OSC: /m/a and /m/B" ] );
       check( "foldEntries initialises the colour slots", UI.foldEntries( [], {} ).paths,
-             { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "" } );
+             { L: "", R: "", G: "", B: "", H: "", S: "", O: "", OSC: "", OSCNB: "", OSCHA: "" } );
       check( "foldEntries a bad channel count is refused with its path",
              UI.foldEntries( [ ent( "/m/two", "L", 2 ) ], {} ).problems,
              [ Util.channelCountProblem( "/m/two", 2 ) ] );
@@ -22395,7 +22395,7 @@ function runPipeTests()
       check( "kind row: a remembered choice shows with its detected link", [ r4.index, r4.detectedLink ], [ 2, true ] );
       var r5 = UI.oscKindRow( ent( "/m/d.xisf", "ALP-T SII/Hb" ), {} );
       check( "kind row: an unsupported filter is disabled", [ r5.index, r5.enabled ], [ 0, false ] );
-      check( "kind items", UI.OSC_KIND_ITEMS, [ "", "Broadband", "Dual-band Hα + OIII" ] );
+      check( "kind items", UI.OSC_KIND_ITEMS, [ "", "Broadband", "Dual-band Hα + OIII", "Narrowband Hα" ] );
 
       // a change writes the choice, moves the entry, and a reset restores detection
       var choices = {}, e1 = ent( "/m/c.xisf", "", { channel: "OSC" } ), e2 = ent( "/m/other.xisf", "", { channel: "OSC" } );
@@ -23381,7 +23381,7 @@ function runPipeTests()
          OSC:   { filter: "UV/IR Cut", path: "/m/a.xisf", numberOfChannels: 3, width: 100, height: 80 },
          OSCNB: { filter: "Duo",       path: "/m/b.xisf", numberOfChannels: 3, width: 100, height: 80 } } ) );
       check( "oscKindProblems unconfident needs a choice",
-             probs, [ "choose Broadband or Dual-band Hα + OIII for /m/b.xisf" ] );
+             probs, [ "choose Broadband, Dual-band Hα + OIII or Narrowband Hα for /m/b.xisf" ] );
       check( "oscKindProblems fills oscKinds", c.oscKinds.OSC, "broadband" );
       var c2 = cfg( { OSCNB: "/m/c.xisf" } );
       check( "oscKindProblems unsupported filter",
@@ -23693,6 +23693,185 @@ function runPipeTests()
       var sparse = {}; stored = {};
       Config.saveFields( sparse, store, [ "mgcEnabled" ] );
       check( "a config without the key is saved as on", stored[ Config.SETTINGS_PREFIX + "mgcEnabled" ], true );
+   } )();
+   } if ( testGroup( "osc.halpha" ) ) {
+   ( function()
+   {
+      // detection: one Ha filter on a colour camera
+      function kindOf( f ) { var i = Util.oscFilterInfo( f ); return i ? i.kind : null; }
+      [ "Ha", "HA", "ha", "H-alpha", "H-Alpha 3nm", "Halpha", "Hα", "H alpha", "Ha 7nm", "Ha7nm", "Ha 12nm",
+        "Astronomik 6nm Ha", "Baader Ha 7nm", "ZWO Ha 7nm", "Optolong H-alpha 7nm", "Antlia 3nm Ha", "Hα 5nm" ].forEach( function( f )
+      {
+         var i = Util.oscFilterInfo( f );
+         check( "halpha: '" + f + "' is the narrowband Hα kind", [ i && i.kind, i && i.confident ], [ "halpha", true ] );
+      } );
+      check( "halpha: the bandwidth is read from the name", [ "Ha 7nm", "Antlia 3nm Ha", "H-alpha 12nm", "Ha", "Ha 6.5nm" ].map(
+             function( f ) { return Util.oscFilterInfo( f ).haNm; } ), [ 7, 3, 12, null, 6.5 ] );
+      [ "Optolong L-eXtreme", "L-eXtreme", "L-Ultimate", "L-eNhance", "ALP-T Hα/OIII", "ALP-T", "HA/OIII", "Hα/OIII",
+        "Ha+OIII", "Ha/OIII 5nm", "Duo-Band", "Dual", "Quad", "Triad", "NBZ", "OIII", "SII", "Luminance", "Sha",
+        "Shapley", "Alpha", "Chai", "Hydrogen", "Ha SII" ].forEach( function( f )
+      {
+         check( "halpha: '" + f + "' is not the Hα kind", kindOf( f ) == "halpha", false );
+      } );
+      check( "halpha: dual-band names keep their kind",
+             [ "L-eXtreme", "L-Ultimate", "L-eNhance", "ALP-T Hα/OIII", "Duo", "Quad", "Ha/OIII" ].map( kindOf ),
+             [ "dualband", "dualband", "dualband", "dualband", "dualband", "dualband", null ] );
+      check( "halpha: an empty filter is still broadband", kindOf( "" ), "broadband" );
+
+      // the slot
+      check( "halpha: slots and members", [ Util.COLOUR_SLOTS, Util.COLOUR_MEMBERS.OSCHA, Util.COLOUR_SLOT_KIND ],
+             [ [ "OSC", "OSCNB", "OSCHA" ], [ "H" ], { OSC: "broadband", OSCNB: "dualband", OSCHA: "halpha" } ] );
+      check( "halpha: a three-channel Ha master goes to OSCHA",
+             Util.entryChannel( "Ha 7nm", 3, "/m/h.xisf", {} ), { channel: "OSCHA", colour: true, kindSource: "detected" } );
+      check( "halpha: a one-channel Ha master is still the mono H",
+             Util.entryChannel( "Ha", 1, "/m/h.xisf", {} ).channel, "H" );
+      check( "halpha: the override picks it for a name that is not detected",
+             Util.entryChannel( "Mystery", 3, "/m/x.xisf", { "filter:mystery": "halpha" } ),
+             { channel: "OSCHA", colour: true, kindSource: "choice" } );
+      check( "halpha: and it overrides a broadband-named filter",
+             Util.entryChannel( "UV/IR Cut", 3, "/m/x.xisf", { "filter:uvircut": "halpha" } ).channel, "OSCHA" );
+      var cands = [ { path: "/m/a.xisf", filter: "Ha 7nm", numberOfChannels: 3, mtime: 1 },
+                    { path: "/m/b.xisf", filter: "UV/IR Cut", numberOfChannels: 3, mtime: 1 },
+                    { path: "/m/c.xisf", filter: "L-eXtreme", numberOfChannels: 3, mtime: 1 } ];
+      var picks = Util.selectColourMasters( cands, {} );
+      check( "halpha: selectColourMasters fills the three slots",
+             [ picks.OSC.path, picks.OSCNB.path, picks.OSCHA.path, picks.unresolved.length ],
+             [ "/m/b.xisf", "/m/c.xisf", "/m/a.xisf", 0 ] );
+      check( "halpha: no candidate leaves OSCHA empty", Util.selectColourMasters( [], {} ).OSCHA, null );
+      check( "halpha: effectiveOscKind with a remembered halpha choice",
+             Util.effectiveOscKind( null, "Mystery", "/m/x", { "filter:mystery": "halpha" } ).kind, "halpha" );
+      check( "halpha: the remembered choice round-trips",
+             ( function()
+             {
+                var c = Config.defaults(), saved = {};
+                c.oscKindChoices = { "filter:mystery": "halpha", "filter:junk": "bogus" };
+                var st = { settings: { write: function( k, t, v ) { saved[k] = v; },
+                                       read: function( k ) { return saved.hasOwnProperty( k ) ? saved[k] : null; } } };
+                Config.saveOscChoices( c, st );
+                var back = Config.defaults();
+                Config.loadOscChoices( back, st );
+                return back.oscKindChoices;
+             } )(), { "filter:mystery": "halpha" } );
+      check( "halpha: the default paths hold an OSCHA slot", Config.defaults().paths.OSCHA, "" );
+
+      // what each combination allows
+      function cfg( paths, palettes )
+      {
+         var c = Config.defaults();
+         for ( var k in paths ) c.paths[k] = paths[k];
+         if ( palettes ) c.palettes = palettes;
+         return c;
+      }
+      check( "halpha: supplies only H", Util.suppliedChannels( cfg( { OSCHA: "/m/h.xisf" } ) ), [ "H" ] );
+      check( "halpha with a broadband colour master supplies R, G, B and H",
+             Util.suppliedChannels( cfg( { OSC: "/m/a.xisf", OSCHA: "/m/h.xisf" } ) ), [ "R", "G", "B", "H" ] );
+      check( "halpha with a broadband colour master is allowed",
+             [ Util.oscCombinationProblem( cfg( { OSC: "/m/a.xisf", OSCHA: "/m/h.xisf" } ) ),
+               Util.colourMixProblem( cfg( { OSC: "/m/a.xisf", OSCHA: "/m/h.xisf" } ) ) ], [ null, null ] );
+      check( "halpha with a dual-band colour master is refused, naming both files",
+             Util.oscCombinationProblem( cfg( { OSCNB: "/m/dir/n.xisf", OSCHA: "/m/dir/h.xisf" } ) ),
+             "a Narrowband Hα colour master and a dual-band Hα + OIII colour master both supply H; " +
+             "choose one of them (Narrowband Hα: h.xisf; dual-band: n.xisf)" );
+      check( "halpha, dual-band and broadband together are refused too",
+             Util.oscCombinationProblem( cfg( { OSC: "/m/a", OSCNB: "/m/n", OSCHA: "/m/h" } ) ) != null, true );
+      check( "halpha is refused with a mono master (colour and mono are not mixed)",
+             Util.colourMixProblem( cfg( { L: "/m/l.xisf", OSCHA: "/m/h.xisf" } ) ) != null, true );
+      check( "halpha: preflight reports the combination",
+             Pipeline.preflight( cfg( { OSCNB: "/m/n.xisf", OSCHA: "/m/h.xisf" } ) ).filter( function( p )
+             { return p.indexOf( "both supply H" ) >= 0; } ).length, 1 );
+      check( "halpha: SHO and HSO are refused for it as for any colour master",
+             Pipeline.oscPaletteProblem( cfg( { OSCHA: "/m/h.xisf" }, [ "SHO" ] ) ),
+             "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO" );
+      check( "halpha: HOO is not refused, and is skipped for the missing O like a mono H-only run",
+             [ Pipeline.oscPaletteProblem( cfg( { OSCHA: "/m/h.xisf" }, [ "HOO" ] ) ),
+               Pipeline.wantedPalettes( cfg( { OSCHA: "/m/h.xisf" }, [ "HOO" ] ) ),
+               Pipeline.wantedPalettes( cfg( { H: "/m/h.xisf" }, [ "HOO" ] ) ) ], [ null, [], [] ] );
+      var warned = [], realWarn = Util.warn;
+      Util.warn = function( t, m ) { warned.push( m ); };
+      try { Pipeline.reportSkippedPalettes( cfg( { OSCHA: "/m/h.xisf" }, [ "HOO" ] ) ); }
+      finally { Util.warn = realWarn; }
+      check( "halpha: the log says the HOO palette needs O", warned,
+             [ "the HOO palette is skipped: it needs O, which was not supplied" ] );
+
+      // preflight's kind checks
+      function infoOf( table ) { return function( slot ) { return table[slot]; }; }
+      var h = cfg( { OSCHA: "/m/h.xisf" } );
+      check( "halpha: a detected Ha master in the Hα slot passes and is recorded",
+             [ Pipeline.oscKindProblems( h, infoOf( { OSCHA: { filter: "Ha 7nm", path: "/m/h.xisf", numberOfChannels: 3 } } ) ),
+               h.oscKinds.OSCHA ], [ [], "halpha" ] );
+      var wrong = cfg( { OSC: "/m/h.xisf" } );
+      check( "halpha: an Ha master in the broadband slot is refused",
+             Pipeline.oscKindProblems( wrong, infoOf( { OSC: { filter: "Ha 7nm", path: "/m/h.xisf", numberOfChannels: 3 } } ) ),
+             [ "/m/h.xisf is a narrowband Hα colour master; the broadband slot needs a Broadband master" ] );
+      var wrong2 = cfg( { OSCNB: "/m/h.xisf" } );
+      check( "halpha: an Ha master in the dual-band slot is refused",
+             Pipeline.oscKindProblems( wrong2, infoOf( { OSCNB: { filter: "Ha", path: "/m/h.xisf", numberOfChannels: 3 } } ) ),
+             [ "/m/h.xisf is a narrowband Hα colour master; the dual-band slot needs a Dual-band Hα + OIII master" ] );
+      var wrong3 = cfg( { OSCHA: "/m/b.xisf" } );
+      check( "halpha: a broadband master in the Hα slot is refused",
+             Pipeline.oscKindProblems( wrong3, infoOf( { OSCHA: { filter: "UV/IR Cut", path: "/m/b.xisf", numberOfChannels: 3 } } ) ),
+             [ "/m/b.xisf is a broadband colour master; the narrowband Hα slot needs a Narrowband Hα master" ] );
+      // controls
+      var st = Util.oscControlState( h );
+      check( "halpha: greys the mono boxes and SHO/HSO, and has no sensor row",
+             [ st.monoEnabled, st.shoHsoEnabled, st.sensorRowVisible, st.rgbFilterRowsVisible ], [ false, false, false, true ] );
+      check( "halpha alone: MGC is greyed (narrowband only)", Util.mgcControlState( h ).mgcBoxEnabled, false );
+      check( "halpha with broadband: MGC stays available",
+             Util.mgcControlState( cfg( { OSC: "/m/a", OSCHA: "/m/h" } ) ).mgcBoxEnabled, true );
+      check( "halpha: no sensor needed without an OSC master",
+             Pipeline.oscSensorProblems( h, function() { return false; } ), [] );
+      check( "halpha: no MARS database needed for it alone", Pipeline.marsProblems( h ), [] );
+      var withOsc = cfg( { OSC: "/m/a", OSCHA: "/m/h" } );
+      var asked = 0, realMgc = Steps.configuredMGC;
+      Steps.configuredMGC = function() { ++asked; return null; };
+      try { check( "halpha with broadband: the MARS database is asked for the broadband channels",
+                   Pipeline.marsProblems( withOsc ).length, 1 ); }
+      finally { Steps.configuredMGC = realMgc; }
+
+      // the split and the registration
+      check( "halpha: H is the red plane, G and B are not used", Pipeline.OSC_RECIPES.OSCHA, { H: 0 } );
+      check( "halpha: only the red plane is checked", Pipeline.OSC_VALIDATED_PLANES.OSCHA, [ 0 ] );
+      var sidecarsHa = {};
+      var ioHa = { stored: [], stats: [], asked: [] };
+      ioHa.openMaster = function() { return { id: "master" }; };
+      ioHa.cacheLoad = function() { return null; };
+      ioHa.cacheStore = function( key ) { ioHa.stored.push( key ); };
+      ioHa.planeWindow = function( m, plane ) { ioHa.asked.push( plane ); return { id: "plane" + plane }; };
+      // the green and blue planes are constant (clipped leak): they must not stop the run
+      ioHa.planeStats = function( m, plane )
+      { ioHa.stats.push( plane ); return plane == 0 ? { min: 0.01, max: 0.9, median: 0.1 } : { min: 0, max: 0, median: 0 }; };
+      ioHa.writeSidecar = function( name, rec ) { sidecarsHa[name] = JSON.stringify( rec ); };
+      ioHa.readSidecar = function( name ) { return sidecarsHa[name] ? JSON.parse( sidecarsHa[name] ) : null; };
+      ioHa.closeMaster = function() {};
+      var ha = Pipeline.oscGroupLoader( "OSCHA", { path: "/m/h.xisf", fingerprint: "fh" }, "halpha", null, ioHa );
+      var haWin = ha.planeWindow( 0 );
+      check( "halpha: the master is split into the red plane only",
+             [ haWin.id, ioHa.asked, ioHa.stats, ioHa.stored.length ], [ "plane0", [ 0 ], [ 0 ], 1 ] );
+      check( "halpha: the validation record holds the red plane", ha.validation().planes.length, 1 );
+      check( "halpha: its cache identity differs from the same file read as another kind",
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fh", "halpha" ), 0 ) !=
+             Pipeline.oscSiblingKey( Pipeline.oscGroupIdentity( "fh", "dualband" ), 0 ), true );
+      var plan = Pipeline.oscRegistrationPlan( [ "R", "G", "B", "H" ], { OSC: [ "R", "G", "B" ], OSCHA: [ "H" ] } );
+      check( "halpha with broadband: registered as one H,H,H image onto the OSC reference",
+             [ plan.ref, plan.identity, plan.groups ], [ "G", [ "R", "G", "B" ], [ { slot: "OSCHA", members: [ "H" ], planes: [ "H", "H", "H" ] } ] ] );
+      var alone = Pipeline.oscRegistrationPlan( [ "H" ], { OSCHA: [ "H" ] } );
+      check( "halpha alone: H is the reference and nothing is registered",
+             [ alone.ref, alone.identity, alone.groups, alone.mono ], [ "H", [ "H" ], [], [] ] );
+      check( "halpha: provenance names the source plane",
+             Pipeline.oscSourceText( { H: { group: "OSCHA", path: "/m/dir/h.xisf", plane: 0 } }, [ "H" ], true ),
+             "OSCHA h.xisf plane 0" );
+      check( "halpha: oscChannelGroups finds the group",
+             Pipeline.oscChannelGroups( { H: { group: "OSCHA" } } ), { OSCHA: [ "H" ] } );
+      check( "halpha: the kind rows offer it", [ UI.OSC_KIND_ITEMS[3], UI.oscKindRow( { filter: "Ha 7nm", ref: "/m/h" }, {} ).index ],
+             [ "Narrowband Hα", 3 ] );
+      var choices = {}, ent = { source: "file", ref: "/m/x", label: "x", filter: "Mystery", numberOfChannels: 3, colour: true, channel: null };
+      UI.applyOscKind( [ ent ], choices, ent, 3 );
+      check( "halpha: picking it is remembered per filter model and moves the entry",
+             [ choices, ent.channel ], [ { "filter:mystery": "halpha" }, "OSCHA" ] );
+      check( "halpha: two Ha masters are refused as one channel",
+             UI.foldEntries( [ { source: "file", ref: "/m/a", label: "a", channel: "OSCHA", colour: true },
+                               { source: "file", ref: "/m/b", label: "b", channel: "OSCHA", colour: true } ], {} ).problems,
+             [ "Two images map to channel OSCHA: a and b" ] );
    } )();
    } if ( testGroup( "osc.calibration" ) ) {
    ( function()
@@ -25828,7 +26007,7 @@ function runFailurePathTests()
       } );
 
       // 4. Anything else is null.
-      [ "Astronomik Deep-Sky", "xyzzy", "Ha 7nm", "Baader Moon & Skyglow" ].forEach( function( v )
+      [ "Astronomik Deep-Sky", "xyzzy", "Baader Moon & Skyglow" ].forEach( function( v )
       {
          check( "qa.osc.detect: '" + v + "' is not recognised", info( v ), null );
       } );
@@ -25938,7 +26117,7 @@ function runFailurePathTests()
       }
 
       // The slots and the defaults.
-      check( "qa.osc.config: the colour slots are OSC and OSCNB", Util.COLOUR_SLOTS, [ "OSC", "OSCNB" ] );
+      check( "qa.osc.config: the colour slots are OSC, OSCNB and OSCHA", Util.COLOUR_SLOTS, [ "OSC", "OSCNB", "OSCHA" ] );
       var d = Config.defaults();
       check( "qa.osc.config: the defaults carry both colour slots, empty",
              [ "OSC" in d.paths, "OSCNB" in d.paths, !d.paths.OSC, !d.paths.OSCNB ], [ true, true, true, true ] );
@@ -26069,7 +26248,7 @@ function runFailurePathTests()
    {
       var SII = "SHO and HSO need SII, which a colour camera cannot separate from Ha: choose HOO";
       var UNSUP = "this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported";
-      var CHOOSE = "choose Broadband or Dual-band Hα + OIII for ";
+      var CHOOSE = "choose Broadband, Dual-band Hα + OIII or Narrowband Hα for ";
       function conf( paths, palettes, views )
       {
          var c = Config.defaults(), k;
