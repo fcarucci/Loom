@@ -1316,9 +1316,8 @@ UI.SelectDialog = class extends Dialog
       this.sensorAuto.toolTip =
          "<p>Choose the sensor colour-filter curves from the camera named in the colour " +
          "master's INSTRUME header (for example the Sony colour sensor curves for an " +
-         "ASI2600MC Pro). Picking a curve by hand turns this off and keeps your choice; " +
-         "tick it again to follow the camera. A camera Loom does not know keeps your " +
-         "manual choice.</p>";
+         "ASI2600MC Pro). Untick it to choose the curves by hand; your choice is kept and " +
+         "used when the camera is not known. Tick it again to follow the camera.</p>";
       this.sensorAuto.onCheck = function( c )
       {
          self.config.oscSensorAuto = c;

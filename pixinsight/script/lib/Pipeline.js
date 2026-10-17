@@ -2581,8 +2581,9 @@ Pipeline.broadbandStages = function( bk, bc, config )
     * The MARS database file list, not just "MGC ran" -- a different
     * database gives a different correction from the same input. With MGC
     * switched off the stage is left out altogether, so nothing after it
-    * can reuse a result that went through MGC (and the other way round),
-    * and the order of the keys is unchanged with it on.
+    * can reuse a result that went through MGC (and the other way round).
+    * The chain follows Pipeline.STAGE_ORDER, so with it on the keys are
+    * what they always were.
     */
    if ( mgcOn )
       stages.mgc = { marsFiles: marsFiles };

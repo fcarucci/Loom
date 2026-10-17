@@ -23435,7 +23435,7 @@ function runPipeTests()
       function names( i ) { var r = Util.sensorCurvesForCamera( i ); return r ? [ r.R, r.G, r.B ] : null; }
       var imx571 = [ "Sony Color Sensor R-UVIRcut", "Sony Color Sensor G-UVIRcut", "Sony Color Sensor B-UVIRcut" ];
       [ "ZWO ASI2600MC Pro", "ZWO  ASI2600MC   Pro", "zwo asi2600mc air", "ASI2600MC-Duo", "QHY268C",
-        "QHY600C", "ZWO ASI6200MC Pro", "ZWO ASI094MC Pro" ].forEach( function( i )
+        "QHY600C", "ZWO ASI6200MC Pro" ].forEach( function( i )
       {
          check( "sensorCurvesForCamera '" + i + "' is the IMX571 family", names( i ), imx571 );
       } );
@@ -23449,7 +23449,7 @@ function runPipeTests()
              [ "Sony IMX 294 UV-IR CUT R", "Sony IMX 294 UV-IR CUT G", "Sony IMX 294 UV-IR CUT B" ] );
       check( "sensorCurvesForCamera ASI676MC", names( "ZWO ASI676MC" ),
              [ "Sony IMX 676 R", "Sony IMX 676 G", "Sony IMX 676 B" ] );
-      [ "ZWO ASI2600MM Pro", "QHY268M", "QHY600M", "ZWO ASI533MM Pro", "ZWO ASI2400MC Pro", "Canon EOS R", "", null,
+      [ "ZWO ASI2600MM Pro", "ZWO ASI094MC Pro", "QHY268M", "QHY600M", "ZWO ASI533MM Pro", "ZWO ASI2400MC Pro", "Canon EOS R", "", null,
         undefined ].forEach( function( i )
       {
          check( "sensorCurvesForCamera has nothing for " + JSON.stringify( i ), Util.sensorCurvesForCamera( i ), null );

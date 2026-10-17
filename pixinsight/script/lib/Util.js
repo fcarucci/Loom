@@ -1142,7 +1142,7 @@ Util.CAMERA_SENSOR_CURVES = [
      match: [ "asi676mc", "imx676" ],
      R: "Sony IMX 676 R", G: "Sony IMX 676 G", B: "Sony IMX 676 B" },
    { model: "Sony IMX571 family",
-     match: [ "asi2600mc", "asi6200mc", "asi094mc", "qhy268c", "qhy600c",
+     match: [ "asi2600mc", "asi6200mc", "qhy268c", "qhy600c",
               "imx571", "imx455", "imx461" ],
      R: "Sony Color Sensor R-UVIRcut", G: "Sony Color Sensor G-UVIRcut", B: "Sony Color Sensor B-UVIRcut" }
 ];
