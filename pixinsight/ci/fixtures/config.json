@@ -33,6 +33,7 @@
   "projectName": "",
   "exportDir": "",
   "marsPath": "",
+  "mgcEnabled": true,
   "starTool": "none",
   "noiseTool": "none",
   "noiseLevel": "medium",
@@ -49,6 +50,7 @@
    "G": "",
    "B": ""
   },
+  "oscSensorAuto": true,
   "oscKindChoices": {}
  },
  "load": {
@@ -76,6 +78,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -90,6 +93,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -143,6 +147,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -159,6 +164,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -186,6 +192,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -200,6 +207,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -260,6 +268,7 @@
     "projectName": "M31",
     "exportDir": "/out",
     "marsPath": "/mars/db",
+    "mgcEnabled": false,
     "starTool": "StarNet2",
     "noiseTool": "MLDenoise",
     "noiseLevel": "high",
@@ -276,6 +285,7 @@
      "G": "Sony Color Sensor G",
      "B": "Sony Color Sensor B"
     },
+    "oscSensorAuto": false,
     "oscKindChoices": {
      "filter:duo": "dualband"
     }
@@ -305,6 +315,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -319,6 +330,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -372,6 +384,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -388,6 +401,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {},
     "useGraXpert": true
    }
@@ -416,6 +430,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -430,6 +445,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -483,6 +499,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -499,6 +516,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {},
     "useGraXpert": false
    }
@@ -528,6 +546,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -542,6 +561,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -595,6 +615,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -611,6 +632,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {},
     "useGraXpert": true
    }
@@ -640,6 +662,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -654,6 +677,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -707,6 +731,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -723,6 +748,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {},
     "useGraXpert": false
    }
@@ -751,6 +777,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -765,6 +792,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -818,6 +846,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -834,6 +863,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -861,6 +891,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -875,6 +906,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -928,6 +960,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -944,6 +977,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -971,6 +1005,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -985,6 +1020,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1038,6 +1074,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1054,6 +1091,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1081,6 +1119,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1095,6 +1134,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1148,6 +1188,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1164,6 +1205,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1195,6 +1237,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1209,6 +1252,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1261,6 +1305,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1277,6 +1322,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1317,6 +1363,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1331,6 +1378,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1384,6 +1432,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1400,6 +1449,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1427,6 +1477,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1441,6 +1492,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1496,6 +1548,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1512,6 +1565,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1540,6 +1594,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1554,6 +1609,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1607,6 +1663,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1623,6 +1680,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1650,6 +1708,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1664,6 +1723,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1717,6 +1777,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1733,6 +1794,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1760,6 +1822,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1774,6 +1837,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1827,6 +1891,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1843,6 +1908,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1870,6 +1936,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1884,6 +1951,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -1937,6 +2005,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -1953,6 +2022,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -1980,6 +2050,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -1994,6 +2065,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -2048,6 +2120,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "SyQon Studio Prism 2.0",
     "noiseLevel": "medium",
@@ -2064,6 +2137,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -2091,6 +2165,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -2105,6 +2180,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -2159,6 +2235,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "SyQon Studio Prism Essential",
     "noiseLevel": "medium",
@@ -2175,6 +2252,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -2202,6 +2280,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -2216,6 +2295,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -2269,6 +2349,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "SyQon Studio Prism 2.0",
     "noiseLevel": "medium",
@@ -2285,6 +2366,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   },
@@ -2312,6 +2394,7 @@
     "Settings.read Loom/filter_G String",
     "Settings.read Loom/filter_B String",
     "Settings.read Loom/oscSensor String",
+    "Settings.read Loom/oscSensorAuto Boolean",
     "Settings.read Loom/oscKindChoices String",
     "Settings.read Loom/palettes String",
     "Settings.read Loom/narrowbandNormalize Boolean",
@@ -2326,6 +2409,7 @@
     "Settings.read Loom/stretchMethod String",
     "Settings.read Loom/stretch Boolean",
     "Settings.read Loom/marsPath String",
+    "Settings.read Loom/mgcEnabled Boolean",
     "Settings.read Loom/starTool String",
     "Settings.read Loom/noiseTool String",
     "Settings.read Loom/noiseLevel String",
@@ -2379,6 +2463,7 @@
     "projectName": "",
     "exportDir": "",
     "marsPath": "",
+    "mgcEnabled": true,
     "starTool": "none",
     "noiseTool": "none",
     "noiseLevel": "medium",
@@ -2395,6 +2480,7 @@
      "G": "",
      "B": ""
     },
+    "oscSensorAuto": true,
     "oscKindChoices": {}
    }
   }
@@ -2433,6 +2519,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2451,6 +2538,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2487,6 +2575,7 @@
     "Settings.write Loom/stretch Boolean true",
     "Settings.write Loom/stretchMethod String \"MultiscaleAdaptiveStretch\"",
     "Settings.write Loom/marsPath String \"/mars/db\"",
+    "Settings.write Loom/mgcEnabled Boolean false",
     "Settings.write Loom/starTool String \"StarNet2\"",
     "Settings.write Loom/noiseTool String \"MLDenoise\"",
     "Settings.write Loom/noiseLevel String \"high\"",
@@ -2505,6 +2594,7 @@
     "Settings.write Loom/filter_G String \"Antlia G\"",
     "Settings.write Loom/filter_B String \"Antlia B\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"Sony Color Sensor R\\\",\\\"G\\\":\\\"Sony Color Sensor G\\\",\\\"B\\\":\\\"Sony Color Sensor B\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean false",
     "Settings.write Loom/oscKindChoices String \"{\\\"filter:duonarrowband\\\":\\\"dualband\\\",\\\"path:/m/x.xisf\\\":\\\"broadband\\\"}\""
    ]
   },
@@ -2541,6 +2631,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2559,6 +2650,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2595,6 +2687,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2613,6 +2706,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2649,6 +2743,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2667,6 +2762,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2703,6 +2799,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2721,6 +2818,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2757,6 +2855,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2775,6 +2874,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   },
@@ -2811,6 +2911,7 @@
     "Settings.write Loom/stretch Boolean false",
     "Settings.write Loom/stretchMethod String \"mtf\"",
     "Settings.write Loom/marsPath String \"\"",
+    "Settings.write Loom/mgcEnabled Boolean true",
     "Settings.write Loom/starTool String \"none\"",
     "Settings.write Loom/noiseTool String \"none\"",
     "Settings.write Loom/noiseLevel String \"medium\"",
@@ -2829,6 +2930,7 @@
     "Settings.write Loom/filter_G String \"\"",
     "Settings.write Loom/filter_B String \"\"",
     "Settings.write Loom/oscSensor String \"{\\\"R\\\":\\\"\\\",\\\"G\\\":\\\"\\\",\\\"B\\\":\\\"\\\"}\"",
+    "Settings.write Loom/oscSensorAuto Boolean true",
     "Settings.write Loom/oscKindChoices String \"{}\""
    ]
   }
@@ -2875,6 +2977,7 @@
   "projectName": "M31",
   "exportDir": "/out",
   "marsPath": "/mars/db",
+  "mgcEnabled": false,
   "starTool": "StarNet2",
   "noiseTool": "MLDenoise",
   "noiseLevel": "high",
@@ -2891,6 +2994,7 @@
    "G": "Sony Color Sensor G",
    "B": "Sony Color Sensor B"
   },
+  "oscSensorAuto": false,
   "oscKindChoices": {
    "filter:duonarrowband": "dualband",
    "path:/m/x.xisf": "broadband"

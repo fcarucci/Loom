@@ -962,6 +962,7 @@ UI.SelectDialog = class extends Dialog
    this.sizer.add( this.separateLStarsCheck );
    this.sizer.add( this.exportPsbCheck );
    this.sizer.add( this.exportGroup );
+   this.sizer.add( this.mgcCheck );
    this.sizer.add( this.marsGroup );
    this.sizer.add( this.reduceHalos );
    this.sizer.add( this.validateOnly );
@@ -1299,12 +1300,33 @@ UI.SelectDialog = class extends Dialog
          {
             if ( !self.config.oscSensor ) self.config.oscSensor = { R: "", G: "", B: "" };
             self.config.oscSensor[ch] = scombo.itemText( i );
+            // a curve picked by hand is the user's choice, and overrides the camera's
+            self.config.oscSensorAuto = false;
+            self.sensorAuto.checked = false;
             Config.saveOscChoices( self.config, Config.pixinsightStore() );
+            self.updateSensorAuto( true );
          };
          self.sensorCombos[ch] = scombo;
          sensorItems.push( UI.label( self.sensorRow, ch + ":", 14 ), scombo, 6 );
       } );
-      this.sensorRow.sizer = UI.row( 4, sensorItems.concat( "stretch" ) );
+      this.sensorAuto = new CheckBox( this.sensorRow );
+      this.sensorAuto.text = "From camera";
+      this.sensorAuto.checked = config.oscSensorAuto !== false;
+      this.sensorAuto.toolTip =
+         "<p>Choose the sensor colour-filter curves from the camera named in the colour " +
+         "master's INSTRUME header (for example the Sony colour sensor curves for an " +
+         "ASI2600MC Pro). Picking a curve by hand turns this off and keeps your choice; " +
+         "tick it again to follow the camera. A camera Loom does not know keeps your " +
+         "manual choice.</p>";
+      this.sensorAuto.onCheck = function( c )
+      {
+         self.config.oscSensorAuto = c;
+         Config.saveOscChoices( self.config, Config.pixinsightStore() );
+         self.updateSensorAuto( true );
+      };
+      this.sensorNote = new Label( this.sensorRow );
+      this.sensorNote.useRichText = true;
+      this.sensorRow.sizer = UI.row( 4, sensorItems.concat( [ this.sensorAuto, this.sensorNote, "stretch" ] ) );
       this.sensorRow.visible = false;
       filterRows.add( this.sensorRow );
 
@@ -1760,17 +1782,47 @@ UI.SelectDialog = class extends Dialog
        * asks what the automatic routes alone would find, independently of
        * whatever this dialog has stored.
        */
-      var marsKnown = false;
-      var marsSource = "";
-      try
+      this.marsKnown = false;
+      this.marsProbed = false;
+      /*
+       * Asked lazily, and only while MGC is on: with the MGC box unchecked
+       * nothing looks for a MARS database (see updateMgcControls).
+       */
+      this.probeMars = function()
       {
-         var autoMgc = Steps.configuredMGC();
-         marsKnown = ( autoMgc != null && autoMgc.marsDatabaseFiles &&
-                       autoMgc.marsDatabaseFiles.length > 0 );
-         if ( marsKnown )
-            marsSource = autoMgc.source || "PixInsight";
-      }
-      catch ( e ) { marsKnown = false; }
+         if ( self.marsProbed )
+            return;
+         self.marsProbed = true;
+         var marsSource = "";
+         try
+         {
+            var autoMgc = Steps.configuredMGC();
+            self.marsKnown = ( autoMgc != null && autoMgc.marsDatabaseFiles &&
+                               autoMgc.marsDatabaseFiles.length > 0 );
+            if ( self.marsKnown )
+               marsSource = autoMgc.source || "PixInsight";
+         }
+         catch ( e ) { self.marsKnown = false; }
+         if ( self.marsKnown )
+            Util.log( "mgc", "MARS databases known from " + marsSource +
+                             "; not asking for a folder" );
+      };
+
+      this.mgcCheck = new CheckBox( this );
+      this.mgcCheck.text = "Run MGC (MultiscaleGradientCorrection against MARS)";
+      this.mgcCheck.checked = config.mgcEnabled !== false;
+      this.mgcCheckTip =
+         "<p>Corrects the broadband channels (L, R, G, B) against the MARS gradient " +
+         "references, before the gradient-removal pass below.</p>" +
+         "<p>On by default. Unchecked, MGC is not run, no MARS database is needed or " +
+         "looked for, and the gradient-removal tool chosen above still runs as chosen. " +
+         "Narrowband channels never run MGC.</p>";
+      this.mgcCheck.toolTip = this.mgcCheckTip;
+      this.mgcCheck.onCheck = function( c )
+      {
+         self.config.mgcEnabled = c;
+         self.updateMgcControls();
+      };
 
       this.marsGroup = new Control( this );
 
@@ -1815,10 +1867,31 @@ UI.SelectDialog = class extends Dialog
       };
 
       this.marsGroup.sizer = UI.row( 6, [ this.marsLabel, [ this.marsEdit, 100 ], this.marsBrowse ] );
-      this.marsGroup.visible = !marsKnown;
-      if ( marsKnown )
-         Util.log( "mgc", "MARS databases known from " + marsSource +
-                          "; not asking for a folder" );
+      this.marsGroup.visible = true;
+      this.marsEditTip = this.marsEdit.toolTip;
+   }
+
+   /*
+    * The MGC box and the MARS folder row follow the run (Util.mgcControlState):
+    * greyed with the reason while MGC is off or the run is narrowband only.
+    * The row is shown only when PixInsight cannot find the databases itself,
+    * and that is only asked while MGC is on and the run has broadband.
+    */
+   updateMgcControls()
+   {
+      var cfg = this.suppliedConfig();
+      cfg.mgcEnabled = this.config.mgcEnabled;
+      var state = Util.mgcControlState( cfg );
+      this.mgcCheck.enabled = state.mgcBoxEnabled;
+      this.mgcCheck.toolTip = state.mgcBoxEnabled ? this.mgcCheckTip : "<p>" + state.mgcBoxReason + "</p>";
+      if ( state.marsEnabled )
+         this.probeMars();
+      this.marsGroup.visible = !( this.marsProbed && this.marsKnown );
+      this.marsLabel.enabled = state.marsEnabled;
+      this.marsEdit.enabled = state.marsEnabled;
+      this.marsBrowse.enabled = state.marsEnabled;
+      this.marsEdit.toolTip = state.marsEnabled ? this.marsEditTip : "<p>" + state.marsReason + "</p>";
+      this.marsLabel.toolTip = this.marsEdit.toolTip;
    }
 
    /* Narrowband bandwidth and normalisation, then the halo option. */
@@ -2881,6 +2954,42 @@ UI.SelectDialog = class extends Dialog
    }
 
    /*
+    * The sensor colour filters while a colour master is in the list: with
+    * "From camera" on and a camera Loom knows (Pipeline.oscSensorChoice, from
+    * the OSC master's INSTRUME) the three curves are shown preselected and the
+    * combos are greyed; the manual choice in the configuration is not touched,
+    * so it is still there when the box is cleared or the camera is unknown.
+    */
+   updateSensorAuto( visible )
+   {
+      if ( !visible )
+         return;
+      var self = this, instrumes = [];
+      this.entries.forEach( function( e ) { if ( e.channel == "OSC" && e.colour ) instrumes.push( e.instrume ); } );
+      var camera = Util.commonInstrument( instrumes );
+      var choice = Pipeline.oscSensorChoice( this.config, camera, function( name, ch )
+      {
+         return UI.filterCurvesOf( ch ).some( function( cv ) { return cv.name == name; } );
+      } );
+      var shown = choice.source == "auto" ? choice : null;
+      Util.RGB_GROUP.forEach( function( ch )
+      {
+         var combo = self.sensorCombos[ch];
+         var want = shown ? shown[ch] : ( ( self.config.oscSensor || {} )[ch] || "" );
+         for ( var i = 0; i < combo.numberOfItems; ++i )
+            if ( combo.itemText( i ) == want )
+            {
+               combo.currentItem = i;
+               break;
+            }
+         combo.enabled = !shown;
+      } );
+      this.sensorNote.text = shown ? "<i>" + shown.model + ", from INSTRUME '" + camera + "'</i>"
+                                   : ( choice.source == "manual" && this.config.oscSensorAuto !== false
+                                       ? "<i>camera not known: your choice</i>" : "" );
+   }
+
+   /*
     * The controls a colour master changes (Util.oscControlState): the
     * mono filter boxes and the SII palettes are greyed with the reason,
     * and the sensor colour filters stand in for the R, G, B filter rows.
@@ -2899,6 +3008,8 @@ UI.SelectDialog = class extends Dialog
       } );
       Util.RGB_GROUP.forEach( function( k ) { self.filterRowControls[k].visible = state.rgbFilterRowsVisible; } );
       this.sensorRow.visible = state.sensorRowVisible;
+      this.updateSensorAuto( state.sensorRowVisible );
+      this.updateMgcControls();
 
       var sii = UI.sensorPalettes( Util.paletteNames() );
       Util.paletteNames().forEach( function( name )

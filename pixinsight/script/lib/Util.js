@@ -798,6 +798,29 @@ Util.oscControlState = function( config )
 };
 
 /*
+ * What the MGC box and the MARS folder row do. MGC is broadband only, so a
+ * run with no broadband channel (narrowband alone) has no use for either: the
+ * box is greyed with the reason, and so is the folder row. The setting itself
+ * is never changed here. With MGC switched off the folder row is greyed too:
+ * no database is needed. Reasons are empty while a control is enabled.
+ */
+Util.mgcControlState = function( config )
+{
+   var supplied = Util.suppliedChannels( config );
+   // an empty list is not narrowband-only: nothing is known yet, so nothing is greyed
+   var broadband = supplied.length == 0 ||
+                   Util.BROADBAND.some( function( k ) { return supplied.indexOf( k ) >= 0; } );
+   var on = !config || config.mgcEnabled !== false;
+   var noBroadband = "MGC is broadband only, and this run has no broadband channel";
+   return {
+      mgcBoxEnabled: broadband,
+      mgcBoxReason: broadband ? "" : noBroadband,
+      marsEnabled: broadband && on,
+      marsReason: !broadband ? noBroadband : on ? "" : "MGC is switched off, so no MARS database is needed"
+   };
+};
+
+/*
  * Maps a FITS FILTER keyword value to one of the seven channel keys, or
  * null when it cannot be recognised. The owner's masters carry bare
  * single letters ("L", "H", "O", ...), but filter wheels are commonly
@@ -1061,6 +1084,54 @@ Util.CAMERA_QE_CURVES = [
    { match: [ "kaf16803" ],           curve: "KAF-16803" },
    { match: [ "kaf8300" ],            curve: "KAF-8300" }
 ];
+
+/*
+ * The colour sensor behind a one-shot colour camera, from its INSTRUME: the
+ * three sensor colour-filter curves (R, G, B) of PixInsight's filter
+ * database that SPCC and SPFC use for a colour master. Only colour models are
+ * listed, by tokens that name the colour variant (asi2600mc, qhy268c), so a
+ * mono camera of the same sensor never matches. Anything not listed, an empty
+ * value included, gives null and the caller keeps the manual choice. The
+ * IMX571 family has no curves of its own in the database: the generic Sony
+ * colour sensor with UV/IR cut stands in. Matching is on normalised text
+ * (lowercase, alphanumeric only), as for Util.qeCurveNameForCamera.
+ */
+Util.CAMERA_SENSOR_CURVES = [
+   { model: "Sony IMX533",
+     match: [ "asi533mc", "imx533" ],
+     R: "Sony-IMX533 R", G: "Sony-IMX533 G", B: "Sony-IMX533 B" },
+   { model: "Sony IMX294",
+     match: [ "asi294mc", "imx294" ],
+     R: "Sony IMX 294 UV-IR CUT R", G: "Sony IMX 294 UV-IR CUT G", B: "Sony IMX 294 UV-IR CUT B" },
+   { model: "Sony IMX585/462/662",
+     match: [ "asi585mc", "asi462mc", "asi662mc", "imx585", "imx462", "imx662" ],
+     R: "Sony IMX 462-662-585-UVIRCut R", G: "Sony IMX 462-662-585-UVIRCut G",
+     B: "Sony IMX 462-662-585-UVIRCut B" },
+   { model: "Sony IMX676",
+     match: [ "asi676mc", "imx676" ],
+     R: "Sony IMX 676 R", G: "Sony IMX 676 G", B: "Sony IMX 676 B" },
+   { model: "Sony IMX571 family",
+     match: [ "asi2600mc", "asi6200mc", "asi094mc", "qhy268c", "qhy600c",
+              "imx571", "imx455", "imx461" ],
+     R: "Sony Color Sensor R-UVIRcut", G: "Sony Color Sensor G-UVIRcut", B: "Sony Color Sensor B-UVIRcut" }
+];
+
+Util.sensorCurvesForCamera = function( instrume )
+{
+   if ( instrume == null )
+      return null;
+   var norm = String( instrume ).toLowerCase().replace( /[^a-z0-9]/g, "" );
+   if ( norm.length == 0 )
+      return null;
+   for ( var i = 0; i < Util.CAMERA_SENSOR_CURVES.length; ++i )
+   {
+      var e = Util.CAMERA_SENSOR_CURVES[i];
+      for ( var j = 0; j < e.match.length; ++j )
+         if ( norm.indexOf( e.match[j] ) >= 0 )
+            return { model: e.model, R: e.R, G: e.G, B: e.B };
+   }
+   return null;
+};
 
 /*
  * "2026-09-14 13:02" -- date and time, no seconds and no timezone. These

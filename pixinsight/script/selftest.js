@@ -746,6 +746,7 @@ function configTranscripts()
       graxpertNarrowband: true, narrowbandBandwidth: 6.5, reduceHalos: true, projectName: "M31",
       exportPsb: true, separateLStars: true, keepLinear: true, exportDir: "/out",
       stretchMethod: Steps.STRETCH_METHOD_MAS, stretch: true, marsPath: "/mars/db",
+      mgcEnabled: false, oscSensorAuto: false,
       starTool: Steps.STAR_TOOL_STARNET, noiseTool: Steps.NR_TOOL_MLDENOISE, noiseLevel: "high",
       noiseLevelL: "low", sharpenTool: Steps.SHARPEN_TOOL_BXT, starReduction: "medium",
       detailLevel: "high", gradientTool: Steps.GRADIENT_TOOL_STUDIO, useGraXpert: true,
@@ -823,6 +824,8 @@ function configTranscripts()
    all.projectName = "M31";
    all.exportDir = "/out";
    all.marsPath = "/mars/db";
+   all.mgcEnabled = false;
+   all.oscSensorAuto = false;
    all.starTool = Steps.STAR_TOOL_STARNET;
    all.noiseTool = Steps.NR_TOOL_MLDENOISE;
    all.noiseLevel = "high";
@@ -23424,6 +23427,272 @@ function runPipeTests()
       check( "oscInfoOf gives null for a missing file",
              Pipeline.oscInfoOf( cfg( { OSC: "/m/definitely/not/here.xisf" } ) )( "OSC" ), null );
       check( "oscInfoOf gives null for an empty slot", Pipeline.oscInfoOf( cfg( {} ) )( "OSC" ), null );
+   } )();
+   } if ( testGroup( "osc.sensor" ) ) {
+   ( function()
+   {
+      // INSTRUME -> the colour sensor's R, G, B curves of the filter database
+      function names( i ) { var r = Util.sensorCurvesForCamera( i ); return r ? [ r.R, r.G, r.B ] : null; }
+      var imx571 = [ "Sony Color Sensor R-UVIRcut", "Sony Color Sensor G-UVIRcut", "Sony Color Sensor B-UVIRcut" ];
+      [ "ZWO ASI2600MC Pro", "ZWO  ASI2600MC   Pro", "zwo asi2600mc air", "ASI2600MC-Duo", "QHY268C",
+        "QHY600C", "ZWO ASI6200MC Pro", "ZWO ASI094MC Pro" ].forEach( function( i )
+      {
+         check( "sensorCurvesForCamera '" + i + "' is the IMX571 family", names( i ), imx571 );
+      } );
+      check( "sensorCurvesForCamera names the model", Util.sensorCurvesForCamera( "ZWO ASI2600MC Pro" ).model,
+             "Sony IMX571 family" );
+      check( "sensorCurvesForCamera ASI533MC", names( "ZWO ASI533MC Pro" ),
+             [ "Sony-IMX533 R", "Sony-IMX533 G", "Sony-IMX533 B" ] );
+      check( "sensorCurvesForCamera ASI585MC", names( "ZWO ASI585MC" ),
+             [ "Sony IMX 462-662-585-UVIRCut R", "Sony IMX 462-662-585-UVIRCut G", "Sony IMX 462-662-585-UVIRCut B" ] );
+      check( "sensorCurvesForCamera ASI294MC", names( "ZWO ASI294MC Pro" ),
+             [ "Sony IMX 294 UV-IR CUT R", "Sony IMX 294 UV-IR CUT G", "Sony IMX 294 UV-IR CUT B" ] );
+      check( "sensorCurvesForCamera ASI676MC", names( "ZWO ASI676MC" ),
+             [ "Sony IMX 676 R", "Sony IMX 676 G", "Sony IMX 676 B" ] );
+      [ "ZWO ASI2600MM Pro", "QHY268M", "QHY600M", "ZWO ASI533MM Pro", "ZWO ASI2400MC Pro", "Canon EOS R", "", null,
+        undefined ].forEach( function( i )
+      {
+         check( "sensorCurvesForCamera has nothing for " + JSON.stringify( i ), Util.sensorCurvesForCamera( i ), null );
+      } );
+      // every curve the table names is a real curve of the filter database
+      var shipped = null;
+      try { shipped = File.readTextFile( Steps.FILTERS_XSPD_PATH ); } catch ( e ) { shipped = null; }
+      if ( shipped != null && shipped.indexOf( "Sony Color Sensor" ) >= 0 )
+      {
+         var missing = [];
+         Util.CAMERA_SENSOR_CURVES.forEach( function( e )
+         {
+            [ "R", "G", "B" ].forEach( function( ch )
+            {
+               if ( shipped.indexOf( '<Filter name="' + e[ch] + '" channel="' + ch + '"' ) < 0 )
+                  missing.push( ch + ":" + e[ch] );
+            } );
+         } );
+         check( "sensor table curves exist in this PixInsight's filters.xspd", missing, [] );
+      }
+
+      // the choice: automatic, manual, none
+      var present = function() { return true; };
+      var cfgA = Config.defaults();
+      var auto = Pipeline.oscSensorChoice( cfgA, "ZWO ASI2600MC Pro", present );
+      check( "choice: a known camera is automatic by default", [ auto.source, auto.R, auto.G, auto.B ],
+             [ "auto" ].concat( imx571 ) );
+      check( "choice: the log says which sensor and why", auto.note,
+             "sensor colour filters: Sony IMX571 family (" + imx571.join( ", " ) +
+             "), from INSTRUME 'ZWO ASI2600MC Pro'" );
+      cfgA.oscSensor = { R: "My R", G: "My G", B: "My B" };
+      check( "choice: automatic beats a remembered manual choice while on",
+             Pipeline.oscSensorChoice( cfgA, "ZWO ASI2600MC Pro", present ).source, "auto" );
+      cfgA.oscSensorAuto = false;
+      var man = Pipeline.oscSensorChoice( cfgA, "ZWO ASI2600MC Pro", present );
+      check( "choice: the manual choice overrides the camera when automatic is off",
+             [ man.source, man.R, man.G, man.B ], [ "manual", "My R", "My G", "My B" ] );
+      check( "choice: manual note", man.note,
+             "sensor colour filters: My R, My G, My B, the manual choice (automatic is off)" );
+      cfgA.oscSensorAuto = true;
+      var unk = Pipeline.oscSensorChoice( cfgA, "Mystery Cam", present );
+      check( "choice: an unknown camera falls back to the manual choice, and says so",
+             [ unk.source, unk.R, unk.note ],
+             [ "manual", "My R", "sensor colour filters: My R, My G, My B, no colour-sensor curves are known for " +
+                                  "the camera 'Mystery Cam'; using the manual choice" ] );
+      var none = Pipeline.oscSensorChoice( Config.defaults(), "Mystery Cam", present );
+      check( "choice: unknown camera and no manual choice is none, with a note",
+             [ none.source, none.note ],
+             [ "none", "sensor colour filters: no colour-sensor curves are known for the camera 'Mystery Cam'; " +
+                       "choose them by hand (SPCC section)" ] );
+      check( "choice: no camera named is none, and not a crash",
+             Pipeline.oscSensorChoice( Config.defaults(), null, present ).source, "none" );
+      var absent = Pipeline.oscSensorChoice( Config.defaults(), "ZWO ASI2600MC Pro", function() { return false; } );
+      check( "choice: curves missing from the database are not chosen",
+             [ absent.source, absent.note ],
+             [ "none", "sensor colour filters: the colour-sensor curves for the camera 'ZWO ASI2600MC Pro' are not " +
+                       "in filters.xspd; choose them by hand (SPCC section)" ] );
+
+      // preflight: resolves from the OSC master's INSTRUME and logs once
+      var logged = [], realLog = Util.log;
+      Util.log = function( tag, msg ) { logged.push( tag + ": " + msg ); };
+      try
+      {
+         var c = Config.defaults(); c.paths.OSC = "/m/a.xisf";
+         var info = function( ins ) { return function( slot ) { return { filter: "UV/IR Cut", instrume: ins }; }; };
+         check( "preflight: a known camera needs no manual choice",
+                Pipeline.oscSensorProblems( c, present, info( "ZWO ASI2600MC Pro" ) ), [] );
+         check( "preflight: the resolved sensor is what the run uses", Pipeline.oscSensorOf( c ),
+                { R: imx571[0], G: imx571[1], B: imx571[2] } );
+         check( "preflight: the choice is logged with the camera",
+                logged, [ "spcc: " + auto.note ] );
+         check( "preflight: the remembered manual choice is untouched", c.oscSensor, { R: "", G: "", B: "" } );
+         check( "preflight: an unknown camera with no manual choice asks for it",
+                Pipeline.oscSensorProblems( c, present, info( "Mystery Cam" ) ),
+                [ "choose the sensor colour filters for the colour master (SPCC section)" ] );
+         check( "preflight: and leaves nothing resolved", c.oscSensorResolved, undefined );
+         c.oscSensor = { R: "r", G: "g", B: "b" };
+         check( "preflight: an unknown camera falls back to the manual choice",
+                [ Pipeline.oscSensorProblems( c, present, info( "Mystery Cam" ) ), Pipeline.oscSensorOf( c ) ],
+                [ [], { R: "r", G: "g", B: "b" } ] );
+         c.oscSensorAuto = false;
+         Pipeline.oscSensorProblems( c, present, info( "ZWO ASI2600MC Pro" ) );
+         check( "preflight: manual override wins over a known camera", Pipeline.oscSensorOf( c ),
+                { R: "r", G: "g", B: "b" } );
+         c.oscSensorAuto = true;
+         var mono = Config.defaults(); mono.paths.L = "/m/l.xisf"; mono.oscSensorResolved = { R: "x", G: "y", B: "z" };
+         check( "preflight: a mono run has no sensor and drops a stale resolution",
+                [ Pipeline.oscSensorProblems( mono, present, info( "ZWO ASI2600MC Pro" ) ), mono.oscSensorResolved ],
+                [ [], undefined ] );
+         var nb = Config.defaults(); nb.paths.OSCNB = "/m/n.xisf";
+         check( "preflight: a dual-band-only run has no sensor",
+                Pipeline.oscSensorProblems( nb, function() { return false; }, info( "ZWO ASI2600MC Pro" ) ), [] );
+      }
+      finally { Util.log = realLog; }
+
+      // keys follow what the run uses
+      var k = Config.defaults(); k.paths.OSC = "/m/a.xisf";
+      k.oscSensorResolved = { R: imx571[0], G: imx571[1], B: imx571[2] };
+      check( "oscSpfcParams follows the resolved sensor", Pipeline.oscSpfcParams( "G", k ),
+             { channel: "G", filter: imx571[1], qe: "Ideal QE curve" } );
+      check( "effectiveFilters follows the resolved sensor", [ Pipeline.effectiveFilters( k ).R, Pipeline.effectiveFilters( k ).B ],
+             [ imx571[0], imx571[2] ] );
+      var k2 = Config.defaults(); k2.paths.OSC = "/m/a.xisf"; k2.oscSensor = { R: imx571[0], G: imx571[1], B: imx571[2] };
+      var wb = { R: { cleanKey: "r" }, G: { cleanKey: "g" }, B: { cleanKey: "b" } }, common = { x0: 0, y0: 0, x1: 9, y1: 9 };
+      check( "the white-balance key is the same for the same curves, chosen by camera or by hand",
+             Pipeline.cleanWhiteBalanceKey( wb, k, common, null, "ref" ),
+             Pipeline.cleanWhiteBalanceKey( wb, k2, common, null, "ref" ) );
+      var k3 = Config.defaults(); k3.paths.OSC = "/m/a.xisf"; k3.oscSensorResolved = { R: "a", G: "b", B: "c" };
+      check( "the white-balance key changes with the camera's curves",
+             Pipeline.cleanWhiteBalanceKey( wb, k, common, null, "ref" ) !=
+             Pipeline.cleanWhiteBalanceKey( wb, k3, common, null, "ref" ), true );
+
+      // remembered
+      check( "automatic is the default", Config.defaults().oscSensorAuto, true );
+      var stored = {};
+      var store = { settings: { write: function( key, type, v ) { stored[key] = v; },
+                                read: function( key ) { return stored.hasOwnProperty( key ) ? stored[key] : null; } } };
+      var off = Config.defaults(); off.oscSensorAuto = false;
+      Config.saveOscChoices( off, store );
+      var back = Config.defaults();
+      Config.loadOscChoices( back, store );
+      check( "a manual override is remembered", back.oscSensorAuto, false );
+      var old = Config.defaults();
+      Config.loadOscChoices( old, { settings: { read: function() { return null; } } } );
+      check( "settings from before the option follow the camera", old.oscSensorAuto, true );
+   } )();
+   } if ( testGroup( "mgc.option" ) ) {
+   ( function()
+   {
+      var broadband = Config.defaults(); broadband.paths.R = "/m/R.xisf"; broadband.paths.G = "/m/G.xisf";
+      broadband.paths.B = "/m/B.xisf";
+      check( "the MGC option is on by default", Config.defaults().mgcEnabled, true );
+      check( "mgcOn: default, true, false, and a config without the key",
+             [ Pipeline.mgcOn( Config.defaults() ), Pipeline.mgcOn( { mgcEnabled: true } ),
+               Pipeline.mgcOn( { mgcEnabled: false } ), Pipeline.mgcOn( {} ) ], [ true, true, false, true ] );
+
+      // preflight: no MARS database needed, and none looked for, with MGC off
+      var asked = 0, realMgc = Steps.configuredMGC;
+      Steps.configuredMGC = function() { ++asked; return null; };
+      try
+      {
+         check( "marsProblems: MGC on and no database refuses the broadband run",
+                Pipeline.marsProblems( broadband ).length, 1 );
+         check( "marsProblems: asked the database", asked, 1 );
+         asked = 0;
+         var off = Config.defaults(); off.paths.R = "/m/R.xisf"; off.paths.G = "/m/G.xisf"; off.paths.B = "/m/B.xisf";
+         off.mgcEnabled = false;
+         check( "marsProblems: MGC off needs no database", Pipeline.marsProblems( off ), [] );
+         check( "marsProblems: MGC off does not look for one", asked, 0 );
+         var oscOff = Config.defaults(); oscOff.paths.OSC = "/m/a.xisf"; oscOff.mgcEnabled = false;
+         check( "marsProblems: MGC off, colour master", Pipeline.marsProblems( oscOff ), [] );
+      }
+      finally { Steps.configuredMGC = realMgc; }
+
+      // the stage and the keys
+      var realCurve = Steps.deviceCurveForImage, realStudio = Steps.studioAvailable;
+      var asked2 = 0;
+      Steps.deviceCurveForImage = function( i ) { return { name: "QE:" + i }; };
+      Steps.configuredMGC = function() { ++asked2; return { marsDatabaseFiles: [ "/mars/b.xmars", "/mars/a.xmars" ] }; };
+      Steps.studioAvailable = function() { return false; };
+      var on, offStages, offKeys, onKeys;
+      try
+      {
+         var cOn = Config.defaults();
+         on = Pipeline.broadbandStages( "R", { instrume: "CAM" }, cOn );
+         check( "broadbandStages: MGC on keeps the stage and its sorted database list",
+                on.mgc, { marsFiles: [ "/mars/a.xmars", "/mars/b.xmars" ] } );
+         check( "broadbandStages: MGC on asked for the databases", asked2, 1 );
+         asked2 = 0;
+         var cOff = Config.defaults(); cOff.mgcEnabled = false;
+         offStages = Pipeline.broadbandStages( "R", { instrume: "CAM" }, cOff );
+         check( "broadbandStages: MGC off has no mgc stage", "mgc" in offStages, false );
+         check( "broadbandStages: MGC off does not look for the databases", asked2, 0 );
+         check( "broadbandStages: MGC off keeps every other stage",
+                Object.keys( offStages ).sort(), Object.keys( on ).filter( function( k ) { return k != "mgc"; } ).sort() );
+         onKeys = Pipeline.buildStageKeys( "src", on );
+         offKeys = Pipeline.buildStageKeys( "src", offStages );
+         check( "the chain: MGC off runs no mgc stage", offKeys.map( function( e ) { return e.stage; } ).indexOf( "mgc" ), -1 );
+         check( "the chain: MGC on has one", onKeys.map( function( e ) { return e.stage; } ).indexOf( "mgc" ) >= 0, true );
+         var last = function( c ) { return c[c.length - 1].key; };
+         check( "the last stage's key differs with MGC off, so a cached MGC result is never reused",
+                last( onKeys ) != last( offKeys ), true );
+         // the same as the key today: the stage keyed on its sorted database list
+         check( "MGC on: the mgc stage key is Cache.chainKey of the solve/spfc chain",
+                onKeys.filter( function( e ) { return e.stage == "mgc"; } )[0].key,
+                Cache.chainKey( onKeys.filter( function( e ) { return e.stage == "spfc"; } )[0].key, "mgc",
+                                { marsFiles: [ "/mars/a.xmars", "/mars/b.xmars" ] } ) );
+         // an OSC channel as well
+         var oscOff = Config.defaults(); oscOff.mgcEnabled = false; oscOff.oscSensor = { R: "r", G: "g", B: "b" };
+         check( "broadbandStages: an OSC channel with MGC off has none either",
+                "mgc" in Pipeline.broadbandStages( "G", { group: "OSC" }, oscOff ), false );
+      }
+      finally { Steps.deviceCurveForImage = realCurve; Steps.configuredMGC = realMgc; Steps.studioAvailable = realStudio; }
+
+      // the second pass still runs as chosen
+      var onlyGrax = Config.defaults(); onlyGrax.mgcEnabled = false; onlyGrax.gradientTool = Steps.GRADIENT_TOOL_GRAXPERT;
+      var tools = [ Steps.GRADIENT_TOOL_GRAXPERT, Steps.GRADIENT_TOOL_NONE ];
+      tools.forEach( function( t )
+      {
+         var a = Config.defaults(), b = Config.defaults();
+         a.gradientTool = t; b.gradientTool = t; b.mgcEnabled = false;
+         check( "gradient stage params do not depend on the MGC box (" + t + ")",
+                Steps.gradientStageParams( a ), Steps.gradientStageParams( b ) );
+      } );
+
+      // the dialog's controls
+      var st = Util.mgcControlState( broadband );
+      check( "controls: broadband, MGC on: both enabled", [ st.mgcBoxEnabled, st.marsEnabled, st.mgcBoxReason, st.marsReason ],
+             [ true, true, "", "" ] );
+      var stOff = Util.mgcControlState( Object.assign( {}, broadband, { mgcEnabled: false } ) );
+      check( "controls: MGC off greys the MARS row with a reason, the box stays",
+             [ stOff.mgcBoxEnabled, stOff.marsEnabled, stOff.marsReason ],
+             [ true, false, "MGC is switched off, so no MARS database is needed" ] );
+      var nbOnly = Config.defaults(); nbOnly.paths.H = "/m/H.xisf"; nbOnly.paths.O = "/m/O.xisf";
+      var stNb = Util.mgcControlState( nbOnly );
+      check( "controls: narrowband only greys the box and the row, with a reason",
+             [ stNb.mgcBoxEnabled, stNb.marsEnabled, stNb.mgcBoxReason, stNb.marsReason ],
+             [ false, false, "MGC is broadband only, and this run has no broadband channel",
+               "MGC is broadband only, and this run has no broadband channel" ] );
+      var nbOnlyOff = Object.assign( {}, nbOnly, { mgcEnabled: false } );
+      check( "controls: narrowband only does not lose the setting", Util.mgcControlState( nbOnlyOff ).mgcBoxEnabled, false );
+      check( "controls: narrowband plus a colour master with broadband enables MGC",
+             Util.mgcControlState( Object.assign( Config.defaults(), { paths: { OSC: "/m/a.xisf" } } ) ).mgcBoxEnabled, true );
+      check( "controls: dual-band colour master alone is narrowband only",
+             Util.mgcControlState( Object.assign( Config.defaults(), { paths: { OSCNB: "/m/n.xisf" } } ) ).mgcBoxEnabled, false );
+      check( "controls: an empty list greys nothing", Util.mgcControlState( Config.defaults() ).mgcBoxEnabled, true );
+
+      // remembered like the other options
+      var stored = {};
+      var store = { settings: { write: function( key, type, v ) { stored[key] = v; },
+                                read: function( key ) { return stored.hasOwnProperty( key ) ? stored[key] : null; } } };
+      var c = Config.defaults(); c.mgcEnabled = false;
+      Config.saveFields( c, store, [ "mgcEnabled" ] );
+      check( "saved as a plain setting", stored[ Config.SETTINGS_PREFIX + "mgcEnabled" ], false );
+      var back = Config.defaults();
+      Config.loadFields( back, store, [ "mgcEnabled" ] );
+      check( "and read back", back.mgcEnabled, false );
+      var absent = Config.defaults();
+      Config.loadFields( absent, { settings: { read: function() { return null; } } }, [ "mgcEnabled" ] );
+      check( "settings from before the option run MGC", absent.mgcEnabled, true );
+      var sparse = {}; stored = {};
+      Config.saveFields( sparse, store, [ "mgcEnabled" ] );
+      check( "a config without the key is saved as on", stored[ Config.SETTINGS_PREFIX + "mgcEnabled" ], true );
    } )();
    } if ( testGroup( "osc.calibration" ) ) {
    ( function()

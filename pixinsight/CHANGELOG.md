@@ -5,6 +5,11 @@ section of this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic sensor colour filters for one-shot colour cameras.** For a broadband colour master, Loom now chooses the sensor's R, G and B curves from the camera named in the `INSTRUME` header and says in the log which it chose and why. The ASI2600MC, ASI6200MC, ASI094MC, QHY268C and QHY600C (IMX571 family) use the "Sony Color Sensor R/G/B-UVIRcut" curves; the ASI533MC, ASI294MC, ASI585MC, ASI462MC, ASI662MC and ASI676MC use their own entries. A camera Loom does not know, or one that is not named, keeps your manual choice, with a note in the log. **From camera** in the dialog is on by default; picking a curve by hand turns it off and is remembered.
+- **A Run MGC box**, checked by default, next to the MARS database folder. Unchecked, MGC is not run, no MARS database is required or looked for, the MARS folder row is greyed with the reason, and the gradient-removal pass (GraXpert, SyQon or Multi Gradient only) runs as chosen. The setting is remembered, and results made without MGC are never reused for a run with it. The box is greyed for a narrowband-only run. With the box checked nothing changes.
+
 ## [0.5.3] — 2026-10-16
 
 - **Loom for Siril 0.5.3 (experimental) is released with it.** Fly-Through can read Gaia data from a folder you choose (the "Gaia data" choice `folder`, or `--gaia folder:DIR`) instead of the online query, and shows Siril's local Gaia catalogue without using it, because it has no parallax. The PixInsight scripts themselves are unchanged. See `siril/CHANGELOG.md` for the details.

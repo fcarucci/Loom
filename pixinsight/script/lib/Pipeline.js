@@ -69,7 +69,7 @@ Pipeline.preflight = function( config )
    var infoOf = Pipeline.oscInfoOf( config );
    problems = problems.concat( Pipeline.inputChannelProblems( config, infoOf ) );
    problems = problems.concat( Pipeline.oscKindProblems( config, infoOf ) );
-   problems = problems.concat( Pipeline.oscSensorProblems( config ) );
+   problems = problems.concat( Pipeline.oscSensorProblems( config, null, infoOf ) );
 
    for ( var i = 0; i < Pipeline.REQUIRED_PROCESSES.length; ++i )
    {
@@ -151,6 +151,16 @@ Pipeline.reportSkippedPalettes = function( config )
 };
 
 /*
+ * Whether MGC runs: the dialog's MGC box, on unless switched off. A
+ * configuration without the key (saved before the box, or built by hand)
+ * runs MGC, as it always did.
+ */
+Pipeline.mgcOn = function( config )
+{
+   return !config || config.mgcEnabled !== false;
+};
+
+/*
  * MGC runs on every broadband channel, and Steps.mgc refuses to start
  * without a MARS database. Asked here the same way -- Steps.configuredMGC,
  * with the run's own folder -- so the absence costs a dialog box rather
@@ -159,6 +169,9 @@ Pipeline.reportSkippedPalettes = function( config )
  */
 Pipeline.marsProblems = function( config )
 {
+   // MGC switched off: no database is needed, and none is looked for.
+   if ( !Pipeline.mgcOn( config ) )
+      return [];
    var supplied = Util.suppliedChannels( config );
    var broadband = Util.BROADBAND.filter( function( k ) { return supplied.indexOf( k ) >= 0; } );
    if ( broadband.length == 0 )
@@ -305,39 +318,107 @@ Pipeline.oscInfoOf = function( config )
          if ( w == null || w.isNull )
             return null;
          var img = w.mainView.image;
-         return { filter: Util.keywordValue( w.keywords, "FILTER" ), path: id,
+         return { filter: Util.keywordValue( w.keywords, "FILTER" ),
+                  instrume: Util.keywordValue( w.keywords, "INSTRUME" ), path: id,
                   numberOfChannels: img.numberOfChannels, width: img.width, height: img.height };
       }
       var path = config.paths && config.paths[slot];
       if ( !path || !File.exists( path ) )
          return null;
       var info = Util.readImageInfo( path );
-      return { filter: Util.keywordValue( info.keywords, "FILTER" ), path: path,
+      return { filter: Util.keywordValue( info.keywords, "FILTER" ),
+               instrume: Util.keywordValue( info.keywords, "INSTRUME" ), path: path,
                numberOfChannels: info.numberOfChannels, width: info.width, height: info.height };
    };
 };
 
 /*
- * The colour camera's sensor checks. A colour master (OSC) is calibrated
- * against the three sensor colour-filter curves in config.oscSensor, so all
- * three must be chosen and each must exist in filters.xspd. A run without
- * OSC (mono, or OSCNB alone) has no sensor to choose. curveExists( name,
- * channel ) can be injected; production asks the filter database.
+ * Which sensor colour-filter curves a colour master is calibrated against,
+ * and why. `instrume` is the master's INSTRUME (null when it has none);
+ * `exists( name, channel )` says whether the filter database has a curve.
+ *
+ * Automatic (config.oscSensorAuto, on unless switched off) comes first: the
+ * curves Util.sensorCurvesForCamera gives for the camera, when all three are in
+ * the database. Otherwise the manual choice in config.oscSensor stands, which
+ * is also what a switched-off automatic leaves. Returns
+ * { source: "auto" | "manual" | "none", R, G, B, model, note }; note is the
+ * log line. "none" has no curves chosen (preflight then asks for them).
  */
-Pipeline.oscSensorProblems = function( config, curveExists )
+Pipeline.oscSensorChoice = function( config, instrume, exists )
 {
+   var trio = Util.RGB_GROUP;
+   var manual = config.oscSensor || {};
+   var haveManual = trio.every( function( k ) { return !!manual[k]; } );
+   var named = instrume ? "'" + instrume + "'" : "(not named)";
+   var why = null;
+
+   if ( config.oscSensorAuto !== false )
+   {
+      var auto = Util.sensorCurvesForCamera( instrume );
+      if ( auto == null )
+         why = "no colour-sensor curves are known for the camera " + named;
+      else if ( !trio.every( function( k ) { return exists( auto[k], k ); } ) )
+         why = "the colour-sensor curves for the camera " + named + " are not in filters.xspd";
+      else
+         return { source: "auto", R: auto.R, G: auto.G, B: auto.B, model: auto.model,
+                  note: "sensor colour filters: " + auto.model + " (" + auto.R + ", " + auto.G + ", " +
+                        auto.B + "), from INSTRUME " + named };
+   }
+   if ( haveManual )
+      return { source: "manual", R: manual.R, G: manual.G, B: manual.B, model: "",
+               note: "sensor colour filters: " + manual.R + ", " + manual.G + ", " + manual.B + ", " +
+                     ( why != null ? why + "; using the manual choice"
+                                   : "the manual choice (automatic is off)" ) };
+   return { source: "none", R: "", G: "", B: "", model: "",
+            note: why != null ? "sensor colour filters: " + why + "; choose them by hand (SPCC section)" : "" };
+};
+
+/*
+ * The sensor curves a run uses: the automatic or manual ones resolved by
+ * preflight (config.oscSensorResolved, per run and never persisted), else
+ * the remembered manual choice.
+ */
+Pipeline.oscSensorOf = function( config )
+{
+   return config.oscSensorResolved || config.oscSensor || {};
+};
+
+/*
+ * The colour camera's sensor checks. A colour master (OSC) is calibrated
+ * against the three sensor colour-filter curves, chosen automatically from
+ * the camera or by hand (Pipeline.oscSensorChoice), so all three must be
+ * known and each must exist in filters.xspd. A run without OSC (mono, or
+ * OSCNB alone) has no sensor to choose. curveExists( name, channel ) can be
+ * injected; production asks the filter database. With infoOf (as preflight
+ * gives it) the camera is read from the OSC master's INSTRUME, the choice is
+ * left in config.oscSensorResolved and the log says what was chosen.
+ */
+Pipeline.oscSensorProblems = function( config, curveExists, infoOf )
+{
+   delete config.oscSensorResolved;
    if ( Util.colourSupplied( config ).indexOf( "OSC" ) < 0 )
       return [];
-   var sensor = config.oscSensor || {};
-   var trio = Util.RGB_GROUP;
-   for ( var t = 0; t < trio.length; ++t )
-      if ( !sensor[trio[t]] )
-         return [ "choose the sensor colour filters for the colour master (SPCC section)" ];
-
    var exists = curveExists || function( name, channel )
    {
       return Steps.filterCurveByName( name, channel ) != null;
    };
+   var trio = Util.RGB_GROUP;
+
+   if ( infoOf )
+   {
+      var info = infoOf( "OSC" );
+      var choice = Pipeline.oscSensorChoice( config, info ? info.instrume : null, exists );
+      if ( choice.note.length > 0 )
+         Util.log( "spcc", choice.note );
+      if ( choice.source != "none" )
+         config.oscSensorResolved = { R: choice.R, G: choice.G, B: choice.B };
+   }
+
+   var sensor = Pipeline.oscSensorOf( config );
+   for ( var t = 0; t < trio.length; ++t )
+      if ( !sensor[trio[t]] )
+         return [ "choose the sensor colour filters for the colour master (SPCC section)" ];
+
    var problems = [];
    for ( var c = 0; c < trio.length; ++c )
       if ( !exists( sensor[trio[c]], trio[c] ) )
@@ -1339,7 +1420,7 @@ Pipeline.cleanWhiteBalanceKey = function( chans, config, common, lumInstrume, re
 
    var response;
    if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
-      response = "|osc:" + JSON.stringify( config.oscSensor || {} ) +
+      response = "|osc:" + JSON.stringify( Pipeline.oscSensorOf( config ) ) +
                  "|qe:" + Util.IDEAL_QE_CURVE_NAME;
    else
       response = "|" + JSON.stringify( config.filters || {} ) +
@@ -2411,6 +2492,8 @@ Pipeline.inheritInstrument = function( chans )
  */
 Pipeline.correctBroadband = function( chans, config, reg )
 {
+   if ( !Pipeline.mgcOn( config ) && Util.BROADBAND.some( function( k ) { return !!chans[k]; } ) )
+      Util.log( "mgc", "MGC skipped by choice (the MGC box is unchecked); no MARS database is needed" );
    for ( var b = 0; b < Util.BROADBAND.length; ++b )
    {
       var bk = Util.BROADBAND[b];
@@ -2447,19 +2530,17 @@ Pipeline.broadbandStages = function( bk, bc, config )
    // so the camera's curve is not looked up (and not logged) for it.
    var isOsc = ( bc.group == "OSC" );
    var qe = isOsc ? null : Steps.deviceCurveForImage( bc.instrume );
-   var mgcCfg = Steps.configuredMGC( config.marsPath );
+   var mgcOn = Pipeline.mgcOn( config );
+   var mgcCfg = mgcOn ? Steps.configuredMGC( config.marsPath ) : null;
    var marsFiles = ( mgcCfg && mgcCfg.marsDatabaseFiles ) ?
                    mgcCfg.marsDatabaseFiles.slice().sort() : [];
 
-   return {
+   var stages = {
       solve: {},
       // channel key + chosen filter + resolved QE curve name: anything
       // that changes what SPFC actually calibrates against.
       spfc: isOsc ? Pipeline.oscSpfcParams( bk, config )
                       : { channel: bk, filter: chosenFilter, qe: qe ? qe.name : null },
-      // the MARS database file list, not just "MGC ran" -- a different
-      // database gives a different correction from the same input.
-      mgc: { marsFiles: marsFiles },
       // enabled flag AND smoothing: toggling GraXpert off must not
       // silently reuse a result computed with it on, and vice versa.
       // The stage keeps its name "graxpert" whichever tool runs it --
@@ -2481,6 +2562,16 @@ Pipeline.broadbandStages = function( bk, bc, config )
        */
       aberration:    Pipeline.aberrationParams( config, Steps.studioAvailable() )
    };
+   /*
+    * The MARS database file list, not just "MGC ran" -- a different
+    * database gives a different correction from the same input. With MGC
+    * switched off the stage is left out altogether, so nothing after it
+    * can reuse a result that went through MGC (and the other way round),
+    * and the order of the keys is unchanged with it on.
+    */
+   if ( mgcOn )
+      stages.mgc = { marsFiles: marsFiles };
+   return stages;
 };
 
 /*
@@ -2524,7 +2615,7 @@ Pipeline.broadbandRunners = function( channel, config )
  */
 Pipeline.oscSpfcParams = function( channel, config )
 {
-   return { channel: channel, filter: ( config.oscSensor || {} )[channel],
+   return { channel: channel, filter: Pipeline.oscSensorOf( config )[channel],
             qe: Util.IDEAL_QE_CURVE_NAME };
 };
 
@@ -2539,7 +2630,7 @@ Pipeline.effectiveFilters = function( config )
    Object.keys( own ).forEach( function( k ) { out[k] = own[k]; } );
    if ( Util.colourSupplied( config ).indexOf( "OSC" ) >= 0 )
    {
-      var sensor = config.oscSensor || {};
+      var sensor = Pipeline.oscSensorOf( config );
       Util.RGB_GROUP.forEach( function( k ) { out[k] = sensor[k]; } );
    }
    return out;

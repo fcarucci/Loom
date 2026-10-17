@@ -78,6 +78,8 @@ Config.FIELDS = {
    stretch:             { type: DataType_Boolean, load: "set",  save: "bool" },
    stretchMethod:       { type: DataType_String,  load: "text", save: { or: Steps.STRETCH_METHOD_MTF } },
    marsPath:            { type: DataType_String,  load: "set",  save: { or: "" } },
+   // On unless switched off: a missing key (older settings, a hand-built config) is on.
+   mgcEnabled:          { type: DataType_Boolean, load: "set",  save: "bool, on if unset" },
    starTool:            { type: DataType_String,  load: "text", save: { or: "none" } },
    noiseTool:           { type: DataType_String,  load: "text", save: { or: "none" } },
    noiseLevel:          { type: DataType_String,  load: "text", save: { or: "medium" } },
@@ -117,6 +119,8 @@ Config.saveFields = function( config, store, names )
       var f = Config.FIELDS[names[i]], v = config[names[i]];
       if ( f.save == "bool" )
          v = !!v;
+      else if ( f.save == "bool, on if unset" )
+         v = v !== false;
       else if ( f.save != "as is" )
          v = v || f.save.or;
       store.settings.write( Config.SETTINGS_PREFIX + names[i], f.type, v );
@@ -165,6 +169,8 @@ Config.defaults = function()
       projectName: "",
       exportDir: "",
       marsPath: "",
+      // Run MultiscaleGradientCorrection on the broadband channels. Off needs no MARS database.
+      mgcEnabled: true,
       starTool: "none",
       noiseTool: "none",
       noiseLevel: "medium",
@@ -188,6 +194,8 @@ Config.defaults = function()
       oscKinds: {},
       // The sensor's three Siril curve names, remembered between runs.
       oscSensor: { R: "", G: "", B: "" },
+      // The sensor curves follow the camera (INSTRUME) while on; picking a curve by hand turns it off.
+      oscSensorAuto: true,
       // Remembered broadband/dualband answers, keyed by Util.oscKindKey.
       oscKindChoices: {}
    };
@@ -308,7 +316,7 @@ Config.load = function( store )
 
    Config.loadFields( config, store, [
       "reduceHalos", "projectName", "exportPsb", "separateLStars", "keepLinear", "exportDir",
-      "stretchMethod", "stretch", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
+      "stretchMethod", "stretch", "marsPath", "mgcEnabled", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
       "sharpenTool", "starReduction", "detailLevel", "parallaxFamily" ] );
    config.parallaxFamily = Steps.studioFamilyOf( config.parallaxFamily );
 
@@ -381,7 +389,7 @@ Config.save = function( config, store )
                          ( config.palettes || [] ).join( "," ) );
    Config.saveFields( config, store, [
       "keepLinear", "separateLStars", "exportPsb", "projectName", "exportDir", "stretch",
-      "stretchMethod", "marsPath", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
+      "stretchMethod", "marsPath", "mgcEnabled", "starTool", "noiseTool", "noiseLevel", "noiseLevelL",
       "sharpenTool", "starReduction", "detailLevel", "parallaxFamily", "useCache", "autoUpdate", "cacheDir",
       "smoothing", "savedList" ] );
    Config.saveFilters( config, store );
@@ -426,6 +434,10 @@ Config.loadOscChoices = function( config, store )
    if ( plain( sensor ) && typeof sensor.R == "string" && typeof sensor.G == "string" && typeof sensor.B == "string" )
       config.oscSensor = { R: sensor.R, G: sensor.G, B: sensor.B };
 
+   var auto = store.settings.read( Config.SETTINGS_PREFIX + "oscSensorAuto", DataType_Boolean );
+   if ( auto != null )
+      config.oscSensorAuto = auto;
+
    var choices = readJson( "oscKindChoices" );
    if ( plain( choices ) )
    {
@@ -446,6 +458,8 @@ Config.saveOscChoices = function( config, store )
    var d = Config.defaults();
    store.settings.write( Config.SETTINGS_PREFIX + "oscSensor", DataType_String,
                          JSON.stringify( config.oscSensor || d.oscSensor ) );
+   store.settings.write( Config.SETTINGS_PREFIX + "oscSensorAuto", DataType_Boolean,
+                         config.oscSensorAuto !== false );
    store.settings.write( Config.SETTINGS_PREFIX + "oscKindChoices", DataType_String,
                          JSON.stringify( config.oscKindChoices || d.oscKindChoices ) );
 };

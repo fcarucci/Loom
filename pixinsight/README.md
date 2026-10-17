@@ -136,7 +136,7 @@ A saved instance icon reuses a configuration (file selections only, not views).
 |---|---|---|
 | **Solve** | plate solution, skipped if one is present; recursive surface splines, and every solve is verified against the catalogue | — |
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera from `INSTRUME` |
-| **MGC** | MultiscaleGradientCorrection against MARS. Broadband only | MARS folder, asked for only if PixInsight does not already know one |
+| **MGC** | MultiscaleGradientCorrection against MARS. Broadband only | **Run MGC** box (on by default; off needs no MARS database and skips MGC, the gradient-removal pass still runs as chosen; greyed for a narrowband-only run); MARS folder, asked for only if PixInsight does not already know one |
 | **Gradient removal** | a second background pass on the linear channels | **Multi Gradient only** (no second pass), **GraXpert** (with its smoothing) or **SyQon Studio Deep Gradient**. **Also remove gradients from H, S and O** is off by default, because faint emission can be taken for background |
 | **Aberration** | star-shape correction, before registration | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. With SyQon Studio installed, Studio Parallax does the aberration pass even when BlurXTerminator is chosen; BlurXTerminator then does star reduction and detail |
 
@@ -258,7 +258,7 @@ A one-shot colour camera gives one debayered RGB master per filter, as WBPP writ
 - **Kind.** The masters list shows each colour master with its kind, detected from the `FILTER` keyword: known models (L-eXtreme, L-Ultimate, L-Enhance, ALP-T Hα/OIII, NBZ and others), broadband names (UV/IR, IR cut, L-Pro, CLS, or no filter), and family names such as Duo, Dual or Quad, which are not trusted on their own. Brand and size words are ignored. Choose **Broadband** or **Dual-band Hα + OIII** to override the detection; the choice is remembered per filter model, or per file when the filter is blank, and the **detected** link clears it. A master whose kind is not certain must be chosen before the run starts. A dual-band filter that is not Hα/OIII (such as an SII/Hβ model) is refused.
 - **Colour or mono, not both.** Colour and mono masters cannot be combined: a run with a colour master and any mono master does not start, and the mono boxes are greyed while a colour master is selected.
 - **HOO only.** SHO and HSO are refused for colour masters, and their boxes are greyed: they need SII, which a colour camera cannot separate from Hα. A quad-band filter is treated as dual-band: its `H` carries SII as well as Hα. `H` is the red plane of the dual-band master and `O` is the green plane only; the blue plane is not used.
-- **Sensor colour filters.** While a broadband (`OSC`) master is used, the SPCC section shows **Sensor colour filters**, the R, G and B sensor curves of PixInsight's filter database, in place of the R, G and B filter boxes. They are used with the Ideal QE curve, since the sensor curves already include the sensor's response.
+- **Sensor colour filters.** While a broadband (`OSC`) master is used, the SPCC section shows **Sensor colour filters**, the R, G and B sensor curves of PixInsight's filter database, in place of the R, G and B filter boxes. They are used with the Ideal QE curve, since the sensor curves already include the sensor's response. **From camera** (on by default) chooses them from the master's `INSTRUME` header and says so in the log (for example "Sony IMX571 family (...), from INSTRUME 'ZWO ASI2600MC Pro'"): the ASI2600MC, ASI6200MC, ASI094MC, QHY268C and QHY600C get the generic "Sony Color Sensor R/G/B-UVIRcut" curves (the database has no IMX571 entry of its own), the ASI533MC gets "Sony-IMX533", the ASI294MC "Sony IMX 294 UV-IR CUT", the ASI585MC, ASI462MC and ASI662MC "Sony IMX 462-662-585-UVIRCut", and the ASI676MC "Sony IMX 676". Mono models never match. For any other camera, or when the camera is not named, the curves you chose by hand are used, with a note in the log. Picking a curve by hand turns **From camera** off and is remembered; tick it again to follow the camera.
 - **Light-pollution filters.** A run is never refused for a light-pollution filter. For the L-Pro, CLS and CLS-CCD filters (matched by model name, whatever brand the `FILTER` value names), the log notes that colour calibration does not model the filter; no filter in front of the camera is modelled.
 - **Registration.** The planes of a colour master are registered together with one transform, so they stay aligned.
 - **Outputs.** Channels and palette layers made from a colour master carry a `LOOMSRC` keyword naming their source, and the run log names each palette's sources.
@@ -525,7 +525,9 @@ Fly-Through has not yet been run by hand on Windows.
 - **A MARS database** (`*.xmars`) for MGC: the folder set in Loom's dialog,
   else a saved MultiscaleGradientCorrection process icon, else what the MGC
   interface remembers; Loom asks only when none gives one. A run with broadband
-  channels and no MARS database is refused before it starts.
+  channels and no MARS database is refused before it starts, unless the
+  **Run MGC** box is unchecked: then MGC is skipped, no database is needed or
+  looked for, and the log says MGC was skipped by choice.
 - **Gaia**: the database set up in PixInsight for SPFC and SPCC. Fly-Through
   uses it too, and its blind solver can fall back to Gaia DR3 online.
 - **Optional:** the tools in [Optional tools](#optional-tools), and ffmpeg for
