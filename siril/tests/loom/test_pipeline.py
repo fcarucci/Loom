@@ -863,3 +863,49 @@ def test_a_halpha_only_run_produces_h_without_any_calibration_call(tmp_path: Pat
     assert os.path.isfile(report.outputs["H"])
     calls = [c for ops in harness.opses for c in ops.calls]
     assert not [c for c in calls if c[0] in ("spcc_osc", "spcc_broadband", "spcc_narrowband")]
+
+
+def test_the_run_resolves_a_blank_osc_sensor_from_the_masters_camera_itself(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The entry point runs preflight on a copy of the options, so the run must not depend on preflight having
+    filled the sensor: it picks it from the master's INSTRUME and logs why."""
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband", oscSensor={"sensor": "", "frontFilter": "", "lpf": ""})
+    cr.run.load_channels()
+    assert cr.cfg["oscSensor"]["sensor"] == "Sony IMX294"          # INSTRUME is "ZWO ASI294MC"
+    assert any(line.startswith("OSC sensor: automatic, Sony IMX294") and "ZWO ASI294MC" in line
+               for line in cr.lines)
+
+
+def test_a_chosen_osc_sensor_is_kept_by_the_run_and_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband",
+                    oscSensor={"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""})
+    cr.run.load_channels()
+    assert cr.cfg["oscSensor"]["sensor"] == "Sony IMX571"
+    assert any(line.startswith("OSC sensor: chosen, Sony IMX571") and "automatic would be Sony IMX294" in line
+               for line in cr.lines)
+
+
+def test_a_run_without_an_osc_master_logs_no_sensor_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSCHA", "halpha")
+    cr.run.load_channels()
+    assert not any(line.startswith("OSC sensor") for line in cr.lines)
+
+
+def test_the_colour_calibration_sends_the_automatic_sensor_when_preflight_ran_on_a_copy(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole path of the entry point: preflight sees a copy, the run gets the original options."""
+    from loomsiril.loom import preflight as pf
+    cr = _ColourRun(tmp_path, monkeypatch, "OSC", "broadband", oscSensor={"sensor": "", "frontFilter": "", "lpf": ""})
+    write_fits(cr.master, [_plane(i + 1) for i in range(3)],
+               {"FILTER": "UVIR", "INSTRUME": INSTRUME, "OBJECT": "NGC 7000"}, bitpix=-32)
+    options = {**cr.cfg, "oscKinds": {}}
+    options["oscSensor"] = {"sensor": "", "frontFilter": "", "lpf": ""}
+    checked = dict(options)                                         # what _Checks.problems does
+    inputs = pf.Preflight(config=checked, read_header=pipeline.channels.read_header, exists=os.path.exists,
+                          readable=lambda p: True, found={}, rejection={}, headless=True)
+    pf.preflight(inputs)
+    assert options["oscSensor"]["sensor"] == "" and "oscSensorNote" not in options   # the copy took the change
+    harness = Harness(tmp_path)
+    harness.run(options, "osc-auto-sensor")
+    calls = [c for ops in harness.opses for c in ops.calls if c[0] == "spcc_osc"]
+    assert calls and all(c[1][0] == "Sony IMX294" for c in calls), calls

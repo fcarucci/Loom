@@ -232,8 +232,13 @@ class _Run:
         paths = self.cfg.get("paths") or {}
         records: dict[str, dict[str, Any]] = {}
         loaders = self._colour_loaders(paths)
-        if loaders and self.cfg.get("oscSensorNote"):
-            self.ctx.log(str(self.cfg["oscSensorNote"]))   # preflight's decision on the OSC sensor, and why
+        if "OSC" in loaders:
+            # The sensor is decided here, from the master's own camera: the entry point checks a copy of the options,
+            # so what preflight filled in never reaches the run. A chosen sensor stays; the log says which and why.
+            note = osc.resolve_osc_sensor(self.cfg, loaders["OSC"][1])
+            self.cfg["oscSensorNote"] = note
+            if note:
+                self.ctx.log(note)
         member_of = {member: slot for slot in loaders for member in osc.COLOUR_MEMBERS[slot]}
         for key in CHANNEL_ORDER:
             path = str(paths.get(key) or "")
