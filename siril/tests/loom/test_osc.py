@@ -25,8 +25,12 @@ ORACLE_FILE = Path(__file__).resolve().parents[1] / "oracle" / "loom_osc.json"
 #: Recorded here, but ported in another module: replayed there (``cache.clean_white_balance_key``).
 ELSEWHERE = {"clean_white_balance_key"}
 
+#: Recorded here, replayed in test_osc_halpha.py: Loom names PixInsight filter curves, Siril names its database's models,
+#: so the port is Siril's own (``auto_osc_sensor``) and only what the cameras share is compared.
+SENSOR_REPLAYED_ELSEWHERE = {"sensor_curves_for_camera"}
+
 #: Public functions of osc.py that have no JavaScript counterpart.
-SIRIL_ONLY = {"colour_run", "js_config"}
+SIRIL_ONLY = {"colour_run", "js_config", "auto_osc_sensor", "common_osc_sensor", "resolve_osc_sensor"}
 
 
 #: Loom functions that are recorded for nothing and not ported, with the reason.
@@ -47,6 +51,7 @@ NEW_FUNCTIONS = {
     "osc_group_cache_action": 300, "osc_registration_plan": 250, "clean_registration_plan": 150,
     "osc_channel_groups": 15, "osc_sensor_problems": 500, "osc_control_state": 12,
     "osc_palette_sources": 600, "osc_channel_source": 20, "osc_source_text": 100,
+    "osc_combination_problem": 40,
 }
 
 
@@ -115,7 +120,7 @@ def _run(case: dict[str, Any]) -> Any:
     return target(*args)
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
+@pytest.mark.parametrize("name", sorted(n for n, c in CASES.items() if c["fn"] not in SENSOR_REPLAYED_ELSEWHERE))
 def test_oracle_replay(name: str) -> None:
     actual = _run(CASES[name])
     expected = CASES[name]["result"]
@@ -124,7 +129,7 @@ def test_oracle_replay(name: str) -> None:
 
 def test_oracle_covers_every_ported_function() -> None:
     fns = {c["fn"] for c in CASES.values()}
-    for fn in sorted(fns - ELSEWHERE):
+    for fn in sorted(fns - ELSEWHERE - SENSOR_REPLAYED_ELSEWHERE):
         assert hasattr(osc, fn), f"no twin for the recorded function {fn}"
     public = {n for n, v in vars(osc).items()
               if not n.startswith("_") and inspect.isfunction(v) and v.__module__ == osc.__name__}

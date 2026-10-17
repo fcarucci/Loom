@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Loom takes a single Hα filter on a colour camera**, as in the PixInsight version: a new colour-master kind, "Narrowband Hα" (slot `OSCHA`), detected from `FILTER` (Ha, H-alpha, Halpha, Hα, with an optional bandwidth such as `7nm`; dual-band names like L-eXtreme, ALP-T Hα/OIII, Duo, Dual or Quad never match) and chosen by hand in the kind control. `H` is the master's red plane (green and blue are not used); the run is like a mono Hα-only run, with no colour calibration and no sensor. One Hα master may be combined with one broadband colour master; an Hα master with a dual-band master is refused, since both supply `H`; colour with mono and SHO/HSO stay refused.
+- **The OSC sensor is chosen automatically** from the `INSTRUME` keyword of the broadband colour master when you have not chosen one: it maps colour cameras (ASI2600MC, QHY268C, ASI6200MC, ASI533MC, ASI294MC, ASI585MC, ASI2400MC and others) to the sensor model of Siril's SPCC database. The dialog shows **Auto (model)** in the sensor box, the run log says which sensor was used and why, a sensor you choose always wins, and an unknown or mono camera falls back to asking you, with the reason.
+- Parity: `tools/oracle/loom_osc.js` calls the PixInsight JavaScript for the new kind, slot and combination rule, and `tests/oracle/loom_osc.json` was recorded again (the recorded cameras are compared with the Siril sensor table in `tests/loom/test_osc_halpha.py`).
+
 ## [0.5.3] — 2026-10-16
 
 ### Added

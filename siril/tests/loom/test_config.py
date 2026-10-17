@@ -14,7 +14,9 @@ import pytest
 from loomsiril.loom import config as cfg
 
 LOOM_TYPE = {"bool": "bool", "string": "str", "double": "float"}
-LOOM_ONLY = {"views", "marsPath", "autoUpdate"}
+# mgcEnabled is the PixInsight MGC box (Siril has no MGC). oscSensorAuto is Loom's switch for the automatic OSC sensor;
+# Siril needs none: a blank sensor means automatic and a chosen one always wins.
+LOOM_ONLY = {"views", "marsPath", "autoUpdate", "mgcEnabled", "oscSensorAuto"}
 PORT_ONLY = {"spccSensor", "outputDir", "stretchTarget"}
 PORT_SHAPE = {"oscSensor"}  # Loom has the key too, in another shape on purpose: Siril SPCC database names
 
@@ -304,7 +306,7 @@ def test_round_trip_preserves_configuration(tmp_path: Path) -> None:
             "narrowbandBandwidth": 6.5,
             "filters": {"R": "Johnson R"},
             "palettes": ["HOO", "SHO"],
-            "paths": {"L": "/a.fits", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
+            "paths": {"L": "/a.fits", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": "", "OSCHA": ""},
             "gradientTool": "SyQon Studio Deep Gradient",
             "smoothing": 0.25,
             "cacheDir": "/var/cache/loom",

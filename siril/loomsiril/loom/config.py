@@ -91,7 +91,7 @@ _EXTRA_TYPES: dict[str, str] = {
 }
 
 # What a remembered one-shot-colour answer may be, and the keys of the chosen sensor (Siril SPCC database names).
-OSC_KIND_VALUES = ("broadband", "dualband")
+OSC_KIND_VALUES = ("broadband", "dualband", "halpha")
 OSC_SENSOR_KEYS = ("sensor", "frontFilter", "lpf")
 
 # How a stored value of each type is described in a warning.
@@ -116,7 +116,7 @@ def _no_warn(text: str) -> None:
 def defaults() -> dict[str, Any]:
     """Loom's defaults, minus views, marsPath and autoUpdate, plus spccSensor and cacheDir."""
     return {
-        "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
+        "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": "", "OSCHA": ""},
         "savedList": "",
         "filters": {},
         "gradientTool": GRADIENT_TOOL_GRAXPERT,
@@ -329,7 +329,7 @@ def _apply_document(config: dict[str, Any], raw: dict[str, Any], warn: WarnFn, p
                 if choice in OSC_KIND_VALUES:
                     kept_choices[name] = choice
                 else:
-                    warn(f"oscKindChoices: {name!r} is not broadband or dualband; ignored")
+                    warn(f"oscKindChoices: {name!r} is not broadband, dualband or halpha; ignored")
             config[key] = kept_choices
             continue
         if key == "oscSensor":

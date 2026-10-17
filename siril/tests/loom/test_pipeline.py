@@ -819,3 +819,47 @@ def test_build_palettes_hands_the_loomsrc_to_the_palette_runners(tmp_path: Path,
     cr.run.load_channels()
     cr.run.build_palettes({"H": "h.fits", "O": "o.fits"}, _COMMON, None)
     assert seen == ["OSCNB n.fits plane 0; OSCNB n.fits plane 1"]
+
+
+def test_a_halpha_only_run_loads_the_red_plane_as_h_and_runs_like_a_mono_h_master(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One Hα filter on a colour camera: H is plane 0 of the master, the green and blue planes are not used, and the
+    run sends Siril no SPCC at all (no sensor, no colour calibration)."""
+    from loomsiril.loom import osc
+    cr = _ColourRun(tmp_path, monkeypatch, "OSCHA", "halpha")
+    cr.run.load_channels()
+    gid = osc.osc_group_identity(stages_correct.source_key(cr.master), "halpha")
+    assert sorted(cr.run.chans) == ["H"]
+    h = cr.run.chans["H"]
+    assert (h.group, h.plane, h.path) == ("OSCHA", 0, cr.master)
+    assert h.source_key == h.current_key == osc.osc_sibling_key(gid, 0)
+    assert f"load H <- {cr.master} (plane 0)" in cr.lines
+    plate = h.source()
+    assert read_fits(plate)[0][0].shape == SHAPE
+    assert _channels_of(plate) == 1
+    assert read_fits(plate)[1]["FILTER"] == "Ha"
+    assert read_fits(plate)[1]["LOOMSRC"] == f"{os.path.basename(cr.master)}|plane:0"
+    assert cr.master_reads() == 1
+
+
+def test_a_halpha_and_a_broadband_master_register_h_as_a_group_onto_g(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from loomsiril.loom import osc
+    plan = osc.osc_registration_plan(["R", "G", "B", "H"], {"OSC": ["R", "G", "B"], "OSCHA": ["H"]})
+    assert plan["ref"] == "G" and plan["identity"] == ["R", "G", "B"]
+    assert [(g["slot"], g["members"], g["planes"]) for g in plan["groups"]] == [("OSCHA", ["H"], ["H", "H", "H"])]
+
+
+def test_a_halpha_only_run_produces_h_without_any_calibration_call(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    cr = _ColourRun(tmp_path, monkeypatch, "OSCHA", "halpha")
+    write_fits(cr.master, [_plane(i + 1) for i in range(3)],
+               {"FILTER": "Ha 7nm", "INSTRUME": INSTRUME, "OBJECT": "NGC 7000"}, bitpix=-32)
+    cfg = dict(cr.cfg)
+    cfg.pop("oscSensor", None)
+    harness = Harness(tmp_path)
+    report = harness.run(cfg, "oscha-only")
+    assert report.produced == ["H"], report.produced
+    assert os.path.isfile(report.outputs["H"])
+    calls = [c for ops in harness.opses for c in ops.calls]
+    assert not [c for c in calls if c[0] in ("spcc_osc", "spcc_broadband", "spcc_narrowband")]

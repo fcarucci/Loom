@@ -1264,7 +1264,7 @@ def test_saved_filters_survive_an_unreadable_spcc_database_and_names_are_read_on
 
 # ---- colour masters: the kind control, the greyed controls, the sensor row ------------------------------------------
 
-KIND_LABELS = ["", "Broadband", "Dual-band " + "H\u03b1 + OIII"]
+KIND_LABELS = ["", "Broadband", "Dual-band " + "H\u03b1 + OIII", "Narrowband H\u03b1"]
 MONO_REASON = "colour and mono masters cannot be combined"
 SHO_REASON = "needs SII, which a colour camera cannot separate from Ha"
 SENSOR_NAMES = {"oscsensor": ["Canon EOS R", "Sony IMX571"],
@@ -1286,7 +1286,7 @@ def _colour(path: str, filter_value: Any = "L-eXtreme", slot: str | None = "OSCN
 
 def _result(colour: dict[str, Any] | None = None, unresolved: list[dict[str, Any]] | None = None,
             confirmed: dict[str, Any] | None = None, corrected: list[str] | None = None) -> dict[str, Any]:
-    return {"confirmed": confirmed or {}, "colour": {"OSC": None, "OSCNB": None, **(colour or {})},
+    return {"confirmed": confirmed or {}, "colour": {"OSC": None, "OSCNB": None, "OSCHA": None, **(colour or {})},
             "unresolved": unresolved or [], "corrected": corrected or [], "skipped": 0, "unreadable": [], "total": 1}
 
 
@@ -1296,9 +1296,9 @@ def _colour_model(result: dict[str, Any], store: Any = None, **overrides: Any) -
     return model
 
 
-def test_the_kind_items_are_none_broadband_and_dual_band() -> None:
+def test_the_kind_items_are_none_broadband_dual_band_and_narrowband_halpha() -> None:
     assert [text for _value, text in dl.KIND_ITEMS] == KIND_LABELS
-    assert [value for value, _text in dl.KIND_ITEMS] == ["", "broadband", "dualband"]
+    assert [value for value, _text in dl.KIND_ITEMS] == ["", "broadband", "dualband", "halpha"]
 
 
 def test_a_kind_row_shows_the_detected_kind_and_whether_it_can_change() -> None:
@@ -1355,7 +1355,7 @@ def test_an_unresolved_master_is_listed_with_no_kind_and_a_scan_says_to_choose()
     row = model.colour_rows()[0]
     assert (row["path"], row["kind"], row["enabled"], row["slot"]) == ("/m/mystery.fits", "", True, "")
     notices = model.take_notices()
-    assert any("Broadband or Dual-band" in n and "mystery.fits" in n for n in notices)
+    assert any("Broadband, Dual-band" in n and "Narrowband" in n and "mystery.fits" in n for n in notices)
     assert any("it is used as a colour master" in n for n in notices)
     assert model.master_rows()[0]["Kind"] == "" and model.master_rows()[0]["Filter"] == "Mystery 9000"
 
@@ -1762,3 +1762,47 @@ def test_the_view_disables_the_kind_control_of_an_unsupported_filter(tk_root: An
     rows = [r for r in view._kind_rows if _shown(r["frame"])]
     assert "disabled" in rows[0]["combo"].state() and "disabled" not in rows[1]["combo"].state()
     view.top.destroy()
+
+
+# ---- the single-Hα master and the automatic sensor -----------------------------------------------------------------
+
+
+def test_a_scan_puts_a_halpha_master_in_its_slot_with_its_kind() -> None:
+    model = _colour_model(_result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC"),
+                                          "OSCHA": _colour("/m/ha.fits", "Ha 7nm", "OSCHA")}))
+    assert (model.path("OSC"), model.path("OSCHA")) == ("/m/osc.fits", "/m/ha.fits")
+    rows = {r["channel"]: r for r in model.master_rows()}
+    assert (rows["OSCHA"]["Filter"], rows["OSCHA"]["Kind"]) == ("Ha 7nm", KIND_LABELS[3])
+    row = {r["path"]: r for r in model.colour_rows()}["/m/ha.fits"]
+    assert (row["kind"], row["slot"], row["enabled"]) == ("halpha", "OSCHA", True)
+
+
+def test_a_remembered_halpha_kind_moves_an_unknown_filter_to_the_halpha_slot() -> None:
+    model = _colour_model(_result(unresolved=[_colour("/m/odd.fits", "Mystery 9000", None)]))
+    model.set_osc_kind("/m/odd.fits", "halpha")
+    assert model.path("OSCHA") == "/m/odd.fits"
+    assert model.to_config()["oscKindChoices"] == {"filter:mystery9000": "halpha"}
+    again = dl.DialogModel.from_config(model.to_config(), all_found(), spcc_names=_spcc)
+    assert again.kind_choices() == {"filter:mystery9000": "halpha"}
+
+
+def test_halpha_sensor_row_is_not_shown_and_the_mono_boxes_grey() -> None:
+    model = dl.DialogModel.from_config(config(paths=_paths(OSCHA="/m/ha.fits")), all_found(), spcc_names=_spcc)
+    assert model.sensor_row_visible() is False
+    assert model.filter_enabled("R") is False
+
+
+def test_the_sensor_box_offers_auto_from_the_osc_master_s_camera() -> None:
+    result = _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC", instrume="ZWO ASI2600MC Pro")})
+    model = _colour_model(result)
+    assert model.osc_auto_sensor()["sensor"] == "Sony IMX571"
+    assert model.osc_sensor_pairs("sensor")[0] == ("", "Auto (Sony IMX571)")
+    assert model.osc_sensor_value("sensor") == ""
+    assert model.to_config()["oscSensor"]["sensor"] == ""   # auto is not stored as a choice
+    model.set_osc_sensor("sensor", "Canon EOS R")
+    assert model.osc_sensor_value("sensor") == "Canon EOS R"
+
+
+def test_the_sensor_box_says_choose_when_the_camera_is_unknown() -> None:
+    result = _result(colour={"OSC": _colour("/m/osc.fits", "UV/IR Cut", "OSC", instrume="Camera 1")})
+    assert _colour_model(result).osc_sensor_pairs("sensor")[0] == ("", "(choose)")

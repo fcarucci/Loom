@@ -546,7 +546,7 @@ def test_group_register_params_hold_the_reference_key_and_the_planes() -> None:
 
 
 def test_group_layers_are_osc_green_and_oscnb_first_plane() -> None:
-    assert GROUP_REGISTER_LAYER == {"OSC": 1, "OSCNB": 0}
+    assert GROUP_REGISTER_LAYER == {"OSC": 1, "OSCNB": 0, "OSCHA": 0}
 
 
 def test_member_split_header_takes_the_masters_filter_and_loomsrc() -> None:

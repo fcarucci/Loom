@@ -246,8 +246,9 @@ class ColourGroupLoader:
         if len(planes) < 3:
             raise ValueError(f"{self.path} is not a colour master: it has {len(planes)} channel"
                              + ("" if len(planes) == 1 else "s"))
-        stats = [plane_statistics(p) for p in planes[:3]]
-        for q, s in enumerate(stats):
+        checked = osc.OSC_VALIDATED_PLANES[self.slot]
+        stats = [plane_statistics(planes[q]) for q in checked]
+        for q, s in zip(checked, stats):
             problem = osc.osc_plane_problem(s, q, self.path)
             if problem is not None:
                 raise ValueError(problem)
@@ -302,7 +303,7 @@ class ColourGroupLoader:
             with open(path, encoding="utf-8") as fh:
                 rec = json.load(fh)
             planes = rec["planes"]
-            if len(planes) != 3:
+            if len(planes) != len(osc.OSC_VALIDATED_PLANES[self.slot]):
                 return None
             for p in planes:
                 float(p["min"]), float(p["max"]), float(p["median"])

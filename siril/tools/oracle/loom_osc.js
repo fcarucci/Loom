@@ -31,6 +31,8 @@ module.exports = function( js )
    constant( "COLOUR_SLOTS", Util.COLOUR_SLOTS );
    constant( "COLOUR_MEMBERS", Util.COLOUR_MEMBERS );
    constant( "OSC_RECIPES", Pipeline.OSC_RECIPES );
+   constant( "OSC_VALIDATED_PLANES", Pipeline.OSC_VALIDATED_PLANES );
+   constant( "COLOUR_SLOT_KIND", Util.COLOUR_SLOT_KIND );
 
    // ---- filter names --------------------------------------------------------
    const modelNames = [ "L-eXtreme", "L-Ultimate", "L-eNhance", "NBZ", "NBZ-II", "ALP-T Hα/OIII", "ALP-T SII/Hβ" ];
@@ -51,7 +53,20 @@ module.exports = function( js )
       "uv/ir", "IR-Cut", "ircut", "uvirblock", "UV/IR Block", "L eNhanced", "ALP-T Ha/OIII 5 nm"
    ].concat( modelNames, Util.OSC_FILTERS.map( f => f.name ), Util.OSC_FILTERS.map( f => f.match ),
              Util.OSC_BROADBAND, Util.OSC_FAMILIES );
-   const filterValues = spellings.concat( [ null, 5, 1.25, true ] );
+   // The single-Hα filter (the QA list: names that match, and names that must not).
+   const halphaNames = [
+      "Ha", "HA", "ha", "H-alpha", "H-Alpha 3nm", "Halpha", "Hα", "Ha 7nm", "Ha7nm", "Astronomik 6nm Ha", "Baader Ha 7nm",
+      "ZWO Ha 7nm", "Optolong H-alpha 7nm", "Antlia 3nm Ha", "  Ha  ", "H_alpha 12 nm", "Ha 6.5nm", "6.5nm Ha", "Hα 3 nm",
+      "H-alpha 7NM", "7nm H-alpha", "Ha 7nm 2\"", "IDAS Hα 12nm 1.25in", "Astronomik Ha 12nm 36mm", "Ha 3nm Ha", "Ha7",
+      "Hα7nm", "ΗΑ", "Ha\u00a07nm", "HAlpha 5nm", "H alpha", "H.alpha", "Optolong Ha"
+   ];
+   const notHalpha = [
+      "Optolong L-eXtreme", "ALP-T", "HA/OIII", "Hα/OIII", "Ha+OIII", "Duo-Band", "Dual", "Quad", "Triad", "Luminance",
+      "Hydrogen", "Sha", "Shapley", "Alpha", "Chai", "OIII", "SII", "Hb", "Ha SII", "Haa", "Ha OIII", "Ha/OIII 7nm",
+      "Duo Ha 7nm", "Dual-Band Ha", "Quad-Band Ha", "Tri-Band Ha", "Triad Ha/OIII/SII", "L-eXtreme Ha", "ALP-T Hα 5nm",
+      "Ha 7nm OIII", "Red", "Ha-RGB", "Ha OIII SII", "nm", "7nm", "Ha Ha", "Halpha OIII", "H-beta", "Hβ", "UV/IR Cut Ha"
+   ];
+   const filterValues = spellings.concat( halphaNames, notHalpha, [ null, 5, 1.25, true ] );
    // Distinct values only, in a stable order.
    const uniq = a => a.filter( ( v, i ) => a.findIndex( w => Object.is( w, v ) ) === i );
    const values = uniq( filterValues );
@@ -87,15 +102,19 @@ module.exports = function( js )
       { "filter:duo": "dualband", "filter:uvir": "dualband", "path:/m/a.xisf": "broadband" },
       { "filter:alptsiihb": "broadband" }, { "filter:optolong": "dualband" }, { "path:": "broadband" },
       { "filter:lextreme": "other" }, { "filter:lextreme": null }, { "path:/m/a.xisf": "dualband", "path:null": "broadband" },
-      { "filter:xyzzy": "broadband" }, { "filter:alpthaoiii": "broadband" }
+      { "filter:xyzzy": "broadband" }, { "filter:alpthaoiii": "broadband" },
+      { "filter:ha": "halpha" }, { "filter:lextreme": "halpha" }, { "filter:xyzzy": "halpha" }, { "filter:ha": "broadband" },
+      { "filter:ha": "dualband", "path:/m/a.xisf": "halpha" }, { "filter:alptsiihb": "halpha" }
    ];
    const effFilters = [ "L-eXtreme", "Optolong L-eXtreme 2\"", "L-Ultimate", "ALP-T Hα/OIII", "ALP-T SII/Hb", "Duo",
-                        "UVIR", "", null, "Optolong", "xyzzy", "Astronomik Deep-Sky" ];
+                        "UVIR", "", null, "Optolong", "xyzzy", "Astronomik Deep-Sky", "Ha", "Ha 7nm", "H-alpha 3nm", "Hα" ];
    let n = 0;
    choiceSets.forEach( c => effFilters.forEach( f =>
-      [ "OSC", "OSCNB", null ].forEach( slot =>
+      [ "OSC", "OSCNB", "OSCHA", null ].forEach( slot =>
          rec( "effective_osc_kind/" + ( n++ ), "effective_osc_kind", [ slot, f, "/m/a.xisf", c ],
               a => Util.effectiveOscKind( a[0], a[1], a[2], a[3] ) ) ) ) );
+   rec( "effective_osc_kind/halpha-view", "effective_osc_kind", [ "OSCHA", "", "HA_View", { "path:HA_View": "halpha" } ],
+        a => Util.effectiveOscKind( a[0], a[1], a[2], a[3] ) );
    rec( "effective_osc_kind/blank-path", "effective_osc_kind", [ "OSC", "", null, { "path:null": "dualband" } ],
         a => Util.effectiveOscKind( a[0], a[1], a[2], a[3] ) );
    rec( "effective_osc_kind/view-id", "effective_osc_kind", [ "OSC", "", "M31_RGB", { "path:M31_RGB": "dualband" } ],
@@ -142,7 +161,14 @@ module.exports = function( js )
       { paths: { H: "/m/h.xisf", S: "/m/s.xisf", O: "/m/o.xisf", L: "/m/l.xisf" } },
       { paths: { R: "" }, views: { R: "" } },
       { paths: { OSC: 5 }, views: {} }, { paths: {}, views: { OSC: 7 } }, { paths: { OSC: false }, views: { OSC: true } },
-      { paths: { OSC: "/a/b\\c/d e.xisf", L: "x" }, views: {} }, { paths: { L: "line1\nline2/z.xisf", OSC: "o" } }
+      { paths: { OSC: "/a/b\\c/d e.xisf", L: "x" }, views: {} }, { paths: { L: "line1\nline2/z.xisf", OSC: "o" } },
+      { paths: { OSCHA: "/m/ha.xisf" } }, { paths: { OSCHA: "/m/ha.xisf", OSC: "/m/rgb.xisf" } },
+      { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/nb.xisf" } }, { paths: { OSCHA: "C:\\Astro\\M 31\\ha.xisf", OSCNB: "C:\\n b\\nb.xisf" } },
+      { paths: { OSCHA: "/m/ha.xisf", H: "/m/h.xisf" } }, { paths: { OSCHA: "/m/ha.xisf", R: "/m/r.xisf", L: "/m/l.xisf" } },
+      { paths: { OSCHA: "" }, views: { OSCHA: "HA_View", OSCNB: "NB_View" } }, { views: { OSCHA: "HA_View" } },
+      { paths: { OSCHA: "/m/ha.xisf", OSCNB: "" }, views: { OSCNB: "" } }, { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/nb.xisf", OSC: "/m/rgb.xisf" } },
+      { paths: { OSCHA: 5, OSCNB: 7 } }, { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/nb.xisf" }, views: { OSCHA: "v", OSCNB: "w" } },
+      { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/dir/" } }, { paths: { OSCHA: "/m/ha.xisf", OSCNB: "line1\nline2/z.xisf" } }
    ];
    cfgs.forEach( ( c, i ) =>
    {
@@ -150,6 +176,7 @@ module.exports = function( js )
       rec( "mono_supplied/" + i, "mono_supplied", [ c ], a => Util.monoSupplied( a[0] ) );
       rec( "supplied_channels/" + i, "supplied_channels", [ c ], a => Util.suppliedChannels( a[0] ) );
       rec( "colour_mix_problem/" + i, "colour_mix_problem", [ c ], a => Util.colourMixProblem( a[0] ) );
+      rec( "osc_combination_problem/" + i, "osc_combination_problem", [ c ], a => Util.oscCombinationProblem( a[0] ) );
    } );
    [ [ {}, {}, "R" ], [ { R: "/a" }, {}, "R" ], [ { R: "" }, {}, "R" ], [ {}, { R: "v" }, "R" ], [ {}, { R: "" }, "R" ],
      [ { OSC: "/a" }, { OSC: "v" }, "OSC" ], [ { OSC: null }, { OSC: null }, "OSC" ], [ { R: 0 }, { R: 0 }, "R" ],
@@ -158,10 +185,11 @@ module.exports = function( js )
 
    // ---- where a masters-list entry goes -----------------------------------------
    const entryFilters = [ "L-eXtreme", "UVIR", "", null, "Duo", "ALP-T SII/Hb", "Optolong L-eXtreme 2\"", "Ha", "L", "xyzzy",
-                          "halpha", "Red", "OIII", "Astronomik Deep-Sky" ];
+                          "halpha", "Red", "OIII", "Astronomik Deep-Sky", "Ha 7nm", "H-alpha", "Hα", "Optolong Ha", "Ha/OIII" ];
    const entryCounts = [ 1, 3, 2, 0, null, 4, "3", "1" ];
    const entryChoices = [ null, {}, { "filter:lextreme": "broadband" }, { "filter:duo": "dualband", "filter:uvir": "dualband" },
-                          { "path:/m/a.xisf": "dualband", "filter:": "broadband" }, { "path:/m/a.xisf": "broadband" } ];
+                          { "path:/m/a.xisf": "dualband", "filter:": "broadband" }, { "path:/m/a.xisf": "broadband" },
+                          { "filter:ha": "halpha", "filter:xyzzy": "halpha" }, { "filter:ha": "broadband" }, { "path:/m/a.xisf": "halpha" } ];
    n = 0;
    entryFilters.forEach( f => entryCounts.forEach( c => entryChoices.forEach( ch =>
       rec( "entry_channel/" + ( n++ ), "entry_channel", [ f, c, "/m/a.xisf", ch ],
@@ -187,9 +215,16 @@ module.exports = function( js )
       [ cand( "", 3, "", false, 7, "view1" ), cand( "", 3, "", false, 8, "view2" ) ],
       [ cand( "Optolong L-eXtreme 2\"", 3, "4x", true, 3, "/m/é.xisf" ), cand( "l extreme", 3, "4x", true, 3, "/m/f.xisf" ) ],
       [ cand( "UVIR", 3, "", false, 5, "/m/a.xisf" ), null, cand( "L-eXtreme", 3, "2x", true, 2, "/m/b.xisf" ), null ],
-      [ cand( "xyzzy", 3, "", false, 1, "/m/a.xisf" ), cand( "UVIR", 3, "", false, 1, "/m/b.xisf" ) ]
+      [ cand( "xyzzy", 3, "", false, 1, "/m/a.xisf" ), cand( "UVIR", 3, "", false, 1, "/m/b.xisf" ) ],
+      [ cand( "Ha 7nm", 3, "", false, 5, "/m/a.xisf" ) ],
+      [ cand( "Ha", 3, "", false, 5, "/m/a.xisf" ), cand( "UVIR", 3, "", false, 5, "/m/b.xisf" ) ],
+      [ cand( "Ha", 3, "", false, 5, "/m/a.xisf" ), cand( "H-alpha", 3, "2x", false, 1, "/m/b.xisf" ), cand( "Hα", 3, "", false, 9, "/m/c.xisf" ) ],
+      [ cand( "Ha", 3, "", false, 5, "/m/a.xisf" ), cand( "L-eXtreme", 3, "", false, 5, "/m/b.xisf" ), cand( "UVIR", 3, "", false, 5, "/m/c.xisf" ) ],
+      [ cand( "Ha", 1, "", false, 5, "/m/a.xisf" ), cand( "Ha", 3, "", false, 5, "/m/b.xisf" ) ],
+      [ cand( "xyzzy", 3, "", false, 1, "/m/a.xisf" ), cand( "Ha", 3, "", false, 1, "/m/b.xisf" ) ]
    ];
-   const pickChoices = [ null, { "filter:duo": "dualband", "filter:xyzzy": "broadband" }, { "filter:lextreme": "broadband" } ];
+   const pickChoices = [ null, { "filter:duo": "dualband", "filter:xyzzy": "broadband" }, { "filter:lextreme": "broadband" },
+                         { "filter:xyzzy": "halpha" }, { "filter:ha": "broadband" } ];
    // The result holds the two picks and the unresolved list; the picks carry the rank written onto them.
    candidateSets.forEach( ( cs, i ) => pickChoices.forEach( ( ch, j ) =>
       rec( "select_colour_masters/" + i + "/" + j, "select_colour_masters", [ cs, ch ],
@@ -210,7 +245,9 @@ module.exports = function( js )
                           [ "SHO", "HSO" ], [ "OHS" ], [ "HOO", "HOS" ], null ];
    const paletteConfigs = [ null, {}, { paths: {} }, { paths: { R: "/m/r", G: "/m/g", B: "/m/b" } },
                             { paths: { OSC: "/m/rgb.xisf" } }, { paths: { OSCNB: "/m/nb.xisf" } },
-                            { views: { OSC: "OSC_View" } }, { paths: { OSC: "" }, views: {} }, { paths: { H: "/m/h" } } ];
+                            { views: { OSC: "OSC_View" } }, { paths: { OSC: "" }, views: {} }, { paths: { H: "/m/h" } },
+                            { paths: { OSCHA: "/m/ha.xisf" } }, { paths: { OSCHA: "/m/ha.xisf", OSC: "/m/rgb.xisf" } },
+                            { views: { OSCHA: "HA_View" } } ];
    n = 0;
    paletteConfigs.forEach( c => paletteLists.forEach( p =>
    {
@@ -234,7 +271,16 @@ module.exports = function( js )
       { OSC: info( "UVIR", 3, "/m/rgb.xisf" ), OSCNB: info( "L-Ultimate", 3, "/m/nb.xisf" ) },
       { OSC: info( "L-eXtreme", 3, "/m/rgb.xisf" ), OSCNB: info( "UVIR", 3, "/m/nb.xisf" ) },
       { OSC: info( "", 3, "/m/é ü.xisf" ), OSCNB: info( "NBZ-II", 3, "C:\\n b\\x.xisf" ) },
-      { L: info( "L", 1, "/m/l.xisf" ), H: info( "Ha", 3, "/m/h.xisf" ), O: info( "OIII", 0, "/m/o.xisf" ) }
+      { L: info( "L", 1, "/m/l.xisf" ), H: info( "Ha", 3, "/m/h.xisf" ), O: info( "OIII", 0, "/m/o.xisf" ) },
+      { OSCHA: info( "Ha 7nm", 3, "/m/ha.xisf" ) }, { OSCHA: info( "H-alpha", 3, "/m/ha.xisf" ) }, { OSCHA: info( "Hα", 3, "/m/ha.xisf" ) },
+      { OSCHA: info( "UVIR", 3, "/m/ha.xisf" ) }, { OSCHA: info( "L-eXtreme", 3, "/m/ha.xisf" ) }, { OSCHA: info( "", 3, "/m/ha.xisf" ) },
+      { OSCHA: info( "Ha", 1, "/m/ha.xisf" ) }, { OSCHA: info( "Ha", 2, "/m/ha.xisf" ) }, { OSCHA: info( "Ha", null, "/m/ha.xisf" ) },
+      { OSCHA: info( "xyzzy", 3, "/m/ha.xisf" ) }, { OSCHA: info( "ALP-T SII/Hβ", 3, "/m/ha.xisf" ) }, { OSCHA: info( "Ha", 3, "" ) },
+      { OSC: info( "UVIR", 3, "/m/rgb.xisf" ), OSCHA: info( "Ha 7nm", 3, "/m/ha.xisf" ) },
+      { OSC: info( "Ha", 3, "/m/rgb.xisf" ), OSCHA: info( "UVIR", 3, "/m/ha.xisf" ) },
+      { OSCNB: info( "Ha", 3, "/m/nb.xisf" ) }, { OSC: info( "Ha 7nm", 3, "/m/rgb.xisf" ) },
+      { OSCHA: info( "Ha", 3, "/m/ha.xisf" ), OSCNB: info( "L-eXtreme", 3, "/m/nb.xisf" ) },
+      { OSCHA: info( "Baader Ha 7nm", 3, "C:\\h a\\é.xisf" ) }
    ];
    const checkConfigs = [
       { paths: { R: "/m/r.xisf" } }, { paths: { R: "/m/r.xisf", G: "/m/g.xisf", B: "/m/b.xisf" } },
@@ -247,7 +293,11 @@ module.exports = function( js )
       { paths: { OSCNB: "/m/nb.xisf" }, oscKindChoices: { "filter:duo": "broadband", "filter:uvir": "dualband" } },
       { paths: { R: "" }, views: { R: "R_View" } }, { paths: { L: "/m/l.xisf", H: "/m/h.xisf", O: "/m/o.xisf" } },
       { paths: { OSC: "/m/é ü.xisf", OSCNB: "C:\\n b\\x.xisf" }, oscKinds: { OSC: "broadband" } },
-      { paths: { OSC: "/m/rgb.xisf" }, oscKinds: null }
+      { paths: { OSC: "/m/rgb.xisf" }, oscKinds: null },
+      { paths: { OSCHA: "/m/ha.xisf" } }, { paths: { OSC: "/m/rgb.xisf", OSCHA: "/m/ha.xisf" } },
+      { paths: { OSCHA: "/m/ha.xisf" }, oscKindChoices: { "filter:ha": "broadband", "filter:uvir": "halpha", "filter:lextreme": "halpha" } },
+      { paths: { OSCHA: "" }, views: { OSCHA: "HA_View" }, oscKindChoices: { "path:HA_View": "halpha" } },
+      { paths: { OSCHA: "/m/ha.xisf" }, oscKinds: { OSC: "broadband" } }, { paths: { OSCHA: "/m/é ü.xisf", OSCNB: "C:\\n b\\x.xisf" } }
    ];
    n = 0;
    checkConfigs.forEach( c => tables.forEach( t =>
@@ -265,7 +315,7 @@ module.exports = function( js )
 
    // ---- the keys of a colour group -------------------------------------------------
    n = 0;
-   fingerprints.forEach( fp => [ "broadband", "dualband", "", null ].forEach( kind =>
+   fingerprints.forEach( fp => [ "broadband", "dualband", "halpha", "", null ].forEach( kind =>
    {
       rec( "osc_group_identity/" + n, "osc_group_identity", [ fp, kind ], a => Pipeline.oscGroupIdentity( a[0], a[1] ) );
       const gid = Pipeline.oscGroupIdentity( fp, kind );
@@ -323,10 +373,13 @@ module.exports = function( js )
                        { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ] }, { OSCNB: [ "H", "O" ], OSC: [ "R", "G", "B" ] },
                        { OSC: [ "R", "G" ] }, { OSC: [ "R", "B" ] }, { OSC: [ "G" ] }, { OSC: [] }, { OSCNB: [] },
                        { OSC: null }, { OSC: [ "B", "R", "G" ] }, { OSC: [ "R", "G", "B" ], OSCNB: [ "O" ] },
-                       { OSC: [ "R", "G", "B" ], OTHER: [ "L" ] }, { OTHER: [ "L" ] }, { OSC: [ "R", "G", "B", "L" ] } ];
+                       { OSC: [ "R", "G", "B" ], OTHER: [ "L" ] }, { OTHER: [ "L" ] }, { OSC: [ "R", "G", "B", "L" ] },
+                       { OSCHA: [ "H" ] }, { OSC: [ "R", "G", "B" ], OSCHA: [ "H" ] }, { OSCHA: [ "H" ], OSC: [ "R", "G", "B" ] },
+                       { OSCNB: [ "H", "O" ], OSCHA: [ "H" ] }, { OSCHA: [] }, { OSCHA: null }, { OSCHA: [ "H", "H" ] },
+                       { OSC: [ "R", "G", "B" ], OSCNB: [ "H", "O" ], OSCHA: [ "H" ] }, { OSCHA: [ "R" ] } ];
    const presents = [ [], [ "R", "G", "B" ], [ "H", "O" ], [ "R", "G", "B", "H", "O" ], [ "L", "R", "G", "B" ],
                       [ "L", "H", "O" ], [ "R", "G" ], [ "R", "B" ], [ "G" ], [ "H" ], [ "O" ], [ "B", "G", "R" ],
-                      [ "L", "R", "G", "B", "H", "O", "S" ], [ "R", "R", "G", "B" ], [ "L" ], [ "S", "H", "O" ],
+                      [ "L", "R", "G", "B", "H", "O", "S" ], [ "L", "H" ], [ "R", "G", "B", "H" ], [ "R", "R", "G", "B" ], [ "L" ], [ "S", "H", "O" ],
                       [ "r", "g", "b" ] ];
    n = 0;
    groupSets.forEach( g => presents.forEach( p =>
@@ -373,7 +426,10 @@ module.exports = function( js )
       { H: ch( "OSC", 0 ), O: ch( "OSC", 1 ) },
       { L: ch( "OSC", 0 ), S: ch( "OSCNB", 0 ) },
       { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ), H: ch( "OSC", 0 ), O: ch( "OSCNB", 1 ), L: ch( null, null ) },
-      { R: { group: "OSC" }, G: { group: "OSC" }, B: { group: "OSC" } }
+      { R: { group: "OSC" }, G: { group: "OSC" }, B: { group: "OSC" } },
+      { H: ch( "OSCHA", 0 ) }, { R: ch( "OSC", 0 ), G: ch( "OSC", 1 ), B: ch( "OSC", 2 ), H: ch( "OSCHA", 0 ) },
+      { H: ch( "OSCHA", 0 ), O: ch( "OSCNB", 1 ) }, { L: ch( null, null ), H: ch( "OSCHA", 0 ) },
+      { H: ch( "OSCHA", 1 ) }, { O: ch( "OSCHA", 0 ) }
    ];
    chanSets.forEach( ( c, i ) =>
       rec( "osc_channel_groups/" + i, "osc_channel_groups", [ c ], a => Pipeline.oscChannelGroups( a[0] ) ) );
@@ -393,7 +449,8 @@ module.exports = function( js )
                         { R: "", G: "", B: "" }, {}, null, { G: "Sony Color Sensor G" }, { R: "Sony Color Sensor R", G: "Sony Color Sensor G", B: null } ];
    const sensorRuns = [ { paths: { OSC: "/m/rgb.xisf" } }, { views: { OSC: "RGB_View" } }, { paths: { OSCNB: "/m/nb.xisf" } },
                         { paths: { R: "/m/r", G: "/m/g", B: "/m/b" } }, { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } },
-                        { paths: { OSC: "" } }, {} ];
+                        { paths: { OSC: "" } }, {}, { paths: { OSCHA: "/m/ha.xisf" } },
+                        { paths: { OSC: "/m/rgb.xisf", OSCHA: "/m/ha.xisf" } } ];
    n = 0;
    sensorRuns.forEach( run => oscSensors.forEach( s => sensorTables.forEach( t =>
    {
@@ -408,13 +465,33 @@ module.exports = function( js )
       rec( "osc_sensor_problems/no-sensor/" + i, "osc_sensor_problems", [ run, sensorTables[1] ], a =>
          Pipeline.oscSensorProblems( a[0], ( name, channel ) => !!( a[1][channel] && a[1][channel].indexOf( name ) >= 0 ) ) ) );
 
+   // ---- the colour sensor behind a camera (only whether it is known and which model; the curve names are PixInsight's) ----
+   const cameras = [
+      "ZWO ASI2600MC Pro", "ZWO ASI2600MC Air", "ZWO ASI2600MC-Duo", "ZWO  ASI2600MC   Pro", "zwo asi2600mc pro", "QHY268C",
+      "QHYCCD-Cameras-Capture (QHY268C-123)", "  ZWO ASI2600MC Pro  ", "ZWO ASI6200MC Pro", "QHY600C", "ZWO ASI533MC Pro",
+      "ZWO ASI294MC Pro", "ZWO ASI585MC", "ZWO ASI2400MC Pro", "ZWO ASI678MC", "ZWO ASI676MC", "ZWO ASI662MC", "ZWO ASI462MC",
+      "ZWO ASI183MC Pro", "ZWO ASI178MC", "ZWO ASI1600MC Pro", "IMX571", "IMX455", "IMX461", "IMX533", "IMX294", "IMX585", "IMX462",
+      "IMX662", "IMX676", "ZWO ASI094MC Pro", "ZWO ASI2600MM Pro", "QHY268M", "ZWO ASI533MM Pro", "ZWO ASI294MM Pro", "", "   ",
+      null, "Camera 1", "ZWO ASI9999MC", "Atik 16200", "ASI2600", "ZWO ASI6200MM Pro", "QHY600M", "ZWO ASI585MM", "ZWO ASI178MM",
+      "ASI533MC", "asi2600mc", "ASI 2600 MC Pro", "Sony IMX571", 5, "QHY268C-PRO", "QHY600C-PH"
+   ];
+   cameras.forEach( ( c, i ) =>
+      rec( "sensor_curves_for_camera/" + i, "sensor_curves_for_camera", [ c ], a =>
+      {
+         const r = Util.sensorCurvesForCamera( a[0] );
+         return r == null ? null : { model: r.model };
+      } ) );
+
    // ---- which dialog controls a colour master changes --------------------------------------------
    const controlConfigs = [ {}, null, { paths: {} }, { paths: { OSC: "/m/rgb.xisf" } }, { paths: { OSCNB: "/m/nb.xisf" } },
                             { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } }, { views: { OSC: "RGB_View" } },
                             { views: { OSCNB: "NB_View" } }, { paths: { R: "/m/r", G: "/m/g", B: "/m/b" } },
                             { paths: { OSC: "" } }, { paths: { OSC: "", OSCNB: "/m/nb.xisf" } },
                             { paths: { OSC: "/m/rgb.xisf", L: "/m/l.xisf" } }, { views: { OSC: "" }, paths: { OSC: "/m/x" } },
-                            { paths: { H: "/m/h.xisf", O: "/m/o.xisf", S: "/m/s.xisf" } }, { views: {}, paths: {} } ];
+                            { paths: { H: "/m/h.xisf", O: "/m/o.xisf", S: "/m/s.xisf" } }, { views: {}, paths: {} },
+                            { paths: { OSCHA: "/m/ha.xisf" } }, { paths: { OSC: "/m/rgb.xisf", OSCHA: "/m/ha.xisf" } },
+                            { views: { OSCHA: "HA_View" } }, { paths: { OSCHA: "/m/ha.xisf", L: "/m/l.xisf" } },
+                            { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/nb.xisf" } } ];
    controlConfigs.forEach( ( c, i ) =>
       rec( "osc_control_state/" + i, "osc_control_state", [ c ], a => Util.oscControlState( a[0] ) ) );
 
@@ -450,10 +527,13 @@ module.exports = function( js )
    const srcPaletteConfigs = [ { paths: { OSCNB: "/m/nb.xisf" } }, { paths: { OSC: "/m/rgb.xisf" } },
                             { paths: { OSC: "/m/rgb.xisf", OSCNB: "/m/nb.xisf" } }, { views: { OSCNB: "NB_View" } },
                             { paths: { H: "/m/h.xisf", O: "/m/o.xisf" } }, { paths: { OSCNB: "" } }, {}, null,
-                            { paths: { OSCNB: "/m/nb.xisf" }, palettes: [ "HOO" ] } ];
+                            { paths: { OSCNB: "/m/nb.xisf" }, palettes: [ "HOO" ] },
+                            { paths: { OSCHA: "/m/ha.xisf" } }, { paths: { OSCHA: "/m/ha.xisf", OSCNB: "/m/nb.xisf" } },
+                            { paths: { OSC: "/m/rgb.xisf", OSCHA: "/m/ha.xisf" }, palettes: [ "HOO" ] } ];
    const srcPaletteInfos = [ { OSCNB: { name: "L-eXtreme" } }, { OSCNB: { name: "ALP-T Ha/OIII" } }, { OSCNB: {} },
                           { OSCNB: { name: "" } }, { OSCNB: { name: 0 } }, { OSCNB: null }, {}, null,
-                          { OSCNB: { name: "Optolong L-eXtreme 2\"" } } ];
+                          { OSCNB: { name: "Optolong L-eXtreme 2\"" } },
+                          { OSCHA: { name: "Ha 7nm" } }, { OSCHA: { name: "Ha" }, OSCNB: { name: "L-eXtreme" } } ];
    const srcPalettes = [ "HOO", "SHO", "HSO", "", null, "XYZ", "hoo", undefined ];
    n = 0;
    srcPaletteConfigs.forEach( c => srcPaletteInfos.forEach( i => srcPalettes.forEach( p =>
@@ -481,13 +561,15 @@ module.exports = function( js )
       B: { group: "OSC", path: "/m/rgb.xisf", plane: 2 }, H: { group: "OSCNB", path: "/m/nb.xisf", plane: 0 },
       O: { group: "OSCNB", path: "/m/nb.xisf", plane: 1 }, L: { group: null, path: "/m/l.xisf", plane: null },
       S: { group: "OSCNB", path: "/n/other.xisf", plane: 0 }, X: { group: "OSC", path: "C:\\m\\rgb.xisf", plane: 0 },
+      Y: { group: "OSCHA", path: "/m/ha.xisf", plane: 0 }, Z: { group: "OSCHA", path: "/m/ha.xisf", plane: 1 },
       Q: { group: "OSC", path: "/m/rgb.xisf", plane: null }, D: { group: "OSC", path: "/m/rgb.xisf", plane: 0 },
       T: { group: "OSC", path: "/m/rgb.xisf", plane: "0" }, W: { group: "OSC", path: "/m/w.xisf", plane: 0 }
    };
    const srcKeySets = [ [ "R", "G", "B" ], [ "H", "O", "O" ], [ "S", "H", "O" ], [ "H", "S", "O" ], [ "L" ], [],
-                        [ "L", "R" ], [ "R", "L", "G" ], [ "Z" ], [ "R", "R", "G" ], [ "H", "H" ], [ "R", "H", "O", "G" ],
+                        [ "L", "R" ], [ "R", "L", "G" ], [ "Zed" ], [ "R", "R", "G" ], [ "H", "H" ], [ "R", "H", "O", "G" ],
                         [ "Q" ], [ "R", "D", "G" ], [ "X", "R" ], [ "S", "O" ], [ "R", "G", "B", "H", "O" ], [ "R", "Q" ],
-                        [ "Q", "Q" ], [ "R", "T" ], [ "R", "W", "G" ], [ "H", "O", "S", "R" ] ];
+                        [ "Q", "Q" ], [ "R", "T" ], [ "R", "W", "G" ], [ "H", "O", "S", "R" ],
+                        [ "Y" ], [ "R", "Y" ], [ "Y", "H" ], [ "H", "Y", "O" ], [ "Y", "Z" ], [ "Y", "Y" ], [ "L", "Y" ] ];
    const srcPerPlane = [ false, true, null, 0, "yes" ];
    n = 0;
    srcKeySets.forEach( k => srcPerPlane.forEach( pp =>

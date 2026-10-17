@@ -26,6 +26,7 @@ S = "/data/S.fits"
 O = "/data/O.fits"
 OSC = "/data/osc.fits"
 OSCNB = "/data/oscnb.fits"
+OSCHA = "/data/oscha.fits"
 MISSING = "/data/missing.fits"
 SOLVED_KEYWORDS = ("CTYPE1", "CRVAL1")
 SPCC = {"redfilter": ["Red"], "greenfilter": ["Green"], "bluefilter": ["Blue"], "monosensor": [],
@@ -41,12 +42,15 @@ HINTS = (("RA", "10.0"), ("DEC", "20.0"), ("FOCALLEN", "500"), ("XPIXSZ", "3.8")
 
 
 def header(path: str, *, filter_value: str | None = "default", solved: bool = False,
-           hints: Sequence[tuple[str, str]] = HINTS, channels: Any = 1) -> dict[str, Any]:
+           hints: Sequence[tuple[str, str]] = HINTS, channels: Any = 1,
+           instrume: str | None = None) -> dict[str, Any]:
     """A synthetic FITS header: FILTER, then the plate-solving hints in the header (not in the config)."""
     keywords: list[dict[str, Any]] = []
     value = _filter_of(path) if filter_value == "default" else filter_value
     if value is not None:
         keywords.append({"name": "FILTER", "value": f"'{value}'"})
+    if instrume is not None:
+        keywords.append({"name": "INSTRUME", "value": f"'{instrume}'"})
     keywords.extend({"name": n, "value": v} for n, v in hints)
     if solved:
         keywords.extend({"name": n, "value": "1"} for n in SOLVED_KEYWORDS)
@@ -76,7 +80,7 @@ def found_for(*tools: str) -> dict[str, Any]:
 def make(config: Mapping[str, Any], *, present: Sequence[str] = (), missing_files: Sequence[str] = (),
          unreadable: Sequence[str] = (), headers: Mapping[str, dict[str, Any]] | None = None,
          rejection: Mapping[str, str] | None = None, headless: bool = True, **kw: Any) -> pf.Preflight:
-    files = {p for p in (L, R, G, B, H, S, O, OSC, OSCNB, MISSING) if p not in missing_files}
+    files = {p for p in (L, R, G, B, H, S, O, OSC, OSCNB, OSCHA, MISSING) if p not in missing_files}
     hdrs = dict(headers or {})
 
     def read_header(path: str) -> dict[str, Any]:
@@ -529,7 +533,7 @@ def test_graxpert_readiness_is_not_asked_when_the_script_is_not_found() -> None:
 # ---- colour masters: the JavaScript order (mix, palette, channel counts, kinds), then the Siril sensor rule ----------
 
 SENSOR = {"sensor": "Sony IMX571", "frontFilter": "", "lpf": ""}
-NO_PATHS = {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""}
+NO_PATHS = {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": "", "OSCHA": ""}
 
 
 def colour_config(**over: Any) -> dict[str, Any]:
@@ -562,7 +566,7 @@ def test_a_colour_run_without_a_sensor_is_refused_when_the_key_is_missing_too() 
     del cfg["oscSensor"]
     hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3)}
     assert pf.preflight(make(cfg, headers=hdrs)) == [
-        "choose the sensor colour filters for the colour master (SPCC section)"]
+        "choose the sensor colour filters for the colour master (SPCC section): the master has no INSTRUME keyword"]
 
 
 def test_colour_with_mono_gives_the_mix_text_first_then_the_input_names() -> None:
@@ -612,7 +616,8 @@ def test_a_two_channel_fits_is_refused_in_a_mono_and_a_colour_slot() -> None:
 def test_an_unconfident_filter_asks_for_a_kind_and_a_saved_choice_answers() -> None:
     hdrs = {OSC: header(OSC, filter_value="Mystery", channels=3)}
     cfg = colour_config(paths={"OSC": OSC})
-    assert pf.preflight(make(cfg, headers=hdrs)) == ["choose Broadband or Dual-band H\u03b1 + OIII for " + OSC]
+    assert pf.preflight(make(cfg, headers=hdrs)) == [
+        "choose Broadband, Dual-band H\u03b1 + OIII or Narrowband H\u03b1 for " + OSC]
     cfg = colour_config(paths={"OSC": OSC}, oscKindChoices={"filter:mystery": "broadband"})
     assert pf.preflight(make(cfg, headers=hdrs)) == []
     assert cfg["oscKinds"] == {"OSC": "broadband"}
@@ -740,3 +745,87 @@ def test_a_mono_run_does_not_look_up_the_osc_names() -> None:
 
     assert pf.preflight(make(base_config(oscSensor={"sensor": "Nope"}), spcc_names=names)) == []
     assert not any(k.startswith("osc") for k in calls)
+
+
+# ---- the automatic OSC sensor and the single-Hα master -------------------------------------------------------------
+
+BLANK_SENSOR = {"sensor": "", "frontFilter": "", "lpf": ""}
+
+
+def test_the_sensor_is_chosen_from_the_camera_and_the_run_log_line_says_why() -> None:
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor=dict(BLANK_SENSOR))
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3, instrume="ZWO ASI2600MC Pro")}
+    pf.preflight(make(cfg, headers=hdrs))
+    assert cfg["oscSensor"]["sensor"] == "Sony IMX571"
+    assert "automatic" in cfg["oscSensorNote"] and "ZWO ASI2600MC Pro" in cfg["oscSensorNote"]
+
+
+def test_a_sensor_the_user_chose_beats_the_camera() -> None:
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor={**BLANK_SENSOR, "sensor": "Canon EOS R"})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3, instrume="ZWO ASI2600MC Pro")}
+    pf.preflight(make(cfg, headers=hdrs))
+    assert cfg["oscSensor"]["sensor"] == "Canon EOS R"
+    assert "chosen" in cfg["oscSensorNote"] and "automatic would be Sony IMX571" in cfg["oscSensorNote"]
+
+
+def test_an_unknown_camera_without_a_chosen_sensor_asks_and_says_why() -> None:
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor=dict(BLANK_SENSOR))
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3, instrume="Camera 1")}
+    out = pf.preflight(make(cfg, headers=hdrs))
+    assert out == ["choose the sensor colour filters for the colour master (SPCC section): "
+                   "INSTRUME 'Camera 1' is an unknown camera"]
+    assert cfg["oscSensor"]["sensor"] == ""
+
+
+def test_the_caller_s_sensor_dict_is_not_changed() -> None:
+    mine = dict(BLANK_SENSOR)
+    cfg = colour_config(paths={"OSC": OSC}, oscSensor=mine)
+    pf.preflight(make(cfg, headers={OSC: header(OSC, filter_value="UVIR", channels=3, instrume="QHY268C")}))
+    assert mine == BLANK_SENSOR and cfg["oscSensor"]["sensor"] == "Sony IMX571"
+
+
+def test_a_dual_band_or_halpha_run_picks_no_sensor() -> None:
+    for slot, flt, pal in (("OSCNB", "L-eXtreme", ["HOO"]), ("OSCHA", "Ha 7nm", [])):
+        cfg = colour_config(paths={slot: OSCNB if slot == "OSCNB" else OSCHA}, palettes=pal,
+                            oscSensor=dict(BLANK_SENSOR))
+        path = cfg["paths"][slot]
+        hdrs = {path: header(path, filter_value=flt, channels=3, instrume="ZWO ASI2600MC Pro")}
+        assert pf.preflight(make(cfg, headers=hdrs)) == []
+        assert cfg["oscSensor"]["sensor"] == "" and not cfg.get("oscSensorNote")
+
+
+def test_a_halpha_master_alone_is_clean_and_fills_its_kind() -> None:
+    cfg = colour_config(paths={"OSCHA": OSCHA})
+    hdrs = {OSCHA: header(OSCHA, filter_value="Ha 7nm", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+    assert cfg["oscKinds"] == {"OSCHA": "halpha"}
+
+
+def test_a_halpha_master_beside_a_broadband_one_is_clean() -> None:
+    cfg = colour_config(paths={"OSC": OSC, "OSCHA": OSCHA})
+    hdrs = {OSC: header(OSC, filter_value="UV/IR Cut", channels=3),
+            OSCHA: header(OSCHA, filter_value="Ha", channels=3)}
+    assert pf.preflight(make(cfg, headers=hdrs)) == []
+    assert cfg["oscKinds"] == {"OSC": "broadband", "OSCHA": "halpha"}
+
+
+def test_halpha_with_dual_band_is_refused() -> None:
+    cfg = colour_config(paths={"OSCHA": OSCHA, "OSCNB": OSCNB})
+    hdrs = {OSCHA: header(OSCHA, filter_value="Ha", channels=3),
+            OSCNB: header(OSCNB, filter_value="L-eXtreme", channels=3)}
+    out = pf.preflight(make(cfg, headers=hdrs))
+    assert len(out) == 1 and "both supply H" in out[0]
+
+
+def test_halpha_with_sho_or_a_mono_master_is_refused() -> None:
+    hdrs = {OSCHA: header(OSCHA, filter_value="Ha", channels=3)}
+    out = pf.preflight(make(colour_config(paths={"OSCHA": OSCHA}, palettes=["SHO"]), headers=hdrs))
+    assert any("SHO and HSO need SII" in p for p in out)
+    out = pf.preflight(make(colour_config(paths={"OSCHA": OSCHA, "L": L}), headers=hdrs))
+    assert any("colour masters cannot be combined with mono masters" in p for p in out)
+
+
+def test_a_halpha_slot_with_a_broadband_master_is_refused() -> None:
+    cfg = colour_config(paths={"OSCHA": OSCHA})
+    out = pf.preflight(make(cfg, headers={OSCHA: header(OSCHA, filter_value="UVIR", channels=3)}))
+    assert out == [OSCHA + " is a broadband colour master; the narrowband H\u03b1 slot needs a Narrowband H\u03b1 master"]

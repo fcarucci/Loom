@@ -796,7 +796,7 @@ def scan_masters(
     the remembered kinds), and a master must be a light (IMAGETYP).
 
     Returns None when ``folder`` is not a directory. Otherwise a dict with ``confirmed`` (mono channel -> entry),
-    ``colour`` (``{"OSC": entry or None, "OSCNB": entry or None}``), ``unresolved`` (colour entries whose kind is
+    ``colour`` (``{"OSC": entry or None, "OSCNB": entry or None, "OSCHA": entry or None}``), ``unresolved`` (colour entries whose kind is
     still to be chosen), ``corrected`` (name-versus-header disagreements), ``skipped`` (the count of winners that
     were not lights plus the files that could not be read), ``unreadable`` (one line with the reason for each file
     that could not be read or decoded) and ``total``. A file whose header cannot be read, or whose name cannot be
@@ -849,7 +849,7 @@ def scan_masters(
     def plan() -> tuple[dict[str, dict[str, Any]], dict[str, Any], bool]:
         mono = select_masters(named)
         cp = osc.select_colour_masters(colour_named, kinds)
-        missing = any(k not in mono for k in CHANNELS) or cp["OSC"] is None or cp["OSCNB"] is None
+        missing = any(k not in mono for k in CHANNELS) or any(cp[slot] is None for slot in osc.COLOUR_SLOTS)
         return mono, cp, missing and len(unnamed) > 0
 
     mono_picks, colour_plan, read_unnamed = plan()
@@ -886,7 +886,7 @@ def scan_masters(
     picks += colour_plan["unresolved"]
 
     confirmed: dict[str, dict[str, Any]] = {}
-    colour: dict[str, Optional[dict[str, Any]]] = {"OSC": None, "OSCNB": None}
+    colour: dict[str, Optional[dict[str, Any]]] = {slot: None for slot in osc.COLOUR_SLOTS}
     unresolved: list[dict[str, Any]] = []
     corrected: list[str] = []
     skipped = 0

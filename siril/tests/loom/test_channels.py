@@ -492,12 +492,31 @@ def test_scan_masters_finds_colour_and_mono_masters_independently(tmp_path: Path
     assert scan["unresolved"] == [] and scan["corrected"] == [] and scan["total"] == 2
 
 
+def test_scan_masters_finds_a_halpha_colour_master_beside_a_broadband_one(tmp_path: Path, no_pixels: None) -> None:
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-Ha_color.fit", "Ha 7nm")
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-UVIR_color.fit", "UVIR")
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"]["OSCHA"]["name"] == "masterLight_BIN-1_FILTER-Ha_color.fit"
+    assert scan["colour"]["OSCHA"]["channel"] == "OSCHA"
+    assert scan["colour"]["OSC"]["name"] == "masterLight_BIN-1_FILTER-UVIR_color.fit"
+    assert scan["colour"]["OSCNB"] is None and scan["confirmed"] == {} and scan["unresolved"] == []
+
+
+def test_a_three_channel_ha_master_is_colour_not_the_mono_h_channel(tmp_path: Path, no_pixels: None) -> None:
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-Ha_color.fit", "Ha")
+    _colour_fits(tmp_path, "masterLight_BIN-1_FILTER-Ha_mono.fit", "Ha", channels=1)
+    scan = ch.scan_masters(str(tmp_path))
+    assert scan is not None
+    assert scan["colour"]["OSCHA"] is not None and list(scan["confirmed"]) == ["H"]
+
+
 def test_scan_masters_keeps_its_existing_keys_and_adds_colour_and_unresolved(tmp_path: Path) -> None:
     _write_fits_master(tmp_path, "masterLight_FILTER-Ha_mono.fits", "H", 1, filter_name="Ha")
     scan = ch.scan_masters(str(tmp_path))
     assert scan is not None
     assert {"confirmed", "corrected", "skipped", "total", "colour", "unresolved"} <= set(scan)
-    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+    assert scan["colour"] == {"OSC": None, "OSCNB": None, "OSCHA": None}
 
 
 def test_scan_masters_unnamed_three_channel_fz_lists_both_colour_and_mono(tmp_path: Path, no_pixels: None) -> None:
@@ -521,7 +540,7 @@ def test_scan_masters_unnamed_colour_file_with_no_known_kind_is_unresolved(tmp_p
     scan = ch.scan_masters(str(tmp_path))
     assert scan is not None
     assert [e["name"] for e in scan["unresolved"]] == ["stack.fit"]
-    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+    assert scan["colour"] == {"OSC": None, "OSCNB": None, "OSCHA": None}
 
 
 def test_scan_masters_colour_name_with_a_one_channel_header_is_corrected_and_used_as_mono(tmp_path: Path) -> None:
@@ -531,7 +550,7 @@ def test_scan_masters_colour_name_with_a_one_channel_header_is_corrected_and_use
     assert scan["corrected"] == [str(path) + ": the name says colour but the image has 1 channel; "
                                  "it is used as a mono master"]
     assert scan["confirmed"]["H"]["name"] == "masterLight_FILTER-Ha_color.fit"
-    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+    assert scan["colour"] == {"OSC": None, "OSCNB": None, "OSCHA": None}
 
 
 def test_scan_masters_mono_name_with_a_three_channel_header_is_a_colour_master(tmp_path: Path) -> None:
@@ -555,7 +574,7 @@ def test_scan_masters_an_unreadable_header_is_reported_and_never_raised(tmp_path
     (tmp_path / "masterLight_FILTER-L-eXtreme_color.fit").write_bytes(b"SIMPLE  =" + b" " * 100)
     scan = ch.scan_masters(str(tmp_path))
     assert scan is not None
-    assert scan["colour"] == {"OSC": None, "OSCNB": None}
+    assert scan["colour"] == {"OSC": None, "OSCNB": None, "OSCHA": None}
     assert scan["unreadable"] and scan["unreadable"][0].endswith("masterLight_FILTER-L-eXtreme_color.fit: "
                                                                   "header could not be read")
     assert scan["skipped"] >= 1

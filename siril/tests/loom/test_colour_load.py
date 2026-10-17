@@ -108,6 +108,38 @@ def test_oscnb_o_is_plane_one_whatever_plane_two_holds(env: Env, tmp_path: Path)
         assert not os.path.exists(env.store.path_for(osc.osc_sibling_key(loader.identity, 2)))  # blue never stored
 
 
+def test_oscha_h_is_the_red_plane_and_green_and_blue_are_neither_checked_nor_stored(env: Env, tmp_path: Path) -> None:
+    planes = _planes(6, third=np.full(SHAPE, 0.5, np.float32))
+    planes[1] = np.full(SHAPE, 0.2, np.float32)           # constant green and blue: not an error for an Hα master
+    master = _master(tmp_path / "ha.fits", planes)
+    loader = env.loader(master, "OSCHA", "halpha")
+    assert np.array_equal(_plate(loader.plate(0)), planes[0])
+    header = read_fits(loader.plate(0))[1]
+    assert header["FILTER"] == "Ha" and header["LOOMSRC"] == "ha.fits|plane:0"
+    for plane in (1, 2):
+        assert not os.path.exists(env.store.path_for(osc.osc_sibling_key(loader.identity, plane)))
+    assert loader.validation() == {"planes": [{"min": float(planes[0].min()), "max": float(planes[0].max()),
+                                              "median": float(np.median(planes[0]))}]}
+    assert loader.opens == 1
+
+
+def test_a_constant_red_plane_of_an_oscha_master_is_refused(env: Env, tmp_path: Path) -> None:
+    planes = _planes(7)
+    planes[0] = np.full(SHAPE, 0.5, np.float32)
+    master = _master(tmp_path / "bad_ha.fits", planes)
+    with pytest.raises(ValueError, match="plane 0 is constant \\(all values 0.5\\); the master looks broken"):
+        env.loader(master, "OSCHA", "halpha").plate(0)
+
+
+def test_an_oscha_master_is_read_once_and_then_served_from_the_cache(env: Env, tmp_path: Path) -> None:
+    master = _master(tmp_path / "ha2.fits", _planes(8))
+    env.loader(master, "OSCHA", "halpha").plate(0)
+    again = env.loader(master, "OSCHA", "halpha")
+    again.plate(0)
+    assert _master_reads(env, master) == 1 and again.opens == 0
+    assert again.validation() is not None and len(again.validation()["planes"]) == 1
+
+
 def test_a_constant_plane_is_refused_with_the_javascript_text_and_nothing_is_stored(env: Env, tmp_path: Path) -> None:
     master = _master(tmp_path / "bad.fits", _planes(4, third=np.full(SHAPE, 0.5, np.float32)))
     loader = env.loader(master)

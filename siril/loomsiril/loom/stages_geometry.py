@@ -54,7 +54,7 @@ _NARROWBAND: tuple[str, ...] = ("H", "S", "O")
 _SEQUENCE = "reg"
 #: The channel of the colour sequence the stars are found on when a colour group is registered as one image: the
 #: green plane of an ``OSC`` group image, the first plane (H) of an ``OSCNB`` one (whose reference is expanded from G).
-GROUP_REGISTER_LAYER: dict[str, int] = {"OSC": 1, "OSCNB": 0}
+GROUP_REGISTER_LAYER: dict[str, int] = {"OSC": 1, "OSCNB": 0, "OSCHA": 0}
 
 
 def register_stage_params(ref_chain_key: str) -> dict[str, Any]:

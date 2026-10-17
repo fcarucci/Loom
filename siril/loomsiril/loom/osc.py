@@ -165,13 +165,24 @@ OSC_FILTERS: list[dict[str, Any]] = [
 OSC_BROADBAND: list[str] = ["uvir", "uvircut", "ircut", "uvirblock", "lpro", "cls", "clsccd", "lrgb"]
 OSC_FAMILIES: list[str] = ["duo", "dual", "dualband", "tri", "triad", "quad", "alpt"]
 
-#: The two colour-master slots and the logical channels each one stands for.
-COLOUR_SLOTS: list[str] = ["OSC", "OSCNB"]
-COLOUR_MEMBERS: dict[str, list[str]] = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O"]}
+#: The colour-master slots and the logical channels each one stands for. ``OSCHA`` is one Hα filter on a colour
+#: camera: its red plane is H.
+COLOUR_SLOTS: list[str] = ["OSC", "OSCNB", "OSCHA"]
+COLOUR_MEMBERS: dict[str, list[str]] = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O"], "OSCHA": ["H"]}
+
+#: The kinds a colour master can be, and the slot each one fills.
+OSC_KINDS: tuple[str, ...] = ("broadband", "dualband", "halpha")
+COLOUR_SLOT_KIND: dict[str, str] = {"OSC": "broadband", "OSCNB": "dualband", "OSCHA": "halpha"}
+#: The other way round: the slot a kind fills (Siril's own helper).
+KIND_SLOTS: dict[str, str] = {kind: slot for slot, kind in COLOUR_SLOT_KIND.items()}
 
 #: The plane each colour master contributes, per kind: the index is the plane in the master's pixel order, the key
 #: the logical channel it becomes.
-OSC_RECIPES: dict[str, dict[str, int]] = {"OSC": {"R": 0, "G": 1, "B": 2}, "OSCNB": {"H": 0, "O": 1}}
+OSC_RECIPES: dict[str, dict[str, int]] = {"OSC": {"R": 0, "G": 1, "B": 2}, "OSCNB": {"H": 0, "O": 1},
+                                          "OSCHA": {"H": 0}}
+#: The planes checked when a colour master is split. OSCHA uses only its red plane (H): its green and blue planes
+#: (interpolation and leak) are neither checked nor kept.
+OSC_VALIDATED_PLANES: dict[str, list[int]] = {"OSC": [0, 1, 2], "OSCNB": [0, 1, 2], "OSCHA": [0]}
 
 # ---------------------------------------------------------------------------
 # Filter names (Util.js)
@@ -183,6 +194,9 @@ _BRAND_PREFIX = re.compile(r"(?:optolong|antlia|idas|astronomik|zwo|baader|svbon
                            + _NOT_WS_CLASS + ")", re.IGNORECASE | re.ASCII)
 _NOT_ALNUM = re.compile(r"[^a-z0-9]")
 _ALPT_SII_HB = re.compile(r"alpt.*(?:sii|hb)")
+#: A single Hα filter, by its normalised model name: Ha or Halpha with the bandwidth on either side (6nmha, ha7nm).
+_HALPHA = re.compile(r"(?:[0-9]+nm)?(?:ha|halpha)(?:[0-9]+nm)?\Z", re.ASCII)
+_BANDWIDTH = re.compile(r"([0-9]+(?:\.[0-9]+)?)" + _WS_CLASS + r"*nm", re.IGNORECASE)
 
 
 def normalise_filter(value: Any) -> str:
@@ -221,6 +235,11 @@ def osc_filter_info(filter_value: Any) -> Optional[dict[str, Any]]:
         if f.startswith(fam):
             return {"kind": "dualband", "name": _trim(_str(filter_value)), "confident": False,
                     "haNm": None, "oiiiNm": None}
+    # A single Hα filter, after every dual-band name (L-eXtreme, ALP-T Hα/OIII, Duo and the like are dual-band).
+    if _HALPHA.match(f):
+        nm = _BANDWIDTH.search(osc_model_name(filter_value))
+        return {"kind": "halpha", "name": _trim(_str(filter_value)), "confident": True,
+                "haNm": _js_float(nm.group(1)) if nm else None, "oiiiNm": None}
     return None
 
 
@@ -340,7 +359,7 @@ def effective_osc_kind(slot: Any, filter_value: Any, path: Any, choices: Any) ->
 
     key = osc_kind_key(filter_value, path)
     choice = choices[key] if isinstance(choices, Mapping) and key in choices else None
-    if choice == "broadband" or choice == "dualband":
+    if choice in OSC_KINDS:
         return {"kind": choice, "name": name, "confident": True,
                 "haNm": info["haNm"] if info else None, "oiiiNm": info["oiiiNm"] if info else None,
                 "source": "choice"}
@@ -356,7 +375,7 @@ def entry_channel(filter_value: Any, number_of_channels: Any, path: Any, choices
     """``Util.entryChannel``: where a masters-list entry goes, from its filter and header channel count.
 
     One channel is a mono master (its channel key); three are a colour master whose slot follows its kind
-    (broadband is OSC, dual-band is OSCNB; an undetected or unsupported kind has no slot yet). Any other count has
+    (broadband is OSC, dual-band is OSCNB, Hα is OSCHA; an undetected or unsupported kind has no slot yet). Any other count has
     none either.
     """
     if _eq_num(number_of_channels, 1):
@@ -364,7 +383,7 @@ def entry_channel(filter_value: Any, number_of_channels: Any, path: Any, choices
     if not _eq_num(number_of_channels, 3):
         return {"channel": None, "colour": False, "kindSource": None}
     k = effective_osc_kind(None, filter_value, path, choices)
-    channel = "OSC" if k["kind"] == "broadband" else "OSCNB" if k["kind"] == "dualband" else None
+    channel = KIND_SLOTS.get(k["kind"]) if k["kind"] is not None else None
     return {"channel": channel, "colour": True, "kindSource": k["source"]}
 
 
@@ -375,7 +394,7 @@ def select_colour_masters(candidates: Sequence[Any], choices: Any) -> dict[str, 
     A candidate with no slot (kind undetected or unsupported) goes to ``unresolved``, in input order; a candidate
     that is not a colour image is not a colour pick.
     """
-    best: dict[str, Any] = {"OSC": None, "OSCNB": None, "unresolved": []}
+    best: dict[str, Any] = {"OSC": None, "OSCNB": None, "OSCHA": None, "unresolved": []}
     for c in candidates:
         if not _truthy(c):
             continue
@@ -462,6 +481,33 @@ def input_channel_problems(config: Any, info_of: InfoOf) -> list[str]:
     return problems
 
 
+def _js_float(text: str) -> Any:
+    """``parseFloat`` of a decimal text, as a JSON number (an integer value stays an int, as 7 not 7.0)."""
+    v = float(text)
+    return int(v) if v == int(v) else v
+
+
+_KIND_TEXT = {"broadband": "broadband", "dualband": "dual-band", "halpha": "narrowband Hα"}
+_SLOT_TEXT = {"OSC": "broadband", "OSCNB": "dual-band", "OSCHA": "narrowband Hα"}
+_KIND_NAME = {"OSC": "Broadband", "OSCNB": "Dual-band Hα + OIII", "OSCHA": "Narrowband Hα"}
+
+
+def osc_combination_problem(config: Any) -> Optional[str]:
+    """``Util.oscCombinationProblem``: a Hα colour master and a dual-band one both supply H, so one run cannot take
+    both (an Hα master with a broadband one is fine). None when the combination is allowed."""
+    colour = colour_supplied(config)
+    if "OSCHA" not in colour or "OSCNB" not in colour:
+        return None
+    paths, views = _paths_views(config)
+
+    def shown(k: str) -> str:
+        p = paths.get(k)
+        return _DIRECTORY.sub("", _str(p), count=1) if _has_length(p) else _str(views.get(k))
+
+    return ("a Narrowband Hα colour master and a dual-band Hα + OIII colour master both supply H; "
+            "choose one of them (Narrowband Hα: " + shown("OSCHA") + "; dual-band: " + shown("OSCNB") + ")")
+
+
 def osc_kind_problems(config: dict[str, Any], info_of: InfoOf) -> list[str]:
     """``Pipeline.oscKindProblems``: the checks of the colour slots (three channels, a known kind matching the slot).
 
@@ -489,11 +535,10 @@ def osc_kind_problems(config: dict[str, Any], info_of: InfoOf) -> list[str]:
         if k["kind"] == "unsupported":
             problems.append("this filter passes SII and Hβ; only Hα/OIII dual-band filters are supported")
         elif k["source"] == "none":
-            problems.append("choose Broadband or Dual-band Hα + OIII for " + _str(path))
-        elif slot == "OSCNB" and k["kind"] == "broadband":
-            problems.append(_str(path) + " is a broadband colour master; the dual-band slot needs a Dual-band Hα + OIII master")
-        elif slot == "OSC" and k["kind"] == "dualband":
-            problems.append(_str(path) + " is a dual-band colour master; the broadband slot needs a Broadband master")
+            problems.append("choose Broadband, Dual-band Hα + OIII or Narrowband Hα for " + _str(path))
+        elif KIND_SLOTS.get(k["kind"]) != slot:
+            problems.append(_str(path) + " is a " + _KIND_TEXT[k["kind"]] + " colour master; the " + _SLOT_TEXT[slot]
+                            + " slot needs a " + _KIND_NAME[slot] + " master")
         else:
             if not _truthy(config.get("oscKinds")):
                 config["oscKinds"] = {}
@@ -572,8 +617,8 @@ narrowband_bandwidths = osc_narrowband_bandwidths
 # How a colour run's channels are registered and cached (Pipeline.js)
 # ---------------------------------------------------------------------------
 
-_COLOUR_REF = {"OSC": "G", "OSCNB": "H"}
-_COLOUR_PLANES = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O", "O"]}
+_COLOUR_REF = {"OSC": "G", "OSCNB": "H", "OSCHA": "H"}
+_COLOUR_PLANES = {"OSC": ["R", "G", "B"], "OSCNB": ["H", "O", "O"], "OSCHA": ["H", "H", "H"]}
 
 
 def osc_registration_plan(present: Sequence[Any], groups: Any) -> dict[str, Any]:
@@ -593,7 +638,7 @@ def osc_registration_plan(present: Sequence[Any], groups: Any) -> dict[str, Any]
         if members:
             byslot[slot] = members
             used.update(members)
-    ref_slot = "OSC" if "OSC" in byslot else "OSCNB" if "OSCNB" in byslot else None
+    ref_slot = next((slot for slot in COLOUR_SLOTS if slot in byslot), None)
     plan: dict[str, Any] = {"ref": None, "identity": [], "groups": [], "mono": [k for k in present if k not in used]}
     if ref_slot is None:
         return plan
@@ -801,3 +846,91 @@ def js_config(config: Any) -> dict[str, Any]:
         name = sensor.get("sensor")
         out["oscSensor"] = {"R": name, "G": name, "B": name}
     return out
+
+
+# ---------------------------------------------------------------------------
+# The automatic OSC sensor (Siril only)
+# ---------------------------------------------------------------------------
+
+#: Colour cameras by their normalised INSTRUME (lower case, only a-z and 0-9), mapped to the model name Siril's SPCC
+#: database holds for an OSC sensor. Colour tokens only (asi2600mc, qhy268c, a bare Sony part number): a mono model
+#: (asi2600mm, qhy268m) never matches. A camera whose sensor the database lacks (ASI094MC is an IMX094, IMX461 is not
+#: listed) is not guessed: it picks nothing and the user chooses. The first match wins.
+OSC_SENSOR_TABLE: list[tuple[str, str]] = [
+    (r"asi2600mc|qhy268c|imx571", "Sony IMX571"),
+    (r"asi6200mc|qhy600c|imx455", "Sony IMX455"),
+    (r"asi533mc|imx533", "Sony IMX533"),
+    (r"asi294mc|qhy294c|imx294", "Sony IMX294"),
+    (r"asi585mc|imx585", "Sony IMX585"),
+    (r"asi2400mc|imx410", "Sony IMX410"),
+    (r"asi678mc|imx678", "Sony IMX678"),
+    (r"asi676mc|imx676", "Sony IMX676"),
+    (r"asi662mc|imx662", "Sony IMX662"),
+    (r"asi462mc|imx462", "Sony IMX462"),
+    (r"asi482mc|imx482", "Sony IMX482"),
+    (r"asi715mc|imx715", "Sony IMX715"),
+    (r"asi385mc|imx385", "Sony IMX385"),
+    (r"asi224mc|imx224", "Sony IMX224"),
+    (r"asi183mc|imx183", "Sony IMX183"),
+    (r"asi178mc|imx178", "Sony IMX178"),
+    (r"asi071mc|imx071", "Sony IMX071"),
+    (r"asi1600mc|mn34230", "Panasonic MN34230"),
+]
+_MONO_CAMERA = re.compile(r"asi[0-9]+mm|qhy[0-9]+m(?:$|[a-bd-z])")
+
+
+def _instrume_text(instrume: Any) -> str:
+    return "" if instrume is None else _trim(_str(instrume))
+
+
+def auto_osc_sensor(instrume: Any) -> dict[str, str]:
+    """The Siril OSC sensor a camera's INSTRUME names, and why: ``{"sensor", "reason"}``.
+
+    ``sensor`` is "" for a camera it cannot tell (no INSTRUME, a mono camera, an unknown camera); ``reason`` always
+    says what was decided, in words for the run log.
+    """
+    text = _instrume_text(instrume)
+    if not text:
+        return {"sensor": "", "reason": "the master has no INSTRUME keyword"}
+    n = normalise_filter(text)
+    for pattern, sensor in OSC_SENSOR_TABLE:
+        if re.search(pattern, n):
+            return {"sensor": sensor, "reason": "INSTRUME '" + text + "' is a " + sensor + " colour camera"}
+    if _MONO_CAMERA.search(n):
+        return {"sensor": "", "reason": "INSTRUME '" + text + "' is a mono camera"}
+    return {"sensor": "", "reason": "INSTRUME '" + text + "' is an unknown camera"}
+
+
+def common_osc_sensor(instrumes: Sequence[Any]) -> dict[str, str]:
+    """``auto_osc_sensor`` of the camera every non-blank INSTRUME names; nothing when they name different cameras."""
+    seen = [t for t in (_instrume_text(v) for v in instrumes) if t]
+    if len(set(seen)) > 1:
+        return {"sensor": "", "reason": "the masters name different cameras (" + ", ".join(sorted(set(seen))) + ")"
+                                        " and differ in INSTRUME"}
+    return auto_osc_sensor(seen[0] if seen else None)
+
+
+def resolve_osc_sensor(config: dict[str, Any], instrume: Any) -> Optional[str]:
+    """Fills the OSC sensor of a run that has none chosen from the camera, and returns the line for the run log.
+
+    ``config["oscSensor"]["sensor"]`` is left alone when the user chose one (the line says so). Otherwise the sensor
+    ``auto_osc_sensor`` names is set; an unknown camera leaves it blank (the run then asks for a choice). None
+    for a run without an OSC master, which has no sensor to choose.
+    """
+    if "OSC" not in colour_supplied(config):
+        return None
+    sensor = config.get("oscSensor")
+    if not isinstance(sensor, dict):
+        sensor = {"sensor": "", "frontFilter": "", "lpf": ""}
+    camera = _instrume_text(instrume)
+    pick = auto_osc_sensor(instrume)
+    shown = "INSTRUME '" + camera + "'" if camera else "no INSTRUME"
+    if _truthy(sensor.get("sensor")):
+        line = "OSC sensor: chosen, " + _str(sensor["sensor"]) + " (" + shown
+        if pick["sensor"] and pick["sensor"] != sensor["sensor"]:
+            line += "; automatic would be " + pick["sensor"]
+        return line + ")"
+    if pick["sensor"]:
+        config["oscSensor"] = {**sensor, "sensor": pick["sensor"]}   # a new dict: the caller's own is never changed
+        return "OSC sensor: automatic, " + pick["sensor"] + " (" + pick["reason"] + ")"
+    return "OSC sensor: " + pick["reason"] + "; choose the sensor colour filters"

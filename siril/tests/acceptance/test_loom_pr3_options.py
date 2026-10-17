@@ -15,7 +15,7 @@ config = pytest.importorskip("loomsiril.loom.config")
 
 # Loom's defaults for every field the port keeps (lib/Config.js:126-188), plus the port's two additions.
 EXPECTED_DEFAULTS = {
-    "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": ""},
+    "paths": {"L": "", "R": "", "G": "", "B": "", "H": "", "S": "", "O": "", "OSC": "", "OSCNB": "", "OSCHA": ""},
     "savedList": "",
     "filters": {},
     "gradientTool": "GraXpert",

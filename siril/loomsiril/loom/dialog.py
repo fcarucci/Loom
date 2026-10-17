@@ -112,7 +112,8 @@ SENSOR_KIND = "monosensor"
 #: The kind control's items of a colour master: (remembered value, text). The empty item is no kind: what the
 #: filter name says (the "detected" reset) or, when it says nothing, nothing chosen yet.
 KIND_ITEMS: tuple[tuple[str, str], ...] = (("", ""), ("broadband", "Broadband"),
-                                           ("dualband", "Dual-band H\u03b1 + OIII"))
+                                           ("dualband", "Dual-band H\u03b1 + OIII"),
+                                           ("halpha", "Narrowband H\u03b1"))
 
 #: The text of the kind column for a filter that cannot be a colour master (only H\u03b1/OIII dual-band filters are).
 KIND_UNSUPPORTED_TEXT = "Not supported"
@@ -152,7 +153,7 @@ def osc_kind_row(entry: Mapping[str, Any], choices: Any) -> dict[str, Any]:
     be changed (not for a filter known to be unsupported), and whether a remembered choice overrides the detection,
     which is when the "detected" link has something to restore."""
     k = osc.effective_osc_kind(None, entry.get("filter"), entry.get("path"), choices)
-    return {"kind": k["kind"] if k["kind"] in ("broadband", "dualband") else "",
+    return {"kind": k["kind"] if k["kind"] in osc.OSC_KINDS else "",
             "enabled": k["kind"] != "unsupported",
             "detected_link": k["source"] == "choice"}
 
@@ -394,6 +395,12 @@ class DialogModel:
         instruments = [e.get("instrume") for e in (self._scan or {}).get("confirmed", {}).values()]
         return ch.spcc_sensor_for(ch.common_instrument(instruments))
 
+    def osc_auto_sensor(self) -> dict[str, str]:
+        """The OSC sensor automatic selection names from the OSC master's INSTRUME: ``{"sensor", "reason"}``."""
+        path = self.path("OSC")
+        known = self._colour_known.get(path) if path else None
+        return osc.auto_osc_sensor(known.get("instrume") if known else None)
+
     def effective_sensor(self) -> str:
         """The sensor a run uses: the chosen one, else the automatic one."""
         return self.sensor() or self.auto_sensor()
@@ -541,7 +548,7 @@ class DialogModel:
         unless a choice was remembered for it, it shows the kind of the slot it sits in."""
         look = osc_kind_row(entry, self._kind_choices)
         if entry.get("unread") and not look["detected_link"]:
-            look["kind"] = {"OSC": "broadband", "OSCNB": "dualband"}.get(slot, "")
+            look["kind"] = {s: kind for kind, s in osc.KIND_SLOTS.items()}.get(slot, "")
             look["enabled"] = True
         return look
 
@@ -557,7 +564,7 @@ class DialogModel:
             if not look["enabled"]:
                 reason = UNSUPPORTED_REASON
             elif not look["kind"]:
-                reason = f"Choose Broadband or {KIND_ITEMS[2][1]} for {entry.get('name')}."
+                reason = (f"Choose Broadband, {KIND_ITEMS[2][1]} or {KIND_ITEMS[3][1]} for {entry.get('name')}.")
             elif not slot:
                 target = self._route(entry, "")
                 other = held.get(target or "")
@@ -570,19 +577,19 @@ class DialogModel:
         return rows
 
     def set_osc_kind(self, path: str, kind: str) -> None:
-        """Gives a colour master its kind: "broadband" or "dualband" is remembered (under ``osc_kind_key``, so one
+        """Gives a colour master its kind: "broadband", "dualband" or "halpha" is remembered (under ``osc_kind_key``, so one
         choice covers every master with that filter name), "" or "detected" forgets it. Saved at once; the master
         moves to its slot. ValueError for a filter that cannot be a colour master (it has no kind to choose)."""
         found = next(((entry, slot) for entry, slot in self._colour_list() if entry["path"] == path), None)
         if found is None:
             raise KeyError(f"not a colour master of the list: {path}")
         target = found[0]
-        if kind not in ("", "detected", "broadband", "dualband"):
+        if kind not in ("", "detected", *osc.OSC_KINDS):
             raise ValueError(f"not a kind: {kind}")
         if not self._kind_look(target, found[1])["enabled"]:
             raise ValueError(UNSUPPORTED_REASON)
         key = osc.osc_kind_key(target.get("filter"), path)
-        if kind in ("broadband", "dualband"):
+        if kind in osc.OSC_KINDS:
             self._kind_choices[key] = kind
         else:
             self._kind_choices.pop(key, None)
@@ -628,7 +635,11 @@ class DialogModel:
             raise KeyError(f"not a sensor colour filter: {key}")
         names = self._choices(_OSC_SENSOR_KINDS[key][0])
         none = _OSC_NONE_NAMES.get(key)
-        first = (("", none) if none is not None else ("", SENSOR_UNSET_TEXT))
+        if none is not None:
+            first = ("", none)
+        else:
+            auto = self.osc_auto_sensor()["sensor"]
+            first = ("", f"Auto ({auto})" if auto else SENSOR_UNSET_TEXT)
         pairs = [first] + [(n, n) for n in names if n != none]
         saved = self._osc_sensor[key]
         if saved and saved != none and saved not in names:

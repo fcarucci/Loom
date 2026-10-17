@@ -232,6 +232,8 @@ class _Run:
         paths = self.cfg.get("paths") or {}
         records: dict[str, dict[str, Any]] = {}
         loaders = self._colour_loaders(paths)
+        if loaders and self.cfg.get("oscSensorNote"):
+            self.ctx.log(str(self.cfg["oscSensorNote"]))   # preflight's decision on the OSC sensor, and why
         member_of = {member: slot for slot in loaders for member in osc.COLOUR_MEMBERS[slot]}
         for key in CHANNEL_ORDER:
             path = str(paths.get(key) or "")
@@ -318,7 +320,7 @@ class _Run:
 
     def register(self) -> str:
         present = [key for key in CHANNEL_ORDER if key in self.chans]
-        # Colour groups first: their reference (OSC's G, else OSCNB's H) needs no star measurement, and the siblings
+        # Colour groups first: their reference (OSC's G, else OSCNB's or OSCHA's H) needs no star measurement, and the siblings
         # of a colour master share the path the measurement reads.
         groups = osc.osc_channel_groups({k: {"group": ch.group} for k, ch in self.chans.items()})
         plan = osc.osc_registration_plan(present, groups) if groups else None

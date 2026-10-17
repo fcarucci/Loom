@@ -211,6 +211,9 @@ def preflight(inputs: Preflight) -> list[str]:
     palette = osc.osc_palette_problem(cfg)
     if palette is not None:
         problems.append(palette)
+    both_h = osc.osc_combination_problem(cfg)
+    if both_h is not None:
+        problems.append(both_h)
 
     def info_of(slot: str) -> dict[str, Any] | None:
         header = headers.get(slot)
@@ -218,14 +221,23 @@ def preflight(inputs: Preflight) -> list[str]:
             return None
         return {"path": paths.get(slot), "numberOfChannels": header.get("channels"),
                 "filter": ch.keyword_value(header.get("keywords", []), "FILTER"),
+                "instrume": ch.keyword_value(header.get("keywords", []), "INSTRUME"),
                 "width": header.get("width"), "height": header.get("height")}
 
     problems.extend(osc.input_channel_problems(cfg, info_of))
     problems.extend(osc.osc_kind_problems(cfg, info_of))  # type: ignore[arg-type]  # fills config["oscKinds"]
-    sensor = cfg.get("oscSensor")
     has_osc = "OSC" in osc.colour_supplied(cfg)
+    # The sensor colour filters: the user's choice, else the one the OSC master's INSTRUME names. What was decided,
+    # and why, is left in config["oscSensorNote"] for the run log (never persisted).
+    reason = ""
+    if has_osc:
+        osc_info = info_of("OSC")
+        instrume = osc_info.get("instrume") if osc_info else None
+        cfg["oscSensorNote"] = osc.resolve_osc_sensor(cfg, instrume)  # type: ignore[arg-type,index]
+        reason = osc.auto_osc_sensor(instrume)["reason"]
+    sensor = cfg.get("oscSensor")
     if has_osc and _blank(sensor.get("sensor") if isinstance(sensor, Mapping) else None):
-        problems.append(_SENSOR_PROBLEM)
+        problems.append(_SENSOR_PROBLEM + ": " + reason)
 
     # 2. The files: not found, not readable, header unreadable, a broadband master without a FILTER keyword.
     problems.extend(file_problems)
