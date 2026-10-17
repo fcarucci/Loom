@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-10-17
+
 ### Added
 
 - **One-shot colour cameras: a single Hα filter.** A colour master shot through one Hα filter (Ha, H-alpha, Halpha, Hα, with an optional bandwidth such as 7nm) is a new kind, **Narrowband Hα**, detected from the `FILTER` keyword and offered in the kind control next to Broadband and Dual-band Hα + OIII (the choice is remembered per filter model as before). H is its red plane, where Hα falls on the Bayer pixels; the green and blue planes are ignored. It then runs like a mono H master: no MGC or SPFC, the narrowband bandwidth box applies, and with it alone the HOO palette is skipped because it needs O. One Hα master can be combined with one broadband colour master; an Hα master and a dual-band master in one run are refused, because both supply H. Dual-band names (L-eXtreme, L-Ultimate, L-eNhance, ALP-T Hα/OIII, Duo, Quad) are detected as before.

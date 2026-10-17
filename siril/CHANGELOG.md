@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-10-17
+
 ### Added
 
 - **Loom takes a single Hα filter on a colour camera**, as in the PixInsight version: a new colour-master kind, "Narrowband Hα" (slot `OSCHA`), detected from `FILTER` (Ha, H-alpha, Halpha, Hα, with an optional bandwidth such as `7nm`; dual-band names like L-eXtreme, ALP-T Hα/OIII, Duo, Dual or Quad never match) and chosen by hand in the kind control. `H` is the master's red plane (green and blue are not used); the run is like a mono Hα-only run, with no colour calibration and no sensor. One Hα master may be combined with one broadband colour master; an Hα master with a dual-band master is refused, since both supply `H`; colour with mono and SHO/HSO stay refused.

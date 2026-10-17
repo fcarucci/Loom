@@ -58,7 +58,7 @@ Util.BANNER = [
    "/_____/\\____/\\____/_/ /_/ /_/ "
 ];
 
-Util.LOOM_VERSION = "0.5.3";
+Util.LOOM_VERSION = "0.5.4";
 
 /* ------------------------------------------------------------------ */
 /* The oldest PixInsight core Loom will run on                         */
