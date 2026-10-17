@@ -82,7 +82,7 @@ OPTIONS_NAME = "loomsiril-fly.json"
 #: ``orientation`` is not kept: the dialog derives it from the image (a portrait image defaults to Vertical).
 OPTION_KEYS: tuple[str, ...] = (
     "target_type", "distance", "presets", "duration", "fps", "loop", "star_quality", "dynamic",
-    "gaia", "video", "out_dir", "object_name", "starnet_licence", "star_tool",
+    "gaia", "gaia_folder", "video", "out_dir", "object_name", "starnet_licence", "star_tool",
     "mode", "image_path", "starless_path", "stars_path", "last_folder", "music_path", "music_fade",
     "format", "quality", "ffmpeg_path", "ms_per_mp",
     "logo_path", "logo_place", "logo_opacity", "logo_delay",      # the logo layer (loomsiril.logo); opacity in percent
@@ -92,7 +92,7 @@ OPTION_KEYS: tuple[str, ...] = (
 
 #: The remembered file paths and the Browse... folder: text only, and an empty one is never written (an empty Image
 #: file box means "the image open in Siril", not a path to remember).
-PATH_KEYS: tuple[str, ...] = ("image_path", "starless_path", "stars_path", "last_folder", "music_path", "ffmpeg_path", "logo_path")
+PATH_KEYS: tuple[str, ...] = ("image_path", "starless_path", "stars_path", "last_folder", "music_path", "ffmpeg_path", "logo_path", "gaia_folder")
 
 #: Guards the read-modify-write of the options file (the dialog's autosave thread and the final save share it).
 _OPTIONS_LOCK = threading.Lock()

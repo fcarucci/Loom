@@ -92,7 +92,8 @@ class DialogValues:
     loop: Any = "none"
     star_quality: Any = field(default_factory=_default_star_quality)
     dynamic: Any = "sdr"
-    gaia: Any = "cache"
+    gaia: Any = "cache"                                          # "cache" (the default), "online" or "folder" (+ gaia_folder)
+    gaia_folder: Any = ""                                        # the folder of local Gaia cone files ("": none chosen)
     object_name: Any = ""
     out_dir: Any = field(default_factory=os.getcwd)
     presets: Any = None
@@ -120,6 +121,11 @@ class DialogValues:
         """The dialog's starting values from a saved (or default) options dict."""
         values = cls(**{f.name: options[f.name] for f in fields(cls) if f.name in options})
         values.fly = fly_options.load_values(options)            # a missing or invalid saved value is the default
+        spec = values.gaia
+        if isinstance(spec, str) and spec.startswith("folder:"):  # the job's spelling "folder:PATH" is the drop-down and the box
+            values.gaia, values.gaia_folder = "folder", spec[len("folder:"):]
+        if values.gaia not in ("cache", "online", "folder"):      # e.g. a hand-edited or old value: the default
+            values.gaia = "cache"
         return values
 
 
@@ -170,7 +176,8 @@ def _form_fields(d: DialogValues, target: Optional[dict], presets: Any, orientat
         _Field("loop", "Loop", dict(presets.LOOPS).get(d.loop, loop_labels[0]), loop_labels),
         _Field("star_quality", "Star quality", d.star_quality, presets.STAR_QUALITIES),
         _Field("dynamic", "Dynamic range", d.dynamic, ["sdr", "hdr"]),
-        _Field("gaia", "Gaia source", d.gaia, ["cache", "online"]),
+        _Field("gaia", "Gaia data", d.gaia, ["cache", "online", "folder"]),
+        _Field("gaia_folder", "Gaia folder", d.gaia_folder, None),
         _Field("object_name", "Object name", d.object_name, None),
         _Field("out_dir", "Output folder", d.out_dir, None),
         _Field("music_path", "Music", d.music_path, None),
@@ -178,7 +185,7 @@ def _form_fields(d: DialogValues, target: Optional[dict], presets: Any, orientat
 
 
 #: Which fields sit in which dialog group, in order.
-TARGET_FIELDS = ("ra", "dec", "target_type", "distance", "gaia")
+TARGET_FIELDS = ("ra", "dec", "target_type", "distance", "gaia", "gaia_folder")
 CLIP_FIELDS = ("duration", "fps", "orientation", "loop", "star_quality", "dynamic")
 OUTPUT_FIELDS = ("object_name", "out_dir")
 #: Browse... buttons: the file pickers (and the group they are greyed with), and the folder picker.
@@ -434,6 +441,10 @@ class LoomFlyDialog:
             if name == "distance":
                 ttk.Label(frame, textvariable=self._distance_note, wraplength=320, foreground=GREY).grid(
                     row=self._next(), column=1, columnspan=2, sticky="w", padx=4)
+            if name == "gaia_folder":                             # what the folder holds, and Siril's catalogue (greyed, with why)
+                self._gaia_note = tk.StringVar(value="")
+                ttk.Label(frame, textvariable=self._gaia_note, wraplength=320, foreground=GREY, justify="left").grid(
+                    row=self._next(), column=1, columnspan=2, sticky="w", padx=4)
         self._name_note = tk.StringVar(value="")                  # "Found: ... (from the file name via CDS Sesame)"
         ttk.Label(frame, textvariable=self._name_note, wraplength=320, foreground=GREY).grid(
             row=self._next(), column=1, columnspan=2, sticky="w", padx=4)
@@ -500,7 +511,8 @@ class LoomFlyDialog:
         self._report_callback_errors()
         self._vars["orientation"].trace_add("write", lambda *_: self._orientation_chosen())  # before _changed's _sync
         for var in [self._mode, self._tool, self._video, self._vars["orientation"], *self._presets.values(),
-                    *(self._vars[n] for n in ("image_path", "starless_path", "stars_path", "out_dir", "music_path"))]:
+                    *(self._vars[n] for n in ("image_path", "starless_path", "stars_path", "out_dir", "music_path", "gaia",
+                                              "gaia_folder"))]:
             var.trace_add("write", lambda *_: self._changed())
         self._fade.trace_add("write", lambda *_: self._schedule_save())
         for name in ("dynamic", "target_type"):                   # these grey the HDR and Nebula motion controls
@@ -508,7 +520,7 @@ class LoomFlyDialog:
         for var in self._vars.values():                           # every box and drop-down is remembered
             var.trace_add("write", lambda *_: self._schedule_save())
         self._vars["image_path"].trace_add("write", lambda *_: self._names_soon())
-        for name in ("ra", "dec", "target_type", "gaia", "distance"):
+        for name in ("ra", "dec", "target_type", "gaia", "gaia_folder", "distance"):
             self._vars[name].trace_add("write", lambda *_: self._distance_soon())
         self._vars["distance"].trace_add("write", lambda *_: self._show_hint())
         self.top.bind("<Destroy>", self._on_destroy, add="+")
@@ -1017,7 +1029,8 @@ class LoomFlyDialog:
             open_grid=self._open_grid(), file_grids=self._file_grids,
             orientation=fly_model.orientation_id(self._vars["orientation"].get()),
             controls={k: var.get() for k, var in self._rule_vars.items()},
-            dynamic=str(self._vars["dynamic"].get()), target_type=str(self._vars["target_type"].get()))
+            dynamic=str(self._vars["dynamic"].get()), target_type=str(self._vars["target_type"].get()),
+            gaia=str(self._vars["gaia"].get()), gaia_folder=str(self._vars["gaia_folder"].get()))
         if trust_checks:
             model.checked = {p: "" for p in model.wanted_paths()}
         return model
@@ -1062,6 +1075,7 @@ class LoomFlyDialog:
             self._video.set(False)
         self._video_note.set(m.video_note())
         self._music_note.set(m.music_note())
+        self._gaia_note.set(m.gaia_note())
         self._logo_note.set(m.logo_note())
         self._loop_note.set(m.loop_note())
         fly_option_rows.update_notes(self)
@@ -1123,6 +1137,8 @@ class LoomFlyDialog:
         snap["music_fade"] = bool(self._fade.get())
         snap.update(self._control_values(lenient=True))
         snap["sections"] = [sid for sid, _title in SECTIONS if self._sections[sid].open]
+        snap["gaia"] = str(self._vars["gaia"].get()).strip()        # the drop-down and the folder box, as they are
+        snap["gaia_folder"] = str(self._vars["gaia_folder"].get()).strip()
         snap["mode"] = self._mode.get()
         snap["last_folder"] = self._last_dir
         snap["starnet_licence"] = self._licence
@@ -1380,7 +1396,15 @@ class LoomFlyDialog:
 
     def _distance_key(self) -> tuple:
         """What the distance depends on, from the boxes now: RA, Dec, Target type, Gaia source and the typed distance."""
-        return tuple(str(self._vars[n].get()).strip() for n in ("ra", "dec", "target_type", "gaia", "distance"))
+        ra, dec, kind, distance = (str(self._vars[n].get()).strip() for n in ("ra", "dec", "target_type", "distance"))
+        return ra, dec, kind, self._gaia_spec(), distance
+
+    def _gaia_spec(self) -> str:
+        """The job's Gaia value from the two boxes: "cache", "online", or "folder:PATH" (a folder chosen but not yet typed
+        is the default, "cache": Render is refused with the reason meanwhile)."""
+        kind = str(self._vars["gaia"].get()).strip()
+        folder = str(self._vars["gaia_folder"].get()).strip()
+        return f"folder:{folder}" if kind == "folder" and folder else ("cache" if kind == "folder" else kind)
 
     def _distance_soon(self) -> None:
         """A box the distance depends on changed: look again 400 ms after the last change (the old answer is stale now)."""
@@ -1566,8 +1590,10 @@ class LoomFlyDialog:
         if group is not None:
             types = AUDIO_FILETYPES if field.name == "music_path" else LAYER_FILETYPES
             command = lambda: self._browse(var, field.label, types)  # noqa: E731
-        elif field.name == "out_dir":
+        elif field.name in ("out_dir", "gaia_folder"):
             command = lambda: self._browse_folder(var, field.label)  # noqa: E731
+            if field.name == "gaia_folder":
+                group = "gaia_folder"                             # greyed unless Gaia data is "folder"
         else:
             return
         button = ttk.Button(self._frame, text="Browse...", command=command)
@@ -1749,6 +1775,9 @@ class LoomFlyDialog:
                 raise ValueError("Target RA and Dec must be numbers (degrees).") from exc
             target = {"ra": ra, "dec": dec}
         distance = float(v["distance"]) if v["distance"] else None
+        if v["gaia"] == "folder" and not v["gaia_folder"]:
+            raise ValueError("Choose the Gaia folder (Gaia data is set to folder).")
+        gaia_spec = f"folder:{v['gaia_folder']}" if v["gaia"] == "folder" else v["gaia"]
         try:
             duration = float(v["duration"])
         except ValueError as exc:
@@ -1769,7 +1798,7 @@ class LoomFlyDialog:
             "target": target, "target_type": v["target_type"], "distance": distance, "duration": duration,
             "fps": int(v["fps"]), "loop": loop_id,
             "orientation": fly_model.orientation_id(v["orientation"]), "star_quality": v["star_quality"], "dynamic": v["dynamic"],
-            "gaia": v["gaia"], "object_name": v["object_name"], "out_dir": v["out_dir"],
+            "gaia": gaia_spec, "object_name": v["object_name"], "out_dir": v["out_dir"],
             "presets": presets_chosen, "video": bool(self._video.get()) and self._model().ffmpeg_ok(),
             "music_path": v["music_path"], "music_fade": bool(self._fade.get()),
             **self._control_values(),

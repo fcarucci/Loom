@@ -78,7 +78,7 @@ def _parse(argv: list[str]) -> Any:
     (["--fps", "0"], (), "at least 1"),
     (["--preset", "no_such_preset"], (), "unknown preset"),
     (["--target", "400,10"], (), "RA in"),
-    (["--gaia", "ftp://x"], (), "cache, online or tsv"),
+    (["--gaia", "ftp://x"], (), "cache, online, folder:DIR or tsv"),
     (["--gaia", "tsv:/no/such/file.tsv"], (), "not there"),
     (["--distance", "-3"], (), "above 0"),
     (["--quality", "ultra"], (), "invalid choice"),

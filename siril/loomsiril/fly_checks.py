@@ -86,6 +86,8 @@ def validate(requests: Iterable[tuple[str, str]], open_grid: Optional[tuple[int,
     for kind, path in requests:
         if kind == "dir":
             out[(kind, path)] = check_out_dir(path) or ""
+        elif kind == "gaia_dir":                  # the folder of local Gaia files: it must be a folder (the files are read at render)
+            out[(kind, path)] = "" if os.path.isdir(os.path.expanduser(path.strip())) else f"The Gaia folder is not there: {path.strip()}"
         elif kind == "ffmpeg":                    # a user-chosen ffmpeg: it must answer -version (runs it, so not on the Tk thread)
             from loomsiril import fly_video
 

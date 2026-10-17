@@ -717,52 +717,56 @@ DIALOG_LAYOUT = [
     (12, 0, "Label", "Distance (pc, blank = auto)"),
     (12, 1, "Entry", None),
     (13, 1, "Label", DYNAMIC),
-    (14, 0, "Label", "Gaia source"),
+    (14, 0, "Label", "Gaia data"),
     (14, 1, "Combobox", None),
-    (15, 1, "Label", DYNAMIC),
-    (16, 0, "Label", "Clip"),
-    (17, 0, "Label", "Duration (s)"),
-    (17, 1, "Entry", None),
-    (18, 0, "Label", "Frames per second"),
-    (18, 1, "Combobox", None),
-    (19, 0, "Label", "Orientation"),
-    (19, 1, "Combobox", None),
-    (19, 2, "Label", DYNAMIC),
-    (20, 0, "Label", "Loop"),
+    (15, 0, "Label", "Gaia folder"),
+    (15, 1, "Entry", None),
+    (15, 2, "Button", "Browse..."),
+    (16, 1, "Label", DYNAMIC),                             # what the Gaia folder holds, and Siril's own catalogue
+    (17, 1, "Label", DYNAMIC),
+    (18, 0, "Label", "Clip"),
+    (19, 0, "Label", "Duration (s)"),
+    (19, 1, "Entry", None),
+    (20, 0, "Label", "Frames per second"),
     (20, 1, "Combobox", None),
-    (20, 2, "Label", DYNAMIC),
-    (21, 0, "Label", "Star quality"),
+    (21, 0, "Label", "Orientation"),
     (21, 1, "Combobox", None),
-    (22, 0, "Label", "Dynamic range"),
+    (21, 2, "Label", DYNAMIC),
+    (22, 0, "Label", "Loop"),
     (22, 1, "Combobox", None),
-    (23, 0, "Frame", None),
+    (22, 2, "Label", DYNAMIC),
+    (23, 0, "Label", "Star quality"),
+    (23, 1, "Combobox", None),
+    (24, 0, "Label", "Dynamic range"),
+    (24, 1, "Combobox", None),
+    (25, 0, "Frame", None),
     (0, 0, "Checkbutton", "Social 1080×1920"),
     (0, 1, "Checkbutton", "Social 1080×1080"),
     (1, 0, "Checkbutton", "YouTube 3840×2160"),
     (1, 1, "Checkbutton", "YouTube 1920×1080"),
     (2, 0, "Checkbutton", "Exhibition 3840×2160 (loop)"),
-    (24, 0, "Label", "Output"),
-    (25, 0, "Label", "Object name"),
-    (25, 1, "Entry", None),
-    (25, 2, "Button", "Find"),
-    (26, 0, "Label", "Output folder"),
-    (26, 1, "Entry", None),
-    (26, 2, "Button", "Browse..."),
-    (27, 0, "Checkbutton", "Encode video (ffmpeg)"),
-    (27, 1, "Label", DYNAMIC),
-    (28, 0, "Label", "Music"),
+    (26, 0, "Label", "Output"),
+    (27, 0, "Label", "Object name"),
+    (27, 1, "Entry", None),
+    (27, 2, "Button", "Find"),
+    (28, 0, "Label", "Output folder"),
     (28, 1, "Entry", None),
     (28, 2, "Button", "Browse..."),
-    (29, 1, "Checkbutton", "Fade in/out"),
-    (29, 2, "Label", DYNAMIC),                             # why the music is greyed, or what is wrong with its file
-    (30, 0, "Button", "\u25b8 Video details"),               # the Advanced sections: collapsed, so no body frame
-    (30, 1, "Label", DYNAMIC),                             # why all its controls are greyed (empty while some apply)
-    (32, 0, "Button", "\u25b8 Logo"),
-    (32, 1, "Label", DYNAMIC),
-    (34, 0, "Button", "\u25b8 Stars and motion"),
+    (29, 0, "Checkbutton", "Encode video (ffmpeg)"),
+    (29, 1, "Label", DYNAMIC),
+    (30, 0, "Label", "Music"),
+    (30, 1, "Entry", None),
+    (30, 2, "Button", "Browse..."),
+    (31, 1, "Checkbutton", "Fade in/out"),
+    (31, 2, "Label", DYNAMIC),                             # why the music is greyed, or what is wrong with its file
+    (32, 0, "Button", "\u25b8 Video details"),               # the Advanced sections: collapsed, so no body frame
+    (32, 1, "Label", DYNAMIC),                             # why all its controls are greyed (empty while some apply)
+    (34, 0, "Button", "\u25b8 Logo"),
     (34, 1, "Label", DYNAMIC),
-    (36, 0, "Button", "\u25b8 HDR"),
+    (36, 0, "Button", "\u25b8 Stars and motion"),
     (36, 1, "Label", DYNAMIC),
+    (38, 0, "Button", "\u25b8 HDR"),
+    (38, 1, "Label", DYNAMIC),
 ]
 
 #: The footer, outside the scroll area: the reason line, the draft note and the buttons.
@@ -792,7 +796,7 @@ DIALOG_CASES = [
         {"duration": 3.0, "out_dir": "/w"}, None, {"ra": 10.0, "dec": -5.0},
         {"mode": "files", "image_path": "", "starless_path": "", "stars_path": "", "ra": "10.0", "dec": "-5.0",
          "target_type": "nebula", "distance": "", "duration": "3.0", "fps": "30", "orientation": "Horizontal", "loop": "None",
-         "star_quality": "high", "dynamic": "sdr", "gaia": "cache", "object_name": "", "out_dir": "/w",
+         "star_quality": "high", "dynamic": "sdr", "gaia": "cache", "gaia_folder": "", "object_name": "", "out_dir": "/w",
          "music_path": ""},
         ["youtube_1080"],
         True,
@@ -809,7 +813,7 @@ DIALOG_CASES = [
          "object_name": "M 42", "out_dir": "/w", "music_path": "/m/song.mp3", "music_fade": False}, None, None,
         {"mode": "files", "image_path": "", "starless_path": "/a.tif", "stars_path": "/b.tif", "ra": "83.8", "dec": "-5.4",
          "target_type": "galaxy", "distance": "12.5", "duration": "8.0", "fps": "60", "orientation": "Horizontal", "loop": "Back and forth",
-         "star_quality": "medium", "dynamic": "hdr", "gaia": "online", "object_name": "M 42", "out_dir": "/w",
+         "star_quality": "medium", "dynamic": "hdr", "gaia": "online", "gaia_folder": "", "object_name": "M 42", "out_dir": "/w",
          "music_path": "/m/song.mp3"},
         ["social_vertical", "exhibition"],
         True,
@@ -980,7 +984,7 @@ def test_browse_buttons_fill_the_boxes_and_share_the_last_folder(stub, script, m
 
     calls = _fake_filedialog(monkeypatch, ["/data/m42/starless.tif", "", "/data/m42/stars.fits"])
     dlg = script.LoomFlyDialog(tk.Tk(), script.DialogValues.from_options({}), blocked_discover, None)
-    _image_btn, starless_btn, stars_btn, _folder_btn, _music_btn = _buttons(dlg, "Browse...")
+    _image_btn, starless_btn, stars_btn, _gaia_btn, _folder_btn, _music_btn = _buttons(dlg, "Browse...")
     starless_btn.kw["command"]()
     assert dlg._vars["starless_path"].get() == "/data/m42/starless.tif"
     stars_btn.kw["command"]()                                   # cancelled: the box stays as it was
@@ -1246,11 +1250,11 @@ def test_each_browse_button_fills_its_own_box(stub, script, monkeypatch, blocked
     from loomsiril.loom import dialog as loom_dialog
 
     dlg, _ = _dialog(script, monkeypatch, blocked_discover)
-    picks = {"image": "/p/image.fits", "starless": "/p/starless.tif", "stars": "/q/stars.tif", "music": "/q/song.mp3"}
+    picks = {"image": "/p/image.fits", "starless": "/p/starless.tif", "stars": "/q/stars.tif", "music": "/q/song.mp3"}  # the folders go through ask_folder
     answers = list(picks.values())
     _fake_filedialog(monkeypatch, answers)
     monkeypatch.setattr(loom_dialog, "ask_folder", lambda title, initial="", parent=None: "/p/renders")
-    image_btn, starless_btn, stars_btn, folder_btn, music_btn = _buttons(dlg, "Browse...")
+    image_btn, starless_btn, stars_btn, gaia_btn, folder_btn, music_btn = _buttons(dlg, "Browse...")
     names = ("image_path", "starless_path", "stars_path", "out_dir", "music_path")
     before = {n: dlg._vars[n].get() for n in names}
     picked: set = set()

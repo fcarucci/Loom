@@ -20,7 +20,8 @@ __all__ = ["GROUPS", "CHECKING", "FINDING_DISTANCE", "FlyDialogModel", "IMAGE_HI
 
 #: Every greying group the dialog knows (``FlyDialogModel.enabled`` answers each; a new control's group is added here, in
 #: ``enabled`` and in ``disabled_reason``).
-GROUPS: tuple[str, ...] = ("extract_radio", "extract", "files", "loop", "video", "music", "encode", "logo", "logo_look")
+GROUPS: tuple[str, ...] = ("extract_radio", "extract", "files", "loop", "video", "music", "encode", "logo", "logo_look",
+                          "gaia_folder")
 #: The prefix of the greying group of a Stars-and-motion or HDR control: ``opt:<saved key>`` (loomsiril.fly_options).
 OPTION_GROUP = "opt:"
 
@@ -155,6 +156,8 @@ class FlyDialogModel:
     controls: Mapping[str, object] = field(default_factory=dict)  # key -> raw value of each rules=True section control
     dynamic: str = "sdr"                                         # the Dynamic range combo: "sdr" or "hdr"
     target_type: str = "nebula"                                  # the Target type combo: "nebula" or "galaxy"
+    gaia: str = "cache"                                          # the Gaia data combo: "cache", "online" or "folder"
+    gaia_folder: str = ""                                        # the Gaia folder box
 
     def image_orientation(self) -> str:
         """The orientation of the image the clip is made from: the Image file's when it is in use and its header was
@@ -192,6 +195,8 @@ class FlyDialogModel:
             return self.ffmpeg_ok() and self.video
         if name == "encode":                  # Format and Quality: the encode's options
             return self.ffmpeg_ok() and self.video
+        if name == "gaia_folder":             # the Gaia folder box and its Browse: only when Gaia data is "folder"
+            return self.gaia == "folder"
         if name == "logo":                    # the Placement combo: needs a logo file
             return bool(self.logo_path())
         if name == "logo_look":               # Opacity and Fade in after: need a logo file that is placed (not Off)
@@ -253,6 +258,8 @@ class FlyDialogModel:
             return "ffmpeg was not found"
         if name in ("music", "encode"):
             return "ffmpeg was not found" if not self.ffmpeg_ok() else "needs Encode video"
+        if name == "gaia_folder":
+            return "needs Gaia data set to folder"
         if name == "logo":
             return "needs a logo file"
         if name == "logo_look":
@@ -280,6 +287,18 @@ class FlyDialogModel:
         path = self.music_path.strip()
         return self.checked.get(("music", path), "") if path else ""
 
+    def gaia_note(self) -> str:
+        """The grey line under the Gaia folder box: what the chosen folder holds (or why it cannot be used), and Siril's own
+        catalogue, which is shown but never used (it has no parallax)."""
+        from loomsiril import gaia_local
+
+        text = gaia_local.siril_note()
+        if self.gaia != "folder":
+            return text
+        path = self.gaia_folder.strip()
+        problem = self.checked.get(("gaia_dir", path), "") if path else ""
+        return f"{problem or gaia_local.folder_status(path)}\n{text}"
+
     def loop_note(self) -> str:
         return "" if self.enabled("loop") else "The Exhibition preset always loops"
 
@@ -292,6 +311,8 @@ class FlyDialogModel:
             pairs.append(("ffmpeg", self.ffmpeg_path()))
         if self.enabled("music") and self.music_path.strip():      # a music file only matters when it will be used
             pairs.append(("music", self.music_path))
+        if self.gaia == "folder" and self.gaia_folder.strip():      # a chosen Gaia folder must be there
+            pairs.append(("gaia_dir", self.gaia_folder))
         if self.logo_path() and self.logo_place() != "off":        # a logo file only matters when it is placed (kept when Off)
             pairs.append(("logo", self.logo_path()))
         return [(k, p.strip()) for k, p in pairs if p.strip()]
@@ -312,6 +333,8 @@ class FlyDialogModel:
             out.append("Choose at least one output size.")
         if not self.out_dir.strip():
             out.append("Choose an output folder.")
+        if self.gaia == "folder" and not self.gaia_folder.strip():
+            out.append("Choose the Gaia folder, or set Gaia data to cache or online.")
         for kind, path in self.wanted_paths():
             if kind == "ffmpeg" and not self.video:               # only the encode needs it
                 continue

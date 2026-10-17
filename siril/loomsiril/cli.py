@@ -16,7 +16,7 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
-from loomsiril import gaia, io_fits, io_tiff, presets, wcs as wcs_mod
+from loomsiril import gaia, gaia_local, io_fits, io_tiff, presets, wcs as wcs_mod
 from loomsiril.core import tan_unproject
 from loomsiril.pipeline import FlyJob, clamp_to_image, run
 
@@ -93,14 +93,20 @@ def _presets(text: str) -> list[str]:
 
 
 def _gaia(text: str) -> str:
-    """argparse type for --gaia: "cache", "online" or "tsv:PATH" (the file must exist)."""
+    """argparse type for --gaia: "cache", "online", "folder:DIR" (the folder must exist) or "tsv:PATH" (the file must exist)."""
     if text in GAIA_SOURCES:
         return text
     if text.startswith("tsv:") and len(text) > 4:
         if not os.path.isfile(text[4:]):
             raise argparse.ArgumentTypeError(f"the Gaia TSV file is not there: {text[4:]}")
         return text
-    raise argparse.ArgumentTypeError(f"--gaia takes cache, online or tsv:PATH, got {text!r}")
+    if text.startswith("folder:") and len(text) > 7:
+        if not os.path.isdir(os.path.expanduser(text[7:])):
+            raise argparse.ArgumentTypeError(f"the Gaia folder is not there: {text[7:]}")
+        return text
+    if text == "siril":
+        raise argparse.ArgumentTypeError(gaia_local.SIRIL_NO_PARALLAX)
+    raise argparse.ArgumentTypeError(f"--gaia takes cache, online, folder:DIR or tsv:PATH, got {text!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -117,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     tgt.add_argument("--target-pixel", metavar="X,Y", type=_pixel, help="the target as a 0-based top-down pixel")
     p.add_argument("--type", choices=("nebula", "galaxy"), default="nebula", help="the target's type (default nebula)")
     p.add_argument("--distance", metavar="PC", type=_positive_float, help="the distance in parsecs (default: looked up)")
-    p.add_argument("--gaia", metavar="SOURCE", type=_gaia, default="cache", help="cache (default), online, or tsv:PATH")
+    p.add_argument("--gaia", metavar="SOURCE", type=_gaia, default="cache", help="cache (default: the local cache, then online), online, folder:DIR (local Gaia files, online where they do not cover), or tsv:PATH")
     p.add_argument("--preset", metavar="ID[,ID..]", type=_presets, default=["youtube_1080"], help="output preset(s) (default youtube_1080)")
     p.add_argument("--duration", metavar="S", type=_duration, default=8.0, help="clip length in seconds, at most 600 (default 8)")
     p.add_argument("--fps", type=_positive_int, default=30, help="frames per second (default 30)")

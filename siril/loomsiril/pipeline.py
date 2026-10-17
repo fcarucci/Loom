@@ -23,7 +23,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from loomsiril import colour, encode, fly_video, gaia, geometry, parallax, resample
+from loomsiril import colour, encode, fly_video, gaia, gaia_local, geometry, parallax, resample
 from loomsiril import logo as logo_mod
 from loomsiril import presets as preset_mod
 from loomsiril import scene as scene_mod
@@ -61,6 +61,8 @@ GAIA_MAG_LIMIT: float = 17.6
 
 #: The note when the Gaia cache held nothing for the target and the answer came from Gaia online.
 CACHE_EMPTY_NOTE = "Gaia: cache empty here, used online"
+#: The note when the Gaia folder (or what it covers) held nothing useful for the target and the answer came from Gaia online.
+FOLDER_EMPTY_NOTE = "Gaia: the folder has nothing here, used online"
 
 #: The CLI's words for a render that found no distance (a GUI says its own: loomsiril.fly_progress.no_distance_text).
 NO_DISTANCE_CLI = "no distance found for the target (no cluster and no illuminating star): give --distance PC"
@@ -249,13 +251,22 @@ def _gaia_kind(spec: str) -> tuple[str, Optional[str]]:
         return spec, None
     if isinstance(spec, str) and spec.startswith("tsv:") and len(spec) > 4:
         return "tsv", spec[4:]
-    raise ValueError(f"unknown Gaia source {spec!r} (use cache, online or tsv:PATH)")
+    if isinstance(spec, str) and spec.startswith("folder:") and len(spec) > 7:
+        return "folder", spec[7:]
+    if spec == "siril":
+        raise ValueError(gaia_local.SIRIL_NO_PARALLAX)
+    raise ValueError(f"unknown Gaia source {spec!r} (use cache, online, folder:PATH or tsv:PATH)")
 
 
 def _gaia_sources(job: FlyJob, query: gaia.GaiaQuery, ctx: RunContext) -> list[dict]:
     """Sky.querySources for one cone: from the job's Gaia source (cache, online through ctx.fetch_text, or a TSV)."""
     kind, path = _gaia_kind(job.gaia)
-    kwargs: dict[str, Any] = {"source": kind, "tsv_path": path}
+    if kind == "folder":
+        local = gaia_local.folder_sources(query, path or "")
+        if local is not None:
+            return local
+        kind = "cache"                    # nothing in the folder covers this cone: the default path (cache, then online)
+    kwargs: dict[str, Any] = {"source": kind, "tsv_path": path if kind == "tsv" else None}
     if ctx.fetch_text is not None:
         kwargs["fetch_text"] = ctx.fetch_text
     return gaia.sources(query, **kwargs)
@@ -745,7 +756,9 @@ def _validate(job: FlyJob) -> None:
     """Raise a clear ValueError for a job the renderer cannot make."""
     _validate_options(job)
     _validate_presets(job)
-    _gaia_kind(job.gaia)
+    kind, path = _gaia_kind(job.gaia)
+    if kind == "folder" and not os.path.isdir(os.path.expanduser(path or "")):
+        raise ValueError(f"the Gaia folder is not there: {path}")
 
 
 def _logo_opts(job: FlyJob) -> dict[str, Any]:
@@ -967,17 +980,18 @@ def _find_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str, fl
     trace = SearchTrace()
     cluster, star = _lookup(job, sources, target, field_radius, cctx, trace)
     used_online = kind == "online" or fetched[0] > 0        # a cache miss asks online by itself (gaia.sources)
-    tried = {"online": "Gaia online", "tsv": "the Gaia table"}.get(kind, "Gaia online" if used_online else "the Gaia cache")
+    tried = {"online": "Gaia online", "tsv": "the Gaia table", "folder": "the Gaia folder"}.get(
+        kind, "Gaia online" if used_online else "the Gaia cache")
     note = ""
-    if cluster is None and star is None and kind == "cache" and fetched[0] == 0:
+    if cluster is None and star is None and kind in ("cache", "folder") and fetched[0] == 0:
         # every cone came from the local cache and it holds nothing useful here: ask Gaia online once
         try:
             trace = SearchTrace()
             cluster, star = _lookup(replace(job, gaia="online"), sources, target, field_radius, cctx, trace)
         except gaia.GaiaError as exc:
-            return DistanceFound(None, "", reason=f"the Gaia cache has nothing for this field and {gaia_failure(exc)}")
-        used_online, tried = True, "the Gaia cache and Gaia online"
-        note = CACHE_EMPTY_NOTE if (cluster is not None or star is not None) else ""
+            return DistanceFound(None, "", reason=f"the Gaia {'folder' if kind == 'folder' else 'cache'} has nothing for this field and {gaia_failure(exc)}")
+        used_online, tried = True, ("the Gaia folder and Gaia online" if kind == "folder" else "the Gaia cache and Gaia online")
+        note = (FOLDER_EMPTY_NOTE if kind == "folder" else CACHE_EMPTY_NOTE) if (cluster is not None or star is not None) else ""
     if cluster is not None:
         return DistanceFound(float(cluster["distance"]), "cluster", cluster=cluster, note=note,
                              label=distance_label("cluster", cluster, online=used_online))
@@ -1060,7 +1074,12 @@ def run(job: FlyJob, progress: Optional[ProgressFn] = None, is_cancelled: Option
     project = _projector(wcs)
 
     ctx.progress("Looking up the stars and their distances in Gaia", 2, 4)
-    sources = _gaia_sources(job, gaia.GaiaQuery.from_centre(field_centre, field_radius, GAIA_MAG_LIMIT), ctx)
+    field_query = gaia.GaiaQuery.from_centre(field_centre, field_radius, GAIA_MAG_LIMIT)
+    if _gaia_kind(job.gaia)[0] == "folder":
+        covered = gaia_local.folder_sources(field_query, _gaia_kind(job.gaia)[1] or "") is not None
+        notes.append("Gaia: read from the chosen folder" if covered else
+                     "Gaia: the chosen folder does not cover this field, used the cache or Gaia online")
+    sources = _gaia_sources(job, field_query, ctx)
 
     found = _find_distance(job, sources, target, field_radius, ctx)
     D, distance_source = found.distance, found.source

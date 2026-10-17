@@ -165,6 +165,35 @@ grey line under Target says where it came from, for example "Found: Sh2-132 (fro
 You can also type a name in **Object name** and press Enter or **Find**: it is resolved the same way and refused,
 with the reason, when it is outside the field. No network means no result and a grey "Name lookup needs the network";
 answers are kept for the session (a failed request is not, so a retry works). No object name is written in the code.
+**Local Gaia data.** The Target group's "Gaia data" drop-down is `cache` (the default: the local cache, then Gaia
+online, exactly as before), `online`, or `folder`. With `folder`, the "Gaia folder" box (with Browse...) names a folder of
+local Gaia files that is used instead of the online query wherever it covers the field; the setting is remembered (the
+`gaia` and `gaia_folder` keys of `loomsiril-fly.json`) and a headless run takes `--gaia folder:DIR`. A field the folder
+does not cover is asked of the cache and then Gaia online, so a half-filled folder never stops a run; the run says which
+it used ("Gaia: read from the chosen folder", or "the chosen folder does not cover this field"), and a distance that
+needed the online answer says "Gaia: the folder has nothing here, used online". A folder that is missing blocks Render with
+the reason.
+
+The folder holds Loom's own cone files, `.csv` or `.tsv`, the format the online cache already writes (the default cache,
+`$XDG_CACHE_HOME/loomsiril/gaia`, is such a folder):
+
+- Columns `ra dec plx pmra pmdec G BP RP`: degrees, parallax in mas, proper motions in mas/yr, magnitudes. A blank is
+  missing. `.tsv` is tab separated with that header line; `.csv` is comma separated with either that header line or
+  VizieR's `RA_ICRS,DE_ICRS,Plx,pmRA,pmDE,Gmag,BPmag,RPmag`.
+- A file named like the cache's, `ra100.0000_dec10.0000_r1.000_g17.6.csv` (centre, radius in degrees, G limit), is a cone:
+  it covers a request whose cone lies inside it and whose G limit it reaches. Any other `.csv` or `.tsv` is a table: it
+  counts when it has stars inside the requested cone, and the tables that do are merged.
+- Every star needs a parallax to be placed (Fly-Through gives each star its depth from it): a star with a blank
+  parallax is left out of the scene, and a folder with no parallaxes finds no distance (type one).
+
+**Siril's local Gaia catalogue is shown but not used.** Siril 1.4's own catalogue (`siril_cat_healpix8_astro.dat`, in
+Siril's user data folder) keeps position, proper motion, Teff and G only: no parallax and no BP or RP. Fly-Through places
+and times every star by its parallax and finds the distance from the parallaxes of a cluster, so records without one place
+no star and find no distance. The line under the Gaia folder box says whether the catalogue is installed and that it is
+not used; `--gaia siril` is refused with the same reason. The reader is in `loomsiril/gaia_local.py` (a HEALpix nested
+cone over Siril's format, tested against a synthetic file and, where it is installed, the real one) for the day a
+catalogue with parallaxes can be used.
+
 **The distance, found for you.** Under the Distance box a grey line says what the render will use, found by a
 worker thread whenever the target changes (the image centre on open, an object found by name, an edit of RA, Dec,
 Target type or Gaia source): "Finding the distance...", then for example "Distance: ~1,950 pc (cluster of 37 stars,
@@ -364,7 +393,7 @@ optional: without it the program writes the frames and prints the exact
 ```
 python -m loomsiril --starless S --stars T [--image I] (--wcs FITS | --solution a.json) \
     (--target "ra,dec" | --target-pixel x,y) [--type nebula|galaxy] [--distance pc] \
-    [--gaia cache|online|tsv:PATH] [--preset id[,id..]] [--duration 8] [--fps 30] --out DIR \
+    [--gaia cache|online|folder:DIR|tsv:PATH] [--preset id[,id..]] [--duration 8] [--fps 30] --out DIR \
     [--video] [--ffmpeg PATH] [--quality high|medium] [--star-quality highest|high|medium] \
     [--dynamic sdr|hdr] [--loop none|pingpong|crossfade] [--orientation landscape|portrait]
 ```
@@ -376,8 +405,10 @@ python -m loomsiril --starless S --stars T [--image I] (--wcs FITS | --solution 
   image. Without either, the header centre is used, else the image centre. The RA is
   taken modulo 360 for the Gaia query (the same sky point); a target with a NaN or
   infinite coordinate, or |dec| > 90, is refused with an error.
-- `--gaia cache` uses the local cache, `online` queries VizieR (refused under
-  pytest), `tsv:PATH` reads a Gaia TSV with the columns `ra dec plx pmra pmdec G BP RP`.
+- `--gaia cache` (the default) uses the local cache, then Gaia online; `online` queries VizieR (refused under
+  pytest); `folder:DIR` reads local Gaia files from a folder (see "Local Gaia data" below) and asks the cache and
+  Gaia online only for what they do not cover; `tsv:PATH` reads one Gaia TSV with the columns
+  `ra dec plx pmra pmdec G BP RP` and nothing else. `--gaia siril` is refused with the reason (see below).
 - `--video` encodes with `ffmpeg` once the frames are written.
 
 Worked example, with the IC 1396 Gaia extract that the tests ship with:
@@ -462,7 +493,7 @@ Loom never bundles, downloads for users or redistributes it.
   with `--wcs` or `--solution`.
 - No linear-image stretch: the CLI warns on linear input; in Siril, run the
   autostretch first.
-- Gaia comes online from VizieR (with a local cache) or from a TSV file. The
+- Gaia comes online from VizieR (with a local cache), from a TSV file, or from a folder of local Gaia files. The
   PixInsight Gaia process has no equivalent in Siril's Python API.
 - Star detection is a numpy replacement for PixInsight's StarDetector. On a crowded,
   noisy one-channel stars layer it misses some faint stars (its noise estimate is

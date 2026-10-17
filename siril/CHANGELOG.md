@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Fly-Through: a local Gaia folder.** A new "Gaia data" choice, `folder`, with a "Gaia folder" box and Browse... button (remembered), and `--gaia folder:DIR` on the command line, read Loom's Gaia cone files (`.csv` or `.tsv`, the cache's own format; layout in the README) instead of the online query wherever they cover the field. A field they do not cover falls back to the cache and Gaia online, and the run says which it used. Gaia online stays the default and its behaviour is unchanged.
+- Siril's local Gaia catalogue is detected and shown under the Gaia folder box, but not used: it has no parallax, which Fly-Through needs to place every star and find the distance. `--gaia siril` is refused with that reason. A HEALpix reader for its format is in `loomsiril/gaia_local.py`, tested.
+
 ## [0.5.2] — 2026-10-15
 
 ### Added
