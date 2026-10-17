@@ -5,6 +5,8 @@ section of this file.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-10-16
+
 - **Loom for Siril 0.5.3 (experimental) is released with it.** Fly-Through can read Gaia data from a folder you choose (the "Gaia data" choice `folder`, or `--gaia folder:DIR`) instead of the online query, and shows Siril's local Gaia catalogue without using it, because it has no parallax. The PixInsight scripts themselves are unchanged. See `siril/CHANGELOG.md` for the details.
 
 ## [0.5.2] — 2026-10-15

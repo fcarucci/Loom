@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-10-16
+
 ### Added
 
 - **Fly-Through: a local Gaia folder.** A new "Gaia data" choice, `folder`, with a "Gaia folder" box and Browse... button (remembered), and `--gaia folder:DIR` on the command line, read Loom's Gaia cone files (`.csv` or `.tsv`, the cache's own format; layout in the README) instead of the online query wherever they cover the field. A field they do not cover falls back to the cache and Gaia online, and the run says which it used. Gaia online stays the default and its behaviour is unchanged.
