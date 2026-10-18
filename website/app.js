@@ -19,5 +19,23 @@ if(copy&&field&&status){copy.hidden=false;copy.addEventListener('click',async()=
 });}
 const images=document.querySelectorAll('[data-reveal]');
 const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');
-if(reduced.matches||!('IntersectionObserver' in window)){images.forEach(img=>img.classList.add('is-visible'));}
-else{const observer=new IntersectionObserver(entries=>{entries.forEach(entry=>{if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target);}});},{threshold:0.12});images.forEach(img=>observer.observe(img));reduced.addEventListener('change',event=>{if(event.matches){observer.disconnect();images.forEach(img=>img.classList.add('is-visible'));}});}
+const showImage=img=>img.classList.add('is-visible');
+if(reduced.matches||!('IntersectionObserver' in window)){
+ images.forEach(showImage);
+}else{
+ const observer=new IntersectionObserver(entries=>{
+  entries.forEach(entry=>{
+   if(!entry.isIntersecting)return;
+   const img=entry.target;
+   observer.unobserve(img);
+   // Lazy-loaded pixels must be ready before their one entrance is spent.
+   const reveal=()=>requestAnimationFrame(()=>requestAnimationFrame(()=>showImage(img)));
+   if(img.complete&&img.naturalWidth>0)reveal();
+   else img.decode().then(reveal,reveal);
+  });
+ },{threshold:0.18,rootMargin:'0px 0px -14% 0px'});
+ images.forEach(img=>observer.observe(img));
+ reduced.addEventListener('change',event=>{
+  if(event.matches){observer.disconnect();images.forEach(showImage);}
+ });
+}

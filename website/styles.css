@@ -72,8 +72,9 @@ h1 { max-width: 900px; font-size: clamp(64px, 8.2vw, 124px); line-height: 1.015;
 .feature-list li { padding-left: 5px; margin: 9px 0; }
 .tool-copy > a:not(.button), .text-link { display: inline-block; margin-top: 18px; font-size: 15px; font-weight: 600; text-decoration: none; }
 .tool-copy > a:not(.button):hover, .text-link:hover { text-decoration: underline; }
-html.js [data-reveal] { transform: scale(1.045); transition: transform 1100ms cubic-bezier(.2,.65,.25,1); }
-html.js [data-reveal].is-visible { transform: scale(1); }
+/* A gentle punch-in starts once enough of the screenshot is on screen. */
+html.js [data-reveal] { transform: scale(.96); }
+html.js [data-reveal].is-visible { transform: scale(1); transition: transform 1500ms cubic-bezier(.2,.65,.25,1); }
 .download-section { border-top: 1px solid var(--rule); padding-top: 112px; padding-bottom: 120px; }
 .download-section > .section-title { max-width: 760px; }
 .download-section > .section-intro { max-width: 720px; }
