@@ -8,8 +8,13 @@ const vm=require('node:vm');
 const {execFileSync}=require('node:child_process');
 const {detectCodeChanges}=require('./change-scope.js');
 const workflow=fs.readFileSync(path.resolve(__dirname,'../../.github/workflows/ci.yml'),'utf8');
+function jobBody(job){const body=workflow.split('\n  '+job+':\n')[1]?.split(/\n  [a-z][\w-]*:\n/)[0];assert.ok(body,'missing job '+job);return body;}
+function requiredSuccess(job,context){
+ const raw=jobBody(job).match(/^    needs: (.+)$/m)?.[1];assert.ok(raw,'missing dependency list '+job);
+ return raw.replace(/[\[\]]/g,'').split(',').map(s=>s.trim()).every(name=>context.needs[name]?.result==='success');
+}
 function condition(job){
- const body=workflow.split('\n  '+job+':\n')[1]?.split(/\n  [a-z][\w-]*:\n/)[0];assert.ok(body,'missing job '+job);
+ const body=jobBody(job);
  const expression=body.match(/^    if: (.+)$/m)?.[1];assert.ok(expression,'missing explicit condition '+job);
  return expression.replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '');
 }
@@ -26,7 +31,7 @@ function graph(code,eventName='push',refType='branch',ref='refs/heads/main',mess
  const needs={scope:{result:'success',outputs:{code:String(code)}},site:{result:'success'},test:{result:'skipped'},package:{result:'skipped'}};
  const context={needs,github:{event_name:eventName,ref_type:refType,ref,event:{head_commit:{message}}}};
  if(allowed('test',context))needs.test.result='success';
- if(needs.test.result==='success'&&allowed('package',context))needs.package.result='success';
+ if(requiredSuccess('package',context)&&allowed('package',context))needs.package.result='success';
  return {test:needs.test.result,package:needs.package.result,pages:allowed('pages',context),context};
 }
 test('required five workflow scenarios exercise actual job conditions',t=>{
@@ -60,4 +65,12 @@ test('Pages refuses failed/cancelled gates and unauthorised events, permits only
  context.cancelled=false;context.needs.test.result='success';assert.equal(allowed('pages',context),false);
  assert.equal(graph(false,'pull_request').pages,false);assert.equal(graph(false,'push','branch','refs/heads/main','normal update').pages,false);
  assert.equal(graph(true,'workflow_dispatch','branch','refs/heads/other').pages,false);
+});
+
+test('failed or cancelled website checks block tag package and release publication',()=>{
+ for(const outcome of ['failure','cancelled']){
+  const {context}=graph(true,'push','tag','refs/tags/v1.0.0','release');context.needs.site.result=outcome;
+  assert.equal(requiredSuccess('package',context)&&allowed('package',context),false,'tag package/release blocked by site '+outcome);
+  assert.equal(allowed('pages',context),false);
+ }
 });

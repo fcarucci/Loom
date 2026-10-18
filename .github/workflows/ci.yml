@@ -95,7 +95,7 @@ jobs:
         run: node ci/test-groups.js
 
   package:
-    needs: [scope, test]
+    needs: [scope, site, test]
     if: needs.scope.outputs.code == 'true'
     name: Package the installable zip
     runs-on: ubuntu-latest
