@@ -14,10 +14,10 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
-    paths: [ 'pixinsight/**', '.github/workflows/ci.yml' ]
+    paths: [ 'pixinsight/**', 'website/**', '.github/workflows/ci.yml' ]
   pull_request:
     branches: [ main ]
-    paths: [ 'pixinsight/**', '.github/workflows/ci.yml' ]
+    paths: [ 'pixinsight/**', 'website/**', '.github/workflows/ci.yml' ]
   workflow_dispatch:
 
 # Every run: step starts in pixinsight/, so the paths below are as they were
@@ -42,6 +42,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Check public website staging
+        run: node --test ci/stage-site.test.js
+
       # BOTH builds, because Loom now compiles differently on 1.9.4 --
       # AstrometricResiduals does not exist there, and an unresolvable
       # #include makes PJSR discard the whole script silently. Running only
@@ -207,7 +210,12 @@ jobs:
   pages:
     needs: package
     name: Publish the update repository
-    if: github.ref_type == 'tag'
+    # Version tags keep their existing release path. A maintainer can also
+    # deploy website-only changes from main without publishing a new script
+    # package; staging copies the signed updater files from the repository
+    # unchanged; manual dispatch from main or the explicitly marked website
+    # publication commit can deploy the site without creating a script release.
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-site]'))
     runs-on: ubuntu-latest
 
     permissions:
@@ -221,45 +229,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Not built here: the signed repository ci/release.sh committed, which
-      # the package job has already checked against the tagged sources.
-      - name: Take the signed repository
-        run: |
-          test -f repo/updates.xri || { echo "repo/updates.xri is missing: releases are cut with ci/release.sh"; exit 1; }
-          mkdir -p dist
-          cp -R repo dist/repo
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      # An index so the URL is not a bare 404 to anyone who opens it in a
-      # browser looking for what to subscribe to.
-      - name: Write the landing page
-        run: |
-          cat > dist/repo/index.html <<'HTML'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <title>Loom — PixInsight update repository</title>
-            <style>
-              body { font-family: -apple-system, system-ui, sans-serif;
-                     max-width: 40em; margin: 4em auto; padding: 0 1em;
-                     line-height: 1.5; }
-              code { background: #f4f4f4; padding: .15em .35em; border-radius: 3px; }
-            </style>
-          </head>
-          <body>
-            <h1>Loom</h1>
-            <p>A PixInsight update repository. In PixInsight, open
-               <b>Resources &rarr; Updates &rarr; Manage Repositories</b>,
-               add this URL, then
-               <b>Resources &rarr; Updates &rarr; Check for Updates</b>:</p>
-            <p><code>https://fcarucci.github.io/Loom/</code></p>
-            <p>The repository is signed by the Certified PixInsight Developer
-               <b>Francesco Carucci</b>.</p>
-            <p><a href="https://github.com/fcarucci/Loom">Source and releases</a>
-               &middot; <a href="LICENSE">Licence (MIT)</a></p>
-          </body>
-          </html>
-          HTML
+      - name: Stage the public website without changing signed artifacts
+        run: node ci/stage-site.js --updater repo --out dist/repo
 
       - uses: actions/upload-pages-artifact@v3
         with:
