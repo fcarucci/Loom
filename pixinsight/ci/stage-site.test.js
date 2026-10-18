@@ -25,6 +25,7 @@ test('stages only current signed artifacts and approved site assets without chan
   assert.equal(fs.existsSync(path.join(f.output,'secret.rs')),false);
   assert.equal(fs.existsSync(path.join(f.output,'pixinsight')),false);
   assert.ok(fs.existsSync(path.join(f.output,'assets/loom.png')));
+  for(const name of ['fly-through-iris.jpg','fly-through-elephant.jpg'])assert.deepEqual(fs.readFileSync(path.join(f.output,'assets',name)),fs.readFileSync(path.join(root,'website/assets',name)));
   const html=fs.readFileSync(path.join(f.output,'index.html'),'utf8');
   assert.ok(html.includes('href="'+currentPackage+'"')); assert.ok(!html.includes('{{'));
 });
@@ -117,4 +118,9 @@ test('preserves distinct modules on the same platform, including repeated platfo
   const result=f.run(['--modules-repo',f.modules]);assert.equal(result.status,0,result.stderr);
   for(const name of ['mac.zip','frame-selector.zip','updates.xri'])assert.deepEqual(fs.readFileSync(path.join(f.output,'pixinsight',name)),fs.readFileSync(path.join(f.modules,name)));
  }
+});
+test('rejects a second current package for the same module under a different ZIP name',t=>{
+ const f=nativeFixture(t);fs.copyFileSync(path.join(f.modules,'mac.zip'),path.join(f.modules,'new-mac.zip'));
+ fs.writeFileSync(path.join(f.modules,'updates.xri'),f.manifest.replace('</xri>',f.platform.replace('mac.zip','new-mac.zip')+'</xri>'));
+ const result=f.run(['--modules-repo',f.modules]);assert.notEqual(result.status,0);assert.match(result.stderr,/Duplicate native module/);assert.equal(fs.existsSync(f.output),false);
 });
