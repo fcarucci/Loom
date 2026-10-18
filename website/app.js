@@ -12,13 +12,16 @@ if(toggle&&nav){
  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&toggle.getAttribute('aria-expanded')==='true'){close();toggle.focus();}});
  document.addEventListener('click',event=>{if(!event.target.closest('.nav-shell'))close();});
 }
-const copy=document.querySelector('#copy-repository');
-const field=document.querySelector('#repository-url');
-const status=document.querySelector('#copy-status');
-if(copy&&field&&status){copy.hidden=false;copy.addEventListener('click',async()=>{
- try{if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(field.value);status.textContent='Repository URL copied.';}
- catch{field.focus();field.select();field.setSelectionRange(0,field.value.length);status.textContent='URL selected. Use your device’s copy command.';}
-});}
+document.querySelectorAll('[data-copy-field][data-copy-status]').forEach(copy=>{
+ const field=document.getElementById(copy.dataset.copyField);
+ const status=document.getElementById(copy.dataset.copyStatus);
+ if(!field||!status)return;
+ copy.hidden=false;
+ copy.addEventListener('click',async()=>{
+  try{if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');await navigator.clipboard.writeText(field.value);status.textContent='Repository URL copied.';}
+  catch{field.focus();field.select();field.setSelectionRange(0,field.value.length);status.textContent='URL selected. Use your device’s copy command.';}
+ });
+});
 const images=document.querySelectorAll('[data-reveal]');
 const reduced=window.matchMedia('(prefers-reduced-motion: reduce)');
 const showImage=img=>img.classList.add('is-visible');
