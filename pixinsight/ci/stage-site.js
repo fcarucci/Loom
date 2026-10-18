@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const root = path.resolve(__dirname, '../..');
 const hash = (algorithm, bytes) => crypto.createHash(algorithm).update(bytes).digest('hex');
+const assetUrl = (name, bytes) => name + '?v=' + hash('sha256', bytes).slice(0,16);
 const safeZip = name => /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.zip$/.test(name || '');
 const escape = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function python(script, input, args = []) {
@@ -149,6 +150,15 @@ async function stageSite(options) {
     ...['loom-mark.svg','favicon.svg','platesolve-gpu-stars.png','fly-through-iris.jpg','fly-through-elephant.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'website/assets', name))]),
     ...['loom.png','frame-selector.png','fly-through.png','banner.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'pixinsight/docs/images', name))])
   ]);
+  // Pages and browsers can cache assets across HTML deployments. Every page
+  // requests the exact bytes staged in this release, including on Safari.
+  for (const name of ['index.html', 'pixinsight.html']) {
+    let html = files.get(name).toString('utf8');
+    for (const asset of ['styles.css', 'app.js']) {
+      html = html.replaceAll('"' + asset + '"', '"' + assetUrl(asset, files.get(asset)) + '"');
+    }
+    files.set(name, Buffer.from(html));
+  }
   const modules = await nativeFiles(options);
   for (const [name, bytes] of modules) files.set('pixinsight/' + name, bytes);
   const directories = new Set(['assets', ...(modules.size ? ['pixinsight'] : [])]);
@@ -180,4 +190,4 @@ if (require.main === module) {
     console.log('Staged ' + count + ' public files at ' + out);
   })().catch(error => {console.error('Site staging failed: ' + error.message); process.exitCode = 1;});
 }
-module.exports = {stageSite, downloadNativeRelease, validateNative};
+module.exports = {stageSite, downloadNativeRelease, validateNative, assetUrl};

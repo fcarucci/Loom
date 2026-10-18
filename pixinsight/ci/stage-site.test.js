@@ -133,3 +133,21 @@ test('rejects a second current package for the same module under a different ZIP
  fs.writeFileSync(path.join(f.modules,'updates.xri'),f.manifest.replace('</xri>',f.platform.replace('mac.zip','new-mac.zip')+'</xri>'));
  const result=f.run(['--modules-repo',f.modules]);assert.notEqual(result.status,0);assert.match(result.stderr,/Duplicate native module/);assert.equal(fs.existsSync(f.output),false);
 });
+
+test('every page pins CSS and JavaScript to their deployed content, so cached assets cannot hide a release', t=>{
+ const f=fixture(t); const result=f.run(); assert.equal(result.status,0,result.stderr);
+ const crypto=require('node:crypto');
+ for(const page of ['index.html','pixinsight.html']) {
+  const html=fs.readFileSync(path.join(f.output,page),'utf8');
+  for(const asset of ['styles.css','app.js']) {
+   const bytes=fs.readFileSync(path.join(f.output,asset));
+   const version=crypto.createHash('sha256').update(bytes).digest('hex').slice(0,16);
+   assert.ok(html.includes(asset+'?v='+version),page+' must request the exact '+asset+' content');
+  }
+ }
+});
+test('content asset URLs are deterministic and change whenever their bytes change',()=>{
+ const {assetUrl}=require('./stage-site.js');
+ assert.equal(assetUrl('styles.css',Buffer.from('a')),assetUrl('styles.css',Buffer.from('a')));
+ assert.notEqual(assetUrl('styles.css',Buffer.from('a')),assetUrl('styles.css',Buffer.from('b')));
+});
