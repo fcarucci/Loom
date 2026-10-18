@@ -7,8 +7,8 @@ name: PixInsight CI
 #
 #    pixinsight/ci/package.sh
 #
-# Runs on main and pull requests only when pixinsight/** (or this file)
-# changed; a v* tag push always runs (path filters are not applied to tags).
+# Runs on PixInsight, website and workflow changes. Proven website-only
+# diffs skip script tests/package; release tags and manual runs keep full CI.
 #
 on:
   push:
@@ -28,6 +28,34 @@ defaults:
     working-directory: pixinsight
 
 jobs:
+  scope:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Determine whether script checks are required
+        id: scope
+        run: node ci/change-scope.js
+
+  site:
+    needs: scope
+    name: Website checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check CI scope and public website staging
+        run: node --test ci/change-scope.test.js ci/stage-site.test.js
+
   # Most of what the suite asserts is arithmetic, cache keys, shell
   # generation and document structure, none of which needs an image
   # processing application. Those run here on every push. The handful that
@@ -35,6 +63,8 @@ jobs:
   # include, opening a window, constructing a dialog -- are skipped rather
   # than faked, and still run locally against the real thing.
   test:
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     name: Tests (no PixInsight)
     runs-on: ubuntu-latest
     steps:
@@ -42,9 +72,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Check public website staging
-        run: node --test ci/stage-site.test.js
-
       # BOTH builds, because Loom now compiles differently on 1.9.4 --
       # AstrometricResiduals does not exist there, and an unresolvable
       # #include makes PJSR discard the whole script silently. Running only
@@ -68,7 +95,8 @@ jobs:
         run: node ci/test-groups.js
 
   package:
-    needs: test
+    needs: [scope, test]
+    if: needs.scope.outputs.code == 'true'
     name: Package the installable zip
     runs-on: ubuntu-latest
 
@@ -204,18 +232,17 @@ jobs:
   # The update repository, served over HTTPS so PixInsight can subscribe to
   # it: https://fcarucci.github.io/Loom/updates.xri
   #
-  # Only on a TAG. Publishing on every push to main would advertise an
-  # unreleased build to everyone subscribed, and the updater would install
-  # it on their next restart.
+  # Tags retain signed release behavior; authorized site publications always
+  # stage the existing signed script repository and pinned native artifacts.
   pages:
-    needs: package
+    needs: [scope, site, test, package]
     name: Publish the update repository
     # Version tags keep their existing release path. A maintainer can also
     # deploy website-only changes from main without publishing a new script
     # package; staging copies the signed updater files from the repository
     # unchanged; manual dispatch from main or the explicitly marked website
     # publication commit can deploy the site without creating a script release.
-    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-site]'))
+    if: ${{ always() && !cancelled() && needs.scope.result == 'success' && needs.site.result == 'success' && ((needs.scope.outputs.code == 'true' && needs.test.result == 'success' && needs.package.result == 'success') || (needs.scope.outputs.code == 'false' && needs.test.result == 'skipped' && needs.package.result == 'skipped')) && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-site]'))) }}
     runs-on: ubuntu-latest
 
     permissions:
