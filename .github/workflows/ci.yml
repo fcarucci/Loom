@@ -234,7 +234,10 @@ jobs:
           node-version: '20'
 
       - name: Stage the public website without changing signed artifacts
-        run: node ci/stage-site.js --updater repo --out dist/repo
+        # Missing/empty native-release.json means no native feed yet. Once
+        # pinned, every deployment must fetch and verify the same public assets;
+        # failed downloads/checks stop the job rather than dropping modules.
+        run: node ci/stage-site.js --updater repo --out dist/repo --native-release ../website/native-release.json --modules-cache dist/native-input
 
       - uses: actions/upload-pages-artifact@v3
         with:
