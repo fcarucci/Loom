@@ -39,3 +39,23 @@ if(reduced.matches||!('IntersectionObserver' in window)){
   if(event.matches){observer.disconnect();images.forEach(showImage);}
  });
 }
+
+// Keep local posters and direct links useful until someone chooses a player.
+document.querySelectorAll('.reel-poster[data-video]').forEach(poster=>{
+ poster.querySelector('.reel-action').textContent='Load player';
+ poster.setAttribute('aria-label','Load video player: '+poster.dataset.videoTitle);
+ poster.addEventListener('click',event=>{
+  // Modified clicks retain the direct YouTube link behavior.
+  if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+  event.preventDefault();
+  const player=document.createElement('iframe');
+  player.src='https://www.youtube-nocookie.com/embed/'+poster.dataset.video+'?playsinline=1&rel=0';
+  player.title=poster.dataset.videoTitle;
+  player.allow='encrypted-media; picture-in-picture; web-share';
+  player.allowFullscreen=true;
+  player.referrerPolicy='strict-origin-when-cross-origin';
+  poster.hidden=true;
+  poster.parentElement.append(player);
+  player.focus();
+ });
+});
