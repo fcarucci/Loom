@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Install Loom scripts and native modules in PixInsight, with separate instructions for the signed script and module repositories.">
+<meta name="theme-color" content="#000000"><title>PixInsight instructions — Loom</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header"><div class="nav-shell">
+<a class="brand" href="index.html" aria-label="Loom home"><img class="brand-mark" src="assets/loom-mark.svg" width="38" height="38" alt=""><span class="brand-name">Loom</span></a>
+<button class="nav-toggle" type="button" aria-expanded="false" aria-controls="main-nav" hidden>Menu <span aria-hidden="true">☰</span></button>
+<nav class="desktop-nav" id="main-nav" aria-label="Main navigation"><a href="index.html#loom">Loom Preprocess</a><a href="index.html#frame-selector">Frame Selector</a><a href="index.html#fly-through">Fly-Through</a><a href="index.html#platesolve">PlateSolve</a><a class="button button-secondary" href="index.html">Loom home</a></nav>
+</div></header>
+<main id="main" class="instructions-main">
+<header class="instructions-heading"><p class="eyebrow">PixInsight</p><h1>Install Loom<br>in PixInsight.</h1><p class="section-intro">Choose the install route for the tools you want. The script repository and native module repository are separate, so add only the one you need.</p></header>
+<div class="instructions-grid">
+<section class="instruction-panel" aria-labelledby="scripts-title">
+<h2 id="scripts-title">PixInsight scripts</h2>
+<p>Loom Preprocess, Frame Selector and Fly-Through are distributed through the signed PixInsight script repository.</p>
+<label class="repository-label" for="repository-url">Script repository URL</label>
+<div class="repository-field"><input id="repository-url" type="url" readonly value="https://fcarucci.github.io/Loom/" spellcheck="false"><button id="copy-repository" class="button button-secondary" type="button" hidden>Copy URL</button></div>
+<p id="copy-status" role="status" aria-live="polite"></p>
+<ol><li>In PixInsight, open <strong>Resources → Updates → Manage Repositories</strong>.</li><li>Add the script repository URL above, including the trailing slash.</li><li>Choose <strong>Resources → Updates → Check for Updates</strong> and apply Loom.</li><li>Restart PixInsight. Find the scripts under <strong>Script → Loom</strong>. If they do not appear, use <strong>Script → Feature Scripts → Regenerate</strong>.</li></ol>
+<p class="small">Install from the update repository or a Git checkout, not both. Both copies register the same scripts.</p>
+<a class="button button-primary" href="https://fcarucci.github.io/Loom/">Open the PixInsight script repository</a>
+<div class="package-download"><h3>{{PACKAGE_TITLE}}</h3><p>Current signed script package.</p><a class="button button-secondary" href="{{PACKAGE_FILE}}" download>Download the script package</a></div>
+</section>
+<section class="instruction-panel" aria-labelledby="modules-title">
+<h2 id="modules-title">Native Loom modules</h2>
+<p>Native processes use a separate signed update repository. Add it once to receive compatible modules.</p>
+<label class="repository-label" for="module-repository-url">Native module repository URL</label>
+<div class="repository-field"><input id="module-repository-url" type="url" readonly value="https://fcarucci.github.io/Loom/pixinsight/" spellcheck="false"></div>
+<ol><li>Open <strong>Resources → Updates → Manage Repositories</strong>.</li><li>Add the native module repository URL above.</li><li>Choose <strong>Resources → Updates → Check for Updates</strong>.</li><li>Apply the available Loom module update, then restart PixInsight.</li></ol>
+<p class="availability">PlateSolve preview is available for macOS arm64 and Windows x64.</p>
+<p>PixInsight selects a package for your operating system, processor architecture and supported PixInsight version. The module feed is separate from the script repository; the script address remains <a href="https://fcarucci.github.io/Loom/updates.xri">https://fcarucci.github.io/Loom/updates.xri</a>.</p>
+<a class="button button-secondary" href="https://github.com/fcarucci/Loom/releases/tag/native-module-preview-0.1.0-preview.3">View PlateSolve preview details</a>
+<div class="package-download"><h3>Manual installation</h3><p>If PixInsight does not offer the module update, download the matching release ZIP, extract it, then choose <strong>Process → Modules → Install Modules</strong>, select the folder containing the signed module, and restart PixInsight.</p></div>
+</section>
+<section class="instruction-panel instruction-panel-wide" aria-labelledby="siril-title">
+<h2 id="siril-title">Using Siril?</h2><p>The experimental Siril scripts are installed from the project checkout. On first run, they install their Python requirements into Siril's Python environment.</p><a class="text-link" href="https://github.com/fcarucci/Loom/tree/main/siril">Read Siril install notes</a>
+</section>
+</div>
+</main>
+<footer class="site-footer"><div class="footer-grid"><div class="footer-brand"><a class="brand" href="index.html"><img class="brand-mark" src="assets/loom-mark.svg" alt="" width="38" height="38"><span class="brand-name">Loom</span></a><p>Tools for the work between integrated masters and finished images.</p></div><div class="footer-column"><h2>Tools</h2><a href="index.html#loom">Loom Preprocess</a><a href="index.html#frame-selector">Frame Selector</a><a href="index.html#fly-through">Fly-Through</a><a href="index.html#platesolve">PlateSolve</a></div><div class="footer-column"><h2>Project</h2><a href="https://github.com/fcarucci/Loom/tree/main/pixinsight">Documentation</a><a href="https://fcarucci.github.io/Loom/">PixInsight updates</a><a href="https://github.com/fcarucci/Loom">Loom on GitHub</a></div></div><div class="footer-bottom"><span>© Francesco Carucci</span><span>Made for the image ahead.</span></div></footer>
+</body></html>

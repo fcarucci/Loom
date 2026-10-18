@@ -144,6 +144,7 @@ async function stageSite(options) {
   const files = new Map([
     ['updates.xri', manifest], [attrs.fileName, archive], ['LICENSE', fs.readFileSync(path.join(updater, 'LICENSE'))],
     ['index.html', Buffer.from(fs.readFileSync(path.join(root, 'website/index.html'), 'utf8').replaceAll('{{PACKAGE_FILE}}', escape(attrs.fileName)).replaceAll('{{PACKAGE_TITLE}}', escape(attrs.title || 'Loom scripts')))],
+    ['pixinsight.html', Buffer.from(fs.readFileSync(path.join(root, 'website/pixinsight.html'), 'utf8').replaceAll('{{PACKAGE_FILE}}', escape(attrs.fileName)).replaceAll('{{PACKAGE_TITLE}}', escape(attrs.title || 'Loom scripts')))],
     ...['styles.css','app.js'].map(name => [name, fs.readFileSync(path.join(root, 'website', name))]),
     ...['loom-mark.svg','favicon.svg','platesolve-gpu-stars.png','fly-through-iris.jpg','fly-through-elephant.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'website/assets', name))]),
     ...['loom.png','frame-selector.png','fly-through.png','banner.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'pixinsight/docs/images', name))])

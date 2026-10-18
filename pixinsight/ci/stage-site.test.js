@@ -27,7 +27,16 @@ test('stages only current signed artifacts and approved site assets without chan
   assert.ok(fs.existsSync(path.join(f.output,'assets/loom.png')));
   for(const name of ['fly-through-iris.jpg','fly-through-elephant.jpg'])assert.deepEqual(fs.readFileSync(path.join(f.output,'assets',name)),fs.readFileSync(path.join(root,'website/assets',name)));
   const html=fs.readFileSync(path.join(f.output,'index.html'),'utf8');
-  assert.ok(html.includes('href="'+currentPackage+'"')); assert.ok(!html.includes('{{'));
+  assert.ok(html.includes('href="pixinsight.html"'));
+  assert.ok(!html.includes('Install Loom<br>in PixInsight.'));
+  assert.ok(!html.includes('Manage Repositories'));
+  assert.ok(!html.includes('{{'));
+  const instructions=fs.readFileSync(path.join(f.output,'pixinsight.html'),'utf8');
+  assert.ok(instructions.includes('Install Loom<br>in PixInsight.'));
+  assert.ok(instructions.includes('https://fcarucci.github.io/Loom/'));
+  assert.ok(instructions.includes('https://fcarucci.github.io/Loom/pixinsight/'));
+  assert.ok(instructions.includes('href="'+currentPackage+'"'));
+  assert.ok(!instructions.includes('{{'));
 });
 test('fails closed on a damaged archive before creating public output', t => {
   const f=fixture(t); fs.appendFileSync(path.join(f.updater,currentPackage),'damage');

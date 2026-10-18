@@ -206,3 +206,38 @@ html.js [data-reveal].is-visible { transform: scale(1); transition: transform 15
  #fly-through { grid-template-columns: minmax(0,1fr); }
  #fly-through .reel-grid, #fly-through .tool-copy { width: 100%; max-width: 650px; margin-left: auto; margin-right: auto; }
 }
+
+/* PixInsight install guide: broad reading columns, with the two feeds kept distinct. */
+.instructions-main { max-width: calc(var(--content) + var(--gutter) * 2); margin: 0 auto; padding: 176px var(--gutter) 120px; }
+.instructions-heading { max-width: 980px; margin-bottom: 68px; }
+.instructions-heading .eyebrow { margin-bottom: 22px; }
+.instructions-heading h1 { max-width: 860px; font-size: clamp(62px, 8vw, 112px); margin-bottom: 30px; }
+.instructions-heading .section-intro { max-width: 740px; }
+.instructions-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); column-gap: clamp(48px, 6vw, 84px); row-gap: 72px; }
+.instruction-panel { min-width: 0; border-top: 1px solid var(--rule); padding-top: 28px; }
+.instruction-panel h2 { font-size: clamp(25px, 2.1vw, 32px); font-weight: 450; letter-spacing: -.035em; line-height: 1.25; margin-bottom: 18px; }
+.instruction-panel h3 { font-size: 22px; font-weight: 450; letter-spacing: -.025em; margin-bottom: 12px; }
+.instruction-panel p, .instruction-panel li { color: var(--secondary); font-size: 16px; line-height: 1.75; }
+.instruction-panel ol { padding-left: 23px; margin: 26px 0; }
+.instruction-panel li { padding-left: 6px; margin-bottom: 13px; }
+.instruction-panel .repository-field { margin-top: 10px; }
+.instruction-panel .repository-field input { min-height: 50px; }
+.instruction-panel .availability { color: #c7cbd2; padding-left: 15px; border-left: 2px solid #68717d; }
+.instruction-panel .small { color: var(--muted); font-size: 14px; }
+.package-download { border-top: 1px solid var(--rule); margin-top: 36px; padding-top: 25px; }
+.package-download p { margin-bottom: 18px; }
+.instruction-panel-wide { grid-column: 1 / -1; max-width: 740px; }
+.instruction-panel .text-link { margin-top: 0; }
+@media (max-width: 800px) {
+ .instructions-main { padding-top: 132px; padding-bottom: 80px; }
+ .instructions-heading { margin-bottom: 50px; }
+ .instructions-heading h1 { font-size: clamp(54px, 10vw, 76px); }
+ .instructions-grid { grid-template-columns: minmax(0,1fr); row-gap: 48px; }
+ .instruction-panel-wide { grid-column: auto; }
+}
+@media (max-width: 430px) {
+ .instructions-main { padding-top: 112px; padding-bottom: 64px; }
+ .instructions-heading h1 { font-size: 53px; }
+ .instruction-panel h2 { font-size: 25px; }
+ .instruction-panel p, .instruction-panel li { font-size: 15px; }
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "fileName": "updates.xri",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.3/updates.xri",
+      "sha256": "dbb7f5fb8b487fc1f527236b49dc37daa6dac606289cb818bdfc71a193ff8c29",
+      "size": 1198
+    },
+    {
+      "fileName": "Loom-0.1.0-preview.3-cd12e18-macos-arm64.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.3/Loom-0.1.0-preview.3-cd12e18-macos-arm64.zip",
+      "sha256": "2de540ed51ef4b03b355eec5d718fa506f82bf35dc7219bd12521ee70f435383",
+      "size": 14875084
+    },
+    {
+      "fileName": "Loom-0.1.0-preview.3-cd12e18-windows-x64.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.3/Loom-0.1.0-preview.3-cd12e18-windows-x64.zip",
+      "sha256": "701b32619476384015211e587c1e7d555e2e73ab05516fcf3c1e6e9cd5c6cec4",
+      "size": 15560149
+    }
+  ]
+}
