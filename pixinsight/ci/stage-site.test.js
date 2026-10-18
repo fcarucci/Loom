@@ -60,7 +60,7 @@ test('persists a native feed under pixinsight without changing root script artif
  assert.equal(f.run(['--modules-repo',f.modules]).status,0);
  assert.notEqual(f.run().status,0,'a later deploy cannot silently drop an existing native feed');
 });
-test('rejects corrupt modules, duplicate platforms, traversal and unsigned native feed before writes', t=> {
+test('rejects corrupt modules, duplicate module identities, traversal and unsigned native feed before writes', t=> {
  for(const kind of ['corrupt','duplicate','traversal','unsigned']){const f=nativeFixture(t);
  if(kind==='corrupt')fs.appendFileSync(path.join(f.modules,'mac.zip'),'broken');
  else fs.writeFileSync(path.join(f.modules,'updates.xri'),kind==='duplicate'?f.manifest.replace('</xri>',f.platform+'</xri>'):kind==='traversal'?f.manifest.replace('mac.zip','../mac.zip'):f.manifest.split('<Signature')[0]);
@@ -105,4 +105,16 @@ test('rejects a checksum-valid native ZIP containing private source',t=>{
  const generated=spawnSync('python3',['-c',"import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'a'); z.writestr('src/engine.rs',b'private'); z.close()",zipPath]);assert.equal(generated.status,0);
  const sha1=require('node:crypto').createHash('sha1').update(fs.readFileSync(zipPath)).digest('hex');fs.writeFileSync(path.join(f.modules,'updates.xri'),f.manifest.replace(/sha1="[^"]+"/,`sha1="${sha1}"`));
  const result=f.run(['--modules-repo',f.modules]);assert.notEqual(result.status,0);assert.match(result.stderr,/unapproved native ZIP file/);assert.equal(fs.existsSync(f.output),false);
+});
+test('preserves distinct modules on the same platform, including repeated platform blocks',t=>{
+ for(const grouped of [true,false]) {
+  const f=nativeFixture(t);const other=path.join(f.modules,'frame-selector.zip');
+  const generated=spawnSync('python3',['-c',"import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w'); z.writestr('bin/LoomFrameSelector-pxm.dylib',b'other module'); z.writestr('bin/LoomFrameSelector-pxm.xsgn',b'signature'); z.close()",other]);assert.equal(generated.status,0);
+  const digest=require('node:crypto').createHash('sha1').update(fs.readFileSync(other)).digest('hex');
+  const entry=`<package fileName="frame-selector.zip" sha1="${digest}" type="module"/>`;
+  const xml=grouped?f.manifest.replace('</platform>',entry+'</platform>'):f.manifest.replace('</xri>',`<platform os="macosx" arch="arm64" version="1.9.5:1.9.99">${entry}</platform></xri>`);
+  fs.writeFileSync(path.join(f.modules,'updates.xri'),xml);
+  const result=f.run(['--modules-repo',f.modules]);assert.equal(result.status,0,result.stderr);
+  for(const name of ['mac.zip','frame-selector.zip','updates.xri'])assert.deepEqual(fs.readFileSync(path.join(f.output,'pixinsight',name)),fs.readFileSync(path.join(f.modules,name)));
+ }
 });

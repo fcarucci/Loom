@@ -28,7 +28,7 @@ if root.tag!='xri' or root.attrib.get('version')!='1.0': raise ValueError('expec
 platforms=root.findall('./platform')
 packages=[{'platform':p.attrib,'attributes':q.attrib} for p in platforms for q in p.findall('./package')]
 if not packages or len(packages)!=len(list(root.iter('package'))): raise ValueError('expected platform/package entries')
-if any(len(p.findall('./package'))!=1 for p in platforms): raise ValueError('expected one current package per platform')
+if any(not p.findall('./package') for p in platforms): raise ValueError('expected current packages in each platform')
 print(json.dumps(packages))`, text.slice(0, end + 6)));
   } catch (error) { throw Error('Invalid manifest XML: ' + error.message); }
 }
@@ -38,14 +38,11 @@ function checkArchive(attrs, bytes) {
 }
 function validateNative(manifest, getBytes) {
   const packages = parseManifest(manifest);
-  const platforms = new Set();
+  const identities = new Set();
   const files = new Map([['updates.xri', manifest]]);
   for (const {platform, attributes: attrs} of packages) {
     const {os, arch, version} = platform;
     if (![os,arch].every(v => typeof v === 'string' && /^[a-zA-Z0-9_-]+$/.test(v)) || !version || os === 'all' || arch === 'noarch') throw Error('Invalid native platform');
-    const key = os + '/' + arch;
-    if (platforms.has(key)) throw Error('Duplicate native platform: ' + key);
-    platforms.add(key);
     if (attrs.type !== 'module') throw Error('Native package must have type module');
     if (!safeZip(attrs.fileName)) throw Error('Unsafe package path');
     if (files.has(attrs.fileName)) throw Error('Native platforms must use unique ZIP names');
@@ -54,7 +51,7 @@ function validateNative(manifest, getBytes) {
     // The manifest format has no size field. Pinned release metadata checks the
     // exact compressed size; this check also validates local verified ZIP inputs.
     if (!bytes.length || bytes.length > 512*1024*1024) throw Error('Invalid native archive size');
-    python(`import sys,io,zipfile,re,stat
+    const binary = python(`import sys,io,zipfile,re,stat
 with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as z:
  entries=z.infolist()
  names=[i.filename for i in entries]
@@ -66,12 +63,16 @@ with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as z:
   if i.is_dir():
    if n!='bin/': raise ValueError('unapproved native ZIP directory')
    continue
-  if n in ('Loom-pxm.dylib','Loom-pxm.dll','Loom-pxm.so','bin/Loom-pxm.dylib','bin/Loom-pxm.dll','bin/Loom-pxm.so'): binaries.append(n)
-  elif n not in ('Loom-pxm.xsgn','bin/Loom-pxm.xsgn','LICENSE','LICENSE-PCL.txt','README.md'): raise ValueError('unapproved native ZIP file: '+n)
+  if re.fullmatch(r'(bin/)?[A-Za-z][A-Za-z0-9_-]*-pxm[.](dylib|dll|so)',n): binaries.append(n)
+  elif not re.fullmatch(r'(bin/)?[A-Za-z][A-Za-z0-9_-]*-pxm[.]xsgn',n) and n not in ('LICENSE','LICENSE-PCL.txt','README.md'): raise ValueError('unapproved native ZIP file: '+n)
   if i.file_size>1024*1024*1024: raise ValueError('native ZIP entry too large')
  if len(binaries)!=1: raise ValueError('expected exactly one native binary')
  if re.sub(r'[.](dylib|dll|so)$','.xsgn',binaries[0]) not in names: raise ValueError('native binary signature missing')
- if z.testzip() is not None: raise ValueError('native ZIP CRC mismatch')`, bytes);
+ if z.testzip() is not None: raise ValueError('native ZIP CRC mismatch')
+ print(re.sub(r'[.](dylib|dll|so)$','',binaries[0].split('/')[-1]))`, bytes).trim();
+    const identity = os + '/' + arch + '/' + binary;
+    if (identities.has(identity)) throw Error('Duplicate native module: ' + identity);
+    identities.add(identity);
     files.set(attrs.fileName, bytes);
   }
   return files;
