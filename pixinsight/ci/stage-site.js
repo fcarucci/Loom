@@ -171,7 +171,7 @@ async function stageSite(options) {
     ['cli-release.json', cliRelease],
     ['cli-help.txt', Buffer.from(cliHelp)],
     ...['styles.css','app.js'].map(name => [name, fs.readFileSync(path.join(root, 'website', name))]),
-    ...['loom-mark.svg','favicon.svg','platesolve-gpu-stars.png','fly-through-iris.jpg','fly-through-elephant.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'website/assets', name))]),
+    ...['loom-mark.svg','loom-social.png','favicon.svg','platesolve-gpu-stars.png','fly-through-iris.jpg','fly-through-elephant.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'website/assets', name))]),
     ...['loom.png','frame-selector.png','fly-through.png','banner.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'pixinsight/docs/images', name))])
   ]);
   // Pages and browsers can cache assets across HTML deployments. Every page
