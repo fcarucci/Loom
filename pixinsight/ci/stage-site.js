@@ -139,7 +139,7 @@ function renderCliDownloads(config) {
   const labels = {macos:'macOS', windows:'Windows', linux:'Linux'};
   const cards = config.assets.map(asset => {
     const {platform, arch, version, fileName, url, sha256, size} = asset;
-    if (!labels[platform] || !['macos/arm64','windows/x64','linux/x64'].includes(platform + '/' + arch) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(version || '')) throw Error('Invalid CLI platform, architecture or version');
+    if (!labels[platform] || !['macos/arm64','windows/x64','linux/x64','linux/arm64'].includes(platform + '/' + arch) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(version || '')) throw Error('Invalid CLI platform, architecture or version');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:zip|tar\.gz)$/.test(fileName || '') || !/^[a-f0-9]{64}$/.test(sha256 || '') || !Number.isSafeInteger(size) || size <= 0 || size > 512*1024*1024) throw Error('Invalid CLI artifact pin');
     const parsed = new URL(url);
     const match = /^\/fcarucci\/Loom\/releases\/download\/([^/]+)\/([^/]+)$/.exec(parsed.pathname);
@@ -147,9 +147,9 @@ function renderCliDownloads(config) {
     const key = platform + '/' + arch;
     if (seen.has(key)) throw Error('Duplicate CLI platform');
     seen.add(key);
-    return '<article class="cli-download"><h3>' + labels[platform] + ' <span>' + arch + '</span></h3><p>Version ' + escape(version) + ' · ' + (size / 1048576).toFixed(1) + ' MB</p><a class="button button-primary" href="' + escape(url) + '" download="' + escape(fileName) + '">Download for ' + labels[platform] + '</a><p class="cli-filename">' + escape(fileName) + '</p><details><summary>SHA-256 checksum</summary><code class="checksum">' + sha256 + '</code><p>' + size + ' bytes</p></details></article>';
+    return '<article class="cli-download"><h3>' + labels[platform] + ' <span>' + arch + (platform === 'linux' && arch === 'arm64' ? ' · Vulkan' : '') + '</span></h3><p>Version ' + escape(version) + ' · ' + (size / 1048576).toFixed(1) + ' MB</p><a class="button button-primary" href="' + escape(url) + '" download="' + escape(fileName) + '">Download for ' + labels[platform] + '</a><p class="cli-filename">' + escape(fileName) + '</p><details><summary>SHA-256 checksum</summary><code class="checksum">' + sha256 + '</code><p>' + size + ' bytes</p></details></article>';
   });
-  return cards.length ? '<div class="cli-download-grid">' + cards.join('') + '</div>' : '<p class="availability">The macOS, Windows and Linux packages are being prepared. Verified downloads will appear here when the release is ready.</p>';
+  return cards.length ? '<div class="cli-download-grid' + (cards.length === 4 ? ' cli-download-grid-four' : '') + '">' + cards.join('') + '</div>' : '<p class="availability">The macOS, Windows and Linux packages are being prepared. Verified downloads will appear here when the release is ready.</p>';
 }
 async function stageSite(options) {
   const {updater, out} = options;

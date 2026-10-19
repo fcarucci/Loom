@@ -290,6 +290,7 @@ html.js [data-reveal].is-visible { transform: scale(1); transition: transform 15
 .cli-section > .section-title { font-size: clamp(32px, 4vw, 48px); max-width: 25ch; }
 .cli-section > .section-intro { max-width: 58ch; }
 .cli-download-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 36px; margin: 40px 0 28px; }
+.cli-download-grid-four { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .cli-download { min-width: 0; padding-top: 24px; border-top: 1px solid var(--rule); }
 .cli-download h3 { font-size: 27px; font-weight: 450; letter-spacing: -.035em; margin-bottom: 12px; }
 .cli-download h3 span { font-size: 15px; color: var(--muted); letter-spacing: 0; }
@@ -316,7 +317,7 @@ html.js [data-reveal].is-visible { transform: scale(1); transition: transform 15
  .cli-download-grid { gap: 28px; }
 }
 @media (max-width: 800px) {
- .cli-download-grid { grid-template-columns: minmax(0,1fr); gap: 32px; }
+ .cli-download-grid, .cli-download-grid-four { grid-template-columns: minmax(0,1fr); gap: 32px; }
  .cli-main .instructions-heading { margin-bottom: 48px; }
  .cli-section { margin-top: 48px; padding-top: 32px; }
  .cli-section .instructions-grid { row-gap: 36px; }

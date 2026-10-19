@@ -168,3 +168,12 @@ test('CLI help page and release pins stage with the existing feeds and versioned
  assert.ok(fs.existsSync(path.join(f.output,'cli-release.json')));
  const home=fs.readFileSync(path.join(f.output,'index.html'),'utf8');assert.ok(home.includes('href="cli.html"'));
 });
+test('CLI downloads include Linux ARM64 for Jetson Vulkan without conflating Linux architectures',()=>{
+ const {renderCliDownloads}=require('./stage-site.js');
+ const assets=[['macos','arm64'],['windows','x64'],['linux','x64'],['linux','arm64']].map(([platform,arch])=>{
+  const fileName=`loom-solve-0.1.0-preview.1-${platform}-${arch}.zip`;
+  return {platform,arch,version:'0.1.0-preview.1',fileName,url:'https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/'+fileName,sha256:'a'.repeat(64),size:1000};
+ });
+ const html=renderCliDownloads({schemaVersion:1,assets});assert.equal((html.match(/class="cli-download"/g)||[]).length,4);
+ assert.ok(html.includes('linux-arm64.zip'));assert.ok(html.includes('linux-x64.zip'));assert.ok(html.includes('Vulkan'));
+});
