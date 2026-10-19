@@ -147,7 +147,7 @@ function renderCliDownloads(config) {
     const key = platform + '/' + arch;
     if (seen.has(key)) throw Error('Duplicate CLI platform');
     seen.add(key);
-    return '<article class="cli-download"><h3>' + labels[platform] + ' <span>' + arch + (platform === 'linux' && arch === 'arm64' ? ' · Vulkan' : '') + '</span></h3><p>Version ' + escape(version) + ' · ' + (size / 1048576).toFixed(1) + ' MB</p><a class="button button-primary" href="' + escape(url) + '" download="' + escape(fileName) + '">Download for ' + labels[platform] + '</a><p class="cli-filename">' + escape(fileName) + '</p><details><summary>SHA-256 checksum</summary><code class="checksum">' + sha256 + '</code><p>' + size + ' bytes</p></details></article>';
+    return '<article class="cli-download"><h3>' + labels[platform] + ' <span>' + arch + (platform === 'linux' && arch === 'arm64' ? ' · Vulkan' : '') + '</span></h3><p>Version ' + escape(version) + ' · ' + (size / 1048576).toFixed(1) + ' MB</p><a class="button button-primary" href="' + escape(url) + '" download="' + escape(fileName) + '">Download for ' + labels[platform] + ' ' + arch + '</a><p class="cli-filename">' + escape(fileName) + '</p><details><summary>SHA-256 checksum</summary><code class="checksum">' + sha256 + '</code><p>' + size + ' bytes</p></details></article>';
   });
   return cards.length ? '<div class="cli-download-grid' + (cards.length === 4 ? ' cli-download-grid-four' : '') + '">' + cards.join('') + '</div>' : '<p class="availability">The macOS, Windows and Linux packages are being prepared. Verified downloads will appear here when the release is ready.</p>';
 }

@@ -175,5 +175,5 @@ test('CLI downloads include Linux ARM64 for Jetson Vulkan without conflating Lin
   return {platform,arch,version:'0.1.0-preview.1',fileName,url:'https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/'+fileName,sha256:'a'.repeat(64),size:1000};
  });
  const html=renderCliDownloads({schemaVersion:1,assets});assert.equal((html.match(/class="cli-download"/g)||[]).length,4);
- assert.ok(html.includes('linux-arm64.zip'));assert.ok(html.includes('linux-x64.zip'));assert.ok(html.includes('Vulkan'));
+ assert.ok(html.includes('linux-arm64.zip'));assert.ok(html.includes('linux-x64.zip'));assert.ok(html.includes('Vulkan'));assert.ok(html.includes('Download for Linux arm64'));assert.ok(html.includes('Download for Linux x64'));
 });
