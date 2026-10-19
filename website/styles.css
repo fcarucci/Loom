@@ -323,3 +323,25 @@ html.js [data-reveal].is-visible { transform: scale(1); transition: transform 15
  .cli-section .instructions-grid { row-gap: 36px; }
  .cli-download .button { min-height: 48px; }
 }
+
+/* Readers' own words, given the same breathing room as the tools. */
+.testimonials { border-top: 1px solid var(--rule); padding: 100px 0 112px; }
+.testimonials > .section-title { margin-bottom: 48px; }
+.testimonial-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 48px; }
+.testimonial { min-width: 0; margin: 0; display: flex; flex-direction: column; align-items: flex-start; }
+.testimonial blockquote { margin: 0 0 28px; font-size: clamp(21px,1.8vw,26px); line-height: 1.55; letter-spacing: -.025em; color: var(--text); }
+.testimonial blockquote p { margin-bottom: 0; }
+.testimonial figcaption { margin-top: auto; color: var(--muted); font-size: 15px; }
+@media (max-width: 1000px) { .testimonial-grid { gap: 32px; } }
+@media (max-width: 800px) {
+ .testimonials { padding: 72px 0 80px; }
+ .testimonials > .section-title { margin-bottom: 36px; }
+ .testimonial-grid { grid-template-columns: minmax(0,1fr); gap: 36px; }
+ .testimonial + .testimonial { border-top: 1px solid var(--rule); padding-top: 32px; }
+ .testimonial blockquote { max-width: 36ch; margin-bottom: 20px; font-size: 23px; }
+}
+
+.cli-preview-note { max-width: 78ch; margin: -20px 0 64px; padding: 24px 0 24px 24px; border-left: 2px solid var(--secondary); }
+.cli-preview-note h2 { margin-bottom: 10px; font-size: 23px; font-weight: 500; letter-spacing: -.025em; line-height: 1.35; }
+.cli-preview-note p { margin: 0; color: var(--secondary); font-size: 17px; line-height: 1.65; }
+@media (max-width: 800px) { .cli-preview-note { margin-top: 0; margin-bottom: 48px; padding-left: 18px; } }

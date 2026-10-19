@@ -1,4 +1,41 @@
 {
   "schemaVersion": 1,
-  "assets": []
+  "assets": [
+    {
+      "platform": "macos",
+      "arch": "arm64",
+      "version": "0.1.0-preview.1",
+      "fileName": "loom-solve-0.1.0-preview.1-aarch64-apple-darwin.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/loom-solve-0.1.0-preview.1-aarch64-apple-darwin.zip",
+      "sha256": "1c778714f8d0c460a115e0513ab7826a2b8fd6c97b831d91454d28673a96d2aa",
+      "size": 14613193
+    },
+    {
+      "platform": "windows",
+      "arch": "x64",
+      "version": "0.1.0-preview.1",
+      "fileName": "loom-solve-0.1.0-preview.1-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/loom-solve-0.1.0-preview.1-x86_64-pc-windows-msvc.zip",
+      "sha256": "f2ca603605a9e912d98aaa034a75510dcc90bf953c914fddbbd9c1ad9f566960",
+      "size": 14809106
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "version": "0.1.0-preview.1",
+      "fileName": "loom-solve-0.1.0-preview.1-x86_64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/loom-solve-0.1.0-preview.1-x86_64-unknown-linux-gnu.zip",
+      "sha256": "feb017cd0f0e4f498c7b5aab96d30fe2aef5f81692b1e3020cba79339464f98e",
+      "size": 14909610
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "version": "0.1.0-preview.1",
+      "fileName": "loom-solve-0.1.0-preview.1-aarch64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.1/loom-solve-0.1.0-preview.1-aarch64-unknown-linux-gnu.zip",
+      "sha256": "0e5bb2f47409cf349e43db442e7eb3cf509681a7501838dab9c6c5fc2519f89e",
+      "size": 14972044
+    }
+  ]
 }
