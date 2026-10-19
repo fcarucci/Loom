@@ -151,3 +151,20 @@ test('content asset URLs are deterministic and change whenever their bytes chang
  assert.equal(assetUrl('styles.css',Buffer.from('a')),assetUrl('styles.css',Buffer.from('a')));
  assert.notEqual(assetUrl('styles.css',Buffer.from('a')),assetUrl('styles.css',Buffer.from('b')));
 });
+
+test('CLI release metadata renders only pinned public platform downloads and escapes text',()=>{
+ const {renderCliDownloads}=require('./stage-site.js');
+ const asset={platform:'macos',arch:'arm64',version:'0.1.0-preview.3',fileName:'loom-platesolve-macos-arm64.zip',url:'https://github.com/fcarucci/Loom/releases/download/cli-test/loom-platesolve-macos-arm64.zip',sha256:'a'.repeat(64),size:123456};
+ const html=renderCliDownloads({schemaVersion:1,assets:[asset]});
+ assert.ok(html.includes(asset.url));assert.ok(html.includes(asset.sha256));assert.ok(html.includes('macOS'));assert.ok(html.includes('arm64'));
+ assert.ok(!renderCliDownloads({schemaVersion:1,assets:[]}).includes('download='));
+ for(const patch of [{platform:'android'},{arch:'unknown'},{sha256:'invalid'},{size:0},{url:'https://example.com/private.zip'},{fileName:'../private.rs'},{version:'<script>'}])assert.throws(()=>renderCliDownloads({schemaVersion:1,assets:[{...asset,...patch}]}));
+ assert.throws(()=>renderCliDownloads({schemaVersion:1,assets:[asset,asset]}));
+});
+test('CLI help page and release pins stage with the existing feeds and versioned assets',t=>{
+ const f=fixture(t);const result=f.run();assert.equal(result.status,0,result.stderr);
+ const page=fs.readFileSync(path.join(f.output,'cli.html'),'utf8');
+ assert.ok(page.includes('PlateSolve command line'));assert.ok(page.includes('styles.css?v='));assert.ok(page.includes('app.js?v='));assert.ok(!page.includes('{{'));
+ assert.ok(fs.existsSync(path.join(f.output,'cli-release.json')));
+ const home=fs.readFileSync(path.join(f.output,'index.html'),'utf8');assert.ok(home.includes('href="cli.html"'));
+});

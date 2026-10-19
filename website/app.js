@@ -4,7 +4,7 @@ const toggle=document.querySelector('.nav-toggle');
 const nav=document.querySelector('#main-nav');
 if(toggle&&nav){
  toggle.hidden=false;
- const mobile=window.matchMedia('(max-width: 800px)');
+ const mobile=window.matchMedia('(max-width: 1000px)');
  const close=()=>{toggle.setAttribute('aria-expanded','false');nav.classList.remove('is-open');};
  mobile.addEventListener('change',close);
  toggle.addEventListener('click',()=>{const open=toggle.getAttribute('aria-expanded')!=='true';toggle.setAttribute('aria-expanded',String(open));nav.classList.toggle('is-open',open);});

@@ -133,6 +133,24 @@ async function nativeFiles(options) {
   }
   return files;
 }
+function renderCliDownloads(config) {
+  if (config?.schemaVersion !== 1 || !Array.isArray(config.assets)) throw Error('Invalid CLI release schema');
+  const seen = new Set();
+  const labels = {macos:'macOS', windows:'Windows', linux:'Linux'};
+  const cards = config.assets.map(asset => {
+    const {platform, arch, version, fileName, url, sha256, size} = asset;
+    if (!labels[platform] || !['macos/arm64','windows/x64','linux/x64'].includes(platform + '/' + arch) || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(version || '')) throw Error('Invalid CLI platform, architecture or version');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:zip|tar\.gz)$/.test(fileName || '') || !/^[a-f0-9]{64}$/.test(sha256 || '') || !Number.isSafeInteger(size) || size <= 0 || size > 512*1024*1024) throw Error('Invalid CLI artifact pin');
+    const parsed = new URL(url);
+    const match = /^\/fcarucci\/Loom\/releases\/download\/([^/]+)\/([^/]+)$/.exec(parsed.pathname);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com' || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || !match || match[2] !== fileName || /latest/i.test(match[1])) throw Error('CLI downloads require immutable public release URLs');
+    const key = platform + '/' + arch;
+    if (seen.has(key)) throw Error('Duplicate CLI platform');
+    seen.add(key);
+    return '<article class="cli-download"><h3>' + labels[platform] + ' <span>' + arch + '</span></h3><p>Version ' + escape(version) + ' · ' + (size / 1048576).toFixed(1) + ' MB</p><a class="button button-primary" href="' + escape(url) + '" download="' + escape(fileName) + '">Download for ' + labels[platform] + '</a><p class="cli-filename">' + escape(fileName) + '</p><details><summary>SHA-256 checksum</summary><code class="checksum">' + sha256 + '</code><p>' + size + ' bytes</p></details></article>';
+  });
+  return cards.length ? '<div class="cli-download-grid">' + cards.join('') + '</div>' : '<p class="availability">The macOS, Windows and Linux packages are being prepared. Verified downloads will appear here when the release is ready.</p>';
+}
 async function stageSite(options) {
   const {updater, out} = options;
   const manifest = fs.readFileSync(path.join(updater, 'updates.xri'));
@@ -142,17 +160,23 @@ async function stageSite(options) {
   if (!safeZip(attrs.fileName)) throw Error('Unsafe package path');
   const archive = fs.readFileSync(path.join(updater, attrs.fileName));
   checkArchive(attrs, archive);
+  const cliRelease = fs.readFileSync(path.join(root, 'website/cli-release.json'));
+  const cliDownloads = renderCliDownloads(JSON.parse(cliRelease));
+  const cliHelp = fs.readFileSync(path.join(root, 'website/cli-help.txt'), 'utf8');
   const files = new Map([
     ['updates.xri', manifest], [attrs.fileName, archive], ['LICENSE', fs.readFileSync(path.join(updater, 'LICENSE'))],
     ['index.html', Buffer.from(fs.readFileSync(path.join(root, 'website/index.html'), 'utf8').replaceAll('{{PACKAGE_FILE}}', escape(attrs.fileName)).replaceAll('{{PACKAGE_TITLE}}', escape(attrs.title || 'Loom scripts')))],
     ['pixinsight.html', Buffer.from(fs.readFileSync(path.join(root, 'website/pixinsight.html'), 'utf8').replaceAll('{{PACKAGE_FILE}}', escape(attrs.fileName)).replaceAll('{{PACKAGE_TITLE}}', escape(attrs.title || 'Loom scripts')))],
+    ['cli.html', Buffer.from(fs.readFileSync(path.join(root, 'website/cli.html'), 'utf8').replace('{{CLI_DOWNLOADS}}', cliDownloads).replace('{{CLI_HELP}}', escape(cliHelp)))],
+    ['cli-release.json', cliRelease],
+    ['cli-help.txt', Buffer.from(cliHelp)],
     ...['styles.css','app.js'].map(name => [name, fs.readFileSync(path.join(root, 'website', name))]),
     ...['loom-mark.svg','favicon.svg','platesolve-gpu-stars.png','fly-through-iris.jpg','fly-through-elephant.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'website/assets', name))]),
     ...['loom.png','frame-selector.png','fly-through.png','banner.jpg'].map(name => ['assets/' + name, fs.readFileSync(path.join(root, 'pixinsight/docs/images', name))])
   ]);
   // Pages and browsers can cache assets across HTML deployments. Every page
   // requests the exact bytes staged in this release, including on Safari.
-  for (const name of ['index.html', 'pixinsight.html']) {
+  for (const name of ['index.html', 'pixinsight.html', 'cli.html']) {
     let html = files.get(name).toString('utf8');
     for (const asset of ['styles.css', 'app.js']) {
       html = html.replaceAll('"' + asset + '"', '"' + assetUrl(asset, files.get(asset)) + '"');
@@ -190,4 +214,4 @@ if (require.main === module) {
     console.log('Staged ' + count + ' public files at ' + out);
   })().catch(error => {console.error('Site staging failed: ' + error.message); process.exitCode = 1;});
 }
-module.exports = {stageSite, downloadNativeRelease, validateNative, assetUrl};
+module.exports = {stageSite, downloadNativeRelease, validateNative, assetUrl, renderCliDownloads};

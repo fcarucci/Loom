@@ -283,3 +283,42 @@ html.js [data-reveal].is-visible { transform: scale(1); transition: transform 15
  .instruction-panel li { padding-left: 3px; }
  .reel-grid { max-width: 360px; margin-inline: auto; }
 }
+
+/* The standalone solver shares the site's reading rhythm and quiet controls. */
+.cli-main .instructions-heading { margin-bottom: 72px; }
+.cli-section { border-top: 1px solid var(--rule); padding-top: 48px; margin-top: 64px; }
+.cli-section > .section-title { font-size: clamp(32px, 4vw, 48px); max-width: 25ch; }
+.cli-section > .section-intro { max-width: 58ch; }
+.cli-download-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 36px; margin: 40px 0 28px; }
+.cli-download { min-width: 0; padding-top: 24px; border-top: 1px solid var(--rule); }
+.cli-download h3 { font-size: 27px; font-weight: 450; letter-spacing: -.035em; margin-bottom: 12px; }
+.cli-download h3 span { font-size: 15px; color: var(--muted); letter-spacing: 0; }
+.cli-download p { color: var(--secondary); font-size: 15px; }
+.cli-download .cli-filename { margin-top: 20px; font-size: 13px; overflow-wrap: anywhere; }
+.cli-download details { color: var(--muted); font-size: 13px; }
+.cli-download summary { min-height: 44px; cursor: pointer; padding: 10px 0; }
+.checksum { display: block; overflow-wrap: anywhere; }
+.cli-help { max-width: 100%; overflow-x: auto; padding: clamp(20px,3vw,36px); background: #101216; border: 1px solid var(--rule); border-radius: 6px; color: var(--secondary); font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cli-section > .small { color: var(--muted); font-size: 14px; }
+.cli-commands { margin: 24px 0; }
+.cli-commands dt { margin-top: 20px; font-size: 14px; color: var(--muted); }
+.cli-commands dd { margin: 6px 0 0; font-size: 14px; }
+.cli-commands code { display: block; overflow-wrap: anywhere; }
+@media (max-width: 1000px) {
+ .nav-shell { position: relative; min-height: 74px; flex-wrap: wrap; gap: 0; }
+ .desktop-nav { width: 100%; gap: 0; flex-direction: column; align-items: stretch; padding: 10px 0 22px; }
+ .desktop-nav a { display: block; min-height: 48px; padding: 11px 0; font-size: 17px; }
+ .desktop-nav .button { margin-top: 10px; }
+ html.js .desktop-nav { display: none; }
+ html.js .desktop-nav.is-open { display: flex; max-height: calc(100svh - 74px); overflow-y: auto; padding-bottom: max(22px,env(safe-area-inset-bottom)); }
+ html.js .nav-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 48px; min-height: 44px; margin-left: auto; padding: 10px 4px 10px 14px; font-size: 14px; }
+ html:not(.js) .site-header { position: relative; }
+ .cli-download-grid { gap: 28px; }
+}
+@media (max-width: 800px) {
+ .cli-download-grid { grid-template-columns: minmax(0,1fr); gap: 32px; }
+ .cli-main .instructions-heading { margin-bottom: 48px; }
+ .cli-section { margin-top: 48px; padding-top: 32px; }
+ .cli-section .instructions-grid { row-gap: 36px; }
+ .cli-download .button { min-height: 48px; }
+}

@@ -1,0 +1,31 @@
+Loom PlateSolve — blind astrometric solver
+
+Usage: loom-solve [OPTIONS] <IMAGE.fits>
+
+Input:
+  -i, --input PATH       Input FITS (alternative to positional path)
+      --gaia PATH        Local Gaia XPSD file; repeatable (optional accelerator)
+      --offline          Use embedded/local/cached catalogues only
+      --ra DEG --dec DEG  Approximate centre (ICRS degrees; supply both)
+      --scale ARCSEC     Approximate image scale in arcseconds/pixel
+      --threads N        Worker count (default: automatic)
+
+Output:
+      --json             Print exact WCS as JSON instead of FITS WCS cards
+  -o, --output PATH      Write result to a new file instead of stdout
+      --sidecar          Write IMAGE.fits.wcs (or .wcs.json with --json)
+      --write-wcs        Write solved FITS to --output (requires new output path)
+
+Execution:
+      --gpu              Enable GPU acceleration (default; CPU fallback available)
+      --no-gpu           Use CPU only
+  -q, --quiet            Suppress progress logs; errors remain on stderr
+  -v, --verbose          Include detailed solver diagnostics
+      --log-level LEVEL  off, error, warn, info, debug, trace
+      --color MODE       auto, always, never (default: auto; honors NO_COLOR)
+  -h, --help             Show this help
+  -V, --version          Show version and release source revision
+
+Results use stdout; logs and errors use stderr. Existing files are never overwritten.
+LOOM_SOLVE_GAIA supplies OS-separated paths when --gaia is omitted.
+Exit codes: 0 success, 1 unsolved, 2 usage, 3 input, 4 output, 130 cancelled.
