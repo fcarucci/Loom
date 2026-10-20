@@ -13,11 +13,11 @@
     {
       "platform": "macos",
       "arch": "arm64",
-      "version": "0.1.0-preview.4",
-      "fileName": "loom-solve-0.1.0-preview.4-aarch64-apple-darwin.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.4/loom-solve-0.1.0-preview.4-aarch64-apple-darwin.zip",
-      "sha256": "c19c51b70d03811c02686e811b02c503c8237ae6e12222f65f4fa0aa744bf014",
-      "size": 14769350
+      "version": "0.1.0-preview.5",
+      "fileName": "loom-solve-0.1.0-preview.5-aarch64-apple-darwin.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.5/loom-solve-0.1.0-preview.5-aarch64-apple-darwin.zip",
+      "sha256": "a26190d63b93773500cca9110a90b4e5fd53d6428e21fd347bc6b8f864a88684",
+      "size": 14639910
     },
     {
       "platform": "linux",
