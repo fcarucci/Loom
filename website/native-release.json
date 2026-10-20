@@ -1,29 +1,46 @@
 {
   "schemaVersion": 1,
+  "releaseTag": "native-module-preview-0.1.0-preview.6",
+  "nativeModuleSourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+  "pclRevision": "5a3902196a7d7a701385a7113cbdce2976ae1a85",
   "assets": [
     {
       "fileName": "updates.xri",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/updates.xri",
-      "sha256": "6e081508525b52bdc573fdb498c11c072276c48121cd516b42ba586f7fe729bf",
-      "size": 1586
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/updates.xri",
+      "sha256": "a449467ae8f38e5cea5a81666dab1773318a54d117f15a76d02762853da191ce",
+      "size": 1997
     },
     {
-      "fileName": "Loom-0.1.0-dev.105-272d9e3.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-dev.105-272d9e3.zip",
-      "sha256": "07ff3197062f3acdcca3647b7df3b309bfac90068a8ba8cdcd0b53739c1b9435",
-      "size": 14978010
+      "platform": "macos",
+      "arch": "arm64",
+      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+      "fileName": "Loom-0.1.0-dev.109-83d9baa.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-dev.109-83d9baa.zip",
+      "sha256": "2617302d12c4f5947fcb5160706c9cfe5acf107b6fd9ffd4b6851a4e5d529bc0",
+      "size": 14990209
     },
     {
-      "fileName": "Loom-0.1.0-preview.5-x86_64-pc-windows-msvc-signed.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-preview.5-x86_64-pc-windows-msvc-signed.zip",
-      "sha256": "2273a373d4cec59aed7746c117e1a08b1d4a19090b5d682c52806cea414c161e",
-      "size": 15668742
+      "platform": "windows",
+      "arch": "x64",
+      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+      "fileName": "Loom-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
+      "sha256": "2ae73249a111124794e2df5e52aff055b885f1197092ee52740b83cda58d84dd",
+      "size": 15679039
     },
     {
-      "fileName": "Loom-0.1.0-preview.5-x86_64-unknown-linux-gnu-signed.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-preview.5-x86_64-unknown-linux-gnu-signed.zip",
-      "sha256": "bd9d501e3a0a28372aa7a5ab075b0f4ad59c278a0d257103f5ffb682e20c305d",
-      "size": 15868556
+      "platform": "linux",
+      "arch": "x64",
+      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+      "fileName": "Loom-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
+      "sha256": "be072b4fa9eb4a4b204a9b50e979af9030a414283db9dca7a0036a73eae8cab0",
+      "size": 15869859
     }
+  ],
+  "knownLimitations": [
+    "Exported FITS astrometry is linear; TAN-SIP distortion terms are not preserved.",
+    "Reference-corner comparison remains open with a measured 5.43 arcsecond discrepancy; full TAN-SIP/native PixInsight parity is not claimed.",
+    "The all-tests suite has not passed."
   ]
 }

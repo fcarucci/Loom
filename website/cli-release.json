@@ -1,41 +1,54 @@
 {
   "schemaVersion": 1,
+  "version": "0.1.0-preview.6",
+  "releaseTag": "cli-v0.1.0-preview.6",
+  "sourceRevision": "67b49f627ba81b2a11f6e9169cf14b9854b29b00",
+  "sourceRevisionScope": "solver engine; external published CLI wrapper plus explicit compatibility adapter",
+  "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
+  "externalAdapterManifestSha256": "7deec79248e7fb39a2d365823f92c885d183435927d54f077c02c8d507f695b6",
+  "nativeModuleSourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+  "pclRevision": "5a3902196a7d7a701385a7113cbdce2976ae1a85",
+  "forceBlindSupported": false,
   "assets": [
     {
       "platform": "windows",
       "arch": "x64",
-      "version": "0.1.0-preview.5",
-      "fileName": "loom-solve-0.1.0-preview.5-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.5/loom-solve-0.1.0-preview.5-x86_64-pc-windows-msvc.zip",
-      "sha256": "e85c3bfca624e8a61eb8f4fc70fe7128ccd283e8da8a4f8bdda996839de379a3",
-      "size": 14823584
+      "version": "0.1.0-preview.6",
+      "fileName": "loom-solve-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
+      "sha256": "2b558aa867e787246025a6fed77060ab496304a23be2e1b47669606f1b9a6e36",
+      "size": 14826040
     },
     {
       "platform": "macos",
       "arch": "arm64",
-      "version": "0.1.0-preview.5",
-      "fileName": "loom-solve-0.1.0-preview.5-aarch64-apple-darwin.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.5/loom-solve-0.1.0-preview.5-aarch64-apple-darwin.zip",
-      "sha256": "a26190d63b93773500cca9110a90b4e5fd53d6428e21fd347bc6b8f864a88684",
-      "size": 14639910
+      "version": "0.1.0-preview.6",
+      "fileName": "loom-solve-0.1.0-preview.6-aarch64-apple-darwin.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-aarch64-apple-darwin.zip",
+      "sha256": "abf229f71321f2c81557c1c64ecae2f8247f72eb1dfc64d73f07000fef44def8",
+      "size": 14637835
     },
     {
       "platform": "linux",
       "arch": "x64",
-      "version": "0.1.0-preview.5",
-      "fileName": "loom-solve-0.1.0-preview.5-x86_64-unknown-linux-gnu.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.5/loom-solve-0.1.0-preview.5-x86_64-unknown-linux-gnu.zip",
-      "sha256": "581e4d9176480517989377454c37dc0aec6819ff6b0cd5c6e1565cb2e282fc63",
-      "size": 14940627
+      "version": "0.1.0-preview.6",
+      "fileName": "loom-solve-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
+      "sha256": "3008023860c936635a5db84f0d5493c29f39690324388d8461866f62479bbe13",
+      "size": 14942597
     },
     {
       "platform": "linux",
       "arch": "arm64",
-      "version": "0.1.0-preview.5",
-      "fileName": "loom-solve-0.1.0-preview.5-aarch64-unknown-linux-gnu.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.5/loom-solve-0.1.0-preview.5-aarch64-unknown-linux-gnu.zip",
-      "sha256": "84d5131144188f5c18b4a935938273461cf973d5c6cd9b0be824e4bd70785124",
-      "size": 15000943
+      "version": "0.1.0-preview.6",
+      "fileName": "loom-solve-0.1.0-preview.6-aarch64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-aarch64-unknown-linux-gnu.zip",
+      "sha256": "faad6c4d2a89a9b2ad980a4f6ee8fa42ceb109d057a4b2eb90126f91fa375606",
+      "size": 15001189
     }
+  ],
+  "limitations": [
+    "--force-blind is unsupported in this preview and returns usage status 2.",
+    "Native Orin/Vulkan runtime is unqualified."
   ]
 }
