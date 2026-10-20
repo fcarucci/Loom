@@ -164,7 +164,7 @@ test('CLI release metadata renders only pinned public platform downloads and esc
 test('CLI help page and release pins stage with the existing feeds and versioned assets',t=>{
  const f=fixture(t);const result=f.run();assert.equal(result.status,0,result.stderr);
  const page=fs.readFileSync(path.join(f.output,'cli.html'),'utf8');
- assert.ok(page.includes('PlateSolve<br>command line.'));assert.ok(page.includes('Experimental preview'));assert.ok(page.includes('currently times out while solving'));assert.ok(page.includes('styles.css?v='));assert.ok(page.includes('app.js?v='));assert.ok(!page.includes('{{'));
+ assert.ok(page.includes('PlateSolve<br>command line.'));assert.ok(page.includes('Experimental preview'));assert.ok(page.includes('did not finish within its 180-second limit'));assert.ok(page.includes('cli-v0.1.0-preview.4'));assert.ok(page.includes('styles.css?v='));assert.ok(page.includes('app.js?v='));assert.ok(!page.includes('{{'));
  assert.ok(fs.existsSync(path.join(f.output,'cli-release.json')));
  const home=fs.readFileSync(path.join(f.output,'index.html'),'utf8');assert.ok(home.includes('href="cli.html"'));
 });
