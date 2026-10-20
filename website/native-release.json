@@ -3,27 +3,27 @@
   "assets": [
     {
       "fileName": "updates.xri",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.4/updates.xri",
-      "sha256": "260d6e8d59237cd59756302b53f0efad1e12689dc02aa61737421ef4edad0746",
-      "size": 1623
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/updates.xri",
+      "sha256": "6e081508525b52bdc573fdb498c11c072276c48121cd516b42ba586f7fe729bf",
+      "size": 1586
     },
     {
-      "fileName": "Loom-0.1.0-preview.4-ce9b6be-macos-arm64.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.4/Loom-0.1.0-preview.4-ce9b6be-macos-arm64.zip",
-      "sha256": "66bcb02f0797e790ebc1232220f172e3c765e3eab3eefa7f0cd3358370093280",
-      "size": 15158180
+      "fileName": "Loom-0.1.0-dev.105-272d9e3.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-dev.105-272d9e3.zip",
+      "sha256": "07ff3197062f3acdcca3647b7df3b309bfac90068a8ba8cdcd0b53739c1b9435",
+      "size": 14978010
     },
     {
-      "fileName": "Loom-0.1.0-preview.4-ce3af83-windows-x64.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.4/Loom-0.1.0-preview.4-ce3af83-windows-x64.zip",
-      "sha256": "23cddc2e6d468be481974179c09dc73ad876c37bd1634e1b962b1f386ba552c2",
-      "size": 15857597
+      "fileName": "Loom-0.1.0-preview.5-x86_64-pc-windows-msvc-signed.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-preview.5-x86_64-pc-windows-msvc-signed.zip",
+      "sha256": "2273a373d4cec59aed7746c117e1a08b1d4a19090b5d682c52806cea414c161e",
+      "size": 15668742
     },
     {
-      "fileName": "Loom-0.1.0-preview.4-ce9b6be-linux-x64.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.4/Loom-0.1.0-preview.4-ce9b6be-linux-x64.zip",
-      "sha256": "08dd97ac621ae3f5db9f42170f16b996847bca6b4bd24ac3bdc4a7d70efd4a2f",
-      "size": 16049533
+      "fileName": "Loom-0.1.0-preview.5-x86_64-unknown-linux-gnu-signed.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.5/Loom-0.1.0-preview.5-x86_64-unknown-linux-gnu-signed.zip",
+      "sha256": "bd9d501e3a0a28372aa7a5ab075b0f4ad59c278a0d257103f5ffb682e20c305d",
+      "size": 15868556
     }
   ]
 }
