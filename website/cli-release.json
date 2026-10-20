@@ -1,54 +1,80 @@
 {
   "schemaVersion": 1,
-  "version": "0.1.0-preview.6",
-  "releaseTag": "cli-v0.1.0-preview.6",
-  "sourceRevision": "67b49f627ba81b2a11f6e9169cf14b9854b29b00",
-  "sourceRevisionScope": "solver engine; external published CLI wrapper plus explicit compatibility adapter",
+  "version": "0.1.0-preview.7-72fc7ae",
+  "releaseTag": "cli-v0.1.0-preview.7-72fc7ae",
+  "engineSourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+  "engineSourceShort": "72fc7ae",
+  "engineSourceTree": "6b30f493f08196cc8eb2d9509159d6075f9ab435",
   "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
-  "externalAdapterManifestSha256": "7deec79248e7fb39a2d365823f92c885d183435927d54f077c02c8d507f695b6",
-  "nativeModuleSourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
   "pclRevision": "5a3902196a7d7a701385a7113cbdce2976ae1a85",
   "forceBlindSupported": false,
   "assets": [
     {
       "platform": "windows",
       "arch": "x64",
-      "version": "0.1.0-preview.6",
-      "fileName": "loom-solve-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
-      "sha256": "2b558aa867e787246025a6fed77060ab496304a23be2e1b47669606f1b9a6e36",
-      "size": 14826040
+      "target": "x86_64-pc-windows-msvc",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "sourceShort": "72fc7ae",
+      "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
+      "compatPacketManifestSha256": "c352be1dcc02f309ef4f797f95aa713e26be9e5cc69e3daadbdb1b2522ed7e2b",
+      "fileName": "loom-solve-0.1.0-preview.7-72fc7ae-x86_64-pc-windows-msvc.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.7-72fc7ae/loom-solve-0.1.0-preview.7-72fc7ae-x86_64-pc-windows-msvc.zip",
+      "sha256": "325abde19abfb1679e7697b4ed3b4c858969acecdf687fc40709f56cdaa5d2ab",
+      "size": 14826140
     },
     {
       "platform": "macos",
       "arch": "arm64",
-      "version": "0.1.0-preview.6",
-      "fileName": "loom-solve-0.1.0-preview.6-aarch64-apple-darwin.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-aarch64-apple-darwin.zip",
-      "sha256": "abf229f71321f2c81557c1c64ecae2f8247f72eb1dfc64d73f07000fef44def8",
-      "size": 14637835
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "sourceShort": "72fc7ae",
+      "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
+      "compatPacketManifestSha256": "6cacd82598f84be4e0e733f91616961936b4d6a1b6ee98b2b54b1f64288b014b",
+      "fileName": "loom-solve-0.1.0-preview.7-72fc7ae-aarch64-apple-darwin.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.7-72fc7ae/loom-solve-0.1.0-preview.7-72fc7ae-aarch64-apple-darwin.zip",
+      "sha256": "aeb9c5172c9cec099bf8ceecd9b88a8a44582e07c71fe20d3ea8d35cdfe59bba",
+      "size": 14638023
     },
     {
       "platform": "linux",
       "arch": "x64",
-      "version": "0.1.0-preview.6",
-      "fileName": "loom-solve-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
-      "sha256": "3008023860c936635a5db84f0d5493c29f39690324388d8461866f62479bbe13",
-      "size": 14942597
+      "target": "x86_64-unknown-linux-gnu",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "sourceShort": "72fc7ae",
+      "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
+      "compatPacketManifestSha256": "c352be1dcc02f309ef4f797f95aa713e26be9e5cc69e3daadbdb1b2522ed7e2b",
+      "fileName": "loom-solve-0.1.0-preview.7-72fc7ae-x86_64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.7-72fc7ae/loom-solve-0.1.0-preview.7-72fc7ae-x86_64-unknown-linux-gnu.zip",
+      "sha256": "67e2d51f86942441565623e5458bc54b2666a3f20e5c7aa35ac4120dfb0a054b",
+      "size": 14942566
     },
     {
       "platform": "linux",
       "arch": "arm64",
-      "version": "0.1.0-preview.6",
-      "fileName": "loom-solve-0.1.0-preview.6-aarch64-unknown-linux-gnu.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.6/loom-solve-0.1.0-preview.6-aarch64-unknown-linux-gnu.zip",
-      "sha256": "faad6c4d2a89a9b2ad980a4f6ee8fa42ceb109d057a4b2eb90126f91fa375606",
-      "size": 15001189
+      "target": "aarch64-unknown-linux-gnu",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "sourceShort": "72fc7ae",
+      "wrapperSourceRevision": "ce3af8345a72632e659ada3f7b4b3be39dc7d4fa",
+      "compatPacketManifestSha256": "c352be1dcc02f309ef4f797f95aa713e26be9e5cc69e3daadbdb1b2522ed7e2b",
+      "fileName": "loom-solve-0.1.0-preview.7-72fc7ae-aarch64-unknown-linux-gnu.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/cli-v0.1.0-preview.7-72fc7ae/loom-solve-0.1.0-preview.7-72fc7ae-aarch64-unknown-linux-gnu.zip",
+      "sha256": "2612f6b792c9a5d4b71f96a14ef3264419ddf8795d01eb3b645226f95fc80df7",
+      "size": 15001222
     }
   ],
   "limitations": [
-    "--force-blind is unsupported in this preview and returns usage status 2.",
-    "Native Orin/Vulkan runtime is unqualified."
-  ]
+    "--force-blind is unsupported and returns usage status 2.",
+    "Native Orin/Vulkan runtime is unqualified.",
+    "Native FITS export retains documented linear-WCS precision limitation; higher-order TAN-SIP parity is not claimed.",
+    "Windows CLI --version was not executed because no Windows runtime or Wine was available in the build container.",
+    "macOS CLI package was cross-built and archive/provenance checked; the binary was not executed on macOS in this build lane."
+  ],
+  "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+  "sourceRevisionScope": "solver engine source 72fc7ae; published wrapper source ce3af834; platform packaging compatibility packet pinned per asset",
+  "sourceShort": "72fc7ae",
+  "nativeModuleSourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60"
 }

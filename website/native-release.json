@@ -1,46 +1,52 @@
 {
   "schemaVersion": 1,
-  "releaseTag": "native-module-preview-0.1.0-preview.6",
-  "nativeModuleSourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
+  "releaseTag": "native-module-0.1.0-preview.7-72fc7ae",
+  "version": "0.1.0-preview.7-72fc7ae",
+  "sourceShort": "72fc7ae",
+  "nativeModuleSourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+  "nativeModuleSourceTree": "6b30f493f08196cc8eb2d9509159d6075f9ab435",
   "pclRevision": "5a3902196a7d7a701385a7113cbdce2976ae1a85",
+  "embeddedNativeVersion": "0.1.0.7.eng",
   "assets": [
     {
       "fileName": "updates.xri",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/updates.xri",
-      "sha256": "a449467ae8f38e5cea5a81666dab1773318a54d117f15a76d02762853da191ce",
-      "size": 1997
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.7-72fc7ae/updates.xri",
+      "sha256": "51af29dd90496e2d78085945c8a8eb23bb15d7597ff0d97e9c9cf24f336569e1",
+      "size": 1919
     },
     {
       "platform": "macos",
       "arch": "arm64",
-      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
-      "fileName": "Loom-0.1.0-dev.109-83d9baa.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-dev.109-83d9baa.zip",
-      "sha256": "2617302d12c4f5947fcb5160706c9cfe5acf107b6fd9ffd4b6851a4e5d529bc0",
-      "size": 14990209
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "fileName": "Loom-0.1.0-preview.7-72fc7ae-macos-arm64.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.7-72fc7ae/Loom-0.1.0-preview.7-72fc7ae-macos-arm64.zip",
+      "sha256": "0fdd1b4c8fe5b39fc706f1cdb34ddec3dfecb9d1aca6eaf098ee4b8c304d6421",
+      "size": 14990166
     },
     {
       "platform": "windows",
       "arch": "x64",
-      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
-      "fileName": "Loom-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-preview.6-x86_64-pc-windows-msvc.zip",
-      "sha256": "2ae73249a111124794e2df5e52aff055b885f1197092ee52740b83cda58d84dd",
-      "size": 15679039
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "fileName": "Loom-0.1.0-preview.7-72fc7ae-windows-x64.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.7-72fc7ae/Loom-0.1.0-preview.7-72fc7ae-windows-x64.zip",
+      "sha256": "f6515c907b7448635b6cf16e885a2831074407e2485d3ebfec948b6652fc3276",
+      "size": 15676234
     },
     {
       "platform": "linux",
       "arch": "x64",
-      "sourceRevision": "83d9baace735d8de9d9067ae24744a66111eb6d7",
-      "fileName": "Loom-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-preview-0.1.0-preview.6/Loom-0.1.0-preview.6-x86_64-unknown-linux-gnu.zip",
-      "sha256": "be072b4fa9eb4a4b204a9b50e979af9030a414283db9dca7a0036a73eae8cab0",
-      "size": 15869859
+      "sourceRevision": "72fc7ae34c12277f28543aa054823d413f468e60",
+      "version": "0.1.0-preview.7-72fc7ae",
+      "fileName": "Loom-0.1.0-preview.7-72fc7ae-linux-x64.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.7-72fc7ae/Loom-0.1.0-preview.7-72fc7ae-linux-x64.zip",
+      "sha256": "6f9fa39864f76873e345dcd6b24435cf5d9282b7280d180f48fc06ea834a20d8",
+      "size": 15867040
     }
   ],
   "knownLimitations": [
-    "Exported FITS astrometry is linear; TAN-SIP distortion terms are not preserved.",
-    "Reference-corner comparison remains open with a measured 5.43 arcsecond discrepancy; full TAN-SIP/native PixInsight parity is not claimed.",
+    "Exported FITS astrometry is linear; TAN-SIP distortion terms are not preserved. Reference-corner comparison remains open at approximately 5.43 arcseconds; full TAN-SIP/native PixInsight parity is not claimed.",
     "The all-tests suite has not passed."
   ]
 }
