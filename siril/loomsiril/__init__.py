@@ -16,7 +16,7 @@ import pkgutil
 from importlib import import_module
 from typing import Any
 
-__version__ = "0.5.4"
+__version__ = "0.5.5"
 
 from loomsiril.core import (
     RAD,
