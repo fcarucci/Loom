@@ -23,7 +23,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
-from loomsiril import colour, encode, fly_video, gaia, gaia_local, geometry, parallax, resample
+from loomsiril import colour, encode, fly_video, gaia, gaia_local, geometry, nebula_distance, parallax, resample
 from loomsiril import logo as logo_mod
 from loomsiril import presets as preset_mod
 from loomsiril import scene as scene_mod
@@ -123,7 +123,7 @@ class FlyJob:
     ``starless``/``stars`` are (h, w) float32 planes in [0, 1], one per channel, top-down; ``wcs``
     the Fly.js wcs dict. ``target`` {"ra", "dec"}: None takes the image centre. ``target_type``
     "nebula" or "galaxy" (a galaxy is a fixed backdrop, D = inf). ``distance`` pc: None looks it up
-    (cluster, then illuminating star). ``distance_source`` / ``distance_label``: where a given ``distance`` came from
+    (SIMBAD estimate, then Gaia cluster / illuminating star). ``distance_source`` / ``distance_label``: where a given ``distance`` came from
     ("typed" by default; the dialog passes the source and text of the distance it found and showed, so the render
     uses that very value) . ``gaia`` "cache", "online" or "tsv:PATH". ``options`` overrides
     the render options by their JS names (camelCase or snake_case, e.g. ``backdrop_motion``).
@@ -896,7 +896,7 @@ def search_text(trace: SearchTrace, field_radius: float, where: str) -> str:
 @dataclass(frozen=True)
 class DistanceFound:
     """What FlyThrough.findDistance found: ``distance`` (pc, None when none), its ``source`` ("galaxy", "typed",
-    "cluster", "star"; "" when none), the ``cluster`` record or the illuminating ``star`` record that gave it, and
+    "catalog", "cluster", "star"; "" when none), the ``cluster`` record or the illuminating ``star`` record that gave it, and
     ``label``: the source in words (see :func:`distance_label`). ``note``: an extra fact to show (the Gaia cache was
     empty and Gaia online answered); ``reason``: why none was found, in plain language, with what was searched
     (:func:`search_text`); ``searched``: the :class:`SearchTrace` behind it."""
@@ -957,7 +957,7 @@ def _find_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str, fl
     """:func:`_resolve_distance` with the records and the label: the ONE lookup the CLI, the Draft, the Render and the
     dialog's preview all use.
 
-    A galaxy is inf; a given ``job.distance`` wins; else the target's cluster, else the illuminating star, from the
+    A galaxy is inf; a given ``job.distance`` wins; else a published SIMBAD nebula estimate, else the target's cluster and illuminating star, from the
     job's Gaia source. With Gaia ``cache`` that finds nothing without having asked online (every cone was in the cache,
     or in the cache's files), Gaia online is asked once (``note`` says so). A Gaia failure of that second ask is a
     ``reason``, not an exception; a failure of the first is raised as before.
@@ -968,6 +968,12 @@ def _find_distance(job: FlyJob, sources: Sequence[dict], target: Mapping[str, fl
     if job.distance is not None and job.distance > 0:
         return DistanceFound(float(job.distance), job.distance_source or "typed",
                              label=job.distance_label or distance_label(job.distance_source or "typed"))
+    ctx.progress("Looking up the nebula's distance in SIMBAD", 3, 4)
+    catalog = nebula_distance.lookup(target, ctx.fetch_text)
+    if ctx.is_cancelled():
+        return DistanceFound(None, "", reason="cancelled")
+    if catalog is not None:
+        return DistanceFound(catalog["distance"], "catalog", label=nebula_distance.label(catalog))
     ctx.progress("Finding the nebula's distance from its star cluster", 3, 4)
     fetched = [0]
     real_fetch = ctx.fetch_text or gaia.fetch_text

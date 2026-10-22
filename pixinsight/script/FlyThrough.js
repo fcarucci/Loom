@@ -380,8 +380,19 @@ FlyThrough.findDistance = function( id, choices, stage )
    }
    else if ( id.target )
    {
-      stage( "Finding the nebula's distance from its star cluster", 3, 4 );
-      FlyThrough.clusterDistance( id, id.target );
+      stage( "Looking up the nebula's distance in SIMBAD", 3, 4 );
+      var catalog = Sky.nebulaDistance( id.target );
+      if ( catalog )
+      {
+         id.catalogDistance = catalog;
+         id.D = catalog.distance;
+         id.distanceSource = "catalog";
+      }
+      else
+      {
+         stage( "Finding the nebula's distance from its star cluster", 3, 4 );
+         FlyThrough.clusterDistance( id, id.target );
+      }
    }
 };
 
@@ -755,6 +766,7 @@ FlyThrough.describeDistance = function( id )
 {
    switch ( id.distanceSource )
    {
+   case "catalog": return Fly.nebulaDistanceLabel( id.catalogDistance );
    case "cluster": return "from its cluster: " + id.cluster.members + " stars, " +
                           Math.round( id.cluster.lo ) + "–" + Math.round( id.cluster.hi ) + " pc";
    case "star":    return "from its brightest star (G " + id.illuminator.G.toFixed( 1 ) + "), which lights it" + ( id.illuminator.online ? " (Gaia DR3 online)" : "" );
@@ -1258,7 +1270,7 @@ FlyThrough.Dialog = class extends Dialog
       this.distanceEdit = this.edit( "", 80 );
       this.distanceTouched = false;
       this.distanceEdit.onEditCompleted = function() { self.distanceTouched = true; };
-      this.distanceEdit.toolTip = "<p>Distance to the nebula in parsecs. Filled from its cluster when one is found.</p>";
+      this.distanceEdit.toolTip = "<p>Distance to the nebula in parsecs. Looked up in SIMBAD, then estimated from Gaia when no catalog distance is found.</p>";
       this.distanceNote = new Label( this );
       this.distanceNote.useRichText = true;
       this.toolCombo = new ComboBox( this );
@@ -1906,9 +1918,9 @@ FlyThrough.Dialog = class extends Dialog
       // read after the build: a type or distance changed while it ran is the one that counts
       var D = distance(), galaxy = ( D === Infinity );
       this.id.type = galaxy ? "galaxy" : "nebula";
-      this.id.D = D;
-      if ( !galaxy && !( this.id.cluster && Math.round( this.id.cluster.distance ) == Math.round( D ) ) )
+      if ( !galaxy && ( this.distanceTouched || !( this.id.D != null && Math.round( this.id.D ) == Math.round( D ) ) ) )
          this.id.distanceSource = "typed";
+      this.id.D = D;
       this.distanceNote.text = FlyThrough.describeDistance( this.id );
       var want = this.travelTouched ? this.number( this.travelEdit ) : null;
       if ( !( want > 0 ) ) want = Fly.defaultTravel( this.id.type, D );

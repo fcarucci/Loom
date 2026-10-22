@@ -199,7 +199,9 @@ worker thread whenever the target changes (the image centre on open, an object f
 Target type or Gaia source): "Finding the distance...", then for example "Distance: ~1,950 pc (cluster of 37 stars,
 Gaia)", or "No distance found: <reason>. Type one (pc)." The value is also the box's grey placeholder and is never
 written into it: an empty box stays "auto", and a distance you type wins ("Distance: 2000 pc (typed)"). It is the
-render's own lookup (`loomsiril/fly_distance.py`): a galaxy is a fixed backdrop; else the target's ionising cluster
+render's own lookup (`loomsiril/fly_distance.py`): a galaxy is a fixed backdrop; else a published SIMBAD nebula
+estimate (the newest usable referenced measurement for one nebula within two arcminutes of the target, converted
+to pc), then the target's ionising cluster
 from Gaia, else the bright star that lights it. With Gaia "cache" and a cache that has nothing for the field it asks
 Gaia online once when the network is up ("Gaia: cache empty here, used online"), and says so when it is not (that
 fallback is in the shared lookup, so the CLI, Draft and Render do it too). Draft and Render get the distance shown, so

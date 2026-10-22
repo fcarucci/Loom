@@ -52,7 +52,9 @@ class Fetch:
     def __init__(self, text: str = EMPTY, error: Exception | None = None) -> None:
         self.text, self.error, self.urls, self.threads = text, error, [], []
 
-    def __call__(self, url: str) -> str:
+    def __call__(self, url: str, **_limits) -> str:
+        if "simbad" in url:
+            return '{"metadata": [], "data": []}'
         self.urls.append(url)
         self.threads.append(threading.current_thread())
         if self.error is not None:
@@ -368,14 +370,15 @@ def test_the_second_lookup_supersedes_the_first(stub, script, monkeypatch, block
     assert line(dlg) == "Distance: ~1,950 pc (cluster of 37 stars, Gaia)"
 
 
-def test_draft_and_render_options_carry_the_distance_the_dialog_found(stub, script, monkeypatch, blocked_discover):
+@pytest.mark.parametrize("answer", [CLUSTER, FD.DistanceResult(199.505, "catalog", "SIMBAD NGC 7293, 2020yCat.1350....0G")])
+def test_draft_and_render_options_carry_the_distance_the_dialog_found(stub, script, monkeypatch, blocked_discover, answer):
     from loomsiril import presets
 
-    dlg = open_dialog(script, monkeypatch, blocked_discover, Resolver(CLUSTER))
+    dlg = open_dialog(script, monkeypatch, blocked_discover, Resolver(answer))
     assert "found_distance" not in dlg.values(presets)                      # still looking: the render finds its own
     _finish(dlg, "distance")
     v = dlg.values(presets)
-    assert (v["found_distance"], v["found_source"], v["found_label"]) == (1950.4, "cluster", "cluster of 37 stars, Gaia")
+    assert (v["found_distance"], v["found_source"], v["found_label"]) == (answer.distance, answer.code, answer.source)
     assert v["distance"] is None
     dlg._vars["ra"].set("11.0")                                              # the boxes changed since: not passed on
     assert "found_distance" not in dlg.values(presets)

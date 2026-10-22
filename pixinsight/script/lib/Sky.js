@@ -183,16 +183,17 @@ Sky.transferWatch = function( clock )
 };
 
 /* The body of a GET, or null on any failure. Replaceable, so the suite never touches the network. */
-Sky.fetchText = function( url, what )
+Sky.fetchText = function( url, what, limits )
 {
    what = what || "Gaia online";
    try
    {
-      var t = new NetworkTransfer, buf = new ByteArray, alive = Sky.transferWatch();
+      var t = new NetworkTransfer, buf = new ByteArray, alive = limits ? Sky.stallWatch( limits.stall, null, limits.first ) : Sky.transferWatch();
+      var start = Date.now();
       t.setURL( url );
       t.setConnectionTimeout( Sky.GAIA_ONLINE_TIMEOUT );
       t.onDownloadDataAvailable = function( data ) { buf.add( data ); return true; };
-      t.onTransferProgress = function( dlTotal, dlCurrent ) { return alive( dlCurrent ); };
+      t.onTransferProgress = function( dlTotal, dlCurrent ) { return alive( dlCurrent ) && ( !limits || Date.now() - start <= limits.total ) && !Sky.transferCancelled(); };
       if ( !t.download() || t.responseCode != 200 )
       {
          Util.warn( "fly", what + ": " + ( t.errorInformation || "HTTP " + t.responseCode ) );
@@ -1414,4 +1415,16 @@ Sky.writeTanKeywords = function( window, wcs )
       new FITSKeyword( "CRPIX1", String( wcs.crpix1 ), "" ), new FITSKeyword( "CRPIX2", String( wcs.crpix2 ), "" ),
       new FITSKeyword( "CD1_1", String( wcs.cd[0] ), "" ), new FITSKeyword( "CD1_2", String( wcs.cd[1] ), "" ),
       new FITSKeyword( "CD2_1", String( wcs.cd[2] ), "" ), new FITSKeyword( "CD2_2", String( wcs.cd[3] ), "" ) ] );
+};
+
+
+/* A miss or outage leaves the existing Gaia inference available. Do not cache
+ * failed answers: reconnecting or a changed target should be retried. */
+Sky.nebulaDistance = function( target )
+{
+   var record = Fly.parseNebulaDistance( Sky.fetchText( Fly.nebulaDistanceUrl( target ), "SIMBAD nebula distance",
+                                                      { stall: 8000, first: 8000, total: 12000 } ), target );
+   if ( record ) Util.log( "fly", Fly.nebulaDistanceLabel( record ) + ": estimate " + record.distance.toFixed( 1 ) + " pc" );
+   else Util.log( "fly", "No unambiguous SIMBAD nebula distance estimate; trying Gaia" );
+   return record;
 };

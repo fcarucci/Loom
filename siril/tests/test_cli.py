@@ -179,8 +179,11 @@ def test_image_clamps_the_starless_layer_and_keeps_the_stars(tmp_path: Path, inp
     np.testing.assert_allclose(job.stars[0], field.stars[0], atol=1 / 65535 + 1e-6)   # --stars as given
 
 
-def test_no_distance_is_one_line_and_exit_1(capsys: pytest.CaptureFixture[str], inputs: dict[str, Any]) -> None:
+def test_no_distance_is_one_line_and_exit_1(capsys: pytest.CaptureFixture[str], inputs: dict[str, Any],
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
     """No cluster, no bright star and no --distance: the CLI prints one line and exits 1 (review F1)."""
+    from loomsiril import nebula_distance
+    monkeypatch.setattr(nebula_distance, "lookup", lambda *a: None)
     assert cli.main(_args(inputs, skip=("--distance",))) == 1
     err = capsys.readouterr().err
     assert "give --distance" in err and "Traceback" not in err

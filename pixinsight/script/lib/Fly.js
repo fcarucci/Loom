@@ -2110,3 +2110,63 @@ Fly.parseGaiaCsv = function( text )
    }
    return out;
 };
+
+/* Published nebula estimates: SIMBAD mesDistance. Match one nebula within
+ * two arcminutes, never a nearby field star/cluster. Newest referenced,
+ * positive, non-limit measurement wins; no averaging of different methods.
+ * Kept in step with siril/loomsiril/nebula_distance.py. */
+Fly.NEBULA_DISTANCE_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync";
+Fly.NEBULA_DISTANCE_RADIUS = 2/60;
+Fly.NEBULA_DISTANCE_MAX_ROWS = 200;
+Fly.NEBULA_TYPES = [ "PN", "HII", "RNe", "SNR", "Neb", "EmO", "MoC", "DNe", "BNe", "ISM", "CGb" ];
+Fly.NEBULA_DISTANCE_COLUMNS = [ "main_id", "ra", "dec", "otype", "dist", "unit", "method", "bibcode", "qual" ];
+
+Fly.nebulaDistanceUrl = function( target )
+{
+   var ra = Number( target.ra ), dec = Number( target.dec );
+   if ( !isFinite( ra ) || ra < 0 || ra >= 360 || !isFinite( dec ) || dec < -90 || dec > 90 )
+      throw new Error( "invalid nebula position" );
+   var cols = "b.main_id,b.ra,b.dec,b.otype,d.dist,d.unit,d.method,d.bibcode,d.qual";
+   var types = Fly.NEBULA_TYPES.map( function( t ) { return "'" + t + "'"; } ).join( "," );
+   var q = "SELECT " + cols + " FROM basic AS b JOIN mesDistance AS d ON b.oid=d.oidref WHERE b.otype IN (" + types +
+           ") AND 1=CONTAINS(POINT('ICRS',b.ra,b.dec),CIRCLE('ICRS'," + ra + "," + dec + "," + Fly.NEBULA_DISTANCE_RADIUS + "))";
+   return Fly.NEBULA_DISTANCE_URL + "?REQUEST=doQuery&LANG=ADQL&FORMAT=json&MAXREC=" + Fly.NEBULA_DISTANCE_MAX_ROWS + "&QUERY=" + encodeURIComponent( q );
+};
+
+Fly.parseNebulaDistance = function( text, target )
+{
+   try
+   {
+      var table = JSON.parse( text ), names = table.metadata.map( function( m ) { return m.name; } );
+      if ( !Fly.NEBULA_DISTANCE_COLUMNS.every( function( c ) { return names.indexOf( c ) >= 0; } ) ||
+           table.data.length >= Fly.NEBULA_DISTANCE_MAX_ROWS ) return null;
+      var records = [], objects = [];
+      table.data.forEach( function( row )
+      {
+         var r = {};
+         names.forEach( function( name, i ) { r[name] = row[i]; } );
+         if ( Fly.NEBULA_TYPES.indexOf( r.otype.trim() ) < 0 ||
+              typeof r.ra != "number" || !isFinite( r.ra ) || r.ra < 0 || r.ra >= 360 ||
+              typeof r.dec != "number" || !isFinite( r.dec ) || r.dec < -90 || r.dec > 90 ||
+              Fly.separation( r, target ) > Fly.NEBULA_DISTANCE_RADIUS ) return;
+         var id = r.main_id.trim();
+         if ( objects.indexOf( id ) < 0 ) objects.push( id );
+         var factor = { pc: 1, kpc: 1000, Mpc: 1000000 }[( r.unit || "" ).trim()];
+         if ( !factor || typeof r.dist != "number" ) return;
+         var distance = r.dist*factor, bib = ( r.bibcode || "" ).trim();
+         if ( !isFinite( distance ) || !( distance > 0 ) || !/^\d{4}/.test( bib ) ||
+              [ "", "A", "B", "C" ].indexOf( ( r.qual || "" ).trim() ) < 0 ) return;
+         records.push( { distance: distance, id: id, bibcode: bib, method: ( r.method || "" ).trim() } );
+      } );
+      if ( objects.length != 1 || !records.length ) return null;
+      records.sort( function( a, b )
+      {
+         var year = Number( b.bibcode.substr( 0, 4 ) ) - Number( a.bibcode.substr( 0, 4 ) );
+         return year || ( a.bibcode < b.bibcode ? -1 : a.bibcode > b.bibcode ? 1 : a.distance - b.distance );
+      } );
+      return records[0];
+   }
+   catch ( e ) { return null; }
+};
+
+Fly.nebulaDistanceLabel = function( record ) { return "SIMBAD " + record.id + ", " + record.bibcode; };

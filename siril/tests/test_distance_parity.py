@@ -68,6 +68,8 @@ class Stub:
         self.stars, self.urls = stars, []
 
     def __call__(self, url: str) -> str:
+        if "simbad" in url:
+            return '{"metadata": [], "data": []}'
         self.urls.append(url)
         q = unquote(url.split("QUERY=", 1)[1])
         ra, dec, r = (float(v) for v in re.search(r"CIRCLE\('ICRS',([^,]+),([^,]+),([^)]+)\)", q).groups())

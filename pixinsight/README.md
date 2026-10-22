@@ -22,6 +22,12 @@ how hard, not when. Where it cannot decide on evidence, it asks, or does
 nothing. Nothing is clipped that is not a single-pixel defect. Results stay as
 open windows; Loom writes to disk only when you ask it to export.
 
+Fly-Through looks up a published nebula distance estimate in SIMBAD first, using
+a single nebula within two arcminutes of the target. It takes the newest usable
+referenced measurement and converts it to parsecs. A missing or ambiguous match,
+or an offline catalog, falls back to the Gaia cluster / illuminating-star estimate.
+A distance you type always wins; no uncertainty controls are needed.
+
 ## Installation
 
 Install from the PixInsight update repository or from git, not both: two

@@ -43,6 +43,12 @@ PRESET = "youtube_1080"
 IC1396 = {"ra": 324.745, "dec": 57.514}
 
 
+@pytest.fixture(autouse=True)
+def no_catalog_distance(monkeypatch):
+    """These characterize the Gaia fallback; catalog hits are covered in test_nebula_distance."""
+    monkeypatch.setattr(P.nebula_distance, "lookup", lambda *a: None)
+
+
 def _write_tsv(path: Path, catalogue: list[dict[str, float]]) -> Path:
     """A Gaia TSV in the public fixture's shape (blanks for NaN)."""
     lines = ["\t".join(COLS)]

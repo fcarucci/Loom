@@ -14851,6 +14851,37 @@ function runFlyTestsClean()
    } )();
 
    } if ( testGroup( "fly.sky" ) ) {
+   /* Published estimates precede Gaia inference; no uncertainty UI. */
+   ( function()
+   {
+      var target = { ra: 337.41060585298, dec: -20.83715201178 };
+      var row = [ "NGC  7293", target.ra, target.dec, "PN", 199.505, "pc  ", "paral", "2020yCat.1350....0G", null ];
+      function table( rows ) { return JSON.stringify( { metadata: Fly.NEBULA_DISTANCE_COLUMNS.map( function( n ) { return { name: n }; } ), data: rows } ); }
+      var old = row.slice(); old[4] = 0.16; old[5] = "kpc"; old[7] = "2010ApJ...714.1096S";
+      var record = Fly.parseNebulaDistance( table( [ row, old ] ), target );
+      check( "Helix: newest published estimate in pc", [ record.distance, record.bibcode ], [ 199.505, "2020yCat.1350....0G" ] );
+      check( "row order cannot select a different estimate", Fly.parseNebulaDistance( table( [ old, row ] ), target ), record );
+      check( "kpc converted to pc", Fly.parseNebulaDistance( table( [ old ] ), target ).distance, 160 );
+      var other = row.slice(); other[0] = "another nebula";
+      check( "two nebulae are ambiguous", Fly.parseNebulaDistance( table( [ row, other ] ), target ), null );
+      var bad = row.slice(); bad[8] = ">";
+      check( "a distance limit is not an estimate", Fly.parseNebulaDistance( table( [ bad ] ), target ), null );
+      bad = row.slice(); bad[3] = "*";
+      check( "a field star is not the nebula", Fly.parseNebulaDistance( table( [ bad ] ), target ), null );
+      check( "an empty table or outage leaves Gaia available", [ Fly.parseNebulaDistance( table( [] ), target ), Fly.parseNebulaDistance( "<error/>", target ) ], [ null, null ] );
+      var q = decodeURIComponent( Fly.nebulaDistanceUrl( target ).split( "QUERY=" )[1] );
+      check( "published nebula measurements in a narrow target cone", q.indexOf( "JOIN mesDistance" ) >= 0 && q.indexOf( "b.otype IN" ) >= 0 && q.indexOf( String( Fly.NEBULA_DISTANCE_RADIUS ) ) >= 0, true );
+      var saved = Sky.fetchText;
+      try
+      {
+         Sky.fetchText = function() { return table( [ row ] ); };
+         check( "Sky returns the published record", Sky.nebulaDistance( target ), record );
+         Sky.fetchText = function() { return null; };
+         check( "Sky outage is a nonfatal miss", Sky.nebulaDistance( target ), null );
+      }
+      finally { Sky.fetchText = saved; }
+   } )();
+
    /* ---- Sky: catalogues, projection, star layers, sprites (PixInsight) - */
    if ( IN_PIXINSIGHT ) ( function()
    {

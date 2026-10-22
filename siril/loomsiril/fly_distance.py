@@ -2,7 +2,7 @@
 
 ``resolve`` is pure (no Tk, no files of its own): it takes the target, the Gaia source and the typed distance and returns
 a :class:`DistanceResult`. It reuses the pipeline's lookup (``pipeline._find_distance``: a galaxy is a fixed backdrop, a
-typed distance wins, else the target's ionising cluster from Gaia, else the bright star that lights it) and the Gaia
+typed distance wins, else a SIMBAD estimate, then the target's ionising cluster from Gaia, else the bright star that lights it) and the Gaia
 fetch of gaia.py, so the dialog and the render cannot disagree. The dialog runs it on a worker thread and passes the
 answer on to the Draft and Render options (``found_distance``), so the render uses exactly the value it showed.
 
@@ -32,7 +32,7 @@ _ONE_LOOKUP = threading.Lock()
 
 @dataclass(frozen=True)
 class DistanceResult:
-    """``distance`` in pc (inf: a galaxy; None: none found); ``code`` "typed", "galaxy", "cluster" or "star" ("" when
+    """``distance`` in pc (inf: a galaxy; None: none found); ``code`` "typed", "galaxy", "catalog", "cluster" or "star" ("" when
     none); ``source`` the same in words ("cluster of 37 stars, Gaia"); ``reason`` why none was found (plain language);
     ``note`` an extra fact to show ("Gaia: cache empty here, used online")."""
 
@@ -44,8 +44,8 @@ class DistanceResult:
 
     @property
     def found_by_lookup(self) -> bool:
-        """True when Gaia found it (a cluster or a star): the value the render must be told, since it is not typed."""
-        return self.code in ("cluster", "star") and self.distance is not None
+        """True when the catalog or Gaia found it: the value the render must be told, since it is not typed."""
+        return self.code in ("catalog", "cluster", "star") and self.distance is not None
 
 
 class _Cancelled(Exception):

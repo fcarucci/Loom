@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Loom Fly-Through finds published nebula distances in SIMBAD** before estimating from Gaia clusters or illuminating stars. It uses the newest usable referenced measurement for a single nebula within two arcminutes of the target, converts pc/kpc/Mpc to parsecs, and shows an estimate with its source. Ambiguous matches, missing distances and network failures fall back to Gaia; typed distances still win. This includes planetary nebulae such as the Helix, whose central star is too faint for the bright illuminating-star fallback.
+
 ## [0.5.4] — 2026-10-17
 
 ### Added

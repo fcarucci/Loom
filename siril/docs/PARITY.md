@@ -1411,3 +1411,16 @@ run inside Siril, and the tips were never shown on a real display.
 10. **Small UI helpers**: `Fly.describeStars` (the dialog's star-count sentence; the CLI and the Siril script print
     pipeline.Result.counts instead) and `Sky.transferCancelled` (the dialog's Cancel during a Gaia download;
     gaia.fetch_text stops on its stall/total deadlines and has no cancel button to watch).
+
+
+### Published nebula distance estimates
+
+Both ports query SIMBAD TAP `basic JOIN mesDistance` before Gaia inference,
+restricted to nebula types within two arcminutes of the target. A single nebula's
+newest referenced positive non-limit measurement is converted from pc/kpc/Mpc to
+parsecs; ambiguous matches and failed/empty responses fall back to Gaia. Typed
+distances still win, and dialog/render paths preserve the catalog source.
+`Fly.nebulaDistanceUrl`, `Fly.parseNebulaDistance`, `Sky.nebulaDistance` and
+`Fly.nebulaDistanceLabel` correspond to `loomsiril.nebula_distance`.
+`tests/test_nebula_distance.py` checks cross-port selection and unit conversion;
+PixInsight's `fly.sky` selftests cover its parser, query and transport boundary.
