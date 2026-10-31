@@ -164,8 +164,11 @@ test('CLI release metadata renders only pinned public platform downloads and esc
 test('CLI help page and release pins stage with the existing feeds and versioned assets',t=>{
  const f=fixture(t);const result=f.run();assert.equal(result.status,0,result.stderr);
  const page=fs.readFileSync(path.join(f.output,'cli.html'),'utf8');
- assert.ok(page.includes('PlateSolve<br>command line.'));assert.ok(page.includes('Experimental preview'));assert.ok(page.includes('0.1.0-preview.8-9a19621'));assert.ok(page.includes('not executed on macOS here'));assert.ok(page.includes('cli-v0.1.0-preview.8-9a19621'));assert.ok(page.includes('styles.css?v='));assert.ok(page.includes('app.js?v='));assert.ok(!page.includes('{{'));
+ const release=JSON.parse(fs.readFileSync(path.join(root,'website/cli-release.json'),'utf8'));
+ assert.ok(page.includes('PlateSolve<br>command line.'));assert.ok(page.includes('Experimental preview '+release.version+' / Standalone tools'));assert.ok(page.includes('source revision '+release.sourceShort));assert.ok(page.includes('href="https://github.com/fcarucci/Loom/releases/tag/'+release.releaseTag+'"'));assert.ok(page.includes('styles.css?v='));assert.ok(page.includes('app.js?v='));assert.ok(!page.includes('{{'));
+ for(const asset of release.assets){assert.equal(asset.version,release.version);assert.ok(page.includes(asset.url));assert.ok(page.includes(asset.sha256));}
  assert.ok(fs.existsSync(path.join(f.output,'cli-release.json')));
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.output,'cli-release.json'),'utf8')),release);
  const home=fs.readFileSync(path.join(f.output,'index.html'),'utf8');assert.ok(home.includes('href="cli.html"'));
 });
 test('CLI downloads include Linux ARM64 for Jetson Vulkan without conflating Linux architectures',()=>{

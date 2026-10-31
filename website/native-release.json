@@ -1,30 +1,32 @@
 {
   "schemaVersion": 1,
-  "releaseTag": "native-module-0.1.0-preview.8-a124834",
-  "version": "0.1.0-preview.8-a124834",
-  "sourceShort": "a124834",
-  "nativeModuleSourceRevision": "a12483419a3db200fd20b98b1a3ea306792943fa",
-  "nativeModuleSourceTree": "dd8580b4f8ba68204d528fbc302c20eb92e25695",
+  "releaseTag": "native-module-0.1.0-preview.9-4446610",
+  "version": "0.1.0-preview.9-4446610",
+  "sourceShort": "4446610",
+  "nativeModuleSourceRevision": "4446610f964e576b6bc6125fc65a45be277001b8",
+  "nativeModuleSourceTree": "f082e241544c5bc3d4ca3379d0424fbcb829c372",
   "pclRevision": "5a3902196a7d7a701385a7113cbdce2976ae1a85",
   "assets": [
     {
       "fileName": "updates.xri",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.8-a124834/updates.xri",
-      "sha256": "d151278727e85e0fe4d752ac0581a0e29ebea3445e508a416d38c152d1572bdb",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610/updates.xri",
+      "sha256": "c4d79476189fc369d69d6e3357306d54458282faff20f66e0b4f2abd11d2eddc",
       "size": 908
     },
     {
       "platform": "macos",
       "arch": "arm64",
-      "sourceRevision": "a12483419a3db200fd20b98b1a3ea306792943fa",
-      "version": "0.1.0-preview.8-a124834",
-      "fileName": "Loom-0.1.0-preview.8-a124834.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.8-a124834/Loom-0.1.0-preview.8-a124834.zip",
-      "sha256": "c2cd2449b4b2b0a604949e22b87318420ec0bf4c55ba3d4ac5a8f1ae7d8f433a",
-      "size": 15359971
+      "sourceRevision": "4446610f964e576b6bc6125fc65a45be277001b8",
+      "version": "0.1.0-preview.9-4446610",
+      "fileName": "Loom-0.1.0-preview.9-4446610.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610/Loom-0.1.0-preview.9-4446610.zip",
+      "sha256": "4976dd65252c625e5a8ecdaa52da0a64f6487692bc251fc7cf9755f95252a317",
+      "size": 15497022
     }
   ],
   "knownLimitations": [
-    "WCS publication was 782 ms on the Windows GTX 1080 issue #6 sample; no sub-500 ms WCS claim is made."
+    "The signed updater feed serves macOS arm64; Windows x64 and Linux x64 use signed manual release archives.",
+    "SPCC and FITS/XISF persistence were verified on Linux. Windows native PixInsight and physical Windows GPU performance are not qualified; the VM software-DX12 renderer is extremely slow.",
+    "PixInsight restores a linear WCS from FITS; full native nonlinear models and grids round-trip through XISF. Reopened FITS passed the reference SPCC comparison."
   ]
 }
