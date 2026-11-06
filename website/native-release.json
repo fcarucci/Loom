@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "releaseTag": "native-module-0.1.0-preview.9-4446610",
+  "releaseTag": "native-module-0.1.0-preview.9-4446610-feed2",
   "version": "0.1.0-preview.9-4446610",
   "sourceShort": "4446610",
   "nativeModuleSourceRevision": "4446610f964e576b6bc6125fc65a45be277001b8",
@@ -9,23 +9,30 @@
   "assets": [
     {
       "fileName": "updates.xri",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610/updates.xri",
-      "sha256": "c4d79476189fc369d69d6e3357306d54458282faff20f66e0b4f2abd11d2eddc",
-      "size": 908
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610-feed2/updates.xri",
+      "sha256": "0fac54b3f765502ed70f6b160ae02d798db3474da0e5a78a7eab200b002a4ca5",
+      "size": 1188
     },
     {
-      "platform": "macos",
-      "arch": "arm64",
-      "sourceRevision": "4446610f964e576b6bc6125fc65a45be277001b8",
-      "version": "0.1.0-preview.9-4446610",
-      "fileName": "Loom-0.1.0-preview.9-4446610.zip",
-      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610/Loom-0.1.0-preview.9-4446610.zip",
-      "sha256": "4976dd65252c625e5a8ecdaa52da0a64f6487692bc251fc7cf9755f95252a317",
-      "size": 15497022
+      "fileName": "Loom-0.1.0-preview.9-4446610-macosx-arm64-update.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610-feed2/Loom-0.1.0-preview.9-4446610-macosx-arm64-update.zip",
+      "sha256": "7f3c0b9b4c92582268cfa991ca42e2092c06b7cb24a80982f0bbf6bc0761ed53",
+      "size": 15500628
+    },
+    {
+      "fileName": "Loom-0.1.0-preview.9-4446610-windows-x64-update.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610-feed2/Loom-0.1.0-preview.9-4446610-windows-x64-update.zip",
+      "sha256": "4a89bb97118cb3c3b4204bc4a1af28166c1ecd55d80bb572afd2e9228aa57d5a",
+      "size": 16211216
+    },
+    {
+      "fileName": "Loom-0.1.0-preview.9-4446610-linux-x64-update.zip",
+      "url": "https://github.com/fcarucci/Loom/releases/download/native-module-0.1.0-preview.9-4446610-feed2/Loom-0.1.0-preview.9-4446610-linux-x64-update.zip",
+      "sha256": "690d90556bbaa2aa7b85574c4e194b72367caf12bff9c0d761cfa6899356a816",
+      "size": 16434307
     }
   ],
   "knownLimitations": [
-    "The signed updater feed serves macOS arm64; Windows x64 and Linux x64 use signed manual release archives.",
     "SPCC and FITS/XISF persistence were verified on Linux. Windows native PixInsight and physical Windows GPU performance are not qualified; the VM software-DX12 renderer is extremely slow.",
     "PixInsight restores a linear WCS from FITS; full native nonlinear models and grids round-trip through XISF. Reopened FITS passed the reference SPCC comparison."
   ]

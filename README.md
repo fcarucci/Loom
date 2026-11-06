@@ -26,6 +26,10 @@ Three PixInsight scripts for the work between capture and making pictures:
 
 Loom is for people who already know PixInsight. It needs PixInsight 1.9.4 or later, on macOS or Windows.
 
+### PlateSolve native process (preview)
+
+PlateSolve is a separate native PixInsight 1.9.5–1.9.99 process. Add `https://fcarucci.github.io/Loom/pixinsight/` under **Resources → Updates → Manage Repositories**, then check for updates and restart PixInsight. The update repository supports macOS arm64, Windows x64 and Linux x64. The script repository below is separate. See the [installation instructions](https://fcarucci.github.io/Loom/pixinsight.html) and [preview release](https://github.com/fcarucci/Loom/releases/tag/native-module-0.1.0-preview.9-4446610-feed2) for manual downloads and platform qualification.
+
 ### Install
 
 Install from the update repository or from git, not both: two copies register the scripts twice.
