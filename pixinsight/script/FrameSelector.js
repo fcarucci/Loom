@@ -2162,6 +2162,33 @@ FrameSelector.darkSourceOf = function( state )
    return MasterFlat.darkSourceOf( FrameSelector.cardDarksFound( state ) ? state.cardDarkMatch : null, state.darksFolder );
 };
 
+/* Read-only preview. Use the same source and matching rules as the import;
+ * the execution step reads again, since files can change after confirmation. */
+FrameSelector.previewFlatDarks = function( manifest, dest, state )
+{
+   var source = FrameSelector.darkSourceOf( state );
+   var flats = [], unreadable = 0;
+   manifest.flats.forEach( function( f )
+   {
+      var h = FrameSelector.quietHeader( f.src );
+      if ( h.info != null )
+         flats.push( MasterFlat.describe( f.src, h.keyword ) );
+      else
+         ++unreadable;
+   } );
+   var darks = [];
+   if ( flats.length > 0 )
+      darks = FrameSelector.cardDarksUsed( state )
+         ? MasterFlat.cardDarks( state.cardDarks, FrameSelector.quietHeader )
+         : MasterFlat.darksOf( MasterFlat.scanFolder( state.darksFolder, FrameSelector.quietHeader ) );
+   var jobs = MasterFlat.buildPlan( flats, darks, AsiairNames.importRoot( dest ).root + "/Flat",
+                                  source.card ? "on the ASIAIR card" : null );
+   source.matchLines = MasterFlat.matchSummaryLines( jobs, darks );
+   if ( unreadable > 0 )
+      source.matchLines.push( "WARNING: " + unreadable + " flat header(s) unreadable; matches could not be checked." );
+   return source;
+};
+
 /*
  * The master-flats step of an import, after the raw flats are in
  * <dest>/Flat. Reads only the XISF copies there and the darks folder;
@@ -3663,8 +3690,12 @@ FrameSelector.Dialog = class extends Dialog
          FrameSelector.tell( problem, StdIcon_Warning );
          return null;
       }
-      var summary = AsiairNames.importSummary( manifest, dest,
-                                               master ? FrameSelector.darkSourceOf( self.state ) : null );
+      var darkPreview = master ? FrameSelector.withProgress( "Loom Frame Selector - dark matches", function( w )
+      {
+         w.announce( "Checking flat-dark matches" );
+         return FrameSelector.previewFlatDarks( manifest, dest, self.state );
+      } ) : null;
+      var summary = AsiairNames.importSummary( manifest, dest, darkPreview );
       if ( !FrameSelector.ask( summary, StdIcon_Question ) )
          return null;
 

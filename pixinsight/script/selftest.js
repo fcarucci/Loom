@@ -12547,9 +12547,9 @@ function runTests()
       var man = { lights: [ {}, {}, {} ], flats: [ {} ] };
       var text = AsiairNames.importSummary( man, "/Astro/Day 12/Light" );
       check( "the confirmation names the folder the lights go to",
-             text.indexOf( "Lights (3) → /Astro/Day 12/Light" ) >= 0, true );
+             text.indexOf( "LIGHTS: 3 XISF copies\nDestination:\n/Astro/Day 12/Light" ) >= 0, true );
       check( "and the one the flats go to",
-             text.indexOf( "Flats (1) → /Astro/Day 12/Flat" ) >= 0, true );
+             text.indexOf( "FLATS: 1 XISF copies\nDestination:\n/Astro/Day 12/Flat" ) >= 0, true );
       check( "it says they are written as XISF copies", text.indexOf( "XISF copies" ) >= 0, true );
       check( "and says it is using the parent of a chosen Light folder",
              text.indexOf( "Using /Astro/Day 12 (the folder you chose is its Light folder)" ) >= 0, true );
@@ -26673,6 +26673,31 @@ function masterFlatChecks()
           [ true, false, false, false, true, false, true, true, false, false, false ] );
 
    function darksFor( list ) { return MasterFlat.darksOf( list ); }
+   var warmFlat = flatFrame( "/card/Flat_15s.fit", "H", 15, { "CCD-TEMP": "12.5", "SET-TEMP": null } );
+   var coldMaster = darksFor( [ darkFrame( "/d/masterDark_15s.xisf", "Master Dark", 15,
+                                            { "CCD-TEMP": "-7", GAIN: null } ) ] );
+   var fallback = MasterFlat.chooseDark( warmFlat, coldMaster );
+   check( "temperature-mismatched masters are allowed with the actual temperatures in a warning",
+          [ fallback.kind, fallback.path, /WARNING:.*flat 12.5 C, master -7.0 C/.test( fallback.warning ) ],
+          [ "master", "/d/masterDark_15s.xisf", true ] );
+   var matchedMaster = darksFor( [ darkFrame( "/d/warm_master.xisf", "Master Dark", 15,
+                                              { "CCD-TEMP": "12.5" } ) ] );
+   check( "a temperature-matched master is preferred over a fallback without warning",
+          MasterFlat.chooseDark( warmFlat, coldMaster.concat( matchedMaster ) ),
+          { kind: "master", path: "/d/warm_master.xisf" } );
+   check( "fallback does not relax exposure, binning or gain and does not accept mismatched raw darks",
+          [ MasterFlat.chooseDark( warmFlat, darksFor( [ darkFrame( "/d/a", "Master Dark", 60 ) ] ) ),
+            MasterFlat.chooseDark( warmFlat, darksFor( [ darkFrame( "/d/a", "Master Dark", 15, { XBINNING: "2" } ) ] ) ),
+            MasterFlat.chooseDark( warmFlat, darksFor( [ darkFrame( "/d/a", "Master Dark", 15, { GAIN: "200" } ) ] ) ),
+            MasterFlat.chooseDark( warmFlat, darksFor( [ darkFrame( "/d/a", "Dark", 15 ), darkFrame( "/d/b", "Dark", 15 ) ] ) ) ],
+          [ null, null, null, null ] );
+   var fallbackJobs = MasterFlat.buildPlan( [ warmFlat, flatFrame( "/card/Flat_15s_2.fit", "H", 15, { "CCD-TEMP": "13" } ) ], coldMaster, "/out" );
+   check( "temperature fallback is ready to build and the preview and import log both warn",
+          [ fallbackJobs[0].skip, /WARNING:/.test( MasterFlat.matchSummaryLines( fallbackJobs, coldMaster ).join( "\n" ) ),
+            /WARNING:/.test( MasterFlat.planLines( fallbackJobs ).join( "\n" ) ) ], [ null, true, true ] );
+   var fallbackResult = MasterFlat.execute( fallbackJobs, {}, { shouldStop: function() { return true; } } );
+   check( "temperature warnings survive into the final import report",
+          /H: WARNING:.*flat 12.5 C, master -7.0 C/.test( MasterFlat.report( fallbackResult ) ), true );
    var chosen = MasterFlat.chooseDark( f2, darksFor( [
       darkFrame( "/d/r1.fit", "Dark Frame", 2 ), darkFrame( "/d/r2.fit", "Dark Frame", 2 ),
       darkFrame( "/d/masterDark_2.xisf", "'Master Dark'", 2 ) ] ) );
@@ -26728,6 +26753,27 @@ function masterFlatChecks()
           [ [ "L", "masterFlat_L.xisf", "/o/Flat/masterFlat_L.xisf", 3, null ],
             [ "R", "masterFlat_R.xisf", "/o/Flat/masterFlat_R.xisf", 3, null ] ] );
    check( "MasterFlat.buildPlan: the part carries the chosen master dark", plan[0].parts[0].dark, { kind: "master", path: "/d/masterDark_2.xisf" } );
+
+   var previewDarks = dFor2.concat( darksFor( [ darkFrame( "/d/raw_5a.fit", "Dark", 5 ),
+                                               darkFrame( "/d/raw_5b.fit", "Dark", 5 ) ] ) );
+   var previewJobs = MasterFlat.buildPlan( flatsOf( "L", 2, 2 ).concat( flatsOf( "R", 2, 2 ),
+                                           flatsOf( "Ha", 2, 5 ), flatsOf( "S", 2, 9 ) ), previewDarks, "/o/Flat" );
+   var previewLines = MasterFlat.matchSummaryLines( previewJobs, previewDarks );
+   check( "dark preview counts a shared master once, raw frames individually, and labels missing matches",
+          [ previewLines[0], previewLines[1], /MASTER DARK/.test( previewLines.join( "\n" ) ),
+            /RAW DARKS \(2; integrate to a master\)/.test( previewLines.join( "\n" ) ),
+            /S \/ bin 1: KEEP RAW FLATS/.test( previewLines.join( "\n" ) ),
+            /9 s.*NO MATCHING DARK/.test( previewLines.join( "\n" ) ) ],
+          [ "Matching master darks: 1", "Matching raw dark frames: 2", true, true, true, true ] );
+   check( "dark preview includes selected master paths, not unselected raw files",
+          [ previewLines.indexOf( "  /d/masterDark_2.xisf" ) >= 0,
+            previewLines.join( "\n" ).indexOf( "/d/raw_5a.fit" ) ], [ true, -1 ] );
+   var previewText = AsiairNames.importSummary( { lights: [], flats: [ 1, 2 ] }, "/o",
+                                               { darksFolder: "/d", matchLines: previewLines } );
+   check( "confirmation shows source and verified matching results on separate lines",
+          [ /Source: darks folder\n\/d\nMatching master darks: 1/.test( previewText ),
+            /Matching raw dark frames: 2/.test( previewText ), /NO MATCHING DARK/.test( previewText ) ],
+          [ true, true, true ] );
 
    var twoBin = MasterFlat.buildPlan( flatsOf( "L", 2, 2 ).concat( flatsOf( "L", 2, 2, { XBINNING: "2" } ).map( function( f ) { f.path = f.path.replace( "/L_", "/L2_" ); return f; } ) ),
                                       darksFor( [ darkFrame( "/d/m1.xisf", "'Master Dark'", 2 ),
@@ -26870,17 +26916,16 @@ function masterFlatImportChecks()
    var man = { lights: [ 1, 2, 3 ], flats: [ 1, 2, 3, 4 ], collisions: [] };
    var plain = AsiairNames.importSummary( man, "/Astro/Day 12" );
    check( "importSummary without master flats is the plain copy summary, as before",
-          plain.split( "\n" ), [ "Written as XISF copies:", "Lights (3) \u2192 /Astro/Day 12/Light", "Flats (4) \u2192 /Astro/Day 12/Flat" ] );
+          plain.split( "\n" ), [ "LIGHTS: 3 XISF copies", "Destination:", "/Astro/Day 12/Light", "", "FLATS: 4 XISF copies", "Destination:", "/Astro/Day 12/Flat", "", "Nothing on the card is changed." ] );
    check( "importSummary with null master flats is the same as none", AsiairNames.importSummary( man, "/Astro/Day 12", null ), plain );
    var master = AsiairNames.importSummary( man, "/Astro/Day 12", { darksFolder: "/Astro/Darks" } );
    check( "importSummary with master flats: where they go, which darks, when raw flats go, when they stay, the card untouched",
           master.split( "\n" ),
-          [ "Written as XISF copies:", "Lights (3) \u2192 /Astro/Day 12/Light",
-            "Flats (4) \u2192 one master flat per filter in /Astro/Day 12/Flat,",
-            "calibrated with the darks in /Astro/Darks;",
-            "the raw flat copies are deleted once each master is written and checked.",
-            "A filter with no matching dark, or whose master fails, keeps its raw flats.",
-            "Nothing on the card is changed." ] );
+          [ "LIGHTS: 3 XISF copies", "Destination:", "/Astro/Day 12/Light", "",
+            "FLATS: 4 frames \u2192 one master flat per filter", "Destination:", "/Astro/Day 12/Flat", "",
+            "DARK CALIBRATION", "Source: darks folder", "/Astro/Darks", "Matches have not been checked.", "",
+            "RAW FLAT COPIES", "Removed only after their master is written and checked.",
+            "Kept if no matching dark is found or the master fails.", "", "Nothing on the card is changed." ] );
    check( "importSummary with master flats names the real root when a Light or Flat folder was chosen",
           AsiairNames.importSummary( man, "/Astro/Day 12/Flat", { darksFolder: "/d" } ).indexOf( "Using /Astro/Day 12 (the folder you chose is its Flat folder)" ), 0 );
 
@@ -27046,9 +27091,9 @@ function masterFlatCardDarkChecks()
    var man = { lights: [ 1, 2, 3 ], flats: [ 1, 2, 3, 4 ], collisions: [] };
    var fromCard = AsiairNames.importSummary( man, "/Astro/Day 12", { card: true, count: 24, exposures: [ 15, 30 ] } );
    check( "importSummary: says the darks came from the card, how many, which exposures",
-          fromCard.split( "\n" )[3], "calibrated with the 24 dark(s) on the ASIAIR card (15 s and 30 s);" );
+          fromCard.indexOf( "Source: ASIAIR card" ) >= 0, true );
    check( "importSummary: the folder wording is unchanged",
-          AsiairNames.importSummary( man, "/Astro/Day 12", { darksFolder: "/Astro/Darks" } ).split( "\n" )[3], "calibrated with the darks in /Astro/Darks;" );
+          AsiairNames.importSummary( man, "/Astro/Day 12", { darksFolder: "/Astro/Darks" } ).indexOf( "Source: darks folder\n/Astro/Darks" ) >= 0, true );
    check( "darkSource: one exposure, three exposures, none stated",
           [ AsiairNames.darkSource( { card: true, count: 9, exposures: [ 15 ] } ),
             AsiairNames.darkSource( { card: true, count: 9, exposures: [ 1.5, 15, 30 ] } ),

@@ -565,16 +565,27 @@ AsiairNames.importSummary = function( manifest, chosen, masterFlats )
    var lines = [];
    if ( r.chosen != null )
       lines.push( "Using " + r.root + " (the folder you chose is its " + r.chosen + " folder)", "" );
-   lines.push( "Written as XISF copies:",
-               "Lights (" + manifest.lights.length + ") \u2192 " + r.root + "/Light" );
+   lines.push( "LIGHTS: " + manifest.lights.length + " XISF copies",
+               "Destination:", r.root + "/Light", "" );
    if ( masterFlats )
-      lines.push( "Flats (" + manifest.flats.length + ") \u2192 one master flat per filter in " + r.root + "/Flat,",
-                  "calibrated with " + AsiairNames.darkSource( masterFlats ) + ";",
-                  "the raw flat copies are deleted once each master is written and checked.",
-                  "A filter with no matching dark, or whose master fails, keeps its raw flats.",
-                  "Nothing on the card is changed." );
+   {
+      lines.push( "FLATS: " + manifest.flats.length + " frames \u2192 one master flat per filter",
+                  "Destination:", r.root + "/Flat", "", "DARK CALIBRATION",
+                  masterFlats.card ? "Source: ASIAIR card" : "Source: darks folder" );
+      if ( !masterFlats.card )
+         lines.push( masterFlats.darksFolder );
+      if ( masterFlats.matchLines != null )
+         lines.push.apply( lines, masterFlats.matchLines );
+      else
+         lines.push( "Matches have not been checked." );
+      lines.push( "", "RAW FLAT COPIES",
+                  "Removed only after their master is written and checked.",
+                  "Kept if no matching dark is found or the master fails.",
+                  "", "Nothing on the card is changed." );
+   }
    else
-      lines.push( "Flats (" + manifest.flats.length + ") \u2192 " + r.root + "/Flat" );
+      lines.push( "FLATS: " + manifest.flats.length + " XISF copies",
+                  "Destination:", r.root + "/Flat", "", "Nothing on the card is changed." );
    return lines.join( "\n" );
 };
 

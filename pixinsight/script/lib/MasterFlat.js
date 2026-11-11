@@ -307,11 +307,16 @@ MasterFlat.compatible = function( a, b, tolerance )
  */
 MasterFlat.darkSuits = function( flat, dark )
 {
-   return MasterFlat.sameExposure( flat.exposure, dark.exposure ) &&
-          MasterFlat.compatible( flat.binning, dark.binning, 0 ) &&
-          MasterFlat.compatible( flat.gain, dark.gain, MasterFlat.GAIN_TOLERANCE ) &&
+   return MasterFlat.darkSettingsSuit( flat, dark ) &&
           flat.temp != null && dark.temp != null &&
           Math.abs( flat.temp - dark.temp ) <= MasterFlat.TEMP_TOLERANCE;
+};
+
+MasterFlat.darkSettingsSuit = function( flat, dark )
+{
+   return MasterFlat.sameExposure( flat.exposure, dark.exposure ) &&
+          MasterFlat.compatible( flat.binning, dark.binning, 0 ) &&
+          MasterFlat.compatible( flat.gain, dark.gain, MasterFlat.GAIN_TOLERANCE );
 };
 
 function masterFlatClosest( x, y )
@@ -322,8 +327,9 @@ function masterFlatClosest( x, y )
 /*
  * The dark for a flat, or null.
  *
- * A master dark wins over raw darks, then the closest exposure, then the
- * closest temperature. Raw darks are grouped by what makes them one master
+ * A temperature-matched master wins, then a master matching the other
+ * settings with an explicit temperature warning, then raw darks. Exposure
+ * and temperature rank candidates within each tier. Raw darks are grouped by what makes them one master
  * (exposure, binning, gain) and the best group
  * is chosen the same way, the larger one winning a tie.
  * Returns { kind: "master", path } or { kind: "raw", paths, key, exposure,
@@ -331,12 +337,19 @@ function masterFlatClosest( x, y )
  */
 MasterFlat.chooseDark = function( flat, darks )
 {
-   var masters = [], groups = Object.create( null ), order = [];
+   var masters = [], fallbackMasters = [], groups = Object.create( null ), order = [];
    for ( var i = 0; i < darks.length; ++i )
    {
       var d = darks[i];
       if ( !MasterFlat.darkSuits( flat, d ) )
+      {
+         // Explicitly allowed for existing masters only. Never combine raw
+         // darks across temperature mismatches or relax exposure/binning/gain.
+         if ( d.kind == "master" && flat.temp != null && d.temp != null &&
+              MasterFlat.darkSettingsSuit( flat, d ) )
+            fallbackMasters.push( d );
          continue;
+      }
       if ( d.kind == "master" )
          masters.push( d );
       else
@@ -367,6 +380,18 @@ MasterFlat.chooseDark = function( flat, darks )
       return { kind: "master", path: masters[0].path };
    }
 
+   if ( fallbackMasters.length > 0 )
+   {
+      fallbackMasters.sort( function( x, y )
+      {
+         return rank( x, y ) || ( x.path < y.path ? -1 : x.path > y.path ? 1 : 0 );
+      } );
+      var fallback = fallbackMasters[0];
+      return { kind: "master", path: fallback.path,
+               warning: "WARNING: using master dark despite temperature mismatch " +
+                        "(flat " + flat.temp.toFixed( 1 ) + " C, master " + fallback.temp.toFixed( 1 ) + " C)." };
+   }
+
    var raws = order.map( function( k ) { return groups[k]; } )
                    .filter( function( g ) { return g.paths.length >= MasterFlat.MIN_DARKS; } );
    if ( raws.length == 0 )
@@ -387,6 +412,42 @@ MasterFlat.rawGroupKey = function( d )
 {
    function f( v, scale ) { return v == null ? "-" : String( Math.round( v * scale ) ); }
    return "e" + f( d.exposure, 1000 ) + "b" + f( d.binning, 1 ) + "g" + f( d.gain, 1 );
+};
+
+/* Actual selections, not merely the number of files in the source folder.
+ * Count shared darks once, and report every exposure part even in a skipped job. */
+MasterFlat.matchSummaryLines = function( jobs, darks )
+{
+   var lines = [], masters = Object.create( null ), raws = Object.create( null );
+   jobs.forEach( function( job )
+   {
+      var label = ( job.filter || "Unknown filter" ) +
+                  ( job.binning == null ? "" : " / bin " + job.binning );
+      if ( job.skip != null )
+         lines.push( label + ": KEEP RAW FLATS", "  " + job.skip );
+      job.parts.forEach( function( part )
+      {
+         var pick = MasterFlat.chooseDark( part.flats[0], darks );
+         var prefix = label + " / " + ( part.exposure == null ? "unknown exposure" : part.exposure + " s" ) +
+                      ( part.gain == null ? "" : " / gain " + part.gain ) + ": ";
+         if ( pick == null )
+            lines.push( prefix + "NO MATCHING DARK" );
+         else if ( pick.kind == "master" )
+         {
+            masters[pick.path] = true;
+            lines.push( prefix + "MASTER DARK", "  " + pick.path );
+            if ( pick.warning ) lines.push( "  " + pick.warning );
+         }
+         else
+         {
+            pick.paths.forEach( function( path ) { raws[path] = true; } );
+            lines.push( prefix + "RAW DARKS (" + pick.paths.length + "; integrate to a master)" );
+         }
+      } );
+   } );
+   return [ "Matching master darks: " + Object.keys( masters ).length,
+            "Matching raw dark frames: " + Object.keys( raws ).length, "" ]
+      .concat( lines.length > 0 ? lines : [ "No flat groups to match." ] );
 };
 
 /* ------------------------------------------------------------------------
@@ -546,7 +607,21 @@ MasterFlat.darkShortfall = function( flat, darks, where )
       if ( !( e in seen ) ) { seen[e] = true; list.push( e ); }
    } );
    var temp = flat.temp == null ? "the flats state no temperature" : "flats at " + flat.temp.toFixed( 1 ) + " C";
-   return " (" + temp + "; darks found: " + list.slice( 0, 8 ).join( ", " ) + ( list.length > 8 ? ", ..." : "" ) + ")";
+   var rejected = [];
+   darks.forEach( function( d )
+   {
+      if ( d.kind != "master" || !MasterFlat.sameExposure( flat.exposure, d.exposure ) ||
+           !MasterFlat.compatible( flat.binning, d.binning, 0 ) ||
+           !MasterFlat.compatible( flat.gain, d.gain, MasterFlat.GAIN_TOLERANCE ) )
+         return;
+      if ( flat.temp == null || d.temp == null )
+         rejected.push( "master dark found, but temperature is missing" );
+      else if ( Math.abs( flat.temp - d.temp ) > MasterFlat.TEMP_TOLERANCE )
+         rejected.push( "master dark at " + d.temp.toFixed( 1 ) + " C rejected: temperature differs by " +
+                        Math.abs( flat.temp - d.temp ).toFixed( 1 ) + " C (limit " + MasterFlat.TEMP_TOLERANCE + " C)" );
+   } );
+   return " (" + temp + "; darks found: " + list.slice( 0, 8 ).join( ", " ) + ( list.length > 8 ? ", ..." : "" ) +
+          ( rejected.length > 0 ? "; " + rejected.join( "; " ) : "" ) + ")";
 };
 
 /* ------------------------------------------------------------------------
@@ -938,6 +1013,15 @@ MasterFlat.execute = function( jobs, engine, opts )
 {
    opts = opts || {};
    var out = { made: [], kept: [], cancelled: false, notes: [] };
+   jobs.forEach( function( job )
+   {
+      if ( job.skip != null ) return;
+      job.parts.forEach( function( part )
+      {
+         if ( part.dark != null && part.dark.warning )
+            out.notes.push( job.filter + ": " + part.dark.warning );
+      } );
+   } );
 
    function stopped()
    {
@@ -1031,6 +1115,7 @@ MasterFlat.planLines = function( jobs )
                      : d.kind == "master" ? "master dark " + d.path
                      : "integrate " + d.paths.length + " raw dark(s), exposure " + masterFlatNum( d.exposure, 1000 ) +
                        " s, mean temp " + masterFlatNum( d.temp, 10 ) ) );
+         if ( d != null && d.warning ) out.push( "    " + d.warning );
       } );
    } );
    return out;
