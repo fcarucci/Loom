@@ -144,7 +144,7 @@ A saved instance icon reuses a configuration (file selections only, not views).
 | **SPFC** | spectrophotometric flux calibration. Broadband only | filter curve per L/R/G/B; camera from `INSTRUME` |
 | **MGC** | MultiscaleGradientCorrection against MARS. Broadband only | **Run MGC** box (on by default; off needs no MARS database and skips MGC, the gradient-removal pass still runs as chosen; greyed for a narrowband-only run); MARS folder, asked for only if PixInsight does not already know one |
 | **Gradient removal** | a second background pass on the linear channels | **Multi Gradient only** (no second pass), **GraXpert** (with its smoothing) or **SyQon Studio Deep Gradient**. **Also remove gradients from H, S and O** is off by default, because faint emission can be taken for background |
-| **Aberration** | star-shape correction, before registration | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. With SyQon Studio installed, Studio Parallax does the aberration pass even when BlurXTerminator is chosen; BlurXTerminator then does star reduction and detail |
+| **Aberration** | star-shape correction, before registration | None, BlurXTerminator, SyQon Parallax or SyQon Studio Parallax. The tool you choose does the whole pass: with BlurXTerminator it is BlurXTerminator, which also does star reduction and detail, whether or not SyQon Studio is installed. SyQon Parallax and SyQon Studio Parallax run only when you select them |
 
 The log grades each solve by its median deviation: 3.0 px or more is wrong,
 above 0.315 px is poor.
@@ -164,7 +164,7 @@ above 0.315 px is poor.
 |---|---|---|
 | **Combine** | R, G, B | — |
 | **Solve, SPFC, SPCC** | calibration of the composite | filter curves |
-| **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High. With SyQon Studio Parallax, **Profile** picks Classic (the default) or Aesthetics; BlurXTerminator has no profile, and the Studio aberration pass above stays Classic; Studio's Max Deblur belongs to Aesthetics but has no command-line option yet, so Loom cannot use it |
+| **Sharpen** | star reduction and detail on the composite | **Star reduction** and **Detail**: None/Low/Medium/High. With SyQon Studio Parallax, **Profile** picks Classic (the default) or Aesthetics; BlurXTerminator has no profile; Studio's Max Deblur belongs to Aesthetics but has no command-line option yet, so Loom cannot use it |
 | **Extract stars** | splits into starless and stars | None, StarNet2, StarXTerminator, SyQon Starless or SyQon Studio Axiom |
 | **Stretch** | see [Stretch](#stretch) | on/off, method |
 | **Denoise** | on the finished L, RGB and palette (their starless plates when stars are extracted), never on the stars plate or single channels. Where it runs is set by the tool: NoiseXTerminator, MLDenoise and SyQon Studio Prism Essential on linear data, after star extraction and before the stretch; standalone SyQon Prism and SyQon Studio Prism 2.0 after the stretch | tool, and a strength (Low/Medium/High; Ultra/Max for Prism 2.0) for **Colour** and for **L** separately. Medium is each tool's own default |

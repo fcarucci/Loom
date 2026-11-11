@@ -619,8 +619,8 @@ UI.masterFileRecord = function( dir, found )
 {
    var mtime = 0;
    try { mtime = found.lastModified.getTime(); } catch ( e ) { mtime = 0; }
-   var ctime = 0;
-   try { ctime = found.created.getTime(); } catch ( e ) { ctime = mtime; }
+   // a file system with no birth time reports the epoch: that is no time, so the mtime stands in
+   var ctime = Util.firstTimeMs( [ found.created, mtime ] );
    return { path: dir + "/" + found.name, name: found.name,
             mtime: mtime, created: ctime };
 };
@@ -655,7 +655,7 @@ UI.fileEntry = function( path, choices )
       width: info ? info.width : 0,
       height: info ? info.height : 0,
       drizzle: Util.masterDrizzleLabel( info ),
-      created: Util.fileCreatedMs( path )
+      created: Util.masterCreatedMs( info, Util.fileCreatedMs( path ) )
    };
 };
 
@@ -1366,9 +1366,9 @@ UI.SelectDialog = class extends Dialog
       this.sharpenToolCombo.enabled = tools.length > 0;
       this.sharpenToolCombo.toolTip = tools.length
          ? "<p>Aberration correction always runs when a tool is selected.</p>" +
-           "<p>With SyQon Studio installed, the aberration pass uses Studio " +
-           "Parallax\'s correction automatically. BlurXTerminator then does " +
-           "star reduction and detail on the composite.</p>"
+           "<p>The tool you choose does all of it: BlurXTerminator corrects, " +
+           "reduces stars and adds detail itself. SyQon Parallax and SyQon " +
+           "Studio Parallax run only when you select them.</p>"
          : "No sharpening tool installed (BlurXTerminator, SyQon Studio or SyQon Parallax).";
 
       this.parallaxFamilyLabel = UI.label( this.sharpenGroup, "Profile:", 100 );
@@ -2534,7 +2534,7 @@ UI.SelectDialog = class extends Dialog
          drizzle: Util.masterDrizzleLabel( info ),
          autocrop: p.autocrop,
          mtime: p.mtime,
-         created: p.created,
+         created: Util.masterCreatedMs( info, p.created ),
          quality: null,
          delta: null
       };
@@ -2566,7 +2566,7 @@ UI.SelectDialog = class extends Dialog
          drizzle: Util.masterDrizzleLabel( info ),
          autocrop: p.autocrop,
          mtime: p.mtime,
-         created: p.created,
+         created: Util.masterCreatedMs( info, p.created ),
          /*
           * Measured here, while the rejected variants of this channel
           * are still known -- the comparison is against the stack this

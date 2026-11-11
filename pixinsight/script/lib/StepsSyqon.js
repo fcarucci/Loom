@@ -1392,8 +1392,8 @@ Steps.syqonStarlessRun = function( window, label )
  * Studio adds Prism 2.0, a two-pass denoiser: Advanced on the linear
  * plate, then Ultra (Medium) or Max (High) after the stretch
  * (Steps.NOISE_LEVELS.studio2), and, with BlurXTerminator
- * chosen, runs the aberration pass in BXT's place with Parallax's
- * correction (Steps.aberrationCorrector) -- no dropdown entry.
+ * chosen, still leaves the whole aberration pass to BXT: Studio Parallax
+ * runs it only when it is the tool chosen.
  *
  * NO TEMPORARY STRETCH. The standalone CLIs were trained on stretched data,
  * which is why Loom wrapped them in syqonCreateStretchedTempWindow and its
@@ -1588,8 +1588,8 @@ Steps.studioModelLabel = function( model )
 
 /*
  * Every Studio model a configuration will run, each once, in pipeline
- * order. Pure: preflight probes what this returns. `studioFound` matters
- * only for BlurXTerminator, whose aberration pass Studio then runs.
+ * order. Pure: preflight probes what this returns. `studioFound` is kept for callers and
+ * no longer changes the answer: BlurXTerminator never hands its pass to Studio.
  */
 Steps.studioModelsFor = function( config, studioFound )
 {
@@ -1597,8 +1597,8 @@ Steps.studioModelsFor = function( config, studioFound )
    function add( m ) { if ( out.indexOf( m ) < 0 ) out.push( m ); }
    if ( Steps.gradientToolOf( config ) == Steps.GRADIENT_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_GRADIENT );
-   // Studio Parallax, or BXT's aberration pass run by Studio (studioFound)
-   if ( Steps.aberrationCorrector( config.sharpenTool, !!studioFound ) == Steps.SHARPEN_TOOL_STUDIO )
+   // Studio Parallax, and only when it is the chosen tool
+   if ( config.sharpenTool == Steps.SHARPEN_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_PARALLAX );
    if ( config.starTool == Steps.STAR_TOOL_STUDIO )
       add( Steps.STUDIO_MODEL_STARLESS );

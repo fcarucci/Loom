@@ -1074,7 +1074,7 @@ function runStepsMemberTests()
       check( "Steps: no member lost", lost, [] );
       check( "Steps: no member added", added, [] );
       check( "Steps: every member's source and load-time value unchanged", changed, [] );
-      check( "Steps: the member count", Object.keys( have ).length, 337 );
+      check( "Steps: the member count", Object.keys( have ).length, 335 );
    }
 
    /*
@@ -3193,21 +3193,26 @@ function runTests()
           [ 0.25, 0.50, 0.75 ] );
 
    /*
-    * The aberration pass with BlurXTerminator chosen: when SyQon Studio is
-    * found, Studio Parallax's correction runs in place of BXT's
-    * correct_only, automatically -- the maintainer's rule. BXT still does
-    * star reduction and detail on the composite. Without Studio, BXT as
-    * before. Every other tool corrects with itself.
+    * The aberration pass is the chosen tool's, whole: BlurXTerminator does
+    * it all even when SyQon Studio is found. Studio Parallax runs it only
+    * when selected.
     */
-   check( "BXT's aberration pass is Studio Parallax's when Studio is found",
-          [ Steps.aberrationCorrector( Steps.SHARPEN_TOOL_BXT, true ),
-            Steps.aberrationCorrector( Steps.SHARPEN_TOOL_BXT, false ) ],
-          [ Steps.SHARPEN_TOOL_STUDIO, Steps.SHARPEN_TOOL_BXT ] );
-   check( "other tools correct with themselves, Studio or not",
-          [ Steps.aberrationCorrector( Steps.SHARPEN_TOOL_SYQON, true ),
-            Steps.aberrationCorrector( Steps.SHARPEN_TOOL_STUDIO, true ),
-            Steps.aberrationCorrector( "none", true ) ],
-          [ Steps.SHARPEN_TOOL_SYQON, Steps.SHARPEN_TOOL_STUDIO, "none" ] );
+   check( "Steps no longer has an aberration corrector that swaps BXT for Studio",
+          [ typeof Steps.aberrationCorrector, typeof Steps.aberrationLogText ],
+          [ "undefined", "undefined" ] );
+   ( function()
+   {
+      var real = [ Steps.studioRun, Steps.studioAvailable, Util.operation, typeof BlurXTerminator == "undefined" ? undefined : BlurXTerminator ], ran = [], logged = [];
+      Steps.studioRun = function( v, label ) { ran.push( "studio:" + label ); };
+      Steps.studioAvailable = function() { return true; };
+      Util.operation = function( stage, tool ) { logged.push( tool ); };
+      BlurXTerminator = function() { this.executeOn = function() { ran.push( "bxt:" + this.correct_only ); return true; }; };
+      try { Steps.aberration( { id: "v" }, Steps.SHARPEN_TOOL_BXT, false, "L" ); }
+      finally { Steps.studioRun = real[0]; Steps.studioAvailable = real[1]; Util.operation = real[2]; BlurXTerminator = real[3]; }
+      check( "BlurXTerminator chosen with Studio found: BXT corrects, Studio is not run",
+             ran, [ "bxt:true" ] );
+      check( "and the log names BlurXTerminator alone", logged, [ Steps.SHARPEN_TOOL_BXT ] );
+   } )();
    /*
     * The profile reaches Studio's command line from every place Studio
     * Parallax runs: the aberration pass (its own, or BXT's), star
@@ -3237,25 +3242,17 @@ function runTests()
              ran.map( function( r ) { return r[1].family; } ),
              [ "aesthetics", "aesthetics", "aesthetics", "aesthetics", "aesthetics", undefined ] );
    } )();
-   check( "the log says which tool corrected",
-          Steps.aberrationLogText( Steps.SHARPEN_TOOL_BXT, true ),
-          "SyQon Studio Parallax (correction only, in place of BlurXTerminator)" );
-   check( "and says nothing extra when the chosen tool corrected",
-          Steps.aberrationLogText( Steps.SHARPEN_TOOL_BXT, false ), Steps.SHARPEN_TOOL_BXT );
-
    /*
-    * The stage key. BXT without Studio keys exactly as it always has, so
-    * its cached channels still hit; BXT with Studio keys on the corrector
-    * that really ran, so a BXT-corrected channel is never served as a
-    * Studio-corrected one, or the other way round.
+    * The stage key: the chosen tool, no corrector, Studio found or not.
     */
    check( "BXT without Studio keys as before",
-          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ),
+          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT } ),
           { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" } );
-   check( "BXT with Studio keys on Studio's corrector and family",
-          Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, true ),
-          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1",
-            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "classic" } );
+   check( "BXT's key carries no corrector, whether Studio is found or not",
+          [ Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, true ),
+            Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ) ],
+          [ { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" },
+            { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" } ] );
    check( "Studio Parallax keys as it did",
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO }, true ),
           { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "classic" } );
@@ -3263,11 +3260,10 @@ function runTests()
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO,
                                        parallaxFamily: "aesthetics" }, true ),
           { tool: Steps.SHARPEN_TOOL_STUDIO, photometry: "linearfit-v1", family: "aesthetics" } );
-   check( "BXT's Studio corrector stays Classic whatever the profile: BXT has no profile",
+   check( "BXT's key ignores the Parallax profile: BXT has no profile",
           Pipeline.aberrationParams( { sharpenTool: Steps.SHARPEN_TOOL_BXT,
                                        parallaxFamily: "aesthetics" }, true ),
-          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1",
-            corrector: Steps.SHARPEN_TOOL_STUDIO, family: "classic" } );
+          { tool: Steps.SHARPEN_TOOL_BXT, photometry: "linearfit-v1" } );
    check( "the family a run hands to Studio is the profile for Studio Parallax and Classic for BXT",
           [ Pipeline.studioFamily( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO, parallaxFamily: "aesthetics" } ),
             Pipeline.studioFamily( { sharpenTool: Steps.SHARPEN_TOOL_BXT, parallaxFamily: "aesthetics" } ),
@@ -3284,10 +3280,11 @@ function runTests()
    check( "no tool keys as none",
           Pipeline.aberrationParams( {}, true ), { tool: "none", photometry: "linearfit-v1" } );
 
-   check( "preflight checks Parallax when BXT's pass will be Studio's",
+   check( "preflight checks no Parallax for BlurXTerminator, Studio found or not; Studio Parallax does",
           [ Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, true ),
-            Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ) ],
-          [ [ "parallax" ], [] ] );
+            Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_BXT }, false ),
+            Steps.studioModelsFor( { sharpenTool: Steps.SHARPEN_TOOL_STUDIO }, true ) ],
+          [ [], [], [ "parallax" ] ] );
 
    /*
     * Gradient removal is a choice of tool now, not a GraXpert checkbox.
@@ -8957,6 +8954,32 @@ function runTests()
     * checked in node too: what they decide is filesystem and header logic,
     * not widgets.
     */
+   /*
+    * The masters list's Created column. A file system with no birth time
+    * hands back a Date at the epoch, which is truthy: it used to win over
+    * the modification time and the column showed nothing.
+    */
+   check( "firstTimeMs skips an epoch Date, NaN and null for the next real time",
+          [ Util.firstTimeMs( [ new Date( 0 ), new Date( 5000 ) ] ),
+            Util.firstTimeMs( [ null, new Date( NaN ), 7000 ] ),
+            Util.firstTimeMs( [ new Date( 0 ), undefined ] ) ], [ 5000, 7000, 0 ] );
+   check( "UI.masterFileRecord: no birth time falls back to the modification time",
+          UI.masterFileRecord( "/m", { name: "a.xisf", created: new Date( 0 ), lastModified: new Date( 8000 ) } ).created, 8000 );
+   check( "UI.masterFileRecord: a real birth time is kept",
+          UI.masterFileRecord( "/m", { name: "a.xisf", created: new Date( 3000 ), lastModified: new Date( 8000 ) } ).created, 3000 );
+   check( "Util.fileCreatedMs: an epoch birth time yields the modification time",
+          Util.fileCreatedMs( "/x", function() { this.timeCreated = new Date( 0 ); this.lastModified = new Date( 9000 ); } ), 9000 );
+   check( "Util.masterCreatedMs: the header's DATE comes first, zone-less as UTC",
+          [ Util.masterCreatedMs( { keywords: [ { name: "DATE", value: "'2026-09-14T21:30:05'" } ] }, 5 ),
+            Util.masterCreatedMs( { keywords: [ { name: "DATE", value: "'2026-09-14'" } ] }, 5 ) ],
+          [ Date.UTC( 2026, 8, 14, 21, 30, 5 ), Date.UTC( 2026, 8, 14 ) ] );
+   check( "Util.masterCreatedMs: no or unparsable DATE falls back to the file time",
+          [ Util.masterCreatedMs( { keywords: [] }, 123 ), Util.masterCreatedMs( null, 456 ),
+            Util.masterCreatedMs( { keywords: [ { name: "DATE", value: "'garbage'" } ] }, 789 ) ],
+          [ 123, 456, 789 ] );
+   check( "the Created column shows a date for a drizzle master with a header DATE",
+          Util.formatFileTime( Util.masterCreatedMs( { keywords: [ { name: "DATE", value: "'2026-09-14T12:00:00'" } ] }, 0 ) ) != "", true );
+
    ( function()
    {
       var dir = TEST_SCRATCH + "/loom-ui-master-scan";

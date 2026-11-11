@@ -616,8 +616,7 @@ Pipeline.withStudioFamily = function( params, tool, family )
 
 /*
  * The Parallax profile a run hands to Studio. Only Studio Parallax as the
- * sharpening tool has one; BlurXTerminator has none, and the Studio
- * aberration pass it borrows is always Classic.
+ * sharpening tool has one; BlurXTerminator has none (Classic, never used).
  */
 Pipeline.studioFamily = function( config )
 {
@@ -626,23 +625,14 @@ Pipeline.studioFamily = function( config )
 };
 
 /*
- * The aberration stage's cache parameters. Keyed on the tool that really
- * corrects: BlurXTerminator without Studio keys byte-for-byte as it always
- * has, so its cached channels still hit, while BXT with Studio found adds
- * the corrector (Studio Parallax) and its family -- a BXT-corrected
- * channel must never be served as a Studio-corrected one, or back.
+ * The aberration stage's cache parameters: the chosen tool, which is the
+ * tool that runs. BlurXTerminator keys exactly as it always did, with no
+ * corrector; only Studio Parallax carries its profile.
  */
-Pipeline.aberrationParams = function( config, studioFound )
+Pipeline.aberrationParams = function( config )
 {
    var tool = config.sharpenTool || "none";
    var p = { tool: tool, photometry: "linearfit-v1" };
-   var corrector = Steps.aberrationCorrector( tool, !!studioFound );
-   if ( corrector != tool )
-   {
-      p.corrector = corrector;
-      p.family = Pipeline.studioFamily( config );
-      return p;
-   }
    return Pipeline.withStudioFamily( p, tool, config.parallaxFamily );
 };
 
@@ -2575,7 +2565,7 @@ Pipeline.broadbandStages = function( bk, bc, config )
        * finished, calibrated composite, where a linked stretch keeps
        * the colour correction intact -- see Steps.correctComposite.
        */
-      aberration:    Pipeline.aberrationParams( config, Steps.studioAvailable() )
+      aberration:    Pipeline.aberrationParams( config )
    };
    /*
     * The MARS database file list, not just "MGC ran" -- a different

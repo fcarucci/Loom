@@ -2498,9 +2498,8 @@ Steps.availableSharpenTools = function()
 
 /*
  * Pure, like Steps.noiseToolsFrom. Studio Parallax sits beside standalone
- * Parallax. Studio's correction alone is not an entry: with Studio found
- * it replaces BlurXTerminator's correct-only pass by itself -- see
- * Steps.aberrationCorrector.
+ * Parallax; each runs the aberration pass only when it is the one chosen.
+ * BlurXTerminator, when chosen, does all of it.
  */
 Steps.sharpenToolsFrom = function( found )
 {
@@ -2599,40 +2598,16 @@ Steps.noiseAmountFor = function( tool, level, pass )
 };
 
 /*
- * Aberration correction. Always runs when a tool is selected. correct_only
+ * Aberration correction. Always runs when a tool is selected, and the
+ * selected tool does it. correct_only
  * fixes star shape and optical aberration WITHOUT adding detail, so it is
  * the operation with no aesthetic downside.
  */
-/*
- * The tool that really runs the aberration pass for a chosen tool.
- *
- * With BlurXTerminator chosen and SyQon Studio found, Studio Parallax's
- * correction runs in place of BXT's correct_only -- automatically, the
- * maintainer's rule: nothing to choose in the dialog. BXT still does star
- * reduction and detail on the composite. Without Studio, BXT as before;
- * every other tool corrects with itself (standalone Parallax keeps its
- * own correction, Studio Parallax already uses Studio's).
- */
-Steps.aberrationCorrector = function( tool, studioFound )
-{
-   return ( tool == Steps.SHARPEN_TOOL_BXT && studioFound ) ? Steps.SHARPEN_TOOL_STUDIO : tool;
-};
-
-/* Says which tool corrected, for the operation log line. */
-Steps.aberrationLogText = function( tool, studioFound )
-{
-   var corrector = Steps.aberrationCorrector( tool, studioFound );
-   return ( corrector == tool ) ? tool
-          : corrector + " (correction only, in place of " + tool + ")";
-};
-
 Steps.aberration = function( view, tool, linked, label, family )
 {
-   var studioFound = ( tool == Steps.SHARPEN_TOOL_BXT ) && Steps.studioAvailable();
-   Util.operation( "aberration", Steps.aberrationLogText( tool, studioFound ), null,
-                   label || view.id );
-   var corrector = Steps.aberrationCorrector( tool, studioFound );
-   if ( corrector == Steps.SHARPEN_TOOL_BXT )
+   // The chosen tool does the whole pass: BlurXTerminator never hands it to Studio.
+   Util.operation( "aberration", tool, null, label || view.id );
+   if ( tool == Steps.SHARPEN_TOOL_BXT )
    {
       var P = new BlurXTerminator;
       P.correct_only = true;
@@ -2643,13 +2618,13 @@ Steps.aberration = function( view, tool, linked, label, family )
          throw new Error( "BlurXTerminator (aberration) failed on " + view.id );
       return;
    }
-   if ( corrector == Steps.SHARPEN_TOOL_SYQON )
+   if ( tool == Steps.SHARPEN_TOOL_SYQON )
    {
       Steps.syqonExecuteStage( view, "aberration correction",
          { correctAberration: true, starReduction: 0, sharpen: 0.0 }, linked );
       return;
    }
-   if ( corrector == Steps.SHARPEN_TOOL_STUDIO )
+   if ( tool == Steps.SHARPEN_TOOL_STUDIO )
    {
       /*
        * Studio's "stellar correction / defect repair" stage alone -- for

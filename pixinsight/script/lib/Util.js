@@ -1484,10 +1484,51 @@ Util.fileCreatedMs = function( path, io )
    try
    {
       var fi = new F( path );
-      var t = fi.timeCreated || fi.lastModified;
-      return t ? t.getTime() : 0;
+      return Util.firstTimeMs( [ fi.timeCreated, fi.lastModified ] );
    }
    catch ( e ) { return 0; }
+};
+
+/*
+ * The first of `times` that is a real moment, in ms, or 0. A file system
+ * with no birth time hands back a Date at the epoch rather than nothing,
+ * and a Date is truthy: `a || b` kept the epoch and the Created column
+ * stayed empty. Zero, NaN and anything that is not a Date are skipped.
+ */
+Util.firstTimeMs = function( times )
+{
+   for ( var i = 0; i < times.length; ++i )
+   {
+      var ms = 0;
+      try { ms = times[i] == null ? 0 : ( typeof times[i] == "number" ? times[i] : times[i].getTime() ); }
+      catch ( e ) { ms = 0; }
+      if ( isFinite( ms ) && ms > 0 )
+         return ms;
+   }
+   return 0;
+};
+
+/*
+ * When a master was made, in ms. The header's own DATE (the FITS file
+ * creation date, which WBPP and Loom write into their masters) first; the
+ * file system's time, `fallbackMs`, only when the header has none or it
+ * does not parse. A DATE with no zone is UTC, like DATE-OBS.
+ */
+Util.masterCreatedMs = function( info, fallbackMs )
+{
+   var v = ( info && info.keywords ) ? Util.keywordValue( info.keywords, "DATE" ) : null;
+   if ( v != null )
+   {
+      var t = String( v );
+      if ( /^\d{4}-\d\d-\d\d$/.test( t ) )
+         t += "T00:00:00";
+      if ( !/[zZ]|[+-]\d\d:?\d\d$/.test( t ) )
+         t += "Z";
+      var ms = Date.parse( t );
+      if ( isFinite( ms ) && ms > 0 )
+         return ms;
+   }
+   return fallbackMs || 0;
 };
 
 /*
