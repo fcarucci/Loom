@@ -1567,7 +1567,9 @@ Util.findEntries = function( pattern, withHidden )
       {
          if ( find.name != "." && find.name != ".." && ( withHidden || find.name.charAt( 0 ) != "." ) )
             out.push( { name: find.name, isDirectory: find.isDirectory, isFile: find.isFile,
-                        isSymbolicLink: find.isSymbolicLink, size: find.size } );
+                        isSymbolicLink: find.isSymbolicLink, size: find.size,
+                        // the masters list's Created column reads these; without them it stayed empty
+                        created: find.created, lastModified: find.lastModified } );
       }
       while ( find.next() );
    return out;

@@ -180,6 +180,9 @@ global.FileFind = function ()
                        : ( st ? st.isDirectory() : false );
       this.isFile = st ? st.isFile() : false;
       this.size = st ? st.size : 0;
+      // PJSR's FileFind exposes both as Dates
+      this.created = st ? st.birthtime : new Date( 0 );
+      this.lastModified = st ? st.mtime : new Date( 0 );
       return true;
    };
 };

@@ -1230,6 +1230,10 @@ function runTests()
          check( "a folder listing skips AppleDouble ._ files and other hidden entries",
                 Util.findEntries( dir + "/*" ).map( function( e ) { return e.name; } ).sort(),
                 [ "Light", "masterFlat_B.xisf" ] );
+         var listed = Util.findEntries( dir + "/*" ).filter( function( e ) { return e.name == "masterFlat_B.xisf"; } )[0];
+         check( "a folder listing carries the file's times, which the masters list's Created column needs",
+                listed != null && listed.lastModified != null && listed.lastModified.getTime() > 0 &&
+                UI.masterFileRecord( dir, listed ).created > 0, true );
          check( "...and so does the plain name list",
                 Util.directoryEntries( dir ).sort(), [ "Light", "masterFlat_B.xisf" ] );
          check( "a listing for emptying or removing a folder still sees every entry",
