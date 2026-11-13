@@ -1813,7 +1813,8 @@ Steps.studioProbe = function( model )
       Steps.studioNoteKeychain();
       var res = Steps.syqonRunProcessBlocking( exePath, args, 5 * 60 * 1000,
                    { text: Steps.studioWaitText, stage: "Checking SyQon Studio " + model } );
-      var ran = File.exists( outPath ) || File.exists( Steps.studioDeclaredOutput( res.stdout ) || "" );
+      // studioDeclaredOutput only returns paths that exist; PJSR File.exists("") throws
+      var ran = File.exists( outPath ) || Steps.studioDeclaredOutput( res.stdout ) != null;
       var out = { exitCode: ( res.exitCode != null ) ? res.exitCode : ( ran ? 0 : null ),
                   stderr: res.stderr };
       if ( ran && !Steps.studioAccountRefused( out ) )

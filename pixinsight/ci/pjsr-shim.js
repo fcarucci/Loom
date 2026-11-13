@@ -39,7 +39,9 @@ global.File = function () {
 };
 
 Object.assign( global.File, {
-   exists:            p => { try { return fs.statSync( p ).isFile(); } catch ( e ) { return false; } },
+   // PJSR throws "Invalid or empty file name" on "" rather than answering false
+   exists:            p => { if ( p == null || String( p ) === "" ) throw new Error( "File I/O Error: Invalid or empty file name" );
+                             try { return fs.statSync( p ).isFile(); } catch ( e ) { return false; } },
    directoryExists:   p => { try { return fs.statSync( p ).isDirectory(); } catch ( e ) { return false; } },
    readTextFile:      p => fs.readFileSync( p, "utf8" ),
    writeTextFile:     ( p, t ) => fs.writeFileSync( p, t ),

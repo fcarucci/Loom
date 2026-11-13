@@ -9,6 +9,7 @@ section of this file.
 
 - **BlurXTerminator does everything when it is the aberration tool.** With SyQon Studio installed, Studio Parallax used to take over the aberration correction even though BlurXTerminator was chosen. Now BlurXTerminator does the whole pass (correction, star reduction, detail), and SyQon Parallax or SyQon Studio Parallax run only when you select them. The aberration cache key no longer carries a corrector for the BlurXTerminator choice, so it matches what it was before Studio was found; channels corrected by Studio's pass under a BlurXTerminator choice are recomputed once.
 - **The masters list's Created column was empty.** A file system that has no birth time reports the epoch, which counted as a time and was never replaced by the modification time, and the column then showed nothing. It now shows the master's own `DATE` keyword when it has one, else the file's creation time, else its modification time.
+- **The SyQon Studio check stopped the run with "Invalid or empty file name".** When syqon-cli printed no output path, the check asked PixInsight whether an empty path exists, which PixInsight treats as an error. It now only checks the path when the CLI printed one.
 
 ## [0.5.5] — 2026-10-21
 
