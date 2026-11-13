@@ -1330,6 +1330,14 @@ Steps.graxpert = function( view, smoothing )
    Util.log( "graxpert", view.id + " smoothing=" + smoothing );
    var P = new GraXpert;
    P.backgroundExtraction = true;  // boolean -- this is what turns extraction ON
+   /*
+    * Newer GraXpert process modules default to Sample-free extraction and
+    * pass -interpolation sample-free / -sample_free_* to the GraXpert app.
+    * GraXpert 3.0.x rejects those arguments and leaves the image unchanged.
+    * Loom uses the AI extraction, so pin it; older modules lack the parameter.
+    */
+   if ( "backgroundExtractionSampleFree" in P )
+      P.backgroundExtractionSampleFree = false;
    P.correction = "Subtraction";   // string enum: "Subtraction" or "Division" -- NOT what enables extraction
    P.smoothing = smoothing;
    P.createBackground = false;
